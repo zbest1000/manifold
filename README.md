@@ -67,7 +67,8 @@ are named for the aesthetic they produce.
 
 ### Prerequisites
 
-- Node.js ≥ 18
+- Node.js ≥ 20 (the OPC UA dependency chain uses ESM-only packages that require
+  Node 20.19+ / 22+)
 
 ### Install
 
@@ -168,7 +169,7 @@ delivered over Socket.IO.
   surface.
 
 - **GitHub Actions** (`.github/workflows/ci.yml`) runs on every push and PR to
-  `main`: server tests on Node 18/20/22, a client production build, and an MCP
+  `main`: server tests on Node 20/22, a client production build, and an MCP
   server load check.
 
 ---
