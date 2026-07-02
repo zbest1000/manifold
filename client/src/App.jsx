@@ -4,6 +4,7 @@ import Overview from './pages/Overview';
 import TopicGraph from './pages/TopicGraph';
 import Brokers from './pages/Brokers';
 import OpcUa from './pages/OpcUa';
+import Cesmii from './pages/Cesmii';
 import Discovery from './pages/Discovery';
 import Settings from './pages/Settings';
 
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="topics" element={<TopicGraph />} />
         <Route path="brokers" element={<Brokers />} />
         <Route path="opcua" element={<OpcUa />} />
+        <Route path="cesmii" element={<Cesmii />} />
         <Route path="discovery" element={<Discovery />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -17,8 +17,12 @@ class MqttManager extends EventEmitter {
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
 
+    // unref so these background timers never keep the process alive on their own
+    // (the HTTP server holds the event loop open in normal operation)
     this.cleanupTimer = setInterval(() => this.cleanupOldMessages(), 300000);
     this.statsTimer = setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
+    this.cleanupTimer.unref?.();
+    this.statsTimer.unref?.();
   }
 
   connectToBroker(config = {}) {

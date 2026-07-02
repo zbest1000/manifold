@@ -314,6 +314,101 @@ server.tool(
   }
 );
 
+// ---------------------------------------------------------------------------
+// CESMII SMIP (Smart Manufacturing Innovation Platform)
+// ---------------------------------------------------------------------------
+server.tool(
+  'cesmii_status',
+  'Get the CESMII SMIP connection status (configured, authenticated, endpoint).',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/cesmii/status'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'cesmii_configure',
+  'Configure and authenticate the CESMII SMIP GraphQL connection. Runs the two-step JWT handshake and returns status.',
+  {
+    endpoint: z.string().describe('SMIP GraphQL endpoint, e.g. https://<instance>.cesmii.net/graphql'),
+    authenticator: z.string().describe('Registered authenticator name.'),
+    role: z.string().describe('GraphQL role for permissions.'),
+    userName: z.string().describe('User identifier.'),
+    secret: z.string().describe('Authenticator secret / password / API key.')
+  },
+  async (args) => {
+    try {
+      return ok(await api('/api/cesmii/config', { method: 'POST', body: JSON.stringify(args) }));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'cesmii_list_equipment',
+  'List equipment instances (id, displayName) from the configured SMIP instance.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/cesmii/equipment'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'cesmii_list_attributes',
+  'List attributes/tags (id, displayName) from the configured SMIP instance. Attribute ids are used for history queries.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/cesmii/attributes'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'cesmii_history',
+  'Retrieve historical time-series samples for SMIP attribute ids via getRawHistoryDataWithSampling.',
+  {
+    ids: z.array(z.string()).describe('Attribute/tag ids to query.'),
+    startTime: z.string().describe('Start timestamp, e.g. "2024-01-01 00:00:00+00".'),
+    endTime: z.string().describe('End timestamp.'),
+    maxSamples: z.number().optional().describe('Max samples (0 disables down-sampling, default 100).')
+  },
+  async (args) => {
+    try {
+      return ok(await api('/api/cesmii/history', { method: 'POST', body: JSON.stringify(args) }));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'cesmii_query',
+  'Run a raw GraphQL query against the configured SMIP instance (authenticated).',
+  {
+    query: z.string().describe('GraphQL query string.'),
+    variables: z.record(z.any()).optional().describe('GraphQL variables.')
+  },
+  async ({ query, variables }) => {
+    try {
+      return ok(await api('/api/cesmii/query', { method: 'POST', body: JSON.stringify({ query, variables }) }));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`Topic Canvas MCP server running (backend: ${API_URL})`);

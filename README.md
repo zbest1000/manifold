@@ -29,8 +29,11 @@ MCP-capable client at the included MCP server.
   presets (Organic, Spacious, Tight). Your choice persists across sessions.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
-- **MCP server** — expose MQTT + OPC UA tools to Claude Desktop, IDE agents, or any
-  MCP client.
+- **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform
+  instance (two-step JWT handshake handled server-side), list equipment and
+  attributes, and pull historical time-series with an inline sparkline.
+- **MCP server** — expose MQTT, OPC UA and CESMII tools to Claude Desktop, IDE
+  agents, or any MCP client.
 
 ---
 
@@ -39,7 +42,7 @@ MCP-capable client at the included MCP server.
 ```
 Topic Canvas
 ├── server/   Node.js + Express + Socket.IO backend
-│             MQTT (mqtt.js) · OPC UA (node-opcua) · discovery · Sparkplug B
+│             MQTT (mqtt.js) · OPC UA (node-opcua) · CESMII SMIP · discovery · Sparkplug B
 ├── client/   React + Vite + Tailwind frontend
 │             canvas force-graph, style presets, live data panels
 └── mcp/      Model Context Protocol server (stdio) bridging to the backend REST API
@@ -123,6 +126,9 @@ backend.
 | `mqtt_subscribe` / `mqtt_publish` | Subscribe to filters and publish messages |
 | `opcua_connect` / `opcua_disconnect` / `opcua_list_connections` | Manage OPC UA connections |
 | `opcua_browse` / `opcua_read` / `opcua_monitor` | Walk the address space, read and monitor nodes |
+| `cesmii_configure` / `cesmii_status` | Configure and authenticate a CESMII SMIP instance |
+| `cesmii_list_equipment` / `cesmii_list_attributes` | List SMIP equipment and attributes |
+| `cesmii_history` / `cesmii_query` | Pull time-series history or run a raw GraphQL query |
 
 ---
 
@@ -140,9 +146,30 @@ backend.
 | `POST` | `/api/opcua/connections` | Connect (`{ endpointUrl, securityMode?, ... }`) |
 | `GET` | `/api/opcua/connections/:id/browse?nodeId=` | Browse a node's children |
 | `POST` | `/api/opcua/connections/:id/monitor` | Monitor a variable (`{ nodeId, samplingInterval? }`) |
+| `POST` | `/api/cesmii/config` | Configure + authenticate a SMIP instance |
+| `GET` | `/api/cesmii/equipment` · `/attributes` | List SMIP equipment / attributes |
+| `POST` | `/api/cesmii/history` | Time-series history (`{ ids, startTime, endTime, maxSamples? }`) |
 
 Real-time updates (messages, broker stats, discovery progress, OPC UA values) are
 delivered over Socket.IO.
+
+---
+
+## Tests & CI
+
+- **Server tests** run on Node's built-in test runner (no extra dependencies):
+
+  ```bash
+  cd server && npm test
+  ```
+
+  They cover CIDR expansion, MQTT message-type / Sparkplug detection, CESMII config
+  validation, and an HTTP smoke test that boots the app and exercises the REST
+  surface.
+
+- **GitHub Actions** (`.github/workflows/ci.yml`) runs on every push and PR to
+  `main`: server tests on Node 18/20/22, a client production build, and an MCP
+  server load check.
 
 ---
 

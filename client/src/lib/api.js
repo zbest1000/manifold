@@ -56,5 +56,13 @@ export const api = {
   // Discovery
   startDiscovery: (options) => request('/api/system/discovery/start', { method: 'POST', body: JSON.stringify(options) }),
   stopDiscovery: () => request('/api/system/discovery/stop', { method: 'POST' }),
-  discoveryResults: () => request('/api/system/discovery/results')
+  discoveryResults: () => request('/api/system/discovery/results'),
+
+  // CESMII SMIP
+  cesmiiStatus: () => request('/api/cesmii/status'),
+  cesmiiConfig: (config) => request('/api/cesmii/config', { method: 'POST', body: JSON.stringify(config) }),
+  cesmiiReset: () => request('/api/cesmii/config', { method: 'DELETE' }),
+  cesmiiEquipment: () => request('/api/cesmii/equipment'),
+  cesmiiAttributes: () => request('/api/cesmii/attributes'),
+  cesmiiHistory: (body) => request('/api/cesmii/history', { method: 'POST', body: JSON.stringify(body) })
 };

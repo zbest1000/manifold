@@ -8,10 +8,12 @@ require('dotenv').config();
 const MqttManager = require('./services/mqttManager');
 const OpcuaManager = require('./services/opcuaManager');
 const DiscoveryService = require('./services/discovery');
+const CesmiiClient = require('./services/cesmiiClient');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
 const systemRoutes = require('./routes/system');
+const cesmiiRoutes = require('./routes/cesmii');
 
 const app = express();
 const server = http.createServer(app);
@@ -32,12 +34,14 @@ if (process.env.NODE_ENV === 'production') {
 const mqttManager = new MqttManager(io);
 const opcuaManager = new OpcuaManager(io);
 const discovery = new DiscoveryService(io);
+const cesmii = new CesmiiClient();
 
-app.locals.services = { mqttManager, opcuaManager, discovery };
+app.locals.services = { mqttManager, opcuaManager, discovery, cesmii };
 
 app.use('/api/mqtt', mqttRoutes);
 app.use('/api/opcua', opcuaRoutes);
 app.use('/api/system', systemRoutes);
+app.use('/api/cesmii', cesmiiRoutes);
 
 app.get('/health', (req, res) => {
   res.json({

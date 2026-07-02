@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity } from 'lucide-react';
+import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot } from './ui';
@@ -9,6 +9,7 @@ const NAV = [
   { to: '/topics', label: 'Topic Graph', icon: Share2 },
   { to: '/brokers', label: 'MQTT Brokers', icon: Radio },
   { to: '/opcua', label: 'OPC UA', icon: Cpu },
+  { to: '/cesmii', label: 'CESMII SMIP', icon: Factory },
   { to: '/discovery', label: 'Discovery', icon: Radar },
   { to: '/settings', label: 'Settings', icon: SettingsIcon }
 ];
