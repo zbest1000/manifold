@@ -7,6 +7,7 @@ import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
 import ForceGraph3D from '@/graph/ForceGraph3D';
+import WebGLGraph from '@/graph/WebGLGraph';
 import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
@@ -252,28 +253,38 @@ export default function TopicGraph() {
           </div>
         ) : (
           <div className="relative flex-1">
-            <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
-            <GraphToolbar
-              showFlow
-              onFit={() => graphRef.current?.fitTo()}
-              onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
-              onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
-            />
-            <ForceGraph
-              ref={graphRef}
-              data={graph}
-              styleId={graphStyle}
-              layoutId={graphLayout}
-              selectedId={selected?.id || null}
-              onSelect={setSelected}
-              onExpand={toggleCollapse}
-              flow={flowEnabled}
-              activitySource={activitySource}
-              activitySize={activitySize}
-              nodeValues={showValues ? nodeValues : null}
-              matchIds={matchIds}
-              minimap={showMinimap}
-            />
+            {!showAll && (
+              <>
+                <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
+                <GraphToolbar
+                  showFlow
+                  onFit={() => graphRef.current?.fitTo()}
+                  onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
+                  onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+                />
+              </>
+            )}
+            {showAll ? (
+              // GPU renderer for the "show everything" view — one draw call for all
+              // nodes/links stays smooth into the hundreds of thousands.
+              <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+            ) : (
+              <ForceGraph
+                ref={graphRef}
+                data={graph}
+                styleId={graphStyle}
+                layoutId={graphLayout}
+                selectedId={selected?.id || null}
+                onSelect={setSelected}
+                onExpand={toggleCollapse}
+                flow={flowEnabled}
+                activitySource={activitySource}
+                activitySize={activitySize}
+                nodeValues={showValues ? nodeValues : null}
+                matchIds={matchIds}
+                minimap={showMinimap}
+              />
+            )}
             {(graph.capped || showAll) && (
               <div className="absolute left-4 top-16 flex items-center gap-2">
                 <button
@@ -298,9 +309,11 @@ export default function TopicGraph() {
               </div>
             )}
             <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
-              <div className="pointer-events-auto">
-                <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
-              </div>
+              {!showAll && (
+                <div className="pointer-events-auto">
+                  <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
+                </div>
+              )}
               <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
                 Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
               </div>
