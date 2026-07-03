@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown, Pin, ArrowDownAZ, Hash, Clock } from 'lucide-react';
 import clsx from 'clsx';
+import { topicMatches } from '@/lib/mqtt';
 
 const ROW_H = 26; // fixed row height enables windowing
 const OVERSCAN = 8;
@@ -22,11 +23,11 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
   const root = useMemo(() => buildTree(topics), [topics]);
 
   const visiblePaths = useMemo(() => {
-    const q = filter.trim().toLowerCase();
+    const q = filter.trim();
     if (!q) return null;
     const keep = new Set();
     for (const t of topics) {
-      if (!t.topic.toLowerCase().includes(q)) continue;
+      if (!topicMatches(q, t.topic)) continue;
       let acc = '';
       for (const s of t.topic.split('/')) {
         acc = acc ? `${acc}/${s}` : s;

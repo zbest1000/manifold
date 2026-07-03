@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2 } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -55,6 +55,7 @@ export default function TopicGraph() {
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph'); // 'graph' | 'tree'
   const [treeFilter, setTreeFilter] = useState('');
+  const [showAll, setShowAll] = useState(false);
   const graphRef = useRef(null);
 
   // Select a topic from the tree, shaping it like a graph node so the shared
@@ -106,9 +107,9 @@ export default function TopicGraph() {
   const GRAPH_MAX_NODES = 2500;
   const fullGraph = useMemo(() => {
     if (!broker) return { nodes: [], links: [] };
-    return buildMqttGraph(broker, brokerTopics, { maxNodes: GRAPH_MAX_NODES });
+    return buildMqttGraph(broker, brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broker?.id, brokerTopics]);
+  }, [broker?.id, brokerTopics, showAll]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
@@ -165,6 +166,14 @@ export default function TopicGraph() {
   }, []);
 
   const replayNodeId = useCallback((m) => `topic:${brokerId}:${m.topic}`, [brokerId]);
+
+  // Frame the whole network when Show all is toggled on.
+  useEffect(() => {
+    if (showAll) {
+      const t = setTimeout(() => graphRef.current?.fitTo(), 250);
+      return () => clearTimeout(t);
+    }
+  }, [showAll]);
 
   if (connected.length === 0) {
     return (
@@ -256,9 +265,27 @@ export default function TopicGraph() {
               matchIds={matchIds}
               minimap={showMinimap}
             />
-            {graph.capped && (
-              <div className="pointer-events-none absolute right-4 top-16 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur">
-                Large topic set — graph capped to {GRAPH_MAX_NODES.toLocaleString()} nodes ("+N" badges aggregate the rest). Switch to Tree for all {brokerTopics.length.toLocaleString()} topics.
+            {(graph.capped || showAll) && (
+              <div className="absolute left-4 top-16 flex items-center gap-2">
+                <button
+                  onClick={() => setShowAll((v) => !v)}
+                  className={clsx(
+                    'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] backdrop-blur transition',
+                    showAll
+                      ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
+                      : 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
+                  )}
+                >
+                  <Boxes size={13} />
+                  {showAll
+                    ? `Showing all ${graph.nodes.length.toLocaleString()} nodes`
+                    : `Show all ${brokerTopics.length.toLocaleString()} topics as nodes`}
+                </button>
+                {showAll && graph.nodes.length > 60000 && (
+                  <span className="rounded-lg bg-surface-900/70 px-2 py-1 text-[10px] text-slate-500 backdrop-blur">
+                    heavy — zoom in for detail
+                  </span>
+                )}
               </div>
             )}
             <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">

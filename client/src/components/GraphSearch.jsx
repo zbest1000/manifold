@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, X, Crosshair } from 'lucide-react';
 import clsx from 'clsx';
+import { topicMatches, isWildcard } from '@/lib/mqtt';
 
 /**
  * Search overlay for a node graph. As the user types, it reports the set of
@@ -11,12 +12,20 @@ export default function GraphSearch({ nodes, onMatches, onFit }) {
   const [query, setQuery] = useState('');
 
   const matchIds = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
     if (!q) return null;
+    const wild = isWildcard(q);
+    const lower = q.toLowerCase();
     const ids = new Set();
     for (const n of nodes) {
-      const hay = `${n.label} ${n.meta?.fullTopic || ''} ${n.meta?.nodeId || ''} ${n.meta?.elementId || ''}`.toLowerCase();
-      if (hay.includes(q)) ids.add(n.id);
+      const topic = n.meta?.fullTopic;
+      if (wild) {
+        // Wildcard queries match against the topic path
+        if (topic && topicMatches(q, topic)) ids.add(n.id);
+      } else {
+        const hay = `${n.label} ${topic || ''} ${n.meta?.nodeId || ''} ${n.meta?.elementId || ''}`.toLowerCase();
+        if (hay.includes(lower)) ids.add(n.id);
+      }
     }
     return ids;
   }, [query, nodes]);

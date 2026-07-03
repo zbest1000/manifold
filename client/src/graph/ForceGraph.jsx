@@ -67,6 +67,8 @@ const ForceGraph = forwardRef(function ForceGraph(
   const rafRef = useRef(0);
   const lastFrameRef = useRef(0);
   const drawRef = useRef(() => {});
+  const bigRef = useRef(false);
+  const gridRef = useRef(null);
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
   const layout = LAYOUTS[layoutId] || LAYOUTS.organic;
@@ -142,49 +144,76 @@ const ForceGraph = forwardRef(function ForceGraph(
     };
 
     // Level of detail: above ~220 nodes drop the expensive canvas glow and edge
-    // curvature so pan/zoom/flow stay smooth on large topic sets.
+    // curvature; above ~4000 ("big"/show-all) also cull to the viewport, render
+    // sub-pixel nodes as points, and drop links when zoomed far out — so even
+    // hundreds of thousands of nodes pan and zoom smoothly.
     const heavy = nodes.length > 220;
+    const big = nodes.length > 4000;
     const curve = !heavy;
 
+    // Visible graph-space rect (+margin) for culling.
+    const m = 80 / t.k;
+    const vx0 = -t.x / t.k - m;
+    const vy0 = -t.y / t.k - m;
+    const vx1 = (width - t.x) / t.k + m;
+    const vy1 = (height - t.y) / t.k + m;
+    const inView = (x, y) => x >= vx0 && x <= vx1 && y >= vy0 && y <= vy1;
+
     // Links: batch the common case into ONE stroke; draw active / faded /
-    // composition edges individually. Gentle curves on smaller graphs read as a
-    // more organic network.
-    ctx.lineWidth = style.link.width / t.k;
-    ctx.strokeStyle = style.link.color;
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-    ctx.beginPath();
-    const special = [];
-    for (const l of links) {
-      const active = hover && (l.source.id === hover.id || l.target.id === hover.id);
-      const faded = focusSet && !(focusSet.has(l.source.id) && focusSet.has(l.target.id));
-      if (active || faded || l.kind === 'composition') {
-        special.push({ l, active, faded });
-        continue;
-      }
-      addLinkPath(ctx, l, curve);
-    }
-    ctx.stroke();
-    for (const { l, active, faded } of special) {
-      ctx.globalAlpha = faded ? 0.15 : 1;
-      ctx.strokeStyle = active ? style.linkHighlight : style.link.color;
-      ctx.setLineDash(l.kind === 'composition' ? [5 / t.k, 4 / t.k] : []);
+    // composition edges individually. In big mode, cull to the viewport and skip
+    // links entirely when zoomed far out (nodes convey structure).
+    const drawLinks = !big || t.k >= 0.3;
+    if (drawLinks) {
+      ctx.lineWidth = style.link.width / t.k;
+      ctx.strokeStyle = style.link.color;
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
       ctx.beginPath();
-      addLinkPath(ctx, l, curve);
+      const special = [];
+      for (const l of links) {
+        if (big && !inView(l.source.x, l.source.y) && !inView(l.target.x, l.target.y)) continue;
+        const active = hover && (l.source.id === hover.id || l.target.id === hover.id);
+        const faded = focusSet && !(focusSet.has(l.source.id) && focusSet.has(l.target.id));
+        if (active || faded || l.kind === 'composition') {
+          special.push({ l, active, faded });
+          continue;
+        }
+        addLinkPath(ctx, l, curve);
+      }
       ctx.stroke();
+      for (const { l, active, faded } of special) {
+        ctx.globalAlpha = faded ? 0.15 : 1;
+        ctx.strokeStyle = active ? style.linkHighlight : style.link.color;
+        ctx.setLineDash(l.kind === 'composition' ? [5 / t.k, 4 / t.k] : []);
+        ctx.beginPath();
+        addLinkPath(ctx, l, curve);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
     }
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
 
     const showLabels = t.k >= style.showLabelsAtZoom;
     const showValues = nodeValues && t.k >= valueZoom;
 
     for (const n of nodes) {
+      if (big && !inView(n.x, n.y)) continue;
       const baseR = nodeRadius(n, style);
       const rate = rateRef.current.get(n.id) || 0;
       const r = activitySize ? baseR * (1 + Math.min(rate, 6) * 0.18) : baseR;
       const color = colorFor(n);
       const alpha = nodeAlpha(n);
+
+      // Fast path for tiny on-screen nodes in big graphs: a cheap point, no
+      // arc / stroke / glow / label.
+      if (big && r * t.k < 1.4) {
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = color;
+        const s = 1.6 / t.k;
+        ctx.fillRect(n.x - s / 2, n.y - s / 2, s, s);
+        ctx.globalAlpha = 1;
+        continue;
+      }
 
       ctx.globalAlpha = alpha;
 
@@ -329,6 +358,20 @@ const ForceGraph = forwardRef(function ForceGraph(
     if (simRef.current) simRef.current.stop();
 
     const depth = computeDepths(nodes, links);
+
+    // Big / show-all graphs: skip physics entirely — a force sim on tens of
+    // thousands of nodes is infeasible. Place nodes with a deterministic radial
+    // tree (O(n)), build a spatial grid for hit-testing, and rely on viewport
+    // culling in draw(). Pan/zoom stay smooth; node dragging is disabled.
+    const big = nodes.length > 4000;
+    bigRef.current = big;
+    if (big) {
+      radialTreeLayout(nodes, links, depth);
+      buildGrid(nodes, gridRef);
+      simRef.current = null;
+      requestAnimationFrame(() => draw());
+      return undefined;
+    }
 
     const sim = forceSimulation(nodes)
       .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
@@ -556,6 +599,8 @@ const ForceGraph = forwardRef(function ForceGraph(
     };
 
     const pick = (gx, gy) => {
+      // Big graphs use the spatial grid; smaller ones scan linearly.
+      if (bigRef.current && gridRef.current) return pickFromGrid(gx, gy, gridRef.current, style);
       const nodes = nodesRef.current;
       for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
@@ -568,6 +613,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     const dragBehavior = drag()
       .container(canvas)
       .subject((event) => {
+        if (bigRef.current) return null; // pan/zoom only in big mode
         const { x, y } = toGraphCoords(event.sourceEvent);
         return pick(x, y);
       })
@@ -869,4 +915,121 @@ function clusterCenters(nodes, radius) {
     centers.set(g, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
   });
   return centers;
+}
+
+// Deterministic O(n) radial-tree layout for very large graphs: each node owns an
+// angular wedge proportional to its leaf count, placed at radius ∝ depth. No
+// physics — positions are exact, so it scales to hundreds of thousands of nodes.
+function radialTreeLayout(nodes, links, depth) {
+  const childrenOf = new Map();
+  const hasParent = new Set();
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  for (const l of links) {
+    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
+    childrenOf.get(l.source).push(l.target);
+    hasParent.add(l.target);
+  }
+  const maxDepth = Math.max(1, ...nodes.map((n) => depth.get(n.id) || 0));
+  const ring = 260 + maxDepth * 10; // spread rings a bit as the tree deepens
+
+  // Leaf counts drive angular allocation so dense branches get more room.
+  const leaves = new Map();
+  const countLeaves = (id, guard) => {
+    if (leaves.has(id)) return leaves.get(id);
+    if (guard.has(id)) return 1;
+    guard.add(id);
+    const kids = childrenOf.get(id) || [];
+    let c = kids.length === 0 ? 1 : 0;
+    for (const k of kids) c += countLeaves(k, guard);
+    leaves.set(id, c || 1);
+    return leaves.get(id);
+  };
+
+  const roots = nodes.filter((n) => !hasParent.has(n.id));
+  for (const r of roots) countLeaves(r.id, new Set());
+
+  const place = (id, a0, a1, d, guard) => {
+    const n = byId.get(id);
+    if (!n || guard.has(id)) return;
+    guard.add(id);
+    const mid = (a0 + a1) / 2;
+    const radius = d * ring;
+    n.x = Math.cos(mid) * radius;
+    n.y = Math.sin(mid) * radius;
+    n.fx = n.x;
+    n.fy = n.y;
+    const kids = childrenOf.get(id) || [];
+    if (kids.length === 0) return;
+    const total = kids.reduce((s, k) => s + (leaves.get(k) || 1), 0) || 1;
+    let a = a0;
+    for (const k of kids) {
+      const span = ((leaves.get(k) || 1) / total) * (a1 - a0);
+      place(k, a, a + span, d + 1, guard);
+      a += span;
+    }
+  };
+
+  const guard = new Set();
+  const totalLeaves = roots.reduce((s, r) => s + (leaves.get(r.id) || 1), 0) || 1;
+  let a = 0;
+  for (const r of roots) {
+    const span = ((leaves.get(r.id) || 1) / totalLeaves) * Math.PI * 2;
+    place(r.id, a, a + span, 0, guard);
+    a += span;
+  }
+}
+
+// Uniform spatial grid over node positions for O(1)-ish hit-testing at scale.
+function buildGrid(nodes, gridRef) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y > maxY) maxY = n.y;
+  }
+  const cell = 40;
+  const cols = Math.max(1, Math.ceil((maxX - minX) / cell) + 1);
+  const map = new Map();
+  for (const n of nodes) {
+    const key = cellKey(n.x, n.y, minX, minY, cell, cols);
+    let bucket = map.get(key);
+    if (!bucket) {
+      bucket = [];
+      map.set(key, bucket);
+    }
+    bucket.push(n);
+  }
+  gridRef.current = { minX, minY, cell, cols, map };
+}
+
+function cellKey(x, y, minX, minY, cell, cols) {
+  const cx = Math.floor((x - minX) / cell);
+  const cy = Math.floor((y - minY) / cell);
+  return cy * cols + cx;
+}
+
+function pickFromGrid(gx, gy, grid, style) {
+  const { minX, minY, cell, cols, map } = grid;
+  let best = null;
+  let bestD = Infinity;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const key = cellKey(gx + dx * cell, gy + dy * cell, minX, minY, cell, cols);
+      const bucket = map.get(key);
+      if (!bucket) continue;
+      for (const n of bucket) {
+        const r = nodeRadius(n, style) + 6;
+        const d = (n.x - gx) ** 2 + (n.y - gy) ** 2;
+        if (d <= r * r && d < bestD) {
+          best = n;
+          bestD = d;
+        }
+      }
+    }
+  }
+  return best;
 }
