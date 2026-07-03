@@ -45,6 +45,12 @@ MCP-capable client at the included MCP server.
   layouts without a second rendering engine on the frontend. OPC UA and i3X graphs
   default to the hierarchical `dot` layout; the MQTT graph has a one-click
   **Beautify** action.
+- **Show-all at massive scale** — a "show all" toggle renders every topic as a node
+  on the GPU. Two interchangeable WebGL renderers are available: a lean built-in
+  one (the default — verified rendering 63k+ nodes and staying responsive to
+  pan/zoom) and **Sigma.js**, which adds zoom-aware labels and native camera
+  controls. The built-in renderer is leaner at the extreme; Sigma is offered for
+  its labelling/polish at moderate sizes.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
 - **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform

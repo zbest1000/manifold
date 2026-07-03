@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Overview from './pages/Overview';
@@ -9,6 +10,9 @@ import I3x from './pages/I3x';
 import Unified from './pages/Unified';
 import Discovery from './pages/Discovery';
 import Settings from './pages/Settings';
+
+// Internal, unlinked benchmark/verification page for the big-graph renderers.
+const Bench = lazy(() => import('./pages/Bench'));
 
 export default function App() {
   return (
@@ -25,6 +29,14 @@ export default function App() {
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
+      <Route
+        path="/bench"
+        element={
+          <Suspense fallback={<div className="grid h-screen place-items-center text-slate-400">Loading bench…</div>}>
+            <Bench />
+          </Suspense>
+        }
+      />
     </Routes>
   );
 }

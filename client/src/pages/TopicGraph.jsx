@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -8,6 +8,9 @@ import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
 import ForceGraph3D from '@/graph/ForceGraph3D';
 import WebGLGraph from '@/graph/WebGLGraph';
+// Sigma pulls in its own WebGL runtime; only load it when a user opts into that
+// renderer so the default bundle stays lean.
+const SigmaGraph = lazy(() => import('@/graph/SigmaGraph'));
 import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
@@ -59,6 +62,7 @@ export default function TopicGraph() {
   const [view, setView] = useState('graph'); // 'graph' | 'tree'
   const [treeFilter, setTreeFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
+  const [bigRenderer, setBigRenderer] = useState('webgl'); // 'webgl' | 'sigma'
   const graphRef = useRef(null);
 
   // Select a topic from the tree, shaping it like a graph node so the shared
@@ -267,9 +271,16 @@ export default function TopicGraph() {
               </>
             )}
             {showAll ? (
-              // GPU renderer for the "show everything" view — one draw call for all
-              // nodes/links stays smooth into the hundreds of thousands.
-              <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+              // GPU renderer for the "show everything" view. Two interchangeable
+              // WebGL renderers: the built-in one (custom, one draw call per frame)
+              // and Sigma.js (mature large-graph library with zoom-aware labels).
+              bigRenderer === 'sigma' ? (
+                <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-xs text-slate-500">Loading Sigma renderer…</div>}>
+                  <SigmaGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+                </Suspense>
+              ) : (
+                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+              )
             ) : (
               <ForceGraph
                 ref={graphRef}
@@ -303,6 +314,24 @@ export default function TopicGraph() {
                     ? `Showing all ${graph.nodes.length.toLocaleString()} nodes`
                     : `Show all ${brokerTopics.length.toLocaleString()} topics as nodes`}
                 </button>
+                {showAll && (
+                  <div className="flex overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-[11px] backdrop-blur">
+                    <button
+                      onClick={() => setBigRenderer('webgl')}
+                      title="Built-in WebGL renderer"
+                      className={clsx('px-2.5 py-2 transition', bigRenderer === 'webgl' ? 'bg-accent-500/20 text-accent-200' : 'text-slate-400 hover:bg-white/5')}
+                    >
+                      WebGL
+                    </button>
+                    <button
+                      onClick={() => setBigRenderer('sigma')}
+                      title="Sigma.js renderer (zoom-aware labels)"
+                      className={clsx('border-l border-white/10 px-2.5 py-2 transition', bigRenderer === 'sigma' ? 'bg-accent-500/20 text-accent-200' : 'text-slate-400 hover:bg-white/5')}
+                    >
+                      Sigma
+                    </button>
+                  </div>
+                )}
                 {showAll && graph.nodes.length > 60000 && (
                   <span className="rounded-lg bg-surface-900/70 px-2 py-1 text-[10px] text-slate-500 backdrop-blur">
                     heavy — zoom in for detail
