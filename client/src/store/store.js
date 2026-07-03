@@ -39,6 +39,9 @@ export const useStore = create((set, get) => ({
   graphStyle: localStorage.getItem('tc.graphStyle') || DEFAULT_STYLE,
   graphLayout: localStorage.getItem('tc.graphLayout') || DEFAULT_LAYOUT,
   flowEnabled: localStorage.getItem('tc.flowEnabled') !== 'false',
+  activitySize: localStorage.getItem('tc.activitySize') === 'true',
+  showValues: localStorage.getItem('tc.showValues') !== 'false',
+  showMinimap: localStorage.getItem('tc.showMinimap') === 'true',
 
   setGraphStyle: (id) => {
     localStorage.setItem('tc.graphStyle', id);
@@ -51,6 +54,18 @@ export const useStore = create((set, get) => ({
   setFlowEnabled: (v) => {
     localStorage.setItem('tc.flowEnabled', String(v));
     set({ flowEnabled: v });
+  },
+  setActivitySize: (v) => {
+    localStorage.setItem('tc.activitySize', String(v));
+    set({ activitySize: v });
+  },
+  setShowValues: (v) => {
+    localStorage.setItem('tc.showValues', String(v));
+    set({ showValues: v });
+  },
+  setShowMinimap: (v) => {
+    localStorage.setItem('tc.showMinimap', String(v));
+    set({ showMinimap: v });
   },
 
   setConnected: (connected) => set({ connected }),

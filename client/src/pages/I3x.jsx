@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, Plug, LogOut, X, Activity, Layers } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
 import { buildI3xGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphSearch from '@/components/GraphSearch';
 import JsonView from '@/components/JsonView';
+import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { useStore } from '@/store/store';
 import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
@@ -13,6 +15,9 @@ import PageHeader from '@/components/PageHeader';
 export default function I3x() {
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
+  const showMinimap = useStore((s) => s.showMinimap);
+  const [matchIds, setMatchIds] = useState(null);
+  const graphRef = useRef(null);
 
   const [status, setStatus] = useState(null);
   const [form, setForm] = useState({ baseUrl: '', token: '' });
@@ -128,13 +133,21 @@ export default function I3x() {
             <EmptyState icon={Layers} title="No objects returned" hint="This i3X server exposed no objects." />
           ) : (
             <>
-              <GraphToolbar />
+              <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
+              <GraphToolbar
+                onFit={() => graphRef.current?.fitTo()}
+                onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), 'i3x-graph.png')}
+                onExportJson={() => downloadJson(graphRef.current?.exportGraph(), 'i3x-graph.json')}
+              />
               <ForceGraph
+                ref={graphRef}
                 data={graph}
                 styleId={graphStyle}
                 layoutId={graphLayout}
                 selectedId={selected?.id || null}
                 onSelect={setSelected}
+                matchIds={matchIds}
+                minimap={showMinimap}
               />
               <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
                 Object graph · click a node to read its value and history

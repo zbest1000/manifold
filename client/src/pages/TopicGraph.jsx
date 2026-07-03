@@ -1,16 +1,39 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Share2, X, Gauge, Clock, Hash, Send } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
-import { buildMqttGraph } from '@/graph/buildGraph';
+import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphSearch from '@/components/GraphSearch';
+import ReplayScrubber from '@/components/ReplayScrubber';
 import JsonView from '@/components/JsonView';
+import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { Card, Button, Badge, EmptyState, Input } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import { formatDistanceToNow } from 'date-fns';
+
+function numericFromPayload(payload) {
+  if (typeof payload === 'number') return payload;
+  if (typeof payload === 'string') {
+    const n = Number(payload);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (payload && typeof payload === 'object') {
+    for (const key of ['value', 'v', 'val', 'temperature', 'temp']) {
+      if (Number.isFinite(payload[key])) return payload[key];
+    }
+  }
+  return null;
+}
+
+function shortText(payload) {
+  if (payload == null) return '';
+  if (typeof payload === 'object') return JSON.stringify(payload);
+  return String(payload);
+}
 
 export default function TopicGraph() {
   const brokers = useStore((s) => s.brokers);
@@ -19,10 +42,16 @@ export default function TopicGraph() {
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
   const flowEnabled = useStore((s) => s.flowEnabled);
+  const activitySize = useStore((s) => s.activitySize);
+  const showValues = useStore((s) => s.showValues);
+  const showMinimap = useStore((s) => s.showMinimap);
   const setTopics = useStore((s) => s.setTopics);
 
   const [brokerId, setBrokerId] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const [matchIds, setMatchIds] = useState(null);
+  const graphRef = useRef(null);
 
   const connected = brokers.filter((b) => b.status === 'connected');
 
@@ -48,11 +77,37 @@ export default function TopicGraph() {
   // Message counts/timestamps update constantly; keying the memo on them would
   // reheat the force simulation on each message and make the layout jitter.
   const topicKey = brokerTopics.map((t) => t.topic).sort().join('\n');
-  const graph = useMemo(() => {
+  const fullGraph = useMemo(() => {
     if (!broker) return { nodes: [], links: [] };
     return buildMqttGraph(broker, brokerTopics);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [broker?.id, topicKey]);
+
+  // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
+  const collapseKey = [...collapsed].sort().join('|');
+  const graph = useMemo(
+    () => collapseGraph(fullGraph, collapsed),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [fullGraph, collapseKey]
+  );
+
+  // Latest value + numeric sparkline per leaf topic, for the on-node overlay.
+  const nodeValues = useMemo(() => {
+    if (!brokerId) return null;
+    const buf = liveMessages[brokerId] || [];
+    const byTopic = new Map();
+    for (const m of buf) {
+      if (!byTopic.has(m.topic)) byTopic.set(m.topic, []);
+      byTopic.get(m.topic).push(m);
+    }
+    const out = {};
+    for (const [topic, msgs] of byTopic) {
+      const ordered = msgs.slice().reverse(); // oldest→newest
+      const series = ordered.map((m) => numericFromPayload(m.payload)).filter((v) => v != null);
+      out[`topic:${brokerId}:${topic}`] = { text: shortText(msgs[0].payload), series: series.slice(-24) };
+    }
+    return out;
+  }, [brokerId, liveMessages]);
 
   // Feed live message activity to the graph's flow animation. Maps an incoming
   // message on this broker to its leaf node id (see buildMqttGraph node ids).
@@ -64,6 +119,19 @@ export default function TopicGraph() {
       }),
     [brokerId]
   );
+
+  // Double-click a branch node to collapse/expand its subtree.
+  const toggleCollapse = useCallback((node) => {
+    if (!node || node.meta?.isLeaf) return;
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(node.id)) next.delete(node.id);
+      else next.add(node.id);
+      return next;
+    });
+  }, []);
+
+  const replayNodeId = useCallback((m) => `topic:${brokerId}:${m.topic}`, [brokerId]);
 
   if (connected.length === 0) {
     return (
@@ -108,18 +176,35 @@ export default function TopicGraph() {
 
       <div className="relative flex flex-1 overflow-hidden">
         <div className="relative flex-1">
-          <GraphToolbar showFlow />
+          <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
+          <GraphToolbar
+            showFlow
+            onFit={() => graphRef.current?.fitTo()}
+            onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
+            onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+          />
           <ForceGraph
+            ref={graphRef}
             data={graph}
             styleId={graphStyle}
             layoutId={graphLayout}
             selectedId={selected?.id || null}
             onSelect={setSelected}
+            onExpand={toggleCollapse}
             flow={flowEnabled}
             activitySource={activitySource}
+            activitySize={activitySize}
+            nodeValues={showValues ? nodeValues : null}
+            matchIds={matchIds}
+            minimap={showMinimap}
           />
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-            Drag to move nodes · scroll to zoom · click a node for details · messages animate live
+          <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
+            <div className="pointer-events-auto">
+              <ReplayScrubber messages={liveMessages[brokerId] || []} toNodeId={replayNodeId} graphRef={graphRef} />
+            </div>
+            <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+              Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
+            </div>
           </div>
         </div>
 

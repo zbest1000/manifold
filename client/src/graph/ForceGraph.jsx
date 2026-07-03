@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   forceSimulation,
   forceLink,
@@ -6,31 +6,44 @@ import {
   forceCenter,
   forceCollide,
   forceX,
-  forceY
+  forceY,
+  forceRadial
 } from 'd3-force';
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import { drag } from 'd3-drag';
 import { GRAPH_STYLES, LAYOUTS } from './graphStyles';
-import { groupColor } from './buildGraph';
+import { groupColor, PROTOCOL_COLORS } from './buildGraph';
 
 /**
- * Canvas-based force-directed graph with pan/zoom, drag, hover and selection.
+ * Canvas node graph: pan/zoom, drag, hover, selection, live message-flow
+ * animation, activity-weighted sizing, value overlays, search/focus dimming,
+ * collapse badges, edge-kind styling, alternate layouts and a minimap.
  *
- * Rendering is done on a 2D canvas for smoothness with hundreds of nodes; the
- * visual language is driven entirely by the selected style preset so switching
- * styles restyles the whole graph instantly without touching layout.
+ * Rendering is on a 2D canvas so it stays smooth with hundreds of nodes; the
+ * visual language is driven by the selected style preset. An imperative handle
+ * exposes fit-to / export for the surrounding page.
  */
-export default function ForceGraph({
-  data,
-  styleId = 'constellation',
-  layoutId = 'organic',
-  selectedId = null,
-  onSelect,
-  onExpand,
-  flow = false,
-  activitySource = null
-}) {
+const ForceGraph = forwardRef(function ForceGraph(
+  {
+    data,
+    styleId = 'constellation',
+    layoutId = 'organic',
+    selectedId = null,
+    onSelect,
+    onExpand,
+    flow = false,
+    activitySource = null,
+    activitySize = false,
+    nodeValues = null,
+    valueZoom = 1.1,
+    matchIds = null,
+    focusId = null,
+    minimap = false,
+    colorByProtocol = false
+  },
+  ref
+) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const simRef = useRef(null);
@@ -39,20 +52,29 @@ export default function ForceGraph({
   const nodesRef = useRef([]);
   const linksRef = useRef([]);
   const dprRef = useRef(1);
+  const sizeRef = useRef({ w: 0, h: 0 });
   const centeredRef = useRef(false);
+  const selRef = useRef(null);
+  const zoomRef = useRef(null);
+  const layoutModeRef = useRef('force');
 
   // Live message-flow animation state (all imperative, off the React tree)
   const nodeByIdRef = useRef(new Map());
-  const parentOfRef = useRef(new Map()); // childId -> parentId, for root→leaf paths
-  const particlesRef = useRef([]); // travelling dots: { nodeIds, progress, speed }
-  const pulseRef = useRef(new Map()); // nodeId -> ring strength (0..1)
-  const rateRef = useRef(new Map()); // nodeId -> recent activity (drives glow)
+  const parentOfRef = useRef(new Map());
+  const particlesRef = useRef([]);
+  const pulseRef = useRef(new Map());
+  const rateRef = useRef(new Map());
   const rafRef = useRef(0);
   const lastFrameRef = useRef(0);
   const drawRef = useRef(() => {});
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
   const layout = LAYOUTS[layoutId] || LAYOUTS.organic;
+
+  const colorFor = useCallback(
+    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style]
+  );
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -68,11 +90,9 @@ export default function ForceGraph({
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Background
     ctx.fillStyle = style.background;
     ctx.fillRect(0, 0, width, height);
 
-    // Optional grid drawn in screen space, offset by pan
     if (style.grid) {
       const size = style.grid.size * t.k;
       const offX = t.x % size;
@@ -103,37 +123,57 @@ export default function ForceGraph({
       }
     }
 
-    // Links
+    // Focus mode: dim everything except the focused node and its neighbors.
+    const focusSet = focusId ? new Set([focusId]) : null;
+    if (focusSet) {
+      for (const l of links) {
+        if (l.source.id === focusId) focusSet.add(l.target.id);
+        if (l.target.id === focusId) focusSet.add(l.source.id);
+      }
+    }
+    const matching = matchIds && matchIds.size ? matchIds : null;
+
+    const nodeAlpha = (n) => {
+      if (focusSet && !focusSet.has(n.id)) return 0.08;
+      if (matching && !matching.has(n.id)) return 0.12;
+      if (hover && hover.id !== n.id && !neighbors.has(n.id)) return 0.35;
+      if (activitySize && n.meta?.isLeaf && (rateRef.current.get(n.id) || 0) < 0.05) return 0.4;
+      return 1;
+    };
+
+    // Links (composition edges dashed; graph edges could curve — kept straight)
     ctx.lineWidth = style.link.width / t.k;
     for (const l of links) {
       const active = hover && (l.source.id === hover.id || l.target.id === hover.id);
+      const faded = focusSet && !(focusSet.has(l.source.id) && focusSet.has(l.target.id));
+      ctx.globalAlpha = faded ? 0.15 : 1;
       ctx.strokeStyle = active ? style.linkHighlight : style.link.color;
+      if (l.kind === 'composition') ctx.setLineDash([5 / t.k, 4 / t.k]);
+      else ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(l.source.x, l.source.y);
       ctx.lineTo(l.target.x, l.target.y);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
 
-    // Nodes
     const showLabels = t.k >= style.showLabelsAtZoom;
+    const showValues = nodeValues && t.k >= valueZoom;
+
     for (const n of nodes) {
-      const r = nodeRadius(n, style);
-      const color = groupColor(n.group, style.palette);
-      const dim = hover && hover.id !== n.id && !neighbors.has(n.id);
+      const baseR = nodeRadius(n, style);
+      const rate = rateRef.current.get(n.id) || 0;
+      const r = activitySize ? baseR * (1 + Math.min(rate, 6) * 0.18) : baseR;
+      const color = colorFor(n);
+      const alpha = nodeAlpha(n);
 
-      ctx.globalAlpha = dim ? 0.35 : 1;
+      ctx.globalAlpha = alpha;
 
-      // Recent message activity brightens a node's glow without touching its
-      // physical radius (which would disturb collision/layout).
-      const activity = rateRef.current.get(n.id) || 0;
-      const activeGlow = Math.min(activity, 4) * 6;
+      const activeGlow = Math.min(rate, 4) * 6;
       const glow = (style.node.glow || 0) + activeGlow;
-      if (glow > 0) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = glow;
-      } else {
-        ctx.shadowBlur = 0;
-      }
+      ctx.shadowColor = color;
+      ctx.shadowBlur = glow > 0 ? glow : 0;
 
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -160,9 +200,14 @@ export default function ForceGraph({
         ctx.stroke();
       }
 
+      // Collapsed-subtree badge
+      if (n.collapsedCount) {
+        drawBadge(ctx, n.x + r, n.y - r, `+${n.collapsedCount}`, t.k, style.linkHighlight);
+      }
+
       ctx.globalAlpha = 1;
 
-      if (showLabels && !dim) {
+      if (showLabels && alpha > 0.3) {
         ctx.font = style.labelFont;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
@@ -172,10 +217,29 @@ export default function ForceGraph({
         ctx.strokeText(label, n.x, n.y + r + 2);
         ctx.fillStyle = style.label.color;
         ctx.fillText(label, n.x, n.y + r + 2);
+
+        // Value overlay + sparkline for leaf nodes above the zoom threshold
+        if (showValues && alpha > 0.5) {
+          const v = nodeValues[n.id];
+          if (v) {
+            if (v.text != null) {
+              ctx.font = `600 11px 'JetBrains Mono', monospace`;
+              const vt = String(v.text).slice(0, 18);
+              ctx.lineWidth = 3 / t.k;
+              ctx.strokeStyle = style.label.halo;
+              ctx.strokeText(vt, n.x, n.y + r + 16);
+              ctx.fillStyle = style.linkHighlight;
+              ctx.fillText(vt, n.x, n.y + r + 16);
+            }
+            if (v.series && v.series.length > 1) {
+              drawSparkline(ctx, v.series, n.x, n.y - r - 4, 34, 12, t.k, style.linkHighlight);
+            }
+          }
+        }
       }
     }
 
-    // Live-flow overlay: expanding pulse rings on active nodes + travelling dots.
+    // Live-flow overlay: expanding pulse rings + travelling dots.
     const byId = nodeByIdRef.current;
     if (pulseRef.current.size) {
       ctx.strokeStyle = style.linkHighlight;
@@ -207,48 +271,89 @@ export default function ForceGraph({
     }
 
     ctx.restore();
-  }, [style, selectedId]);
 
-  // Keep the animation loop pointed at the latest draw (recreated on restyle).
+    if (minimap) drawMinimap(ctx, nodes, transformRef.current, sizeRef.current, style, colorFor);
+  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor]);
+
   useEffect(() => {
     drawRef.current = draw;
   }, [draw]);
 
-  // Register a burst of activity on a node: pulse the node, send a dot along the
-  // path from the root down to it, and bump its glow. Drives the animation loop.
-  const pulse = useCallback(
-    (nodeId) => {
-      const byId = nodeByIdRef.current;
-      if (!byId.has(nodeId)) return;
+  // Build / rebuild the simulation when data or layout changes.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !data) return;
 
-      // Walk parent pointers up to the root to get the root→node path
-      const path = [nodeId];
-      let cur = nodeId;
-      const guard = new Set([nodeId]);
-      while (parentOfRef.current.has(cur)) {
-        const parent = parentOfRef.current.get(cur);
-        if (guard.has(parent)) break;
-        path.push(parent);
-        guard.add(parent);
-        cur = parent;
+    const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
+    const nodes = data.nodes.map((n) => {
+      const old = prev.get(n.id);
+      return old ? { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...n };
+    });
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    const links = data.links
+      .filter((l) => nodeById.has(l.source) && nodeById.has(l.target))
+      .map((l) => ({ source: l.source, target: l.target, kind: l.kind }));
+
+    const parentOf = new Map();
+    for (const l of links) parentOf.set(l.target, l.source);
+    nodeByIdRef.current = nodeById;
+    parentOfRef.current = parentOf;
+    nodesRef.current = nodes;
+    linksRef.current = links;
+    layoutModeRef.current = layout.mode;
+
+    if (simRef.current) simRef.current.stop();
+
+    const depth = computeDepths(nodes, links);
+
+    const sim = forceSimulation(nodes)
+      .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
+      .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
+      .alpha(0.9)
+      .alphaDecay(0.028)
+      .on('tick', draw);
+
+    if (layout.mode === 'radial') {
+      sim
+        .force('charge', forceManyBody().strength(layout.charge))
+        .force('radial', forceRadial((d) => (depth.get(d.id) || 0) * layout.ringGap, 0, 0).strength(0.9))
+        .force('center', forceCenter(0, 0).strength(0.05));
+    } else if (layout.mode === 'cluster') {
+      const centers = clusterCenters(nodes, layout.clusterRadius);
+      sim
+        .force('charge', forceManyBody().strength(layout.charge))
+        .force('x', forceX((d) => centers.get(d.group)?.x || 0).strength(0.25))
+        .force('y', forceY((d) => centers.get(d.group)?.y || 0).strength(0.25));
+    } else if (layout.mode === 'tree') {
+      const pos = treePositions(nodes, links, layout);
+      for (const n of nodes) {
+        const p = pos.get(n.id);
+        if (p) {
+          n.x = p.x;
+          n.y = p.y;
+          n.fx = p.x;
+          n.fy = p.y;
+        }
       }
-      path.reverse(); // root ... leaf
+      sim.alphaDecay(0.2); // settle immediately — positions are fixed
+    } else {
+      sim
+        .force('charge', forceManyBody().strength(layout.charge))
+        .force('center', forceCenter(0, 0))
+        .force('x', forceX(0).strength(layout.gravity))
+        .force('y', forceY(0).strength(layout.gravity));
+    }
 
-      pulseRef.current.set(nodeId, 1);
-      rateRef.current.set(nodeId, (rateRef.current.get(nodeId) || 0) + 1);
-
-      if (path.length >= 2) {
-        const dur = 450 + (path.length - 1) * 130; // ms, longer paths take longer
-        particlesRef.current.push({ nodeIds: path, progress: 0, speed: 1 / dur });
-        if (particlesRef.current.length > 200) particlesRef.current.shift();
-      }
-      startAnimation();
-    },
-    // startAnimation is stable (defined below via ref-free closure)
+    simRef.current = sim;
+    return () => sim.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  );
+  }, [data, layout, draw]);
 
+  useEffect(() => {
+    draw();
+  }, [draw]);
+
+  // ---- Live message-flow animation ----
   const startAnimation = useCallback(() => {
     if (rafRef.current) return;
     lastFrameRef.current = 0;
@@ -256,20 +361,17 @@ export default function ForceGraph({
       const dt = lastFrameRef.current ? Math.min(ts - lastFrameRef.current, 50) : 16;
       lastFrameRef.current = ts;
 
-      // Advance travelling dots
       const particles = particlesRef.current;
       for (let i = particles.length - 1; i >= 0; i--) {
         particles[i].progress += dt * particles[i].speed;
         if (particles[i].progress >= 1) particles.splice(i, 1);
       }
-      // Decay pulse rings
       const pulseDecay = Math.pow(0.9, dt / 16);
       for (const [id, s] of pulseRef.current) {
         const next = s * pulseDecay;
         if (next < 0.04) pulseRef.current.delete(id);
         else pulseRef.current.set(id, next);
       }
-      // Decay activity glow (slower)
       const rateDecay = Math.pow(0.985, dt / 16);
       for (const [id, v] of rateRef.current) {
         const next = v * rateDecay;
@@ -289,93 +391,117 @@ export default function ForceGraph({
     rafRef.current = requestAnimationFrame(step);
   }, []);
 
-  // Subscribe to the activity bus while live flow is enabled.
+  // Register activity on a node: bump its rate, and (when animating) pulse it and
+  // send a dot from the root down to it. `force` animates regardless of the flow
+  // toggle — used by the replay scrubber.
+  const emitPulse = useCallback(
+    (nodeId, force) => {
+      const byId = nodeByIdRef.current;
+      if (!byId.has(nodeId)) return;
+
+      const path = [nodeId];
+      let cur = nodeId;
+      const guard = new Set([nodeId]);
+      while (parentOfRef.current.has(cur)) {
+        const parent = parentOfRef.current.get(cur);
+        if (guard.has(parent)) break;
+        path.push(parent);
+        guard.add(parent);
+        cur = parent;
+      }
+      path.reverse();
+
+      rateRef.current.set(nodeId, (rateRef.current.get(nodeId) || 0) + 1);
+      if (flow || force) {
+        pulseRef.current.set(nodeId, 1);
+        if (path.length >= 2) {
+          const dur = 450 + (path.length - 1) * 130;
+          particlesRef.current.push({ nodeIds: path, progress: 0, speed: 1 / dur });
+          if (particlesRef.current.length > 200) particlesRef.current.shift();
+        }
+      }
+      startAnimation();
+    },
+    [flow, startAnimation]
+  );
+  const pulse = useCallback((nodeId) => emitPulse(nodeId, false), [emitPulse]);
+
+  // Subscribe to the activity bus whenever flow OR activity-sizing needs it.
   useEffect(() => {
-    if (!flow || !activitySource) return undefined;
+    if ((!flow && !activitySize) || !activitySource) return undefined;
     const unsub = activitySource(pulse);
     return () => {
       if (typeof unsub === 'function') unsub();
     };
-  }, [flow, activitySource, pulse]);
+  }, [flow, activitySize, activitySource, pulse]);
 
-  // Stop the animation loop and clear transient state when flow is turned off.
+  // Clear transient animation state when both live features are off.
   useEffect(() => {
-    if (flow) return;
+    if (flow || activitySize) return;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
     particlesRef.current = [];
     pulseRef.current.clear();
     rateRef.current.clear();
     draw();
-  }, [flow, draw]);
+  }, [flow, activitySize, draw]);
 
-  // Cancel any pending frame on unmount.
   useEffect(() => () => rafRef.current && cancelAnimationFrame(rafRef.current), []);
 
-  // Build / rebuild the simulation when the graph data or layout changes.
-  useEffect(() => {
+  // ---- Imperative handle: fit-to and export ----
+  const fitTo = useCallback((ids) => {
     const canvas = canvasRef.current;
-    if (!canvas || !data) return;
-
-    // Preserve positions of nodes that persist across updates
-    const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
-    const nodes = data.nodes.map((n) => {
-      const old = prev.get(n.id);
-      return old ? { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...n };
-    });
-    const nodeById = new Map(nodes.map((n) => [n.id, n]));
-    const links = data.links
-      .filter((l) => nodeById.has(l.source) && nodeById.has(l.target))
-      .map((l) => ({ source: l.source, target: l.target }));
-
-    // Live-flow lookups: id→node and child→parent (edges run parent→child).
-    // Built from the string ids before forceLink() mutates them into objects.
-    const parentOf = new Map();
-    for (const l of links) parentOf.set(l.target, l.source);
-    nodeByIdRef.current = nodeById;
-    parentOfRef.current = parentOf;
-
-    nodesRef.current = nodes;
-    linksRef.current = links;
-
-    if (simRef.current) simRef.current.stop();
-
-    const sim = forceSimulation(nodes)
-      .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance).strength(0.7))
-      .force('charge', forceManyBody().strength(layout.charge))
-      .force('center', forceCenter(0, 0))
-      .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
-      .force('x', forceX(0).strength(layout.gravity))
-      .force('y', forceY(0).strength(layout.gravity))
-      .alpha(0.9)
-      .alphaDecay(0.028)
-      .on('tick', draw);
-
-    simRef.current = sim;
-    return () => sim.stop();
-    // style intentionally excluded: restyling should not rebuild the simulation
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, layout, draw]);
-
-  // Redraw on style/selection change without disturbing layout.
-  useEffect(() => {
+    if (!canvas) return;
+    const { w, h } = sizeRef.current;
+    const set = ids && ids.size ? ids : null;
+    const nodes = nodesRef.current.filter((n) => (set ? set.has(n.id) : true));
+    if (!nodes.length || w === 0) return;
+    const xs = nodes.map((n) => n.x);
+    const ys = nodes.map((n) => n.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const pad = 90;
+    const k = Math.min((w - pad) / Math.max(maxX - minX, 1), (h - pad) / Math.max(maxY - minY, 1), 2.5);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const t = zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k);
+    if (selRef.current && zoomRef.current) selRef.current.call(zoomRef.current.transform, t);
+    transformRef.current = t;
     draw();
   }, [draw]);
 
-  // Canvas sizing + zoom/drag/hover wiring (once).
+  useImperativeHandle(
+    ref,
+    () => ({
+      fitTo,
+      pulseNode: (nodeId) => emitPulse(nodeId, true),
+      exportPng: () => canvasRef.current?.toDataURL('image/png'),
+      exportGraph: () => ({
+        nodes: (data?.nodes || []).map(({ id, label, group, kind }) => ({ id, label, group, kind })),
+        links: (data?.links || []).map((l) => ({ source: l.source, target: l.target, kind: l.kind }))
+      })
+    }),
+    [fitTo, emitPulse, data]
+  );
+
+  // ---- Canvas sizing + interaction wiring (once) ----
   useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
 
     const sel = select(canvas);
+    selRef.current = sel;
 
     const zoomBehavior = zoom()
-      .scaleExtent([0.1, 6])
+      .scaleExtent([0.05, 8])
       .on('zoom', (event) => {
         transformRef.current = event.transform;
         draw();
       });
+    zoomRef.current = zoomBehavior;
     sel.call(zoomBehavior);
 
     const resize = () => {
@@ -386,8 +512,7 @@ export default function ForceGraph({
       canvas.height = height * dpr;
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
-      // The simulation centers the graph at graph-origin (0,0); translate the
-      // view so that origin sits at the viewport centre on first layout.
+      sizeRef.current = { w: width, h: height };
       if (!centeredRef.current && width > 0 && height > 0) {
         centeredRef.current = true;
         const initial = zoomIdentity.translate(width / 2, height / 2);
@@ -403,16 +528,14 @@ export default function ForceGraph({
     const toGraphCoords = (event) => {
       const rect = canvas.getBoundingClientRect();
       const t = transformRef.current;
-      const px = event.clientX - rect.left;
-      const py = event.clientY - rect.top;
-      return { x: (px - t.x) / t.k, y: (py - t.y) / t.k };
+      return { x: (event.clientX - rect.left - t.x) / t.k, y: (event.clientY - rect.top - t.y) / t.k };
     };
 
     const pick = (gx, gy) => {
       const nodes = nodesRef.current;
       for (let i = nodes.length - 1; i >= 0; i--) {
         const n = nodes[i];
-        const r = nodeRadius(n, style) + 4;
+        const r = nodeRadius(n, style) + 6;
         if ((n.x - gx) ** 2 + (n.y - gy) ** 2 <= r * r) return n;
       }
       return null;
@@ -440,10 +563,12 @@ export default function ForceGraph({
       .on('end', (event) => {
         if (!event.subject) return;
         if (simRef.current) simRef.current.alphaTarget(0);
-        event.subject.fx = null;
-        event.subject.fy = null;
+        // Keep nodes pinned in tree mode; release them in free-form layouts.
+        if (layoutModeRef.current !== 'tree') {
+          event.subject.fx = null;
+          event.subject.fy = null;
+        }
       });
-    // Drag filters out clicks; only real drags move nodes
     sel.call(dragBehavior);
 
     let downPos = null;
@@ -454,7 +579,7 @@ export default function ForceGraph({
       if (!downPos) return;
       const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
       downPos = null;
-      if (moved > 5) return; // was a drag/pan, not a click
+      if (moved > 5) return;
       const { x, y } = toGraphCoords(e);
       const hit = pick(x, y);
       if (hit && onSelect) onSelect(hit);
@@ -494,16 +619,20 @@ export default function ForceGraph({
       <canvas ref={canvasRef} className="graph-canvas" />
     </div>
   );
-}
+});
 
+export default ForceGraph;
+
+// ---------------------------------------------------------------------------
+// Rendering helpers
+// ---------------------------------------------------------------------------
 function nodeRadius(n, style) {
   const base = style.nodeMinRadius;
   const scaled = base + Math.sqrt(n.degree || 0) * 3;
-  if (n.kind === 'broker' || n.kind === 'opcua-server') return style.nodeMaxRadius;
+  if (n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server') return style.nodeMaxRadius;
   return Math.min(scaled, style.nodeMaxRadius);
 }
 
-// Interpolate a travelling dot's position along its root→leaf node path.
 function particlePosition(p, byId) {
   const segments = p.nodeIds.length - 1;
   if (segments < 1) return null;
@@ -514,4 +643,187 @@ function particlePosition(p, byId) {
   const b = byId.get(p.nodeIds[i + 1]);
   if (!a || !b) return null;
   return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
+}
+
+function drawBadge(ctx, x, y, text, k, color) {
+  ctx.save();
+  ctx.font = `600 ${10 / k}px Inter, sans-serif`;
+  const padX = 4 / k;
+  const w = ctx.measureText(text).width + padX * 2;
+  const h = 13 / k;
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.9;
+  roundRect(ctx, x - w / 2, y - h / 2, w, h, 4 / k);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#0a0f1c';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function drawSparkline(ctx, series, cx, cy, w, h, k, color) {
+  const vals = series.filter((v) => Number.isFinite(v));
+  if (vals.length < 2) return;
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const sw = w / k;
+  const sh = h / k;
+  const x0 = cx - sw / 2;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.2 / k;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  vals.forEach((v, i) => {
+    const px = x0 + (i / (vals.length - 1)) * sw;
+    const py = cy - ((v - min) / span) * sh;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawMinimap(ctx, nodes, t, size, style, colorFor) {
+  if (!nodes.length || size.w === 0) return;
+  const mw = 168;
+  const mh = 112;
+  const mx = size.w - mw - 16;
+  const my = size.h - mh - 16;
+
+  const xs = nodes.map((n) => n.x);
+  const ys = nodes.map((n) => n.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const gw = Math.max(maxX - minX, 1);
+  const gh = Math.max(maxY - minY, 1);
+  const pad = 8;
+  const s = Math.min((mw - pad * 2) / gw, (mh - pad * 2) / gh);
+  const toMx = (x) => mx + pad + (x - minX) * s;
+  const toMy = (y) => my + pad + (y - minY) * s;
+
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = 'rgba(10,15,28,0.85)';
+  roundRect(ctx, mx, my, mw, mh, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.clip();
+
+  for (const n of nodes) {
+    ctx.fillStyle = colorFor(n);
+    ctx.beginPath();
+    ctx.arc(toMx(n.x), toMy(n.y), 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Viewport rectangle: which graph area is currently visible
+  const vx0 = (-t.x) / t.k;
+  const vy0 = (-t.y) / t.k;
+  const vx1 = (size.w - t.x) / t.k;
+  const vy1 = (size.h - t.y) / t.k;
+  ctx.strokeStyle = style.linkHighlight;
+  ctx.lineWidth = 1.2;
+  ctx.strokeRect(toMx(vx0), toMy(vy0), (vx1 - vx0) * s, (vy1 - vy0) * s);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Layout helpers
+// ---------------------------------------------------------------------------
+function computeDepths(nodes, links) {
+  const childrenOf = new Map();
+  const hasParent = new Set();
+  for (const l of links) {
+    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
+    childrenOf.get(l.source).push(l.target);
+    hasParent.add(l.target);
+  }
+  const depth = new Map();
+  const roots = nodes.filter((n) => !hasParent.has(n.id));
+  const queue = roots.map((n) => [n.id, 0]);
+  for (const n of roots) depth.set(n.id, 0);
+  while (queue.length) {
+    const [id, d] = queue.shift();
+    for (const c of childrenOf.get(id) || []) {
+      if (!depth.has(c)) {
+        depth.set(c, d + 1);
+        queue.push([c, d + 1]);
+      }
+    }
+  }
+  for (const n of nodes) if (!depth.has(n.id)) depth.set(n.id, 0);
+  return depth;
+}
+
+function treePositions(nodes, links, layout) {
+  const childrenOf = new Map();
+  const hasParent = new Set();
+  for (const l of links) {
+    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
+    childrenOf.get(l.source).push(l.target);
+    hasParent.add(l.target);
+  }
+  const rowGap = layout.rowGap || 90;
+  const colGap = layout.colGap || 46;
+  const pos = new Map();
+  let order = 0;
+  const seen = new Set();
+
+  const visit = (id, depth) => {
+    if (seen.has(id)) return order * colGap;
+    seen.add(id);
+    const kids = (childrenOf.get(id) || []).filter((k) => !seen.has(k));
+    if (kids.length === 0) {
+      const x = order * colGap;
+      order++;
+      pos.set(id, { x, y: depth * rowGap });
+      return x;
+    }
+    const xs = kids.map((k) => visit(k, depth + 1));
+    const x = (Math.min(...xs) + Math.max(...xs)) / 2;
+    pos.set(id, { x, y: depth * rowGap });
+    return x;
+  };
+
+  const roots = nodes.filter((n) => !hasParent.has(n.id));
+  for (const r of roots) visit(r.id, 0);
+  for (const n of nodes) if (!pos.has(n.id)) visit(n.id, 0); // stragglers
+
+  const xsAll = [...pos.values()].map((p) => p.x);
+  const ysAll = [...pos.values()].map((p) => p.y);
+  const cx = xsAll.length ? (Math.min(...xsAll) + Math.max(...xsAll)) / 2 : 0;
+  const cy = ysAll.length ? (Math.min(...ysAll) + Math.max(...ysAll)) / 2 : 0;
+  for (const p of pos.values()) {
+    p.x -= cx;
+    p.y -= cy;
+  }
+  return pos;
+}
+
+function clusterCenters(nodes, radius) {
+  const groups = [...new Set(nodes.map((n) => n.group))];
+  const centers = new Map();
+  groups.forEach((g, i) => {
+    const angle = (i / groups.length) * Math.PI * 2;
+    centers.set(g, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+  });
+  return centers;
 }

@@ -167,10 +167,16 @@ export function buildI3xGraph(server, objects) {
   for (const o of objects) {
     const childId = `i3x:${server.baseUrl}:${o.elementId}`;
     if (o.parentId && ids.has(o.parentId)) {
-      links.push({ source: `i3x:${server.baseUrl}:${o.parentId}`, target: childId });
+      // i3X distinguishes hierarchical vs composition relationships; the renderer
+      // draws each edge kind differently (solid / dashed).
+      links.push({
+        source: `i3x:${server.baseUrl}:${o.parentId}`,
+        target: childId,
+        kind: o.isComposition ? 'composition' : 'hierarchical'
+      });
     } else {
       // Orphan objects attach to the server root so nothing floats free
-      links.push({ source: rootId, target: childId });
+      links.push({ source: rootId, target: childId, kind: 'hierarchical' });
     }
   }
 
@@ -212,3 +218,70 @@ export function groupColor(group, palette) {
   if (idx === -1) return palette[0];
   return palette[idx % palette.length];
 }
+
+/**
+ * Collapse subtrees: hide every descendant of a node in `collapsed`, and annotate
+ * each collapsed node with `collapsedCount` (number of hidden descendants) so the
+ * renderer can show a badge. Works on any parent→child link graph.
+ */
+export function collapseGraph(graph, collapsed) {
+  if (!collapsed || collapsed.size === 0) return graph;
+
+  const childrenOf = new Map();
+  for (const l of graph.links) {
+    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
+    childrenOf.get(l.source).push(l.target);
+  }
+
+  // Collect all hidden descendants of collapsed roots
+  const hidden = new Set();
+  const counts = new Map();
+  for (const rootId of collapsed) {
+    if (!graph.nodes.some((n) => n.id === rootId)) continue;
+    let count = 0;
+    const stack = [...(childrenOf.get(rootId) || [])];
+    const seen = new Set();
+    while (stack.length) {
+      const id = stack.pop();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      hidden.add(id);
+      count++;
+      for (const c of childrenOf.get(id) || []) stack.push(c);
+    }
+    counts.set(rootId, count);
+  }
+
+  const nodes = graph.nodes
+    .filter((n) => !hidden.has(n.id))
+    .map((n) => (counts.has(n.id) ? { ...n, collapsedCount: counts.get(n.id) } : n));
+  const links = graph.links.filter((l) => !hidden.has(l.source) && !hidden.has(l.target));
+  return { nodes, links };
+}
+
+/**
+ * Merge several source graphs into one. Node ids are already namespaced per
+ * source (broker:/topic:/opcua:/i3x:) so there are no collisions; a `protocol`
+ * tag is stamped on every node for color-coding in the unified view.
+ */
+export function mergeGraphs(parts) {
+  const nodes = [];
+  const links = [];
+  const seen = new Set();
+  for (const { protocol, graph } of parts) {
+    for (const n of graph.nodes) {
+      if (seen.has(n.id)) continue;
+      seen.add(n.id);
+      nodes.push({ ...n, protocol });
+    }
+    for (const l of graph.links) links.push(l);
+  }
+  return { nodes, links };
+}
+
+// Protocol → accent color for the unified cross-source view.
+export const PROTOCOL_COLORS = {
+  mqtt: '#38bdf8',
+  opcua: '#a78bfa',
+  i3x: '#34d399'
+};

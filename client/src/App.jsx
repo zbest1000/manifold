@@ -6,6 +6,7 @@ import Brokers from './pages/Brokers';
 import OpcUa from './pages/OpcUa';
 import Cesmii from './pages/Cesmii';
 import I3x from './pages/I3x';
+import Unified from './pages/Unified';
 import Discovery from './pages/Discovery';
 import Settings from './pages/Settings';
 
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="opcua" element={<OpcUa />} />
         <Route path="cesmii" element={<Cesmii />} />
         <Route path="i3x" element={<I3x />} />
+        <Route path="unified" element={<Unified />} />
         <Route path="discovery" element={<Discovery />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Cpu, Plus, X, Activity, Eye } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
@@ -7,7 +7,9 @@ import { socket } from '@/lib/socket';
 import ForceGraph from '@/graph/ForceGraph';
 import { buildOpcuaGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphSearch from '@/components/GraphSearch';
 import JsonView from '@/components/JsonView';
+import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 
@@ -19,6 +21,8 @@ export default function OpcUa() {
   const setOpcua = useStore((s) => s.setOpcua);
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
+  const showValues = useStore((s) => s.showValues);
+  const showMinimap = useStore((s) => s.showMinimap);
 
   const [connectionId, setConnectionId] = useState(null);
   const [expanded, setExpanded] = useState(new Map()); // nodeId -> references
@@ -26,6 +30,8 @@ export default function OpcUa() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', endpointUrl: 'opc.tcp://localhost:4840' });
   const [busy, setBusy] = useState(false);
+  const [matchIds, setMatchIds] = useState(null);
+  const graphRef = useRef(null);
 
   const connected = opcua.filter((c) => c.status === 'connected');
 
@@ -50,6 +56,18 @@ export default function OpcUa() {
     if (!connection) return { nodes: [], links: [] };
     return buildOpcuaGraph(connection, expanded);
   }, [connection, expanded]);
+
+  // Latest monitored value per node, for the on-node overlay.
+  const nodeValues = useMemo(() => {
+    const vals = opcuaValues[connectionId] || {};
+    const out = {};
+    for (const [nodeId, v] of Object.entries(vals)) {
+      out[`opcua:${connectionId}:${nodeId}`] = {
+        text: typeof v.value === 'object' ? JSON.stringify(v.value) : String(v.value)
+      };
+    }
+    return out;
+  }, [connectionId, opcuaValues]);
 
   const connect = async () => {
     if (!form.endpointUrl) return toast.error('Endpoint URL is required');
@@ -164,14 +182,23 @@ export default function OpcUa() {
         <div className="relative flex-1">
           {connection ? (
             <>
-              <GraphToolbar />
+              <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
+              <GraphToolbar
+                onFit={() => graphRef.current?.fitTo()}
+                onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `opcua-graph-${connectionId}.png`)}
+                onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `opcua-graph-${connectionId}.json`)}
+              />
               <ForceGraph
+                ref={graphRef}
                 data={graph}
                 styleId={graphStyle}
                 layoutId={graphLayout}
                 selectedId={selected?.id || null}
                 onSelect={setSelected}
                 onExpand={expandNode}
+                nodeValues={showValues ? nodeValues : null}
+                matchIds={matchIds}
+                minimap={showMinimap}
               />
               <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
                 Double-click a node to browse its children · click to inspect

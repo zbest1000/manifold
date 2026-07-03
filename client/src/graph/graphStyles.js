@@ -111,11 +111,15 @@ export const GRAPH_STYLES = {
 export const STYLE_LIST = Object.values(GRAPH_STYLES);
 export const DEFAULT_STYLE = 'constellation';
 
-// Layout presets control the force simulation feel, independent of visual style.
+// Layout presets. `mode` selects the positioning strategy; the force fields
+// (charge/linkDistance/gravity) tune the three free-form force layouts.
 export const LAYOUTS = {
-  organic: { id: 'organic', name: 'Organic', charge: -220, linkDistance: 55, gravity: 0.05 },
-  spacious: { id: 'spacious', name: 'Spacious', charge: -520, linkDistance: 110, gravity: 0.03 },
-  tight: { id: 'tight', name: 'Tight', charge: -120, linkDistance: 34, gravity: 0.09 }
+  organic: { id: 'organic', name: 'Organic', mode: 'force', charge: -220, linkDistance: 55, gravity: 0.05 },
+  spacious: { id: 'spacious', name: 'Spacious', mode: 'force', charge: -520, linkDistance: 110, gravity: 0.03 },
+  tight: { id: 'tight', name: 'Tight', mode: 'force', charge: -120, linkDistance: 34, gravity: 0.09 },
+  radial: { id: 'radial', name: 'Radial', mode: 'radial', charge: -160, linkDistance: 50, ringGap: 120 },
+  tree: { id: 'tree', name: 'Tree', mode: 'tree', rowGap: 90, colGap: 46 },
+  cluster: { id: 'cluster', name: 'Cluster', mode: 'cluster', charge: -90, linkDistance: 40, clusterRadius: 260 }
 };
 
 export const LAYOUT_LIST = Object.values(LAYOUTS);

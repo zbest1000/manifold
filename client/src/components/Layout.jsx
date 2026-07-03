@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes } from 'lucide-react';
+import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Network } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot } from './ui';
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/opcua', label: 'OPC UA', icon: Cpu },
   { to: '/cesmii', label: 'CESMII SMIP', icon: Factory },
   { to: '/i3x', label: 'i3X', icon: Boxes },
+  { to: '/unified', label: 'Unified', icon: Network },
   { to: '/discovery', label: 'Discovery', icon: Radar },
   { to: '/settings', label: 'Settings', icon: SettingsIcon }
 ];

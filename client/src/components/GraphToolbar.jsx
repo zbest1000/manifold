@@ -1,39 +1,76 @@
 import { useState } from 'react';
-import { Palette, Shuffle, Check, ChevronDown, Activity } from 'lucide-react';
+import {
+  Palette,
+  Shuffle,
+  Check,
+  ChevronDown,
+  Activity,
+  Circle,
+  Tag,
+  Map as MapIcon,
+  Download,
+  Maximize2
+} from 'lucide-react';
 import clsx from 'clsx';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
 import { useStore } from '@/store/store';
 
 /**
- * Floating toolbar for the node graph: toggle live message-flow animation and
- * choose the visual style + layout.
+ * Floating toolbar for the node graph: quick toggles (flow, activity size,
+ * values, minimap), fit + export actions, and a dropdown for visual style and
+ * layout.
  *
- * `showFlow` gates the flow toggle so views without a live message stream
- * (e.g. OPC UA / i3X) don't show a control that would do nothing.
+ * `showFlow` gates message-flow controls to views with a live stream. Pass
+ * `onFit` / `onExportPng` / `onExportJson` to enable those actions.
  */
-export default function GraphToolbar({ showFlow = false }) {
-  const { graphStyle, graphLayout, setGraphStyle, setGraphLayout, flowEnabled, setFlowEnabled } = useStore();
+export default function GraphToolbar({ showFlow = false, onFit, onExportPng, onExportJson }) {
+  const {
+    graphStyle,
+    graphLayout,
+    setGraphStyle,
+    setGraphLayout,
+    flowEnabled,
+    setFlowEnabled,
+    activitySize,
+    setActivitySize,
+    showValues,
+    setShowValues,
+    showMinimap,
+    setShowMinimap
+  } = useStore();
   const [open, setOpen] = useState(false);
 
   const active = STYLE_LIST.find((s) => s.id === graphStyle) || STYLE_LIST[0];
 
   return (
     <div className="pointer-events-auto absolute right-4 top-4 z-10 flex flex-col items-end gap-2">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         {showFlow && (
-          <button
-            onClick={() => setFlowEnabled(!flowEnabled)}
-            title={flowEnabled ? 'Live message flow: on' : 'Live message flow: off'}
-            className={clsx(
-              'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm backdrop-blur transition',
-              flowEnabled
-                ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
-                : 'border-white/10 bg-surface-900/80 text-slate-400 hover:border-white/20'
+          <Toggle active={flowEnabled} onClick={() => setFlowEnabled(!flowEnabled)} icon={Activity} label="Flow" pulse />
+        )}
+        {showFlow && (
+          <Toggle active={activitySize} onClick={() => setActivitySize(!activitySize)} icon={Circle} label="Activity" />
+        )}
+        <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
+        <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
+        {onFit && <IconButton onClick={() => onFit()} icon={Maximize2} title="Fit graph to view" />}
+        {(onExportPng || onExportJson) && (
+          <div className="flex overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 backdrop-blur">
+            {onExportPng && (
+              <button onClick={onExportPng} title="Export PNG" className="px-2.5 py-2 text-slate-300 hover:bg-white/10">
+                <Download size={15} />
+              </button>
             )}
-          >
-            <Activity size={16} className={clsx(flowEnabled && 'animate-pulse')} />
-            <span className="font-medium">Flow</span>
-          </button>
+            {onExportJson && (
+              <button
+                onClick={onExportJson}
+                title="Export JSON"
+                className="border-l border-white/10 px-2 py-2 text-[11px] font-medium text-slate-400 hover:bg-white/10"
+              >
+                JSON
+              </button>
+            )}
+          </div>
         )}
         <button
           onClick={() => setOpen((v) => !v)}
@@ -71,19 +108,19 @@ export default function GraphToolbar({ showFlow = false }) {
           </div>
 
           <p className="mb-2 mt-4 px-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Layout</p>
-          <div className="flex gap-2">
+          <div className="grid grid-cols-3 gap-2">
             {LAYOUT_LIST.map((layout) => (
               <button
                 key={layout.id}
                 onClick={() => setGraphLayout(layout.id)}
                 className={clsx(
-                  'flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
+                  'flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
                   layout.id === graphLayout
                     ? 'border-accent-500/70 bg-accent-500/10 text-accent-300'
                     : 'border-white/10 text-slate-300 hover:border-white/25'
                 )}
               >
-                <Shuffle size={12} />
+                <Shuffle size={11} />
                 {layout.name}
               </button>
             ))}
@@ -91,6 +128,36 @@ export default function GraphToolbar({ showFlow = false }) {
         </div>
       )}
     </div>
+  );
+}
+
+function Toggle({ active, onClick, icon: Icon, label, pulse }) {
+  return (
+    <button
+      onClick={onClick}
+      title={`${label}: ${active ? 'on' : 'off'}`}
+      className={clsx(
+        'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+        active
+          ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
+          : 'border-white/10 bg-surface-900/80 text-slate-400 hover:border-white/20'
+      )}
+    >
+      <Icon size={15} className={clsx(pulse && active && 'animate-pulse')} />
+      <span className="hidden font-medium sm:inline">{label}</span>
+    </button>
+  );
+}
+
+function IconButton({ onClick, icon: Icon, title }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-slate-300 backdrop-blur transition hover:border-white/20 hover:text-slate-100"
+    >
+      <Icon size={15} />
+    </button>
   );
 }
 
