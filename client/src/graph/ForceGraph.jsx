@@ -141,18 +141,36 @@ const ForceGraph = forwardRef(function ForceGraph(
       return 1;
     };
 
-    // Links (composition edges dashed; graph edges could curve — kept straight)
+    // Level of detail: above ~220 nodes drop the expensive canvas glow and edge
+    // curvature so pan/zoom/flow stay smooth on large topic sets.
+    const heavy = nodes.length > 220;
+    const curve = !heavy;
+
+    // Links: batch the common case into ONE stroke; draw active / faded /
+    // composition edges individually. Gentle curves on smaller graphs read as a
+    // more organic network.
     ctx.lineWidth = style.link.width / t.k;
+    ctx.strokeStyle = style.link.color;
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    const special = [];
     for (const l of links) {
       const active = hover && (l.source.id === hover.id || l.target.id === hover.id);
       const faded = focusSet && !(focusSet.has(l.source.id) && focusSet.has(l.target.id));
+      if (active || faded || l.kind === 'composition') {
+        special.push({ l, active, faded });
+        continue;
+      }
+      addLinkPath(ctx, l, curve);
+    }
+    ctx.stroke();
+    for (const { l, active, faded } of special) {
       ctx.globalAlpha = faded ? 0.15 : 1;
       ctx.strokeStyle = active ? style.linkHighlight : style.link.color;
-      if (l.kind === 'composition') ctx.setLineDash([5 / t.k, 4 / t.k]);
-      else ctx.setLineDash([]);
+      ctx.setLineDash(l.kind === 'composition' ? [5 / t.k, 4 / t.k] : []);
       ctx.beginPath();
-      ctx.moveTo(l.source.x, l.source.y);
-      ctx.lineTo(l.target.x, l.target.y);
+      addLinkPath(ctx, l, curve);
       ctx.stroke();
     }
     ctx.setLineDash([]);
@@ -170,10 +188,14 @@ const ForceGraph = forwardRef(function ForceGraph(
 
       ctx.globalAlpha = alpha;
 
-      const activeGlow = Math.min(rate, 4) * 6;
-      const glow = (style.node.glow || 0) + activeGlow;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = glow > 0 ? glow : 0;
+      let glow = 0;
+      if (!heavy) glow = (style.node.glow || 0) + Math.min(rate, 4) * 6;
+      if (glow > 0) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = glow;
+      } else if (ctx.shadowBlur) {
+        ctx.shadowBlur = 0;
+      }
 
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -257,8 +279,10 @@ const ForceGraph = forwardRef(function ForceGraph(
     }
     if (particlesRef.current.length) {
       ctx.fillStyle = style.linkHighlight;
-      ctx.shadowColor = style.linkHighlight;
-      ctx.shadowBlur = 8;
+      if (!heavy) {
+        ctx.shadowColor = style.linkHighlight;
+        ctx.shadowBlur = 8;
+      }
       const dot = 3.5 / t.k;
       for (const p of particlesRef.current) {
         const pos = particlePosition(p, byId);
@@ -631,6 +655,25 @@ function nodeRadius(n, style) {
   const scaled = base + Math.sqrt(n.degree || 0) * 3;
   if (n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server') return style.nodeMaxRadius;
   return Math.min(scaled, style.nodeMaxRadius);
+}
+
+// Add one link's path (straight, or a gentle perpendicular-offset curve) to the
+// current path so many links can be batched into a single stroke.
+function addLinkPath(ctx, l, curve) {
+  const x1 = l.source.x;
+  const y1 = l.source.y;
+  const x2 = l.target.x;
+  const y2 = l.target.y;
+  ctx.moveTo(x1, y1);
+  if (!curve) {
+    ctx.lineTo(x2, y2);
+    return;
+  }
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  ctx.quadraticCurveTo(mx - dy * 0.12, my + dx * 0.12, x2, y2);
 }
 
 function particlePosition(p, byId) {

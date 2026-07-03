@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Radio, Cpu, Share2, Radar, ArrowRight, MessageSquare } from 'lucide-react';
 import { useStore } from '@/store/store';
@@ -8,14 +9,23 @@ import { formatDistanceToNow } from 'date-fns';
 export default function Overview() {
   const brokers = useStore((s) => s.brokers);
   const opcua = useStore((s) => s.opcua);
-  const topics = useStore((s) => s.topics);
-  const liveMessages = useStore((s) => s.liveMessages);
+  const dataTick = useStore((s) => s.dataTick);
+  const topicVersion = useStore((s) => s.topicVersion);
 
-  const topicCount = Object.values(topics).reduce((acc, t) => acc + t.length, 0);
-  const recent = Object.values(liveMessages)
-    .flat()
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 12);
+  // Read high-frequency data from the non-reactive store snapshot; refreshes at
+  // the throttled tick / structure change rather than on every message.
+  const { topicCount, recent } = useMemo(() => {
+    const state = useStore.getState();
+    let count = 0;
+    let all = [];
+    for (const b of brokers) {
+      count += state.getTopics(b.id).length;
+      all = all.concat(state.getLiveMessages(b.id));
+    }
+    all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return { topicCount: count, recent: all.slice(0, 12) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brokers, dataTick, topicVersion]);
 
   const stats = [
     { label: 'MQTT Brokers', value: brokers.length, icon: Radio, to: '/brokers', accent: 'from-sky-400 to-sky-600' },

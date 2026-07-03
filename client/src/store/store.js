@@ -2,11 +2,21 @@ import { create } from 'zustand';
 import { socket } from '@/lib/socket';
 import { DEFAULT_STYLE, DEFAULT_LAYOUT } from '@/graph/graphStyles';
 
-const MAX_LIVE_MESSAGES = 200;
+const MAX_LIVE_MESSAGES = 300;
+const TICK_MS = 300; // how often high-frequency data changes surface to React (~3Hz)
 
-// Lightweight message-activity bus. The graph's live-flow animation subscribes
-// here instead of through React state, so a busy broker doesn't trigger a render
-// per message — it just drives the canvas animation loop directly.
+// -----------------------------------------------------------------------------
+// High-frequency message data lives OUTSIDE React state. At thousands of
+// messages/sec, updating reactive state per message would re-render the whole UI
+// on every message and drop the graph to single-digit FPS. Instead we keep the
+// live buffers + topic index in plain module maps (mutated synchronously, no
+// render), drive the flow animation through the activity bus, and only bump a
+// low-frequency `dataTick` / per-broker `topicVersion` so views refresh at ~3Hz
+// and structure changes rebuild the graph immediately.
+// -----------------------------------------------------------------------------
+const liveBuffers = new Map(); // brokerId -> msg[] (newest first)
+const topicIndex = new Map(); // brokerId -> Map(topic -> { topic, messageCount, lastActivity, type, payload })
+
 const activityListeners = new Set();
 export function onMessageActivity(cb) {
   activityListeners.add(cb);
@@ -22,18 +32,27 @@ function emitActivity(msg) {
   }
 }
 
+let tickScheduled = false;
+function scheduleTick(store) {
+  if (tickScheduled) return;
+  tickScheduled = true;
+  setTimeout(() => {
+    tickScheduled = false;
+    store.setState((s) => ({ dataTick: s.dataTick + 1 }));
+  }, TICK_MS);
+}
+
 export const useStore = create((set, get) => ({
   connected: false,
-  brokers: [], // MQTT connections
-  opcua: [], // OPC UA connections
+  brokers: [],
+  opcua: [],
   discovery: { scanning: false, results: [], progress: null },
 
-  // topics[brokerId] = [{ topic, messageCount, lastActivity, type, ... }]
-  topics: {},
-  // liveMessages[brokerId] = recent message objects (ring buffer)
-  liveMessages: {},
-  // opcuaValues[connectionId] = { nodeId: { value, sourceTimestamp, ... } }
-  opcuaValues: {},
+  // Reactive change signals for the high-frequency data (see note above).
+  dataTick: 0,
+  topicVersion: {}, // brokerId -> integer, bumped only when the topic SET changes
+
+  opcuaValues: {}, // connectionId -> { nodeId: { value, ... } } (low frequency)
 
   // Graph view preferences (persisted to localStorage)
   graphStyle: localStorage.getItem('tc.graphStyle') || DEFAULT_STYLE,
@@ -81,37 +100,64 @@ export const useStore = create((set, get) => ({
       return { brokers: next };
     }),
 
-  removeBroker: (brokerId) =>
-    set((s) => ({
-      brokers: s.brokers.filter((b) => b.id !== brokerId),
-      topics: omit(s.topics, brokerId),
-      liveMessages: omit(s.liveMessages, brokerId)
-    })),
+  removeBroker: (brokerId) => {
+    liveBuffers.delete(brokerId);
+    topicIndex.delete(brokerId);
+    set((s) => {
+      const tv = { ...s.topicVersion };
+      delete tv[brokerId];
+      return { brokers: s.brokers.filter((b) => b.id !== brokerId), topicVersion: tv };
+    });
+  },
 
-  setTopics: (brokerId, topics) => set((s) => ({ topics: { ...s.topics, [brokerId]: topics } })),
+  // Non-reactive getters for the high-frequency data.
+  getTopics: (brokerId) => Array.from(topicIndex.get(brokerId)?.values() || []),
+  getLiveMessages: (brokerId) => liveBuffers.get(brokerId) || [],
+  getTopicMessages: (brokerId, topic) => (liveBuffers.get(brokerId) || []).filter((m) => m.topic === topic),
+
+  // Seed the topic index from an authoritative API fetch (bumps structure).
+  setTopics: (brokerId, topics) => {
+    const map = topicIndex.get(brokerId) || new Map();
+    for (const t of topics) map.set(t.topic, { ...map.get(t.topic), ...t });
+    topicIndex.set(brokerId, map);
+    set((s) => ({ topicVersion: { ...s.topicVersion, [brokerId]: (s.topicVersion[brokerId] || 0) + 1 } }));
+  },
 
   ingestMessage: (msg) => {
     emitActivity(msg);
-    set((s) => {
-      const buf = s.liveMessages[msg.brokerId] || [];
-      const next = [msg, ...buf].slice(0, MAX_LIVE_MESSAGES);
-      // Keep a lightweight topic index fresh from the live stream
-      const existing = s.topics[msg.brokerId] || [];
-      let topics = existing;
-      if (!existing.some((t) => t.topic === msg.topic)) {
-        topics = [...existing, { topic: msg.topic, messageCount: 1, lastActivity: msg.timestamp, type: msg.type }];
-      } else {
-        topics = existing.map((t) =>
-          t.topic === msg.topic
-            ? { ...t, messageCount: t.messageCount + 1, lastActivity: msg.timestamp, type: msg.type }
-            : t
-        );
-      }
-      return {
-        liveMessages: { ...s.liveMessages, [msg.brokerId]: next },
-        topics: { ...s.topics, [msg.brokerId]: topics }
-      };
+
+    // Live buffer (newest first, capped)
+    let buf = liveBuffers.get(msg.brokerId);
+    if (!buf) {
+      buf = [];
+      liveBuffers.set(msg.brokerId, buf);
+    }
+    buf.unshift(msg);
+    if (buf.length > MAX_LIVE_MESSAGES) buf.length = MAX_LIVE_MESSAGES;
+
+    // Topic index (mutated in place — no React render)
+    let map = topicIndex.get(msg.brokerId);
+    if (!map) {
+      map = new Map();
+      topicIndex.set(msg.brokerId, map);
+    }
+    const existing = map.get(msg.topic);
+    const isNewTopic = !existing;
+    map.set(msg.topic, {
+      topic: msg.topic,
+      messageCount: (existing?.messageCount || 0) + 1,
+      lastActivity: msg.timestamp,
+      type: msg.type,
+      payload: msg.payload,
+      retain: msg.retain
     });
+
+    // Only a NEW topic changes graph structure → bump version (rare). Value
+    // changes just schedule the throttled tick.
+    if (isNewTopic) {
+      set((s) => ({ topicVersion: { ...s.topicVersion, [msg.brokerId]: (s.topicVersion[msg.brokerId] || 0) + 1 } }));
+    }
+    scheduleTick(useStore);
   },
 
   setOpcuaValue: (connectionId, nodeId, value) =>
@@ -132,13 +178,6 @@ export const useStore = create((set, get) => ({
     }))
 }));
 
-function omit(obj, key) {
-  const next = { ...obj };
-  delete next[key];
-  return next;
-}
-
-// Wire socket events into the store exactly once.
 let wired = false;
 export function initRealtime() {
   if (wired) return;
@@ -165,12 +204,10 @@ export function initRealtime() {
     for (const st of stats) s.upsertBroker({ id: st.brokerId, status: st.status, metrics: st.metrics });
   });
 
-  socket.on('opcua-connection-attempt', ({ connection }) => refreshOpcua());
+  socket.on('opcua-connection-attempt', () => refreshOpcua());
   socket.on('opcua-connected', () => refreshOpcua());
   socket.on('opcua-disconnected', () => refreshOpcua());
-  socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) =>
-    s.setOpcuaValue(connectionId, nodeId, rest)
-  );
+  socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
 
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));

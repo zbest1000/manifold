@@ -37,8 +37,8 @@ function shortText(payload) {
 
 export default function TopicGraph() {
   const brokers = useStore((s) => s.brokers);
-  const topics = useStore((s) => s.topics);
-  const liveMessages = useStore((s) => s.liveMessages);
+  const dataTick = useStore((s) => s.dataTick);
+  const topicVersionMap = useStore((s) => s.topicVersion);
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
   const flowEnabled = useStore((s) => s.flowEnabled);
@@ -71,17 +71,20 @@ export default function TopicGraph() {
   }, [brokerId, setTopics]);
 
   const broker = brokers.find((b) => b.id === brokerId);
-  const brokerTopics = topics[brokerId] || [];
+  const topicVersion = topicVersionMap[brokerId] || 0;
 
-  // Rebuild the graph only when the topic *set* changes — not on every message.
-  // Message counts/timestamps update constantly; keying the memo on them would
-  // reheat the force simulation on each message and make the layout jitter.
-  const topicKey = brokerTopics.map((t) => t.topic).sort().join('\n');
+  // Read the topic list from the non-reactive index; recompute only when the
+  // topic SET changes (topicVersion), not on every message.
+  const brokerTopics = useMemo(
+    () => useStore.getState().getTopics(brokerId),
+    [brokerId, topicVersion]
+  );
+
   const fullGraph = useMemo(() => {
     if (!broker) return { nodes: [], links: [] };
     return buildMqttGraph(broker, brokerTopics);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broker?.id, topicKey]);
+  }, [broker?.id, brokerTopics]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
@@ -91,12 +94,18 @@ export default function TopicGraph() {
     [fullGraph, collapseKey]
   );
 
+  // Live buffer snapshot, refreshed at the throttled tick (not per message).
+  const liveMsgs = useMemo(
+    () => useStore.getState().getLiveMessages(brokerId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [brokerId, dataTick]
+  );
+
   // Latest value + numeric sparkline per leaf topic, for the on-node overlay.
   const nodeValues = useMemo(() => {
     if (!brokerId) return null;
-    const buf = liveMessages[brokerId] || [];
     const byTopic = new Map();
-    for (const m of buf) {
+    for (const m of liveMsgs) {
       if (!byTopic.has(m.topic)) byTopic.set(m.topic, []);
       byTopic.get(m.topic).push(m);
     }
@@ -107,7 +116,7 @@ export default function TopicGraph() {
       out[`topic:${brokerId}:${topic}`] = { text: shortText(msgs[0].payload), series: series.slice(-24) };
     }
     return out;
-  }, [brokerId, liveMessages]);
+  }, [brokerId, liveMsgs]);
 
   // Feed live message activity to the graph's flow animation. Maps an incoming
   // message on this broker to its leaf node id (see buildMqttGraph node ids).
@@ -200,7 +209,7 @@ export default function TopicGraph() {
           />
           <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
             <div className="pointer-events-auto">
-              <ReplayScrubber messages={liveMessages[brokerId] || []} toNodeId={replayNodeId} graphRef={graphRef} />
+              <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
             </div>
             <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
               Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
@@ -212,7 +221,7 @@ export default function TopicGraph() {
           <TopicPanel
             node={selected}
             brokerId={brokerId}
-            messages={liveMessages[brokerId] || []}
+            messages={liveMsgs}
             onClose={() => setSelected(null)}
           />
         )}

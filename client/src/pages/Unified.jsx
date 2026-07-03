@@ -18,7 +18,7 @@ import PageHeader from '@/components/PageHeader';
 export default function Unified() {
   const brokers = useStore((s) => s.brokers);
   const opcua = useStore((s) => s.opcua);
-  const topics = useStore((s) => s.topics);
+  const topicVersion = useStore((s) => s.topicVersion);
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
   const showMinimap = useStore((s) => s.showMinimap);
@@ -52,10 +52,11 @@ export default function Unified() {
       .catch(() => setI3xGraph(null));
   }, []);
 
-  const topicKey = connectedBrokers.map((b) => `${b.id}:${(topics[b.id] || []).length}`).join(',');
+  const topicKey = connectedBrokers.map((b) => `${b.id}:${topicVersion[b.id] || 0}`).join(',');
   const graph = useMemo(() => {
+    const state = useStore.getState();
     const parts = [];
-    for (const b of connectedBrokers) parts.push({ protocol: 'mqtt', graph: buildMqttGraph(b, topics[b.id] || []) });
+    for (const b of connectedBrokers) parts.push({ protocol: 'mqtt', graph: buildMqttGraph(b, state.getTopics(b.id)) });
     for (const c of connectedOpcua) {
       // Show OPC UA servers as a single node each (address space is lazy-loaded on its own page)
       parts.push({
