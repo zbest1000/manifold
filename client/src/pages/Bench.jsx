@@ -19,6 +19,7 @@ export default function Bench() {
   const n = Math.max(1, Math.min(1_000_000, Number(params.get('n')) || 50_000));
   const renderer = params.get('r') === 'sigma' ? 'sigma' : 'webgl';
   const density = params.has('d') ? Math.max(0, Math.min(1, Number(params.get('d')))) : 0.5;
+  const skew = params.get('skew') === '1'; // irregular (realistic) topic tree vs uniform
   const [phase, setPhase] = useState('building');
   const t0Ref = useRef(0);
 
@@ -27,20 +28,43 @@ export default function Bench() {
     const t = performance.now();
     const topics = [];
     // factory/area{a}/line{l}/dev{d}/{metric} — shared prefixes keep it realistic.
-    const perDev = 4;
-    const devs = Math.ceil(n / perDev);
-    const metrics = ['temp', 'pressure', 'flow', 'state'];
-    for (let i = 0; i < devs; i++) {
-      const a = i % 50;
-      const l = i % 500;
-      for (let m = 0; m < perDev && topics.length < n; m++) {
-        topics.push({ topic: `factory/area${a}/line${l}/dev${i}/${metrics[m]}`, messageCount: 1, type: 'telemetry' });
+    const metrics = ['temp', 'pressure', 'flow', 'state', 'rpm', 'level', 'vibration', 'power'];
+    if (skew) {
+      // Irregular tree (closer to a real broker): uneven fan-out at every level and
+      // a varying number of metrics per device — so the radial layout is lumpy, not
+      // a symmetric sunburst. Seeded LCG so runs are reproducible.
+      let seed = 1337;
+      const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+      let dev = 0;
+      const areas = 8 + Math.floor(rnd() * 24);
+      for (let a = 0; a < areas && topics.length < n; a++) {
+        const lines = 1 + Math.floor(rnd() * rnd() * 60); // heavily skewed: many small, few huge
+        for (let l = 0; l < lines && topics.length < n; l++) {
+          const nDev = 1 + Math.floor(rnd() * rnd() * 40);
+          for (let d = 0; d < nDev && topics.length < n; d++) {
+            const id = dev++;
+            const nMetric = 1 + Math.floor(rnd() * 8);
+            for (let m = 0; m < nMetric && topics.length < n; m++) {
+              topics.push({ topic: `factory/area${a}/line${l}/dev${id}/${metrics[m]}`, messageCount: 1, type: 'telemetry' });
+            }
+          }
+        }
+      }
+    } else {
+      const perDev = 4;
+      const devs = Math.ceil(n / perDev);
+      for (let i = 0; i < devs; i++) {
+        const a = i % 50;
+        const l = i % 500;
+        for (let m = 0; m < perDev && topics.length < n; m++) {
+          topics.push({ topic: `factory/area${a}/line${l}/dev${i}/${metrics[m]}`, messageCount: 1, type: 'telemetry' });
+        }
       }
     }
     const broker = { id: 'bench', name: 'Bench Broker', host: 'localhost', port: 1883, status: 'connected' };
     const g = buildMqttGraph(broker, topics, { maxNodes: Infinity });
     return { graph: g, buildMs: Math.round(performance.now() - t) };
-  }, [n]);
+  }, [n, skew]);
 
   useEffect(() => {
     t0Ref.current = performance.now();
