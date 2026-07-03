@@ -2,6 +2,7 @@ const mqtt = require('mqtt');
 const { EventEmitter } = require('events');
 const { v4: uuidv4 } = require('uuid');
 const SparkplugDecoder = require('./sparkplugDecoder');
+const TopicStore = require('./topicStore');
 
 const STATS_INTERVAL_MS = 2000;
 const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -22,10 +23,8 @@ class MqttManager extends EventEmitter {
     this.io = io;
     this.connections = new Map(); // brokerId -> connection info
     this.clients = new Map(); // brokerId -> mqtt client
-    this.topicData = new Map(); // brokerId -> Map(topic -> latest-value record)
+    this.stores = new Map(); // brokerId -> TopicStore (memory-lean struct-of-arrays)
     this.recent = new Map(); // brokerId -> recent message ring (bounded)
-    this.dirty = new Map(); // brokerId -> Set(topic) changed since last flush
-    this.dropped = new Map(); // brokerId -> count of topics dropped at the cap
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
@@ -101,10 +100,8 @@ class MqttManager extends EventEmitter {
 
     this.connections.set(brokerId, info);
     this.clients.set(brokerId, client);
-    this.topicData.set(brokerId, new Map());
+    this.stores.set(brokerId, new TopicStore(MAX_TOPICS));
     this.recent.set(brokerId, []);
-    this.dirty.set(brokerId, new Set());
-    this.dropped.set(brokerId, 0);
     this.subscriptions.set(brokerId, new Set());
     this.setupClientEventHandlers(client, brokerId);
 
@@ -152,40 +149,27 @@ class MqttManager extends EventEmitter {
 
   // Hot path — runs once per publish. Kept deliberately minimal so the manager
   // can sustain very high publish rates (millions/sec): no JSON parse, no uuid,
-  // no per-message allocation of a message object. The raw payload is stashed on
-  // the topic record and the topic is marked dirty; the actual message object is
-  // built once per topic at flush time (coalescing).
+  // no per-message allocation of a message object. The store keeps only the
+  // latest payload per topic (as a latin1 string in a struct-of-arrays) and marks
+  // the topic dirty; the actual message object is built once per topic at flush
+  // time (coalescing). See topicStore.js for the memory model.
   handleMessage(brokerId, topic, message, packet) {
     const info = this.connections.get(brokerId);
-    const topicMap = this.topicData.get(brokerId);
-    if (!info || !topicMap) return;
+    const store = this.stores.get(brokerId);
+    if (!info || !store) return;
 
     info.metrics.messagesReceived++;
     info.metrics.bytesReceived += message.length;
 
-    let record = topicMap.get(topic);
-    if (!record) {
-      if (topicMap.size >= MAX_TOPICS) {
-        this.dropped.set(brokerId, (this.dropped.get(brokerId) || 0) + 1);
-        return;
-      }
-      record = { topic, messageCount: 0, firstSeen: Date.now() };
-      topicMap.set(topic, record);
-      info.metrics.topicCount = topicMap.size;
-    }
-    record.messageCount++;
-    record.raw = message; // Buffer ref; only the newest survives to flush
-    record.qos = packet.qos;
-    record.retainFlag = packet.retain;
-    record.ts = Date.now();
-
-    this.dirty.get(brokerId)?.add(topic);
+    store.ingest(topic, message, packet.qos, packet.retain);
+    info.metrics.topicCount = store.topicCount();
   }
 
-  // Build the full message object for a topic's latest raw payload (parse, type
+  // Build the full message object for a drained topic row (parse, type
   // detection, Sparkplug decode). Runs at most once per topic per flush.
-  buildMessage(brokerId, record) {
-    const message = record.raw;
+  // `row` is a TopicStore row: { topic, buffer, qos, retain, ts, count }.
+  buildMessage(brokerId, row) {
+    const message = row.buffer;
     let payload;
     let payloadFormat = 'text';
     const text = message.toString('utf8');
@@ -203,17 +187,17 @@ class MqttManager extends EventEmitter {
     const messageObj = {
       id: ++this.msgSeq,
       brokerId,
-      topic: record.topic,
+      topic: row.topic,
       payload,
       payloadFormat,
-      qos: record.qos,
-      retain: record.retainFlag,
-      timestamp: new Date(record.ts).toISOString(),
+      qos: row.qos,
+      retain: row.retain,
+      timestamp: new Date(row.ts).toISOString(),
       size: message.length,
-      type: this.detectMessageType(record.topic, payload)
+      type: this.detectMessageType(row.topic, payload)
     };
 
-    if (this.isSparkplugTopic(record.topic)) {
+    if (this.isSparkplugTopic(row.topic)) {
       try {
         messageObj.sparkplug = this.sparkplugDecoder.decode(message);
         messageObj.type = 'sparkplug';
@@ -230,26 +214,19 @@ class MqttManager extends EventEmitter {
   // bounded by the number of *topics* touched, not the publish rate. Beyond
   // FORWARD_CAP topics per flush we forward a sample (server still counts all).
   flushBroker(brokerId) {
-    const dirty = this.dirty.get(brokerId);
-    const topicMap = this.topicData.get(brokerId);
-    if (!dirty || dirty.size === 0 || !topicMap) return;
+    const store = this.stores.get(brokerId);
+    if (!store) return;
+
+    const rows = store.drain();
+    if (rows.length === 0) return;
 
     const ring = this.recent.get(brokerId);
     const batch = [];
     let forwarded = 0;
     let lastActivity = null;
 
-    for (const topic of dirty) {
-      const record = topicMap.get(topic);
-      if (!record || !record.raw) continue;
-
-      const messageObj = this.buildMessage(brokerId, record);
-      record.latest = messageObj;
-      record.lastActivity = messageObj.timestamp;
-      record.type = messageObj.type;
-      record.retain = messageObj.retain;
-      record.payloadFormat = messageObj.payloadFormat;
-      record.raw = null; // release the buffer once consumed
+    for (const row of rows) {
+      const messageObj = this.buildMessage(brokerId, row);
       lastActivity = messageObj.timestamp;
 
       if (forwarded < FORWARD_CAP) {
@@ -261,7 +238,6 @@ class MqttManager extends EventEmitter {
         }
       }
     }
-    dirty.clear();
 
     const info = this.connections.get(brokerId);
     if (info && lastActivity) info.lastActivity = new Date(lastActivity);
@@ -270,7 +246,7 @@ class MqttManager extends EventEmitter {
   }
 
   flushBatches() {
-    for (const brokerId of this.dirty.keys()) this.flushBroker(brokerId);
+    for (const brokerId of this.stores.keys()) this.flushBroker(brokerId);
   }
 
   subscribe(brokerId, topic, qos = 0) {
@@ -331,10 +307,8 @@ class MqttManager extends EventEmitter {
       this.clients.delete(brokerId);
     }
     this.connections.delete(brokerId);
-    this.topicData.delete(brokerId);
+    this.stores.delete(brokerId);
     this.recent.delete(brokerId);
-    this.dirty.delete(brokerId);
-    this.dropped.delete(brokerId);
     this.subscriptions.delete(brokerId);
     this.io.emit('mqtt-disconnected', { brokerId });
     return { brokerId, status: 'disconnected' };
@@ -372,7 +346,7 @@ class MqttManager extends EventEmitter {
       stats.push({
         brokerId,
         status: info.status,
-        metrics: { ...info.metrics, droppedTopics: this.dropped.get(brokerId) || 0 },
+        metrics: { ...info.metrics, droppedTopics: this.stores.get(brokerId)?.dropped || 0 },
         lastActivity: info.lastActivity
       });
     });
@@ -408,23 +382,22 @@ class MqttManager extends EventEmitter {
   }
 
   getTopics(brokerId, { limit = Infinity } = {}) {
-    const topicMap = this.topicData.get(brokerId);
-    if (!topicMap) return { topics: [], total: 0, dropped: 0 };
+    const store = this.stores.get(brokerId);
+    if (!store) return { topics: [], total: 0, dropped: 0 };
 
-    const topics = [];
-    for (const record of topicMap.values()) {
-      if (topics.length >= limit) break;
-      topics.push({
-        topic: record.topic,
-        messageCount: record.messageCount,
-        lastActivity: record.lastActivity || null,
-        lastPayloadFormat: record.payloadFormat || null,
-        type: record.type || 'unknown',
-        retain: record.retain || false,
-        payload: record.latest?.payload
-      });
-    }
-    return { topics, total: topicMap.size, dropped: this.dropped.get(brokerId) || 0 };
+    const topics = store.getTopics(limit).map((row) => {
+      const msg = this.buildMessage(brokerId, row);
+      return {
+        topic: row.topic,
+        messageCount: row.count,
+        lastActivity: msg.timestamp,
+        lastPayloadFormat: msg.payloadFormat,
+        type: msg.type,
+        retain: msg.retain,
+        payload: msg.payload
+      };
+    });
+    return { topics, total: store.topicCount(), dropped: store.dropped };
   }
 
   getMessages(brokerId, topic, limit = 50) {
@@ -434,10 +407,11 @@ class MqttManager extends EventEmitter {
     for (let i = ring.length - 1; i >= 0 && matches.length < limit; i--) {
       if (ring[i].topic === topic) matches.push(ring[i]);
     }
-    // Ensure the retained latest value is present even if it aged out of the ring.
-    const record = this.topicData.get(brokerId)?.get(topic);
-    if (record?.latest && !matches.some((m) => m.id === record.latest.id)) {
-      matches.push(record.latest);
+    // The newest ring hit for a topic is already its latest value; only when the
+    // topic has aged entirely out of the ring do we rebuild it from the store.
+    if (matches.length === 0) {
+      const row = this.stores.get(brokerId)?.getLatest(topic);
+      if (row) matches.push(this.buildMessage(brokerId, row));
     }
     return matches.reverse();
   }
@@ -449,9 +423,8 @@ class MqttManager extends EventEmitter {
     this.clients.forEach((client) => client.end(true));
     this.clients.clear();
     this.connections.clear();
-    this.topicData.clear();
+    this.stores.clear();
     this.recent.clear();
-    this.dirty.clear();
   }
 }
 

@@ -16,8 +16,18 @@ make the server faster?**
 
 | Memory @ 1,000,000 topics | RSS | 
 |---|---|
-| JS `Map` of record objects | 532 MB |
-| Rust `TopicStore` | **380 MB** (~29% less, and no GC pauses) |
+| JS `Map` of record objects (old default) | 532 MB |
+| **JS struct-of-arrays store** (`server/services/topicStore.js`, current default) | **425 MB** (~20% less, no native dep) |
+| Rust `TopicStore` | 380 MB (~29% less than old, and no GC pauses) |
+
+> **Update — the memory win was captured in pure JS.** The default hot path now
+> uses `server/services/topicStore.js`: one `Map(topic -> slot)` plus parallel
+> typed arrays for the scalar fields and the latest payload kept as a **latin1
+> string** (V8 stores latin1 at one byte/char, lossless for arbitrary bytes, and
+> avoids a `Buffer` object per topic). That recovers most of Rust's memory
+> advantage — 425 MB vs Rust's 380 MB — **without any native build step**, so the
+> Rust addon is no longer needed even for the memory-bound case. It remains below
+> only as a reproducible benchmark.
 
 ## Conclusion
 
