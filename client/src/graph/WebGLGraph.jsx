@@ -15,6 +15,7 @@ import { groupColor, PROTOCOL_COLORS } from './buildGraph';
  */
 export default function WebGLGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false }) {
   const canvasRef = useRef(null);
+  const labelCanvasRef = useRef(null);
   const wrapRef = useRef(null);
   const glRef = useRef(null);
   const progRef = useRef({});
@@ -55,7 +56,12 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       gl.uniform1f(lp.u_scale, t.k);
       gl.uniform2f(lp.u_resolution, w, h);
       const lc = hexToRgb(style.link.color);
-      gl.uniform4f(lp.u_color, lc[0], lc[1], lc[2], 0.22);
+      // Zoom-aware opacity: faint when zoomed out (tens of thousands of edges
+      // would otherwise blob into a solid mass), stronger as you zoom in and only
+      // a few connection lines are on screen — so structure stays readable next
+      // to the labels.
+      const edgeAlpha = Math.min(0.6, 0.16 + t.k * 0.06);
+      gl.uniform4f(lp.u_color, lc[0], lc[1], lc[2], edgeAlpha);
       gl.bindBuffer(gl.ARRAY_BUFFER, b.linePos);
       gl.enableVertexAttribArray(lp.a_pos);
       gl.vertexAttribPointer(lp.a_pos, 2, gl.FLOAT, false, 0, 0);
@@ -80,7 +86,72 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       gl.vertexAttribPointer(pp.a_size, 1, gl.FLOAT, false, 0, 0);
       gl.drawArrays(gl.POINTS, 0, nodes);
     }
+
+    drawLabels(t, w, h);
   }, [style]);
+
+  // Label overlay: WebGL can't cheaply draw text, so labels are painted on a 2D
+  // canvas layered on top — but ONLY for nodes actually on screen and large
+  // enough to read at the current zoom (plus servers/brokers and the selection,
+  // which are always labelled). Viewport culling + a hard cap keep this to tens/
+  // low-hundreds of fillText calls per frame regardless of total graph size, so
+  // the renderer stays fast while the show-all view becomes legible as you zoom.
+  const drawLabels = useCallback(
+    (t, w, h) => {
+      const canvas = labelCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+
+      const dpr = window.devicePixelRatio || 1;
+      const nodes = nodesRef.current;
+      const sel = selectedRef.current;
+      const MAX = 400;
+      const MIN_SCREEN_R = 4.5 * dpr; // node radius (screen px) needed to bother labelling
+      const font = `${Math.round(11 * dpr)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = font;
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      const labelColor = style.label?.color || '#cbd5e1';
+      const haloColor = style.background || '#000';
+      const margin = 40 * dpr;
+
+      let drawn = 0;
+      const paint = (n, sx, sy, r, strong) => {
+        const text = n.label || n.id;
+        ctx.lineWidth = 3 * dpr;
+        ctx.strokeStyle = haloColor;
+        ctx.strokeText(text, sx + r + 3 * dpr, sy);
+        ctx.fillStyle = strong ? '#fff' : labelColor;
+        ctx.fillText(text, sx + r + 3 * dpr, sy);
+      };
+
+      // First pass: always-on labels (servers/brokers + the selected node).
+      for (const n of nodes) {
+        const isHub = n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server';
+        if (!isHub && n.id !== sel) continue;
+        const sx = n.x * t.k + t.x;
+        const sy = n.y * t.k + t.y;
+        if (sx < -margin || sy < -margin || sx > w + margin || sy > h + margin) continue;
+        paint(n, sx, sy, (n.size || 4) * t.k, true);
+      }
+
+      // Second pass: readable, on-screen nodes up to the cap.
+      for (const n of nodes) {
+        if (drawn >= MAX) break;
+        const isHub = n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server';
+        if (isHub || n.id === sel) continue;
+        const r = (n.size || 4) * t.k;
+        if (r < MIN_SCREEN_R) continue;
+        const sx = n.x * t.k + t.x;
+        const sy = n.y * t.k + t.y;
+        if (sx < -margin || sy < -margin || sx > w + margin || sy > h + margin) continue;
+        paint(n, sx, sy, r, false);
+        drawn++;
+      }
+    },
+    [style]
+  );
 
   // Build GL programs + upload geometry when data changes.
   useEffect(() => {
@@ -113,7 +184,9 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       color[i * 3] = c[0];
       color[i * 3 + 1] = c[1];
       color[i * 3 + 2] = c[2];
-      size[i] = n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server' ? 12 : 4 + Math.sqrt(n.degree || 0) * 1.5;
+      const s = n.kind === 'broker' || n.kind === 'opcua-server' || n.kind === 'i3x-server' ? 12 : 4 + Math.sqrt(n.degree || 0) * 1.5;
+      n.size = s; // reused by the label overlay + picking
+      size[i] = s;
     });
     const linePos = new Float32Array(links.length * 4);
     links.forEach((l, i) => {
@@ -151,6 +224,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
 
+    const labelCanvas = labelCanvasRef.current;
     let centered = false;
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -159,6 +233,12 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       canvas.height = height * dpr;
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
+      if (labelCanvas) {
+        labelCanvas.width = width * dpr;
+        labelCanvas.height = height * dpr;
+        labelCanvas.style.width = `${width}px`;
+        labelCanvas.style.height = `${height}px`;
+      }
       sizeRef.current = { w: canvas.width, h: canvas.height };
       if (!centered && width > 0) {
         centered = true;
@@ -262,6 +342,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas ref={labelCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
     </div>
   );
 }

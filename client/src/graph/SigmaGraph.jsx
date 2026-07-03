@@ -52,22 +52,20 @@ export default function SigmaGraph({ data, styleId = 'constellation', selectedId
       }
     }
 
-    // Above this size, Sigma's per-frame label-selection scan and full edge
-    // redraw dominate; drop labels and edges so panning/zooming stays responsive
-    // (you can't read tens of thousands of labels anyway). Below it, Sigma's
-    // zoom-aware labels are its main advantage over the built-in WebGL renderer.
+    // Labels and connection lines both matter, so keep them on at every size.
+    // For very large graphs, thin the label pass (bigger grid cells, higher size
+    // threshold) so only the more-connected nodes get labels and per-frame work
+    // stays bounded — Sigma still only draws the labels currently on screen.
     const huge = data.nodes.length > 20_000;
     const renderer = new Sigma(graph, wrap, {
       allowInvalidContainer: true,
       renderEdgeLabels: false,
-      renderLabels: !huge,
-      renderEdges: !huge,
       defaultNodeColor: style.palette[0],
       defaultEdgeColor: style.link.color,
       labelColor: { color: style.label?.color || '#e5e7eb' },
-      labelDensity: 0.6,
-      labelGridCellSize: huge ? 250 : 90,
-      labelRenderedSizeThreshold: huge ? 24 : 7, // only label the more connected nodes
+      labelDensity: huge ? 0.35 : 0.6,
+      labelGridCellSize: huge ? 200 : 90,
+      labelRenderedSizeThreshold: huge ? 18 : 7, // only label the more connected nodes
       zoomToSizeRatioFunction: (x) => x,
       // Dim everything except the selected node + its neighbors when one is picked.
       nodeReducer: (node, attrs) => {
