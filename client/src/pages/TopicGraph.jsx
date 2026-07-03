@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -63,6 +63,7 @@ export default function TopicGraph() {
   const [treeFilter, setTreeFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [bigRenderer, setBigRenderer] = useState('webgl'); // 'webgl' | 'sigma'
+  const [labelDensity, setLabelDensity] = useState(0.5); // 0 (off) .. 1 (dense)
   const graphRef = useRef(null);
 
   // Select a topic from the tree, shaping it like a graph node so the shared
@@ -276,10 +277,10 @@ export default function TopicGraph() {
               // and Sigma.js (mature large-graph library with zoom-aware labels).
               bigRenderer === 'sigma' ? (
                 <Suspense fallback={<div className="absolute inset-0 grid place-items-center text-xs text-slate-500">Loading Sigma renderer…</div>}>
-                  <SigmaGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+                  <SigmaGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} />
                 </Suspense>
               ) : (
-                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} />
               )
             ) : (
               <ForceGraph
@@ -330,6 +331,26 @@ export default function TopicGraph() {
                     >
                       Sigma
                     </button>
+                  </div>
+                )}
+                {showAll && (
+                  <div
+                    className="flex items-center gap-2 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-[11px] text-slate-300 backdrop-blur"
+                    title="Label density"
+                  >
+                    <Tag size={13} className="text-slate-400" />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={labelDensity}
+                      onChange={(e) => setLabelDensity(Number(e.target.value))}
+                      className="h-1 w-24 cursor-pointer accent-accent-400"
+                    />
+                    <span className="w-8 tabular-nums text-slate-500">
+                      {labelDensity <= 0.001 ? 'off' : `${Math.round(labelDensity * 100)}%`}
+                    </span>
                   </div>
                 )}
                 {showAll && graph.nodes.length > 60000 && (

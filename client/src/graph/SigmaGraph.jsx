@@ -14,7 +14,7 @@ import { groupColor, PROTOCOL_COLORS } from './buildGraph';
  *
  * Props mirror WebGLGraph so the two are drop-in interchangeable.
  */
-export default function SigmaGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false }) {
+export default function SigmaGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false, labelDensity = 0.5 }) {
   const wrapRef = useRef(null);
   const sigmaRef = useRef(null);
   const selectedRef = useRef(selectedId);
@@ -57,15 +57,17 @@ export default function SigmaGraph({ data, styleId = 'constellation', selectedId
     // threshold) so only the more-connected nodes get labels and per-frame work
     // stays bounded — Sigma still only draws the labels currently on screen.
     const huge = data.nodes.length > 20_000;
+    const ls = labelSettings(labelDensity);
     const renderer = new Sigma(graph, wrap, {
       allowInvalidContainer: true,
       renderEdgeLabels: false,
+      renderLabels: ls.renderLabels,
       defaultNodeColor: style.palette[0],
       defaultEdgeColor: style.link.color,
       labelColor: { color: style.label?.color || '#e5e7eb' },
-      labelDensity: huge ? 0.35 : 0.6,
+      labelDensity: ls.labelDensity,
       labelGridCellSize: huge ? 200 : 90,
-      labelRenderedSizeThreshold: huge ? 18 : 7, // only label the more connected nodes
+      labelRenderedSizeThreshold: ls.labelRenderedSizeThreshold,
       zoomToSizeRatioFunction: (x) => x,
       // Dim everything except the selected node + its neighbors when one is picked.
       nodeReducer: (node, attrs) => {
@@ -107,7 +109,29 @@ export default function SigmaGraph({ data, styleId = 'constellation', selectedId
     sigmaRef.current?.refresh();
   }, [selectedId]);
 
+  // Apply label density live without rebuilding the graph.
+  useEffect(() => {
+    const r = sigmaRef.current;
+    if (!r) return;
+    const ls = labelSettings(labelDensity);
+    r.setSetting('renderLabels', ls.renderLabels);
+    r.setSetting('labelDensity', ls.labelDensity);
+    r.setSetting('labelRenderedSizeThreshold', ls.labelRenderedSizeThreshold);
+    r.refresh();
+  }, [labelDensity]);
+
   return <div ref={wrapRef} className="absolute inset-0 h-full w-full" />;
+}
+
+// Map the density knob (0..1) to Sigma's label settings. Higher density shows
+// more labels (denser grid, lower size threshold); 0 turns labels off.
+function labelSettings(d) {
+  if (d <= 0.001) return { renderLabels: false, labelDensity: 0.2, labelRenderedSizeThreshold: 100 };
+  return {
+    renderLabels: true,
+    labelDensity: 0.2 + d * 1.3,
+    labelRenderedSizeThreshold: Math.max(1, 20 - d * 18)
+  };
 }
 
 // Deterministic radial-tree layout: root(s) at the centre, each depth on a wider

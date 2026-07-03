@@ -48,9 +48,11 @@ MCP-capable client at the included MCP server.
 - **Show-all at massive scale** — a "show all" toggle renders every topic as a node
   on the GPU. Two interchangeable WebGL renderers are available: a lean built-in
   one (the default — verified rendering 63k+ nodes and staying responsive to
-  pan/zoom) and **Sigma.js**, which adds zoom-aware labels and native camera
-  controls. The built-in renderer is leaner at the extreme; Sigma is offered for
-  its labelling/polish at moderate sizes.
+  pan/zoom) and **Sigma.js**, which adds native camera controls. Both draw
+  viewport-culled, zoom-aware **labels** and connection lines, with a
+  **label-density slider** to dial how many labels show at once (from off to
+  dense). The built-in renderer is leaner at the extreme; Sigma is offered as an
+  alternative for its camera feel.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
 - **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform

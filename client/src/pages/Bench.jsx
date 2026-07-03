@@ -18,6 +18,7 @@ export default function Bench() {
   const params = new URLSearchParams(window.location.search);
   const n = Math.max(1, Math.min(1_000_000, Number(params.get('n')) || 50_000));
   const renderer = params.get('r') === 'sigma' ? 'sigma' : 'webgl';
+  const density = params.has('d') ? Math.max(0, Math.min(1, Number(params.get('d')))) : 0.5;
   const [phase, setPhase] = useState('building');
   const t0Ref = useRef(0);
 
@@ -72,9 +73,9 @@ export default function Bench() {
   return (
     <div className="relative h-screen w-screen bg-black">
       {renderer === 'sigma' ? (
-        <SigmaGraph data={graph} styleId="constellation" />
+        <SigmaGraph data={graph} styleId="constellation" labelDensity={density} />
       ) : (
-        <WebGLGraph data={graph} styleId="constellation" />
+        <WebGLGraph data={graph} styleId="constellation" labelDensity={density} />
       )}
       <div
         data-testid="bench-status"

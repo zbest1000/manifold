@@ -13,11 +13,12 @@ import { groupColor, PROTOCOL_COLORS } from './buildGraph';
  * The feature-rich 2D ForceGraph remains the default for normal-sized graphs
  * (labels, glow, curved links, live message-flow animation).
  */
-export default function WebGLGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false }) {
+export default function WebGLGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false, labelDensity = 0.5 }) {
   const canvasRef = useRef(null);
   const labelCanvasRef = useRef(null);
   const wrapRef = useRef(null);
   const glRef = useRef(null);
+  const labelDensityRef = useRef(labelDensity);
   const progRef = useRef({});
   const buffersRef = useRef({});
   const countsRef = useRef({ nodes: 0, lineVerts: 0 });
@@ -106,8 +107,12 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       const dpr = window.devicePixelRatio || 1;
       const nodes = nodesRef.current;
       const sel = selectedRef.current;
-      const MAX = 400;
-      const MIN_SCREEN_R = 4.5 * dpr; // node radius (screen px) needed to bother labelling
+      // Density knob (0..1): higher = more labels (bigger cap, smaller nodes get
+      // labelled); lower = only the largest/nearest few; 0 turns labels off.
+      const d = labelDensityRef.current;
+      if (d <= 0.001) return;
+      const MAX = Math.round(80 + d * 1120); // ~80 → ~1200 labels
+      const MIN_SCREEN_R = (9 - d * 7) * dpr; // ~9px (sparse) → ~2px (dense) radius to qualify
       const font = `${Math.round(11 * dpr)}px ui-sans-serif, system-ui, sans-serif`;
       ctx.font = font;
       ctx.textBaseline = 'middle';
@@ -217,6 +222,11 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     selectedRef.current = selectedId;
     draw();
   }, [selectedId, draw]);
+
+  useEffect(() => {
+    labelDensityRef.current = labelDensity;
+    draw();
+  }, [labelDensity, draw]);
 
   // Sizing + interaction (once).
   useEffect(() => {
