@@ -409,10 +409,18 @@ function buildProgram(gl, vsSrc, fsSrc, attribs, uniforms) {
   return out;
 }
 
-function hexToRgb(hex) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})/i.exec(hex || '#000000');
-  if (!m) return [0, 0, 0];
-  return [parseInt(m[1], 16) / 255, parseInt(m[2], 16) / 255, parseInt(m[3], 16) / 255];
+// Parse hex (#rgb / #rrggbb) OR rgb()/rgba() into normalized [r,g,b]. Several
+// style presets specify link colors as rgba() strings, so a hex-only parser
+// silently returned black — making connection lines invisible on dark themes.
+function hexToRgb(color) {
+  const s = String(color || '#000000').trim();
+  const full = /^#([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})/i.exec(s);
+  if (full) return [parseInt(full[1], 16) / 255, parseInt(full[2], 16) / 255, parseInt(full[3], 16) / 255];
+  const short = /^#([a-f\d])([a-f\d])([a-f\d])$/i.exec(s);
+  if (short) return [parseInt(short[1] + short[1], 16) / 255, parseInt(short[2] + short[2], 16) / 255, parseInt(short[3] + short[3], 16) / 255];
+  const rgb = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i.exec(s);
+  if (rgb) return [Math.min(1, +rgb[1] / 255), Math.min(1, +rgb[2] / 255), Math.min(1, +rgb[3] / 255)];
+  return [0, 0, 0];
 }
 
 // Deterministic radial-tree layout (proportional wedges), O(n).
