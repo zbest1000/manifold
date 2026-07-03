@@ -51,3 +51,19 @@ body {
 .mono {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
+
+/* Value-change flash for the topic tree (remounted via key to replay). */
+@keyframes valueflash {
+  0% {
+    background-color: rgba(56, 189, 248, 0.5);
+    color: #e0f2fe;
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.valueflash {
+  animation: valueflash 0.9s ease-out;
+  border-radius: 4px;
+  padding: 0 4px;
+}

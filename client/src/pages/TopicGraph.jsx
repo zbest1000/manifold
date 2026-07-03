@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
@@ -9,6 +10,7 @@ import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
+import TopicTree from '@/components/TopicTree';
 import JsonView from '@/components/JsonView';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { Card, Button, Badge, EmptyState, Input } from '@/components/ui';
@@ -51,7 +53,28 @@ export default function TopicGraph() {
   const [selected, setSelected] = useState(null);
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
+  const [view, setView] = useState('graph'); // 'graph' | 'tree'
+  const [treeFilter, setTreeFilter] = useState('');
   const graphRef = useRef(null);
+
+  // Select a topic from the tree, shaping it like a graph node so the shared
+  // detail panel works for both views.
+  const selectTopic = useCallback(
+    (c) =>
+      setSelected({
+        id: `topic:${brokerId}:${c.path}`,
+        label: c.name,
+        kind: 'topic',
+        meta: {
+          fullTopic: c.path,
+          isLeaf: true,
+          messageCount: c.stat?.messageCount,
+          type: c.stat?.type,
+          lastActivity: c.stat?.lastActivity
+        }
+      }),
+    [brokerId]
+  );
 
   const connected = brokers.filter((b) => b.status === 'connected');
 
@@ -163,59 +186,85 @@ export default function TopicGraph() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="Topic Graph"
-        subtitle={broker ? `${graph.nodes.length} nodes · ${brokerTopics.length} topics` : 'Select a broker'}
+        title="Topics"
+        subtitle={broker ? `${brokerTopics.length} topics · ${graph.nodes.length} nodes` : 'Select a broker'}
         actions={
-          <select
-            value={brokerId || ''}
-            onChange={(e) => {
-              setBrokerId(e.target.value);
-              setSelected(null);
-            }}
-            className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-          >
-            {connected.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <div className="flex overflow-hidden rounded-xl border border-white/10">
+              <ViewTab active={view === 'graph'} onClick={() => setView('graph')} icon={Share2} label="Graph" />
+              <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
+            </div>
+            <select
+              value={brokerId || ''}
+              onChange={(e) => {
+                setBrokerId(e.target.value);
+                setSelected(null);
+              }}
+              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
+            >
+              {connected.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
         }
       />
 
       <div className="relative flex flex-1 overflow-hidden">
-        <div className="relative flex-1">
-          <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
-          <GraphToolbar
-            showFlow
-            onFit={() => graphRef.current?.fitTo()}
-            onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
-            onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
-          />
-          <ForceGraph
-            ref={graphRef}
-            data={graph}
-            styleId={graphStyle}
-            layoutId={graphLayout}
-            selectedId={selected?.id || null}
-            onSelect={setSelected}
-            onExpand={toggleCollapse}
-            flow={flowEnabled}
-            activitySource={activitySource}
-            activitySize={activitySize}
-            nodeValues={showValues ? nodeValues : null}
-            matchIds={matchIds}
-            minimap={showMinimap}
-          />
-          <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
-            <div className="pointer-events-auto">
-              <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
+        {view === 'tree' ? (
+          <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30">
+            <div className="flex items-center gap-1.5 border-b border-white/5 px-3 py-2">
+              <Search size={14} className="text-slate-500" />
+              <input
+                value={treeFilter}
+                onChange={(e) => setTreeFilter(e.target.value)}
+                placeholder="Filter topics…"
+                className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none"
+              />
             </div>
-            <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-              Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
+            <TopicTree
+              topics={brokerTopics}
+              selectedTopic={selected?.meta?.fullTopic}
+              onSelect={selectTopic}
+              filter={treeFilter}
+            />
+          </div>
+        ) : (
+          <div className="relative flex-1">
+            <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
+            <GraphToolbar
+              showFlow
+              onFit={() => graphRef.current?.fitTo()}
+              onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
+              onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+            />
+            <ForceGraph
+              ref={graphRef}
+              data={graph}
+              styleId={graphStyle}
+              layoutId={graphLayout}
+              selectedId={selected?.id || null}
+              onSelect={setSelected}
+              onExpand={toggleCollapse}
+              flow={flowEnabled}
+              activitySource={activitySource}
+              activitySize={activitySize}
+              nodeValues={showValues ? nodeValues : null}
+              matchIds={matchIds}
+              minimap={showMinimap}
+            />
+            <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
+              <div className="pointer-events-auto">
+                <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
+              </div>
+              <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+                Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {selected && (
           <TopicPanel
@@ -230,11 +279,28 @@ export default function TopicGraph() {
   );
 }
 
+function ViewTab({ active, onClick, icon: Icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        'flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition',
+        active ? 'bg-accent-500/20 text-accent-200' : 'bg-surface-950/60 text-slate-400 hover:text-slate-200'
+      )}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  );
+}
+
 function TopicPanel({ node, brokerId, messages, onClose }) {
   const meta = node.meta || {};
   const fullTopic = meta.fullTopic;
   const [history, setHistory] = useState([]);
   const [publishValue, setPublishValue] = useState('');
+  const [qos, setQos] = useState(0);
+  const [retain, setRetain] = useState(false);
 
   useEffect(() => {
     if (!fullTopic) return;
@@ -251,13 +317,35 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
 
   const publish = async () => {
     try {
-      await api.publish(brokerId, fullTopic, publishValue);
-      toast.success('Published');
+      await api.publish(brokerId, fullTopic, publishValue, { qos, retain });
+      toast.success(retain ? 'Published (retained)' : 'Published');
       setPublishValue('');
     } catch (e) {
       toast.error(e.message);
     }
   };
+
+  const deleteRetained = async () => {
+    try {
+      await api.publish(brokerId, fullTopic, '', { retain: true });
+      toast.success('Cleared retained message');
+    } catch (e) {
+      toast.error(e.message);
+    }
+  };
+
+  const copy = (text) => {
+    navigator.clipboard?.writeText(text).then(
+      () => toast.success('Copied'),
+      () => toast.error('Copy failed')
+    );
+  };
+
+  const numericSeries = merged
+    .slice()
+    .reverse()
+    .map((m) => numericFromPayload(m.payload))
+    .filter((v) => v != null);
 
   return (
     <aside className="flex w-96 shrink-0 flex-col border-l border-white/5 bg-surface-900/50">
@@ -266,9 +354,14 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
           <p className="text-xs uppercase tracking-wide text-slate-500">
             {meta.isLeaf ? 'Topic' : node.kind === 'broker' ? 'Broker' : 'Topic branch'}
           </p>
-          <p className="mono mt-0.5 break-all text-sm font-medium text-slate-100">
-            {fullTopic || node.label}
-          </p>
+          <div className="flex items-center gap-1.5">
+            <p className="mono mt-0.5 break-all text-sm font-medium text-slate-100">{fullTopic || node.label}</p>
+            {fullTopic && (
+              <button onClick={() => copy(fullTopic)} title="Copy topic" className="shrink-0 text-slate-500 hover:text-slate-300">
+                <Copy size={13} />
+              </button>
+            )}
+          </div>
         </div>
         <button onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300">
           <X size={16} />
@@ -290,7 +383,18 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
 
         {latest && (
           <Card className="p-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Latest payload</p>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Latest payload</p>
+              <button
+                onClick={() =>
+                  copy(typeof latest.payload === 'object' ? JSON.stringify(latest.payload) : String(latest.payload))
+                }
+                title="Copy value"
+                className="text-slate-500 hover:text-slate-300"
+              >
+                <Copy size={13} />
+              </button>
+            </div>
             {latest.sparkplug ? (
               <JsonView data={latest.sparkplug} name="sparkplug" />
             ) : typeof latest.payload === 'object' ? (
@@ -300,12 +404,30 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
                 {String(latest.payload)}
               </pre>
             )}
+            {numericSeries.length > 3 && <PanelPlot series={numericSeries} />}
           </Card>
         )}
 
         {meta.isLeaf && (
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Publish</p>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Publish</p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={qos}
+                  onChange={(e) => setQos(Number(e.target.value))}
+                  className="rounded-md border border-white/10 bg-surface-950/60 px-1.5 py-0.5 text-[11px] text-slate-300"
+                  title="QoS"
+                >
+                  <option value={0}>QoS 0</option>
+                  <option value={1}>QoS 1</option>
+                  <option value={2}>QoS 2</option>
+                </select>
+                <label className="flex items-center gap-1 text-[11px] text-slate-400">
+                  <input type="checkbox" checked={retain} onChange={(e) => setRetain(e.target.checked)} /> retain
+                </label>
+              </div>
+            </div>
             <div className="flex gap-2">
               <Input
                 value={publishValue}
@@ -317,6 +439,12 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
                 <Send size={14} />
               </Button>
             </div>
+            <button
+              onClick={deleteRetained}
+              className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-rose-300"
+            >
+              <Trash2 size={12} /> Clear retained message
+            </button>
           </div>
         )}
 
@@ -353,6 +481,30 @@ function Stat({ icon: Icon, label, value }) {
       <Icon size={14} className="text-slate-500" />
       <p className="mt-1.5 text-sm font-medium text-slate-200">{value}</p>
       <p className="text-[11px] text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+// Numeric history plot for the detail panel.
+function PanelPlot({ series }) {
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const span = max - min || 1;
+  const w = 320;
+  const h = 70;
+  const pts = series
+    .map((v, i) => `${(i / (series.length - 1)) * w},${h - ((v - min) / span) * h}`)
+    .join(' ');
+  return (
+    <div className="mt-3 rounded-lg border border-white/5 bg-surface-950/50 p-2">
+      <svg viewBox={`0 0 ${w} ${h}`} className="h-20 w-full" preserveAspectRatio="none">
+        <polyline points={pts} fill="none" stroke="#38bdf8" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+        <span>min {min}</span>
+        <span>{series.length} pts</span>
+        <span>max {max}</span>
+      </div>
     </div>
   );
 }
