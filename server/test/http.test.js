@@ -87,3 +87,28 @@ test('unknown OPC UA connection returns 404 on delete', async () => {
   const res = await fetch(`${baseUrl}/api/opcua/connections/does-not-exist`, { method: 'DELETE' });
   assert.strictEqual(res.status, 404);
 });
+
+test('GET /api/layout/engines lists available engines', async () => {
+  const { status, body } = await get('/api/layout/engines');
+  assert.strictEqual(status, 200);
+  assert.ok(Array.isArray(body.engines));
+  assert.ok(body.engines.includes('dot'));
+  assert.ok(body.engines.includes('fcose'));
+});
+
+test('POST /api/layout computes coordinates for a small graph', async () => {
+  const graph = {
+    nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    links: [{ source: 'a', target: 'b' }, { source: 'a', target: 'c' }]
+  };
+  const { status, body } = await post('/api/layout', { graph, engine: 'dot' });
+  assert.strictEqual(status, 200);
+  assert.strictEqual(body.count, 3);
+  assert.ok(body.positions.a && Number.isFinite(body.positions.a.x));
+});
+
+test('POST /api/layout rejects an unknown engine', async () => {
+  const { status, body } = await post('/api/layout', { graph: { nodes: [{ id: 'a' }] }, engine: 'bogus' });
+  assert.strictEqual(status, 400);
+  assert.match(body.error, /unknown layout engine/);
+});

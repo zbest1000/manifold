@@ -16,6 +16,7 @@ const opcuaRoutes = require('./routes/opcua');
 const systemRoutes = require('./routes/system');
 const cesmiiRoutes = require('./routes/cesmii');
 const i3xRoutes = require('./routes/i3x');
+const layoutRoutes = require('./routes/layout');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,6 +47,7 @@ app.use('/api/opcua', opcuaRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/cesmii', cesmiiRoutes);
 app.use('/api/i3x', i3xRoutes);
+app.use('/api/layout', layoutRoutes);
 
 app.get('/health', (req, res) => {
   res.json({

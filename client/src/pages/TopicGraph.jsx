@@ -45,6 +45,7 @@ export default function TopicGraph() {
   const topicVersionMap = useStore((s) => s.topicVersion);
   const graphStyle = useStore((s) => s.graphStyle);
   const graphLayout = useStore((s) => s.graphLayout);
+  const setGraphLayout = useStore((s) => s.setGraphLayout);
   const flowEnabled = useStore((s) => s.flowEnabled);
   const activitySize = useStore((s) => s.activitySize);
   const showValues = useStore((s) => s.showValues);
@@ -259,6 +260,7 @@ export default function TopicGraph() {
                 <GraphToolbar
                   showFlow
                   onFit={() => graphRef.current?.fitTo()}
+                  onBeautify={() => setGraphLayout('balanced')}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
                 />

@@ -35,8 +35,16 @@ MCP-capable client at the included MCP server.
   busy topics glow brighter — so you can *see* what your network is doing. Toggle
   it from the graph toolbar (persists across sessions).
 - **Selectable visual styles** — pick from six hand-tuned graph themes
-  (Constellation, Blueprint, Aurora, Neon, Circuit, Slate) plus three layout
-  presets (Organic, Spacious, Tight). Your choice persists across sessions.
+  (Constellation, Blueprint, Aurora, Neon, Circuit, Slate). Your choice persists
+  across sessions.
+- **Live and computed layouts** — interactive physics layouts (Organic, Spacious,
+  Tight, Radial, Tree, Cluster) run in the browser, while *computed* layouts
+  (Hierarchy, Layered, Balanced, Radial+, Circular, Scalable) are calculated
+  server-side by **Graphviz** (`dot`/`sfdp`/`twopi`/`circo`) and **Cytoscape**
+  (`fcose`) and applied as fixed coordinates — clean hierarchy and cluster-aware
+  layouts without a second rendering engine on the frontend. OPC UA and i3X graphs
+  default to the hierarchical `dot` layout; the MQTT graph has a one-click
+  **Beautify** action.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
 - **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform
@@ -170,6 +178,8 @@ backend.
 | `POST` | `/api/i3x/connect` · `/probe` | Connect to / probe an i3X server (`{ baseUrl, token? }`) |
 | `GET` | `/api/i3x/objects` · `/graph` · `/namespaces` | List objects, the object graph, and namespaces |
 | `POST` | `/api/i3x/value` · `/history` | Read current / historical i3X object values |
+| `GET` | `/api/layout/engines` | List available layout engines |
+| `POST` | `/api/layout` | Compute a graph layout (`{ graph, engine, direction? }`) → node coordinates |
 
 Real-time updates (messages, broker stats, discovery progress, OPC UA values) are
 delivered over Socket.IO.

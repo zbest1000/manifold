@@ -32,8 +32,10 @@ function ViewTab({ active, onClick, icon: Icon, label }) {
 
 export default function I3x() {
   const graphStyle = useStore((s) => s.graphStyle);
-  const graphLayout = useStore((s) => s.graphLayout);
   const showMinimap = useStore((s) => s.showMinimap);
+  // i3X object graphs are hierarchical (parentId) — default to server `dot`,
+  // kept per-view so it doesn't override the MQTT graph's layout preference.
+  const [graphLayout, setGraphLayout] = useState('hierarchy');
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph');
   const [treeFilter, setTreeFilter] = useState('');
@@ -190,6 +192,8 @@ export default function I3x() {
                   onFit={() => graphRef.current?.fitTo()}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), 'i3x-graph.png')}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), 'i3x-graph.json')}
+                  layoutValue={graphLayout}
+                  onLayoutChange={setGraphLayout}
                 />
                 <ForceGraph
                   ref={graphRef}

@@ -78,5 +78,21 @@ export const api = {
   },
   i3xValue: (elementIds, maxDepth = 1) =>
     request('/api/i3x/value', { method: 'POST', body: JSON.stringify({ elementIds, maxDepth }) }),
-  i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) })
+  i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) }),
+
+  // Server-side graph layout (Graphviz dot/sfdp/twopi/circo, Cytoscape fcose).
+  // Only ids + edges are sent — enough for layout, and keeps the payload small.
+  layoutEngines: () => request('/api/layout/engines'),
+  computeLayout: (graph, engine, direction) =>
+    request('/api/layout', {
+      method: 'POST',
+      body: JSON.stringify({
+        graph: {
+          nodes: graph.nodes.map((n) => ({ id: n.id })),
+          links: graph.links.map((l) => ({ source: l.source, target: l.target }))
+        },
+        engine,
+        direction
+      })
+    })
 };

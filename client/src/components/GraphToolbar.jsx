@@ -9,7 +9,8 @@ import {
   Tag,
   Map as MapIcon,
   Download,
-  Maximize2
+  Maximize2,
+  Sparkles
 } from 'lucide-react';
 import clsx from 'clsx';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
@@ -23,7 +24,15 @@ import { useStore } from '@/store/store';
  * `showFlow` gates message-flow controls to views with a live stream. Pass
  * `onFit` / `onExportPng` / `onExportJson` to enable those actions.
  */
-export default function GraphToolbar({ showFlow = false, onFit, onExportPng, onExportJson }) {
+export default function GraphToolbar({
+  showFlow = false,
+  onFit,
+  onExportPng,
+  onExportJson,
+  layoutValue,
+  onLayoutChange,
+  onBeautify
+}) {
   const {
     graphStyle,
     graphLayout,
@@ -40,6 +49,11 @@ export default function GraphToolbar({ showFlow = false, onFit, onExportPng, onE
   } = useStore();
   const [open, setOpen] = useState(false);
 
+  // Layout can be bound to the shared store (MQTT) or overridden per-view
+  // (OPC UA / i3X default to a hierarchical layout without changing the global).
+  const currentLayout = onLayoutChange ? layoutValue : graphLayout;
+  const chooseLayout = onLayoutChange || setGraphLayout;
+
   const active = STYLE_LIST.find((s) => s.id === graphStyle) || STYLE_LIST[0];
 
   return (
@@ -53,6 +67,16 @@ export default function GraphToolbar({ showFlow = false, onFit, onExportPng, onE
         )}
         <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
         <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
+        {onBeautify && (
+          <button
+            onClick={onBeautify}
+            title="Beautify layout (server-computed clustering)"
+            className="flex items-center gap-1.5 rounded-xl border border-accent-500/40 bg-accent-500/10 px-2.5 py-2 text-sm text-accent-200 backdrop-blur transition hover:border-accent-500/70"
+          >
+            <Sparkles size={15} />
+            <span className="hidden font-medium sm:inline">Beautify</span>
+          </button>
+        )}
         {onFit && <IconButton onClick={() => onFit()} icon={Maximize2} title="Fit graph to view" />}
         {(onExportPng || onExportJson) && (
           <div className="flex overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 backdrop-blur">
@@ -107,27 +131,43 @@ export default function GraphToolbar({ showFlow = false, onFit, onExportPng, onE
             ))}
           </div>
 
-          <p className="mb-2 mt-4 px-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Layout</p>
+          <p className="mb-2 mt-4 px-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Layout · Live physics</p>
           <div className="grid grid-cols-3 gap-2">
-            {LAYOUT_LIST.map((layout) => (
-              <button
-                key={layout.id}
-                onClick={() => setGraphLayout(layout.id)}
-                className={clsx(
-                  'flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
-                  layout.id === graphLayout
-                    ? 'border-accent-500/70 bg-accent-500/10 text-accent-300'
-                    : 'border-white/10 text-slate-300 hover:border-white/25'
-                )}
-              >
-                <Shuffle size={11} />
-                {layout.name}
-              </button>
+            {LAYOUT_LIST.filter((l) => l.group !== 'server').map((layout) => (
+              <LayoutButton key={layout.id} layout={layout} active={layout.id === currentLayout} onClick={() => chooseLayout(layout.id)} icon={Shuffle} />
             ))}
           </div>
+
+          <p className="mb-2 mt-4 flex items-center gap-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            <Sparkles size={12} className="text-accent-400" />
+            Layout · Computed
+          </p>
+          <div className="grid grid-cols-3 gap-2">
+            {LAYOUT_LIST.filter((l) => l.group === 'server').map((layout) => (
+              <LayoutButton key={layout.id} layout={layout} active={layout.id === currentLayout} onClick={() => chooseLayout(layout.id)} icon={Sparkles} />
+            ))}
+          </div>
+          <p className="mt-2 px-1 text-[10px] leading-tight text-slate-500">
+            Computed layouts use Graphviz &amp; Cytoscape on the server for clean hierarchy and clustering — best for OPC UA / i3X and a one-shot "beautify" of the topic graph.
+          </p>
         </div>
       )}
     </div>
+  );
+}
+
+function LayoutButton({ layout, active, onClick, icon: Icon }) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        'flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
+        active ? 'border-accent-500/70 bg-accent-500/10 text-accent-300' : 'border-white/10 text-slate-300 hover:border-white/25'
+      )}
+    >
+      <Icon size={11} />
+      {layout.name}
+    </button>
   );
 }
 

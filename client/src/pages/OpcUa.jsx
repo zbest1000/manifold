@@ -38,10 +38,12 @@ export default function OpcUa() {
   const opcuaValues = useStore((s) => s.opcuaValues);
   const setOpcua = useStore((s) => s.setOpcua);
   const graphStyle = useStore((s) => s.graphStyle);
-  const graphLayout = useStore((s) => s.graphLayout);
   const showValues = useStore((s) => s.showValues);
   const showMinimap = useStore((s) => s.showMinimap);
 
+  // OPC UA address spaces are strictly hierarchical — default to the server
+  // `dot` layout (kept per-view so it doesn't override the MQTT graph's pref).
+  const [graphLayout, setGraphLayout] = useState('hierarchy');
   const [connectionId, setConnectionId] = useState(null);
   const [expanded, setExpanded] = useState(new Map()); // nodeId -> references
   const [selected, setSelected] = useState(null);
@@ -243,6 +245,8 @@ export default function OpcUa() {
                   onFit={() => graphRef.current?.fitTo()}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `opcua-graph-${connectionId}.png`)}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `opcua-graph-${connectionId}.json`)}
+                  layoutValue={graphLayout}
+                  onLayoutChange={setGraphLayout}
                 />
                 <ForceGraph
                   ref={graphRef}
