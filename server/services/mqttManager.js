@@ -2,6 +2,7 @@ const mqtt = require('mqtt');
 const { EventEmitter } = require('events');
 const { v4: uuidv4 } = require('uuid');
 const SparkplugDecoder = require('./sparkplugDecoder');
+const SparkplugRegistry = require('./sparkplugRegistry');
 const TopicStore = require('./topicStore');
 
 const STATS_INTERVAL_MS = 2000;
@@ -24,6 +25,7 @@ class MqttManager extends EventEmitter {
     this.connections = new Map(); // brokerId -> connection info
     this.clients = new Map(); // brokerId -> mqtt client
     this.stores = new Map(); // brokerId -> TopicStore (memory-lean struct-of-arrays)
+    this.sparkplug = new Map(); // brokerId -> SparkplugRegistry (device topology)
     this.recent = new Map(); // brokerId -> recent message ring (bounded)
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
@@ -101,6 +103,7 @@ class MqttManager extends EventEmitter {
     this.connections.set(brokerId, info);
     this.clients.set(brokerId, client);
     this.stores.set(brokerId, new TopicStore(MAX_TOPICS));
+    this.sparkplug.set(brokerId, new SparkplugRegistry());
     this.recent.set(brokerId, []);
     this.subscriptions.set(brokerId, new Set());
     this.setupClientEventHandlers(client, brokerId);
@@ -120,6 +123,10 @@ class MqttManager extends EventEmitter {
 
       if (info.autoSubscribe) {
         this.subscribe(brokerId, '#', 0);
+        // `#` does not match topics beginning with `$` (MQTT spec), so subscribe
+        // to the broker's `$SYS` tree separately for audit/health stats. Brokers
+        // that don't publish `$SYS` simply deliver nothing here.
+        this.subscribe(brokerId, '$SYS/#', 0);
       }
     });
 
@@ -221,6 +228,7 @@ class MqttManager extends EventEmitter {
     if (rows.length === 0) return;
 
     const ring = this.recent.get(brokerId);
+    const registry = this.sparkplug.get(brokerId);
     const batch = [];
     let forwarded = 0;
     let lastActivity = null;
@@ -228,6 +236,12 @@ class MqttManager extends EventEmitter {
     for (const row of rows) {
       const messageObj = this.buildMessage(brokerId, row);
       lastActivity = messageObj.timestamp;
+
+      // Fold Sparkplug traffic into the device topology (identity from the topic,
+      // metrics from the decoded payload). Reuses the decode already done above.
+      if (registry && this.isSparkplugTopic(messageObj.topic)) {
+        registry.update(messageObj.topic, messageObj.sparkplug || null, row.ts);
+      }
 
       if (forwarded < FORWARD_CAP) {
         batch.push(messageObj);
@@ -308,6 +322,7 @@ class MqttManager extends EventEmitter {
     }
     this.connections.delete(brokerId);
     this.stores.delete(brokerId);
+    this.sparkplug.delete(brokerId);
     this.recent.delete(brokerId);
     this.subscriptions.delete(brokerId);
     this.io.emit('mqtt-disconnected', { brokerId });
@@ -416,6 +431,45 @@ class MqttManager extends EventEmitter {
     return matches.reverse();
   }
 
+  // Sparkplug B device topology: real publishing endpoints (Group → Edge Node →
+  // Device) with online/offline state and each endpoint's metric set.
+  getSparkplug(brokerId) {
+    const registry = this.sparkplug.get(brokerId);
+    return registry ? registry.toJSON() : { groups: [], summary: { groups: 0, edgeNodes: 0, devices: 0, online: 0, lastUpdate: 0 } };
+  }
+
+  // Broker `$SYS` stats (Mosquitto/EMQX-style). Returns the raw latest values plus
+  // a curated summary. Aggregate only — standard `$SYS` exposes broker health and
+  // client/subscription COUNTS, not a per-client subscription map (see routes).
+  getSysStats(brokerId) {
+    const store = this.stores.get(brokerId);
+    if (!store) return { available: false, raw: {}, summary: {} };
+    const rows = store.getByPrefix('$SYS/');
+    if (!rows.length) return { available: false, raw: {}, summary: {} };
+
+    const raw = {};
+    for (const row of rows) raw[row.topic] = row.buffer.toString('utf8');
+    const num = (t) => {
+      const v = parseFloat(raw[t]);
+      return Number.isFinite(v) ? v : undefined;
+    };
+    const summary = {
+      version: raw['$SYS/broker/version'],
+      uptimeSeconds: num('$SYS/broker/uptime'),
+      clientsConnected: num('$SYS/broker/clients/connected') ?? num('$SYS/broker/clients/active'),
+      clientsTotal: num('$SYS/broker/clients/total'),
+      clientsMaximum: num('$SYS/broker/clients/maximum'),
+      subscriptionsCount: num('$SYS/broker/subscriptions/count'),
+      messagesReceived: num('$SYS/broker/messages/received'),
+      messagesSent: num('$SYS/broker/messages/sent'),
+      bytesReceived: num('$SYS/broker/bytes/received'),
+      bytesSent: num('$SYS/broker/bytes/sent'),
+      retainedMessages: num('$SYS/broker/retained messages/count') ?? num('$SYS/broker/messages/retained/count'),
+      loadMessagesReceived1min: num('$SYS/broker/load/messages/received/1min')
+    };
+    return { available: true, raw, summary };
+  }
+
   shutdown() {
     clearInterval(this.cleanupTimer);
     clearInterval(this.statsTimer);
@@ -424,6 +478,7 @@ class MqttManager extends EventEmitter {
     this.clients.clear();
     this.connections.clear();
     this.stores.clear();
+    this.sparkplug.clear();
     this.recent.clear();
   }
 }

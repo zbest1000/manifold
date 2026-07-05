@@ -106,6 +106,16 @@ class TopicStore {
     return slot === undefined ? null : this._rowAt(topic, slot);
   }
 
+  /** All topics starting with `prefix` (used for the small `$SYS/` tree). */
+  getByPrefix(prefix, limit = 2000) {
+    const out = [];
+    for (const [topic, slot] of this.index) {
+      if (out.length >= limit) break;
+      if (topic.startsWith(prefix)) out.push(this._rowAt(topic, slot));
+    }
+    return out;
+  }
+
   topicCount() {
     return this.index.size;
   }

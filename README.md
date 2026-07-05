@@ -56,6 +56,18 @@ MCP-capable client at the included MCP server.
   force-directed arrangement server-side (Graphviz `sfdp`, up to 30k nodes) and
   renders it in the same view — the classic "network graph" look at scale, instead
   of the deterministic radial default.
+- **Sparkplug B device audit** — a "Devices" view maps the real publishing
+  endpoints of Sparkplug traffic: **Group → Edge Node → Device**, reconstructed
+  from BIRTH/DEATH certificates (`spBv1.0/…`), with live online/offline state and
+  the metric set each endpoint publishes. Real device identity, not topic strings.
+  Alongside it, a **broker `$SYS` health panel** (Mosquitto/EMQX-style) shows
+  client + subscription counts, throughput and uptime.
+  - *On auditing subscribers:* MQTT decouples publishers and subscribers, so the
+    protocol and `$SYS` expose only **aggregate** client/subscription counts, not a
+    per-client subscription map. "Who publishes what" is fully observable (the
+    Sparkplug tree and the topic graphs); "who subscribes to what" requires a
+    broker admin API (EMQX/HiveMQ REST, `mosquitto_ctrl`). The UI states this
+    plainly rather than implying it can see more than MQTT allows.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
 - **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform

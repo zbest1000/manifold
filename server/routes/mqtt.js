@@ -68,6 +68,38 @@ router.get('/brokers/:brokerId/messages', (req, res) => {
   res.json({ topic, count: messages.length, messages });
 });
 
+// GET /api/mqtt/brokers/:brokerId/sparkplug — Sparkplug B device topology
+// (real publishing endpoints: Group → Edge Node → Device, with online state and
+// each endpoint's metric set). Empty until Sparkplug traffic is observed.
+router.get('/brokers/:brokerId/sparkplug', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  res.json(mqttManager.getSparkplug(req.params.brokerId));
+});
+
+// GET /api/mqtt/brokers/:brokerId/sys — broker `$SYS` health + audit stats.
+// NOTE: standard MQTT (and the `$SYS` tree) exposes broker health and client /
+// subscription COUNTS, not a per-client "who subscribes to what" map. That
+// requires a broker admin API (EMQX/HiveMQ REST, mosquitto_ctrl); reported here
+// via `subscriberVisibility` so the UI can be honest about it.
+router.get('/brokers/:brokerId/sys', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const sys = mqttManager.getSysStats(req.params.brokerId);
+  res.json({
+    ...sys,
+    subscriberVisibility: {
+      perClientSubscriptions: false,
+      reason:
+        'Core MQTT and $SYS expose aggregate counts only. Per-client subscriptions require a broker admin API (e.g. EMQX/HiveMQ REST or mosquitto_ctrl).'
+    }
+  });
+});
+
 // POST /api/mqtt/brokers/:brokerId/subscribe { topic, qos }
 router.post('/brokers/:brokerId/subscribe', (req, res) => {
   const { mqttManager } = req.app.locals.services;

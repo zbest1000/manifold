@@ -194,6 +194,87 @@ export function buildI3xGraph(server, objects) {
   return { nodes: Array.from(nodes.values()), links };
 }
 
+/**
+ * Build a Sparkplug B device topology graph: Broker → Group → Edge Node → Device.
+ * These are REAL publishing endpoints (identity from the Sparkplug topic + BIRTH
+ * certificates), not topic strings. Online endpoints are grouped as 'telemetry',
+ * offline (post-DEATH) as 'alarm' so the renderer colors them distinctly.
+ */
+export function buildSparkplugGraph(broker, topology) {
+  const nodes = new Map();
+  const links = [];
+  const rootId = `sp:${broker.id}:root`;
+  nodes.set(rootId, {
+    id: rootId,
+    label: broker.name || `${broker.host}:${broker.port}`,
+    group: 'broker',
+    kind: 'broker',
+    degree: 0,
+    meta: { brokerId: broker.id }
+  });
+
+  const stateGroup = (online) => (online ? 'telemetry' : 'alarm');
+
+  for (const g of topology.groups || []) {
+    const groupId = `sp:${broker.id}:g:${g.id}`;
+    nodes.set(groupId, {
+      id: groupId,
+      label: g.id,
+      group: 'topic',
+      kind: 'sparkplug-group',
+      degree: 0,
+      meta: { kind: 'group', edgeNodes: g.edgeNodes.length }
+    });
+    links.push({ source: rootId, target: groupId });
+
+    for (const e of g.edgeNodes) {
+      const edgeId = `sp:${broker.id}:e:${g.id}/${e.id}`;
+      nodes.set(edgeId, {
+        id: edgeId,
+        label: e.id,
+        group: stateGroup(e.online),
+        kind: 'sparkplug-edge',
+        degree: 0,
+        meta: {
+          kind: 'edgeNode',
+          online: e.online,
+          metrics: e.metrics,
+          msgCount: e.msgCount,
+          lastSeen: e.lastSeen,
+          lastBirth: e.lastBirth,
+          lastDeath: e.lastDeath,
+          deviceCount: e.devices.length
+        }
+      });
+      links.push({ source: groupId, target: edgeId });
+
+      for (const d of e.devices) {
+        const devId = `sp:${broker.id}:d:${g.id}/${e.id}/${d.id}`;
+        nodes.set(devId, {
+          id: devId,
+          label: d.id,
+          group: stateGroup(d.online),
+          kind: 'sparkplug-device',
+          degree: 0,
+          meta: {
+            kind: 'device',
+            online: d.online,
+            metrics: d.metrics,
+            msgCount: d.msgCount,
+            lastSeen: d.lastSeen,
+            lastBirth: d.lastBirth,
+            lastDeath: d.lastDeath
+          }
+        });
+        links.push({ source: edgeId, target: devId });
+      }
+    }
+  }
+
+  computeDegree(nodes, links);
+  return { nodes: Array.from(nodes.values()), links };
+}
+
 function opcuaGroup(nodeClass) {
   switch (nodeClass) {
     case 'Variable':

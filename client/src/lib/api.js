@@ -28,6 +28,8 @@ export const api = {
   brokerTopics: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topics`),
   topicMessages: (id, topic, limit = 50) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/messages?topic=${encodeURIComponent(topic)}&limit=${limit}`),
+  brokerSparkplug: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sparkplug`),
+  brokerSys: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sys`),
   subscribe: (id, topic, qos = 0) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/subscribe`, {
       method: 'POST',

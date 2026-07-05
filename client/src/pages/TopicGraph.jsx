@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2 } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -15,6 +15,7 @@ import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
+import SparkplugAudit from '@/components/SparkplugAudit';
 import TopicTree from '@/components/TopicTree';
 import JsonView from '@/components/JsonView';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
@@ -240,6 +241,7 @@ export default function TopicGraph() {
               <ViewTab active={view === 'graph'} onClick={() => setView('graph')} icon={Share2} label="Graph" />
               <ViewTab active={view === '3d'} onClick={() => setView('3d')} icon={Box} label="3D" />
               <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
+              <ViewTab active={view === 'devices'} onClick={() => setView('devices')} icon={Cpu} label="Devices" />
             </div>
             <select
               value={brokerId || ''}
@@ -260,7 +262,9 @@ export default function TopicGraph() {
       />
 
       <div className="relative flex flex-1 overflow-hidden">
-        {view === 'tree' ? (
+        {view === 'devices' ? (
+          <SparkplugAudit broker={broker} />
+        ) : view === 'tree' ? (
           <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30">
             <div className="flex items-center gap-1.5 border-b border-white/5 px-3 py-2">
               <Search size={14} className="text-slate-500" />
