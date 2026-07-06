@@ -25,6 +25,27 @@ class MQTTClientManager extends EventEmitter {
     }, 300000); // Every 5 minutes
   }
 
+  // Emits only to the browser socket that owns this broker connection instead of
+  // broadcasting to every connected client. No-op for API-created connections
+  // (socketId 'api-client'), which poll via REST.
+  emitToOwner(brokerId, event, payload) {
+    const info = this.connections.get(brokerId);
+    const socketId = info && info.socketId;
+    if (socketId && socketId !== 'api-client') {
+      this.io.to(socketId).emit(event, payload);
+    }
+  }
+
+  // Strips secrets (password, TLS material) from a connection object before it
+  // is sent to any client.
+  publicConnectionInfo(info) {
+    if (!info || typeof info !== 'object') {
+      return info;
+    }
+    const { password, cert, key, ca, ...safe } = info;
+    return safe;
+  }
+
   async connectToBroker(connectionConfig, socketId) {
     const brokerId = connectionConfig.id || uuidv4();
     
@@ -33,6 +54,7 @@ class MQTTClientManager extends EventEmitter {
       if (!connectionConfig.host || !connectionConfig.port) {
         throw new Error('Host and port are required');
       }
+      this.validateConnectionTarget(connectionConfig);
 
       const clientId = connectionConfig.clientId || `MQTTExplore_${Date.now()}`;
       const brokerUrl = this.buildBrokerUrl(connectionConfig);
@@ -88,23 +110,32 @@ class MQTTClientManager extends EventEmitter {
       this.connections.set(brokerId, connectionInfo);
       this.clients.set(brokerId, client);
       this.topicData.set(brokerId, new Map());
-      this.clientMetrics.set(brokerId, { ...connectionInfo.metrics });
+      // Same object reference (not a copy) so subscription counters and message
+      // counters no longer drift across the two maps.
+      this.clientMetrics.set(brokerId, connectionInfo.metrics);
 
       // Set up event handlers
       this.setupClientEventHandlers(client, brokerId);
 
-      // Emit connection attempt
-      this.io.emit('mqtt-connection-attempt', { brokerId, connectionInfo });
+      // Emit connection attempt to the owning socket only (no credentials).
+      if (socketId && socketId !== 'api-client') {
+        this.io.to(socketId).emit('mqtt-connection-attempt', {
+          brokerId,
+          connectionInfo: this.publicConnectionInfo(connectionInfo)
+        });
+      }
 
       return { brokerId, status: 'connecting' };
 
     } catch (error) {
       console.error(`Failed to connect to broker ${connectionConfig.host}:${connectionConfig.port}:`, error);
-      this.io.emit('mqtt-connection-error', { 
-        brokerId, 
-        error: error.message,
-        connectionConfig 
-      });
+      if (socketId && socketId !== 'api-client') {
+        this.io.to(socketId).emit('mqtt-connection-error', {
+          brokerId,
+          error: error.message,
+          connectionConfig: this.publicConnectionInfo(connectionConfig)
+        });
+      }
       throw error;
     }
   }
@@ -119,10 +150,10 @@ class MQTTClientManager extends EventEmitter {
       connectionInfo.connectedAt = new Date();
       connectionInfo.connack = connack;
 
-      this.io.emit('mqtt-connected', { 
-        brokerId, 
-        connectionInfo: { ...connectionInfo },
-        connack 
+      this.emitToOwner(brokerId, 'mqtt-connected', {
+        brokerId,
+        connectionInfo: this.publicConnectionInfo(connectionInfo),
+        connack
       });
 
       // Auto-subscribe to wildcard if enabled
@@ -142,10 +173,10 @@ class MQTTClientManager extends EventEmitter {
       connectionInfo.lastError = error.message;
       connectionInfo.metrics.errors++;
 
-      this.io.emit('mqtt-error', { 
-        brokerId, 
+      this.emitToOwner(brokerId, 'mqtt-error', {
+        brokerId,
         error: error.message,
-        connectionInfo: { ...connectionInfo }
+        connectionInfo: this.publicConnectionInfo(connectionInfo)
       });
     });
 
@@ -155,24 +186,24 @@ class MQTTClientManager extends EventEmitter {
       connectionInfo.status = 'disconnected';
       connectionInfo.disconnectedAt = new Date();
 
-      this.io.emit('mqtt-disconnected', { 
-        brokerId, 
-        connectionInfo: { ...connectionInfo }
+      this.emitToOwner(brokerId, 'mqtt-disconnected', {
+        brokerId,
+        connectionInfo: this.publicConnectionInfo(connectionInfo)
       });
     });
 
     client.on('offline', () => {
       console.log(`📴 MQTT client offline: ${brokerId}`);
       connectionInfo.status = 'offline';
-      
-      this.io.emit('mqtt-offline', { brokerId });
+
+      this.emitToOwner(brokerId, 'mqtt-offline', { brokerId });
     });
 
     client.on('reconnect', () => {
       console.log(`🔄 MQTT client reconnecting: ${brokerId}`);
       connectionInfo.status = 'reconnecting';
-      
-      this.io.emit('mqtt-reconnecting', { brokerId });
+
+      this.emitToOwner(brokerId, 'mqtt-reconnecting', { brokerId });
     });
   }
 
@@ -212,7 +243,7 @@ class MQTTClientManager extends EventEmitter {
     // Decode Sparkplug B if applicable
     if (this.isSparkplugTopic(topic)) {
       try {
-        messageObj.sparkplug = this.sparkplugDecoder.decode(message);
+        messageObj.sparkplug = this.sparkplugDecoder.decode(message, topic);
         messageObj.type = 'sparkplug';
       } catch (error) {
         console.error('Sparkplug decode error:', error);
@@ -235,11 +266,11 @@ class MQTTClientManager extends EventEmitter {
     // Add to global message buffer for AI analysis
     this.addToMessageBuffer(messageObj);
 
-    // Emit to frontend
-    this.io.emit('mqtt-message', messageObj);
+    // Emit to the owning client only
+    this.emitToOwner(brokerId, 'mqtt-message', messageObj);
 
     // Emit topic update
-    this.io.emit('topic-updated', {
+    this.emitToOwner(brokerId, 'topic-updated', {
       brokerId,
       topic,
       messageCount: topicMessages.length,
@@ -248,7 +279,7 @@ class MQTTClientManager extends EventEmitter {
     });
 
     // Update metrics
-    this.io.emit('broker-metrics-updated', {
+    this.emitToOwner(brokerId, 'broker-metrics-updated', {
       brokerId,
       metrics: { ...metrics }
     });
@@ -279,10 +310,10 @@ class MQTTClientManager extends EventEmitter {
     client.subscribe(topic, { qos }, (error, granted) => {
       if (error) {
         console.error(`Subscription error for ${topic}:`, error);
-        this.io.emit('subscription-error', { 
-          brokerId, 
-          topic, 
-          error: error.message 
+        this.emitToOwner(brokerId, 'subscription-error', {
+          brokerId,
+          topic,
+          error: error.message
         });
         return;
       }
@@ -290,11 +321,11 @@ class MQTTClientManager extends EventEmitter {
       console.log(`📝 Subscribed to topic: ${topic} (QoS ${qos})`);
       connectionInfo.metrics.subscriptions++;
 
-      this.io.emit('subscription-success', { 
-        brokerId, 
-        topic, 
-        qos, 
-        granted 
+      this.emitToOwner(brokerId, 'subscription-success', {
+        brokerId,
+        topic,
+        qos,
+        granted
       });
     });
   }
@@ -310,10 +341,10 @@ class MQTTClientManager extends EventEmitter {
     client.unsubscribe(topic, (error) => {
       if (error) {
         console.error(`Unsubscription error for ${topic}:`, error);
-        this.io.emit('unsubscription-error', { 
-          brokerId, 
-          topic, 
-          error: error.message 
+        this.emitToOwner(brokerId, 'unsubscription-error', {
+          brokerId,
+          topic,
+          error: error.message
         });
         return;
       }
@@ -321,9 +352,9 @@ class MQTTClientManager extends EventEmitter {
       console.log(`📝 Unsubscribed from topic: ${topic}`);
       connectionInfo.metrics.subscriptions--;
 
-      this.io.emit('unsubscription-success', { 
-        brokerId, 
-        topic 
+      this.emitToOwner(brokerId, 'unsubscription-success', {
+        brokerId,
+        topic
       });
     });
   }
@@ -349,10 +380,10 @@ class MQTTClientManager extends EventEmitter {
       if (error) {
         console.error(`Publish error for ${topic}:`, error);
         metrics.errors++;
-        this.io.emit('publish-error', { 
-          brokerId, 
-          topic, 
-          error: error.message 
+        this.emitToOwner(brokerId, 'publish-error', {
+          brokerId,
+          topic,
+          error: error.message
         });
         return;
       }
@@ -362,9 +393,9 @@ class MQTTClientManager extends EventEmitter {
       metrics.bytesSent += messagePayload.length;
       connectionInfo.lastActivity = new Date();
 
-      this.io.emit('publish-success', { 
-        brokerId, 
-        topic, 
+      this.emitToOwner(brokerId, 'publish-success', {
+        brokerId,
+        topic,
         payload: messagePayload,
         options: publishOptions,
         timestamp: new Date()
@@ -374,25 +405,51 @@ class MQTTClientManager extends EventEmitter {
 
   disconnectFromBroker(brokerId) {
     const client = this.clients.get(brokerId);
-    const connectionInfo = this.connections.get(brokerId);
 
     if (client) {
       client.end(true);
-      this.clients.delete(brokerId);
-    }
-
-    if (connectionInfo) {
-      connectionInfo.status = 'disconnected';
-      connectionInfo.disconnectedAt = new Date();
     }
 
     console.log(`🔌 Disconnected from broker: ${brokerId}`);
-    this.io.emit('mqtt-disconnected', { brokerId });
+    // Notify the owner before we drop the connection record it is looked up from.
+    this.emitToOwner(brokerId, 'mqtt-disconnected', { brokerId });
+
+    // Free ALL per-broker state to avoid unbounded growth across connect/disconnect.
+    this.clients.delete(brokerId);
+    this.connections.delete(brokerId);
+    this.topicData.delete(brokerId);
+    this.clientMetrics.delete(brokerId);
+    this.messageBuffer.delete(brokerId);
   }
 
   buildBrokerUrl(config) {
     const protocol = config.protocol || (config.port === 8883 ? 'mqtts' : 'mqtt');
     return `${protocol}://${config.host}:${config.port}`;
+  }
+
+  // Validates a broker target. Auth already gates who can trigger a connection;
+  // this rejects malformed input and, if configured, enforces a host allow-list.
+  // It deliberately does NOT block private/LAN addresses — connecting to brokers
+  // on the local network is this tool's primary purpose.
+  validateConnectionTarget(config) {
+    const protocol = config.protocol || (config.port === 8883 ? 'mqtts' : 'mqtt');
+    if (!['mqtt', 'mqtts', 'ws', 'wss'].includes(protocol)) {
+      throw new Error(`Unsupported protocol: ${protocol}`);
+    }
+    const port = Number(config.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`Invalid port: ${config.port}`);
+    }
+    if (typeof config.host !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(config.host)) {
+      throw new Error(`Invalid host: ${config.host}`);
+    }
+    const allowList = (process.env.MQTT_ALLOWED_HOSTS || '')
+      .split(',')
+      .map((host) => host.trim())
+      .filter(Boolean);
+    if (allowList.length > 0 && !allowList.includes(config.host)) {
+      throw new Error(`Host not permitted by MQTT_ALLOWED_HOSTS: ${config.host}`);
+    }
   }
 
   detectMessageType(topic, payload) {
@@ -439,10 +496,16 @@ class MQTTClientManager extends EventEmitter {
   cleanupOldMessages() {
     const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
 
-    this.topicData.forEach((topicMap, brokerId) => {
+    this.topicData.forEach((topicMap) => {
       topicMap.forEach((messages, topic) => {
         const filteredMessages = messages.filter(msg => msg.timestamp > cutoffTime);
-        topicMap.set(topic, filteredMessages);
+        // Drop the topic key entirely when it empties out, so the map does not
+        // grow unbounded under a wildcard subscription to a topic-spamming broker.
+        if (filteredMessages.length === 0) {
+          topicMap.delete(topic);
+        } else {
+          topicMap.set(topic, filteredMessages);
+        }
       });
     });
 

@@ -66,17 +66,23 @@ class AIService {
 
       const aiResponse = response.choices[0].message.content;
       
-      // Store in conversation history
+      // Store in conversation history (bounded, so the array cannot grow forever).
       this.conversationHistory.push({
         timestamp: new Date().toISOString(),
         query,
         response: aiResponse,
         context
       });
+      if (this.conversationHistory.length > 50) {
+        this.conversationHistory = this.conversationHistory.slice(-50);
+      }
 
       return {
         response: aiResponse,
         confidence: 0.85,
+        model: 'gpt-4',
+        usage: response.usage,
+        timestamp: new Date().toISOString(),
         sources: this.extractSources(context),
         suggestions: this.generateSuggestions(query, context)
       };
@@ -409,8 +415,73 @@ Generated: ${timestamp}
     return this.conversationHistory.slice(-50); // Last 50 conversations
   }
 
-  clearConversationHistory() {
+  clearHistory() {
     this.conversationHistory = [];
+  }
+
+  clearConversationHistory() {
+    this.clearHistory();
+  }
+
+  // Returns ready-made natural-language queries for the AI assistant UI.
+  getSuggestedQueries() {
+    return [
+      'Show all topics active in the past 5 minutes',
+      'Which brokers have the highest message volume?',
+      'Summarize recent Sparkplug device births and deaths',
+      'Are there any connection errors or anomalies?',
+      'What message types are most common right now?'
+    ];
+  }
+
+  // Builds insights from the current MQTT data, enriched by the model when enabled.
+  async generateInsights(data = {}, timeRange = '1hour') {
+    const connections = data.connections || {};
+    const topics = data.topics || {};
+    const brokerIds = Object.keys(connections);
+
+    let topicCount = 0;
+    let messageCount = 0;
+    for (const brokerId of brokerIds) {
+      const brokerTopics = topics[brokerId] || {};
+      topicCount += Object.keys(brokerTopics).length;
+      messageCount += Object.values(brokerTopics).reduce((sum, t) => sum + (t.messageCount || 0), 0);
+    }
+
+    const findings = [];
+    if (brokerIds.length === 0) {
+      findings.push('No active broker connections in this window.');
+    } else {
+      findings.push(`${brokerIds.length} broker(s), ${topicCount} active topic(s), ${messageCount} message(s).`);
+    }
+    if (topicCount > 0 && messageCount === 0) {
+      findings.push('Topics are subscribed but no messages have arrived — check publishers.');
+    }
+
+    const base = {
+      timeRange,
+      generatedAt: new Date().toISOString(),
+      brokerCount: brokerIds.length,
+      topicCount,
+      messageCount,
+      aiEnabled: this.isEnabled,
+      findings
+    };
+
+    if (!this.isEnabled) {
+      return base;
+    }
+
+    try {
+      const response = await this.processQuery(
+        `Provide concise operational insights for the last ${timeRange} of this MQTT network.`,
+        data
+      );
+      return { ...base, aiSummary: response.response };
+    } catch (error) {
+      console.error('generateInsights AI error:', error);
+      return base;
+    }
   }
 
   isAvailable() {
@@ -422,8 +493,11 @@ Generated: ${timestamp}
       enabled: this.isEnabled,
       hasApiKey: !!process.env.OPENAI_API_KEY,
       conversationCount: this.conversationHistory.length,
-      lastUsed: this.conversationHistory.length > 0 
-        ? this.conversationHistory[this.conversationHistory.length - 1].timestamp 
+      conversationLength: this.conversationHistory.length,
+      model: this.isEnabled ? 'gpt-4' : 'mock',
+      provider: this.isEnabled ? 'openai' : 'mock',
+      lastUsed: this.conversationHistory.length > 0
+        ? this.conversationHistory[this.conversationHistory.length - 1].timestamp
         : null
     };
   }

@@ -2,8 +2,12 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 require('dotenv').config();
+
+const { httpAuth, socketAuth } = require('./middleware/auth');
 
 // Import custom modules
 const MQTTDiscoveryService = require('./services/mqttDiscovery');
@@ -27,10 +31,32 @@ const io = socketIo(server, {
   }
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Security middleware. CSP is disabled because the SPA it serves uses inline
+// assets; the rest of helmet's headers (nosniff, frameguard, HSTS, ...) apply.
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Rate limiting: a general limit on the whole API plus a stricter limit on the
+// expensive/abusable endpoints (AI calls, network scanning).
+const rateWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW || '15', 10) * 60 * 1000;
+const globalLimiter = rateLimit({
+  windowMs: rateWindowMs,
+  max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const strictLimiter = rateLimit({
+  windowMs: rateWindowMs,
+  max: parseInt(process.env.RATE_LIMIT_MAX_STRICT || '20', 10),
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use('/api/ai', strictLimiter);
+app.use('/api/network', strictLimiter);
+// Auth + general rate limit gate every /api route (health check stays public).
+app.use('/api', globalLimiter, httpAuth);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
@@ -74,51 +100,44 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Reject unauthenticated sockets during the handshake (enforced only when
+// APP_ACCESS_TOKEN is set).
+io.use(socketAuth);
+
+// Wraps a socket handler so a thrown error or rejected promise emits an error
+// back to that client instead of crashing the Node process.
+function safeOn(socket, event, handler) {
+  socket.on(event, async (...args) => {
+    try {
+      await handler(...args);
+    } catch (error) {
+      console.error(`Socket handler error [${event}]:`, error.message);
+      socket.emit('server-error', { event, error: error.message });
+    }
+  });
+}
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
   // MQTT Discovery events
-  socket.on('start-discovery', (options) => {
-    mqttDiscovery.startDiscovery(options);
-  });
-
-  socket.on('stop-discovery', () => {
-    mqttDiscovery.stopDiscovery();
-  });
+  safeOn(socket, 'start-discovery', (options) => mqttDiscovery.startDiscovery(options));
+  safeOn(socket, 'stop-discovery', () => mqttDiscovery.stopDiscovery());
 
   // MQTT Connection events
-  socket.on('connect-mqtt', (connectionConfig) => {
-    mqttClientManager.connectToBroker(connectionConfig, socket.id);
-  });
-
-  socket.on('disconnect-mqtt', (brokerId) => {
-    mqttClientManager.disconnectFromBroker(brokerId);
-  });
-
-  socket.on('subscribe-topic', (data) => {
-    mqttClientManager.subscribeToTopic(data.brokerId, data.topic, data.qos);
-  });
-
-  socket.on('unsubscribe-topic', (data) => {
-    mqttClientManager.unsubscribeFromTopic(data.brokerId, data.topic);
-  });
-
-  socket.on('publish-message', (data) => {
-    mqttClientManager.publishMessage(data.brokerId, data.topic, data.payload, data.options);
-  });
+  safeOn(socket, 'connect-mqtt', (connectionConfig) => mqttClientManager.connectToBroker(connectionConfig, socket.id));
+  safeOn(socket, 'disconnect-mqtt', (brokerId) => mqttClientManager.disconnectFromBroker(brokerId));
+  safeOn(socket, 'subscribe-topic', (data) => mqttClientManager.subscribeToTopic(data.brokerId, data.topic, data.qos));
+  safeOn(socket, 'unsubscribe-topic', (data) => mqttClientManager.unsubscribeFromTopic(data.brokerId, data.topic));
+  safeOn(socket, 'publish-message', (data) => mqttClientManager.publishMessage(data.brokerId, data.topic, data.payload, data.options));
 
   // Network scanning events
-  socket.on('start-network-scan', (options) => {
-    networkScanner.startScan(options);
-  });
-
-  socket.on('stop-network-scan', () => {
-    networkScanner.stopScan();
-  });
+  safeOn(socket, 'start-network-scan', (options) => networkScanner.startScan(options));
+  safeOn(socket, 'stop-network-scan', () => networkScanner.stopScan());
 
   // AI Query events
-  socket.on('ai-query', async (query) => {
+  safeOn(socket, 'ai-query', async (query) => {
     try {
       const response = await aiService.processQuery(query, mqttClientManager.getAllData());
       socket.emit('ai-response', { query, response });
@@ -128,19 +147,16 @@ io.on('connection', (socket) => {
   });
 
   // Data export events
-  socket.on('export-data', async (options) => {
+  safeOn(socket, 'export-data', async (options) => {
     try {
-      const exportData = await dataExporter.exportData(
-        mqttClientManager.getAllData(), 
-        options
-      );
+      const exportData = await dataExporter.exportData(mqttClientManager.getAllData(), options);
       socket.emit('export-ready', exportData);
     } catch (error) {
       socket.emit('export-error', { error: error.message });
     }
   });
 
-  socket.on('disconnect', () => {
+  safeOn(socket, 'disconnect', () => {
     console.log('Client disconnected:', socket.id);
     mqttClientManager.cleanupSocketConnections(socket.id);
   });
@@ -160,14 +176,18 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 MQTT Explore Server running on port ${PORT}`);
-  console.log(`📡 WebSocket server ready for real-time communication`);
-  
-  // Start background services
-  if (process.env.AUTO_START_DISCOVERY === 'true') {
-    mqttDiscovery.startDiscovery();
-  }
-});
+// Only listen when run directly (node index.js). When required by tests we export
+// the app so supertest can exercise it without binding a port.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`🚀 MQTT Explore Server running on port ${PORT}`);
+    console.log(`📡 WebSocket server ready for real-time communication`);
+
+    // Start background services
+    if (process.env.AUTO_START_DISCOVERY === 'true') {
+      mqttDiscovery.startDiscovery();
+    }
+  });
+}
 
 module.exports = { app, server, io };

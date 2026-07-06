@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const ExcelJS = require('exceljs');
 
 class DataExporter {
   constructor() {
@@ -16,6 +17,19 @@ class DataExporter {
     } catch (error) {
       console.error('Failed to create export directory:', error);
     }
+  }
+
+  // Prevents path traversal: reduces any client-supplied name to a safe basename
+  // inside the export directory, falling back to a generated name when invalid.
+  sanitizeFilename(name, fallback) {
+    if (!name || typeof name !== 'string') {
+      return fallback;
+    }
+    const base = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!base || base === '.' || base === '..' || base.startsWith('.')) {
+      return fallback;
+    }
+    return base;
   }
 
   async exportData(mqttData, options = {}) {
@@ -95,7 +109,7 @@ class DataExporter {
   }
 
   async exportJSON(mqttData, options, exportId) {
-    const filename = options.filename || `mqtt-export-${exportId}.json`;
+    const filename = this.sanitizeFilename(options.filename, `mqtt-export-${exportId}.json`);
     const filepath = path.join(this.exportDirectory, filename);
 
     const exportData = this.prepareExportData(mqttData, options);
@@ -118,7 +132,7 @@ class DataExporter {
   }
 
   async exportCSV(mqttData, options, exportId) {
-    const filename = options.filename || `mqtt-export-${exportId}.csv`;
+    const filename = this.sanitizeFilename(options.filename, `mqtt-export-${exportId}.csv`);
     const filepath = path.join(this.exportDirectory, filename);
 
     const csvContent = this.generateCSVContent(mqttData, options);
@@ -138,7 +152,7 @@ class DataExporter {
   }
 
   async exportYAML(mqttData, options, exportId) {
-    const filename = options.filename || `mqtt-export-${exportId}.yaml`;
+    const filename = this.sanitizeFilename(options.filename, `mqtt-export-${exportId}.yaml`);
     const filepath = path.join(this.exportDirectory, filename);
 
     const exportData = this.prepareExportData(mqttData, options);
@@ -159,34 +173,40 @@ class DataExporter {
   }
 
   async exportExcel(mqttData, options, exportId) {
-    // Note: In a real implementation, you'd use a library like 'xlsx' or 'exceljs'
-    // For now, we'll export as CSV and rename the extension
-    const filename = options.filename || `mqtt-export-${exportId}.xlsx`;
+    const filename = this.sanitizeFilename(options.filename, `mqtt-export-${exportId}.xlsx`);
     const filepath = path.join(this.exportDirectory, filename);
 
-    // Generate multiple sheets worth of data
-    const workbookData = this.generateWorkbookData(mqttData, options);
-    
-    // For simplicity, we'll create a detailed JSON structure that could be converted to Excel
-    const excelContent = JSON.stringify(workbookData, null, 2);
-    
-    await fs.writeFile(filepath, excelContent, 'utf8');
-    
+    const { sheets } = this.generateWorkbookData(mqttData, options);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'MQTT Explore';
+    workbook.created = new Date();
+
+    Object.entries(sheets).forEach(([sheetName, rows]) => {
+      const worksheet = workbook.addWorksheet(sheetName);
+      (rows || []).forEach((row, index) => {
+        const added = worksheet.addRow(row);
+        if (index === 0) {
+          added.font = { bold: true }; // header row
+        }
+      });
+    });
+
+    await workbook.xlsx.writeFile(filepath);
     const stats = await fs.stat(filepath);
-    
+
     return {
       id: exportId,
       filename: filename,
       filepath: filepath,
       format: 'excel',
       size: stats.size,
-      timestamp: new Date(),
-      note: 'Excel format simulated as structured JSON (requires xlsx library for true Excel format)'
+      timestamp: new Date()
     };
   }
 
   async exportNetworkMap(mqttData, options, exportId) {
-    const filename = options.filename || `network-map-${exportId}.json`;
+    const filename = this.sanitizeFilename(options.filename, `network-map-${exportId}.json`);
     const filepath = path.join(this.exportDirectory, filename);
 
     const networkMap = this.generateNetworkMapData(mqttData);
@@ -209,7 +229,7 @@ class DataExporter {
   }
 
   async exportSparkplugReport(mqttData, options, exportId) {
-    const filename = options.filename || `sparkplug-report-${exportId}.json`;
+    const filename = this.sanitizeFilename(options.filename, `sparkplug-report-${exportId}.json`);
     const filepath = path.join(this.exportDirectory, filename);
 
     const sparkplugReport = this.generateSparkplugReport(mqttData);
@@ -899,7 +919,7 @@ class DataExporter {
       throw new Error('Export not found');
     }
 
-    const filepath = path.join(this.exportDirectory, historyEntry.filename);
+    const filepath = path.join(this.exportDirectory, path.basename(historyEntry.filename));
     
     try {
       const content = await fs.readFile(filepath, 'utf8');
@@ -920,7 +940,7 @@ class DataExporter {
       throw new Error('Export not found');
     }
 
-    const filepath = path.join(this.exportDirectory, historyEntry.filename);
+    const filepath = path.join(this.exportDirectory, path.basename(historyEntry.filename));
     
     try {
       await fs.unlink(filepath);

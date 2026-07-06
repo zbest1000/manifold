@@ -157,49 +157,40 @@ export const useMQTTStore = create()(
 
         // Actions - Messages
         addMessage: (brokerId, message) => {
-          const messages = new Map(get().messagesByBroker)
-          const brokerMessages = messages.get(brokerId) || []
-          
-          // Add message
-          brokerMessages.push(message)
-          
-          // Keep only recent messages (last 1000 per broker)
-          if (brokerMessages.length > 1000) {
-            brokerMessages.splice(0, brokerMessages.length - 1000)
-          }
-          
-          messages.set(brokerId, brokerMessages)
-          set({ messagesByBroker: messages })
-          
-          // Update Sparkplug data if applicable
-          if (message.sparkplug) {
-            get().updateSparkplugData(message)
-          }
-          
-          get().updateStats()
+          get().addMessages(brokerId, [message])
         },
 
         addMessages: (brokerId, newMessages) => {
+          if (!newMessages || newMessages.length === 0) return
+
           const messages = new Map(get().messagesByBroker)
-          const brokerMessages = messages.get(brokerId) || []
-          
+          // New array reference so selectors observe an identity change.
+          const brokerMessages = (messages.get(brokerId) || []).slice()
           brokerMessages.push(...newMessages)
-          
-          // Keep only recent messages
+
+          // Cap at 1000 per broker; track evicted bytes for the running total.
+          let evictedBytes = 0
           if (brokerMessages.length > 1000) {
-            brokerMessages.splice(0, brokerMessages.length - 1000)
+            const evicted = brokerMessages.splice(0, brokerMessages.length - 1000)
+            evictedBytes = evicted.reduce((sum, m) => sum + (m.size || 0), 0)
           }
-          
           messages.set(brokerId, brokerMessages)
-          set({ messagesByBroker: messages })
-          
+
+          const addedBytes = newMessages.reduce((sum, m) => sum + (m.size || 0), 0)
+          const bytesTransferred = Math.max(0, get().stats.bytesTransferred + addedBytes - evictedBytes)
+
+          set({
+            messagesByBroker: messages,
+            stats: { ...get().stats, bytesTransferred }
+          })
+
           // Process Sparkplug messages
           newMessages.forEach(message => {
             if (message.sparkplug) {
               get().updateSparkplugData(message)
             }
           })
-          
+
           get().updateStats()
         },
 
@@ -342,21 +333,19 @@ export const useMQTTStore = create()(
         // Actions - Statistics
         updateStats: () => {
           const state = get()
-          const stats = {
-            totalBrokers: state.discoveredBrokers.size,
-            totalConnections: state.brokerConnections.size,
-            totalTopics: Array.from(state.topicsByBroker.values())
-              .reduce((sum, topics) => sum + topics.size, 0),
-            totalMessages: Array.from(state.messagesByBroker.values())
-              .reduce((sum, messages) => sum + messages.length, 0),
-            messagesPerSecond: 0, // Calculated elsewhere
-            bytesTransferred: Array.from(state.messagesByBroker.values())
-              .flat()
-              .reduce((sum, message) => sum + (message.size || 0), 0),
-            errors: 0 // Tracked elsewhere
-          }
-          
-          set({ stats })
+          set({
+            stats: {
+              ...state.stats,
+              totalBrokers: state.discoveredBrokers.size,
+              totalConnections: state.brokerConnections.size,
+              totalTopics: Array.from(state.topicsByBroker.values())
+                .reduce((sum, topics) => sum + topics.size, 0),
+              totalMessages: Array.from(state.messagesByBroker.values())
+                .reduce((sum, messages) => sum + messages.length, 0)
+              // bytesTransferred is maintained incrementally in addMessages —
+              // recomputing it here by flattening every message was O(n^2).
+            }
+          })
         },
 
         // Getters

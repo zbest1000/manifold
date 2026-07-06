@@ -37,7 +37,7 @@ router.post('/connect', async (req, res) => {
     });
   } catch (error) {
     console.error('MQTT connect error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -54,7 +54,7 @@ router.post('/disconnect/:brokerId', (req, res) => {
     });
   } catch (error) {
     console.error('MQTT disconnect error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -80,7 +80,7 @@ router.post('/subscribe', (req, res) => {
     });
   } catch (error) {
     console.error('MQTT subscribe error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -105,7 +105,7 @@ router.post('/unsubscribe', (req, res) => {
     });
   } catch (error) {
     console.error('MQTT unsubscribe error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -131,7 +131,7 @@ router.post('/publish', (req, res) => {
     });
   } catch (error) {
     console.error('MQTT publish error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -415,7 +415,7 @@ router.post('/classify-payload', async (req, res) => {
     });
   } catch (error) {
     console.error('Classify payload error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -499,7 +499,7 @@ router.post('/test-connection', async (req, res) => {
     console.error('Test connection error:', error);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: 'Internal server error' 
     });
   }
 });

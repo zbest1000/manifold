@@ -93,7 +93,7 @@ router.post('/discovery/start', (req, res) => {
     });
   } catch (error) {
     console.error('Start discovery error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -137,7 +137,7 @@ router.post('/network/scan/start', async (req, res) => {
     });
   } catch (error) {
     console.error('Network scan error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -226,7 +226,7 @@ router.post('/export', async (req, res) => {
     });
   } catch (error) {
     console.error('Export data error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -256,7 +256,7 @@ router.get('/export/:exportId/download', async (req, res) => {
     res.send(exportFile.content);
   } catch (error) {
     console.error('Download export error:', error);
-    res.status(404).json({ error: error.message });
+    res.status(404).json({ error: 'Internal server error' });
   }
 });
 
@@ -270,7 +270,7 @@ router.delete('/export/:exportId', async (req, res) => {
     res.json({ success: true, message: 'Export deleted' });
   } catch (error) {
     console.error('Delete export error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

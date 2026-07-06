@@ -37,9 +37,8 @@ export default defineConfig({
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom'],
-          ui: ['@headlessui/react', '@heroicons/react', 'framer-motion'],
-          chart: ['d3', 'cytoscape', 'recharts'],
-          utils: ['lodash', 'date-fns', 'uuid']
+          ui: ['framer-motion', 'lucide-react'],
+          chart: ['chart.js', 'react-chartjs-2']
         }
       }
     }
@@ -49,10 +48,7 @@ export default defineConfig({
       'react',
       'react-dom',
       'socket.io-client',
-      'axios',
       'zustand',
-      'd3',
-      'cytoscape',
       'react-hot-toast'
     ]
   }

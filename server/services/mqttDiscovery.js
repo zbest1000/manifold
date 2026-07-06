@@ -1,7 +1,5 @@
 const EventEmitter = require('events');
-const { spawn } = require('child_process');
 const net = require('net');
-const dgram = require('dgram');
 
 class MQTTDiscoveryService extends EventEmitter {
   constructor(io) {
@@ -9,16 +7,17 @@ class MQTTDiscoveryService extends EventEmitter {
     this.io = io;
     this.isDiscovering = false;
     this.discoveredBrokers = new Map();
-    this.scanProcesses = new Set();
-    
+
     // Default discovery options
     this.options = {
       networkRange: '192.168.1.0/24',
       portRange: [1883, 8883, 1884, 8884, 1888, 8888, 9001],
       timeout: 5000,
       enablePortScan: true,
+      // mDNS (real, via bonjour-service) is on by default. SSDP is real but
+      // rarely advertises MQTT, so it stays opt-in.
       enableMDNS: true,
-      enableSSDP: true,
+      enableSSDP: false,
       enableFingerprinting: true
     };
   }
@@ -50,22 +49,22 @@ class MQTTDiscoveryService extends EventEmitter {
     } catch (error) {
       console.error('Discovery error:', error);
       this.io.emit('discovery-error', { error: error.message });
+    } finally {
+      // Always reset so discovery can run more than once per process.
+      this.isDiscovering = false;
+      this.io.emit('discovery-completed', {
+        timestamp: new Date().toISOString(),
+        brokersFound: this.discoveredBrokers.size
+      });
     }
   }
 
   stopDiscovery() {
     if (!this.isDiscovering) return;
 
-    console.log('� Stopping MQTT broker discovery...');
+    console.log('⏹️  Stopping MQTT broker discovery...');
+    // The in-flight port scan loops check this flag and break early.
     this.isDiscovering = false;
-
-    // Kill all running scan processes
-    this.scanProcesses.forEach(process => {
-      if (!process.killed) {
-        process.kill();
-      }
-    });
-    this.scanProcesses.clear();
 
     this.io.emit('discovery-stopped', {
       timestamp: new Date().toISOString(),
@@ -143,6 +142,7 @@ class MQTTDiscoveryService extends EventEmitter {
     try {
       // Simple MQTT connection attempt
       const mqtt = require('mqtt');
+      const connectStart = Date.now();
       const client = mqtt.connect(`mqtt://${ip}:${port}`, {
         connectTimeout: 3000,
         clientId: `mqtt-explorer-${Date.now()}`
@@ -166,7 +166,7 @@ class MQTTDiscoveryService extends EventEmitter {
             status: 'online',
             discoveryMethod: 'Port Scan',
             lastSeen: new Date(),
-            responseTime: Date.now() % 100, // Mock response time
+            responseTime: Date.now() - connectStart, // measured connect RTT
             secure: port === 8883 || port === 8884,
             clientId: null,
             topics: 0,
@@ -190,60 +190,111 @@ class MQTTDiscoveryService extends EventEmitter {
   async mdnsDiscovery() {
     if (!this.options.enableMDNS) return;
 
-    console.log('🔍 Starting mDNS discovery...');
-    
-    // Simplified mDNS implementation using dgram
-    const socket = dgram.createSocket('udp4');
-    
-    // Mock mDNS discovery - in a real implementation you'd use a proper mDNS library
-    setTimeout(() => {
-      // Add some mock discovered brokers
-      if (this.isDiscovering) {
+    let bonjour;
+    try {
+      const { Bonjour } = require('bonjour-service');
+      bonjour = new Bonjour();
+    } catch (error) {
+      console.warn('bonjour-service not installed; skipping mDNS discovery.');
+      return;
+    }
+
+    console.log('🔍 Starting mDNS discovery (_mqtt._tcp.local.)...');
+
+    return new Promise((resolve) => {
+      const browser = bonjour.find({ type: 'mqtt' });
+
+      browser.on('up', (service) => {
+        if (!this.isDiscovering) return;
+        const host = (service.addresses || []).find((addr) => addr.includes('.')) || service.host;
+        if (!host || !service.port) return;
         this.addDiscoveredBroker({
-          id: 'mdns-broker-1',
-          host: '192.168.1.150',
-          port: 1883,
+          id: `mdns:${host}:${service.port}`,
+          host,
+          port: service.port,
           protocol: 'MQTT',
-          version: 'v3.1.1',
+          version: 'unknown',
           status: 'online',
           discoveryMethod: 'mDNS',
           lastSeen: new Date(),
-          responseTime: 15,
-          secure: false,
-          clientId: 'raspberry-mqtt',
-          topics: 25,
-          clients: 5
+          secure: service.port === 8883,
+          clientId: service.name || null,
+          topics: 0,
+          clients: 0
         });
-      }
-      socket.close();
-    }, 2000);
+      });
+
+      const stop = () => {
+        try {
+          browser.stop();
+          bonjour.destroy();
+        } catch (error) {
+          // best-effort cleanup
+        }
+        resolve();
+      };
+      setTimeout(stop, this.options.timeout || 5000);
+    });
   }
 
   async ssdpDiscovery() {
     if (!this.options.enableSSDP) return;
 
-    console.log('🔍 Starting SSDP discovery...');
-    
-    // Mock SSDP discovery
-    setTimeout(() => {
-      if (this.isDiscovering) {
+    const dgram = require('dgram');
+    console.log('🔍 Starting SSDP discovery (M-SEARCH)...');
+
+    return new Promise((resolve) => {
+      const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      const message = Buffer.from(
+        'M-SEARCH * HTTP/1.1\r\n' +
+          'HOST: 239.255.255.250:1900\r\n' +
+          'MAN: "ssdp:discover"\r\n' +
+          'MX: 2\r\n' +
+          'ST: ssdp:all\r\n\r\n'
+      );
+      const seen = new Set();
+
+      const close = () => {
+        try {
+          socket.close();
+        } catch (error) {
+          // already closed
+        }
+        resolve();
+      };
+
+      socket.on('message', (msg, rinfo) => {
+        if (!this.isDiscovering) return;
+        // SSDP rarely advertises MQTT directly, so only surface responders whose
+        // advertisement actually mentions MQTT (never fabricate a broker).
+        if (!/mqtt/i.test(msg.toString()) || seen.has(rinfo.address)) return;
+        seen.add(rinfo.address);
         this.addDiscoveredBroker({
-          id: 'ssdp-broker-1',
-          host: '192.168.1.200',
-          port: 8883,
+          id: `ssdp:${rinfo.address}`,
+          host: rinfo.address,
+          port: 1883,
           protocol: 'MQTT',
-          version: 'v5.0',
+          version: 'unknown',
           status: 'online',
           discoveryMethod: 'SSDP',
           lastSeen: new Date(),
-          responseTime: 22,
-          secure: true,
-          clientId: 'smart-home-hub',
-          topics: 89,
-          clients: 12
+          secure: false,
+          clientId: null,
+          topics: 0,
+          clients: 0
         });
-      }
-    }, 3000);
+      });
+
+      socket.on('error', close);
+      socket.bind(() => {
+        try {
+          socket.send(message, 0, message.length, 1900, '239.255.255.250');
+        } catch (error) {
+          // send failed; the timeout below will still resolve
+        }
+      });
+      setTimeout(close, this.options.timeout || 5000);
+    });
   }
 
   addDiscoveredBroker(brokerInfo) {
@@ -266,6 +317,19 @@ class MQTTDiscoveryService extends EventEmitter {
 
   getDiscoveredBrokers() {
     return Array.from(this.discoveredBrokers.values());
+  }
+
+  getBrokerById(brokerId) {
+    return this.discoveredBrokers.get(brokerId) || null;
+  }
+
+  removeBroker(brokerId) {
+    const existed = this.discoveredBrokers.has(brokerId);
+    if (existed) {
+      this.discoveredBrokers.delete(brokerId);
+      this.io.emit('broker-removed', { brokerId });
+    }
+    return existed;
   }
 
   getDiscoveryStatus() {

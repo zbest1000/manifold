@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import toast from 'react-hot-toast'
@@ -30,11 +30,40 @@ function App() {
   
   // Store hooks
   const { setConnected, setConnectionStatus } = useAppStore()
-  const { addBroker, updateBroker, addMessage, updateTopics } = useMQTTStore()
+  const { addBroker, updateBroker, updateTopics } = useMQTTStore()
   const { theme, setTheme } = useUIStore()
 
-  // Initialize app
+  // Batch incoming MQTT messages so we do one store write + re-render per ~150ms
+  // instead of one per message (the previous path was O(n^2) under real traffic).
+  const messageBatch = useRef(new Map())
+  const flushScheduled = useRef(false)
+  const initializedRef = useRef(false)
+
+  const flushMessages = () => {
+    flushScheduled.current = false
+    const batch = messageBatch.current
+    if (batch.size === 0) return
+    messageBatch.current = new Map()
+    const { addMessages } = useMQTTStore.getState()
+    batch.forEach((msgs, brokerId) => addMessages(brokerId, msgs))
+  }
+
+  const queueMessage = (message) => {
+    if (!message || !message.brokerId) return
+    const arr = messageBatch.current.get(message.brokerId) || []
+    arr.push(message)
+    messageBatch.current.set(message.brokerId, arr)
+    if (!flushScheduled.current) {
+      flushScheduled.current = true
+      setTimeout(flushMessages, 150)
+    }
+  }
+
+  // Initialize once. The guard stops React StrictMode's dev double-invoke from
+  // registering socket listeners twice.
   useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
     initializeApp()
   }, [])
 
@@ -51,10 +80,15 @@ function App() {
       
       // Initialize WebSocket connection
       await socketService.connect()
-      
+
       // Set up socket event listeners
       setupSocketListeners()
-      
+
+      // Seed connection state: the 'connect' listener is registered after
+      // connect() already resolved, so it would otherwise miss the first event.
+      setConnected(true)
+      setConnectionStatus('connected')
+
       // Auto-discover brokers if enabled
       if (status.services?.mqttDiscovery?.isDiscovering) {
         toast.success('Network discovery is already running')
@@ -133,7 +167,7 @@ function App() {
 
     // Message events
     socketService.on('mqtt-message', (message) => {
-      addMessage(message.brokerId, message)
+      queueMessage(message)
     })
 
     socketService.on('topic-updated', (data) => {

@@ -1,457 +1,141 @@
 # 🌐 MQTT Explore
 
-> **Real-time, AI-powered MQTT network discovery and visualization tool**
+> Real-time MQTT network discovery, monitoring, and Sparkplug B analysis for IoT and industrial engineers.
 
-MQTT Explore is a comprehensive web application designed for IoT engineers, SCADA teams, and industrial cybersecurity analysts. It provides powerful tools for discovering, monitoring, and analyzing MQTT networks with advanced AI capabilities and beautiful visualizations.
+MQTT Explore is a web application for discovering MQTT brokers on a network, connecting to them, watching live topic traffic, and decoding Sparkplug B industrial payloads — with an optional AI assistant. It is a **developer/prototype tool**, not a hardened production product; see [Project status](#-project-status) for what is real vs. planned.
 
-![MQTT Explore Banner](https://img.shields.io/badge/MQTT-Explore-blue?style=for-the-badge&logo=mqtt)
-![Version](https://img.shields.io/badge/version-1.0.0-green?style=for-the-badge)
-![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.0.0-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## ✨ Features
 
-### 🔍 **Network Discovery**
-- **Automatic MQTT Broker Detection** via multiple methods:
-  - Port scanning (1883, 8883, custom ports)
-  - mDNS/Bonjour discovery (`_mqtt._tcp.local.`)
-  - SSDP discovery
-  - Active fingerprinting with partial MQTT connects
-  - AI/DPI-based payload heuristics
-- **Network Health Monitoring** with real-time status updates
-- **Comprehensive Host Discovery** with industrial protocol detection
+Legend: ✅ working · ⚠️ works but limited/demo · 🚧 not implemented yet
 
-### 🔗 **MQTT Client Management**
-- **Multi-Broker Connections** with support for:
-  - Username/password authentication
-  - TLS/SSL security (mqtts://)
-  - Custom client IDs and keep-alive settings
-  - Clean/persistent sessions
-- **Real-time Topic Monitoring** with wildcard subscriptions
-- **Message Publishing** with QoS control and retain flags
-- **Connection Health Tracking** with metrics and diagnostics
+### 🔍 Network discovery
+- ✅ **TCP port-scan discovery** of MQTT brokers across a CIDR range (parallel, bounded concurrency). Confirms brokers with a real MQTT connect.
+- ✅ **Standalone network scanner** (pure-JS TCP connect scan) that categorises hosts as MQTT / web / industrial (Modbus, S7comm, EtherNet/IP) and probes MQTT brokers with a spec-correct CONNECT packet.
+- ✅ **mDNS discovery** of `_mqtt._tcp.local.` brokers via `bonjour-service` (on by default). ⚠️ **SSDP** is a real M-SEARCH implementation but off by default, since SSDP rarely advertises MQTT.
 
-### 🏭 **Sparkplug B Support**
-- **Full Protobuf Decoding** for Sparkplug B v1.0 and v2.0
-- **Industrial Data Visualization**:
-  - Group ID → Edge Node ID → Device ID hierarchy
-  - Metric name, type, alias, and timestamp analysis
-  - Birth/Death certificate tracking
-  - Real-time metric monitoring
-- **Device Health Monitoring** with anomaly detection
+### 🔗 MQTT client management
+- ✅ Connect to multiple brokers with username/password and TLS (`mqtts://`, client cert/key).
+- ✅ Wildcard subscriptions, publish with QoS/retain, live connection metrics.
+- ✅ Per-connection isolation: a browser only receives its own connections' traffic (events are scoped per socket, and broker credentials are never broadcast).
 
-### 🤖 **AI-Powered Analytics**
-- **Natural Language Queries** powered by GPT-4:
-  - "Show all topics active in the past 5 minutes"
-  - "Which clients haven't sent DBIRTH today?"
-  - "Summarize payloads for sensors/+/temperature"
-- **Intelligent Payload Classification**:
-  - Intent detection (telemetry, commands, alarms, configs)
-  - Auto-suggest field meanings and units
-  - Context-aware analysis
-- **Smart Insights Generation**:
-  - Network health assessments
-  - Performance optimization recommendations
-  - Security vulnerability detection
-  - Anomaly identification
+### 🏭 Sparkplug B
+- ✅ Protobuf decoding of Sparkplug B payloads (NBIRTH/DBIRTH/NDATA/DDATA/…), with **alias resolution** (names cached from BIRTH and applied to DATA), correct **signed-integer** handling, and **STATE** message parsing.
+- ✅ Group → Edge Node → Device hierarchy and metric summaries.
 
-### 📊 **Advanced Visualizations**
-- **Interactive Network Topology** with D3.js/Cytoscape:
-  - Real-time broker/client/topic relationships
-  - Animated message flows
-  - Hierarchical Sparkplug B device trees
-- **Live Data Dashboards**:
-  - Message frequency charts
-  - QoS distribution graphs
-  - Connection status heatmaps
-  - Metric trend analysis
-- **Mind Map Style Topic Exploration**
-- **Network Flow Animations** showing real-time MQTT traffic
+### 🤖 AI assistant
+- ⚠️ Natural-language queries and insights. Uses OpenAI when `OPENAI_API_KEY` and the `openai` package are present; **otherwise it runs in mock mode** with canned responses (the `openai` package is an optional dependency you must add — see below).
 
-### 📈 **Monitoring & Analytics**
-- **Real-time Message Logging** with filtering and search
-- **Performance Metrics**:
-  - Message rates and throughput
-  - Connection stability tracking
-  - Error rate monitoring
-  - Bandwidth utilization
-- **Historical Data Analysis** with time-range filtering
-- **Alert System** for connection issues and anomalies
+### 📤 Export & reporting
+- ✅ Export collected data as **JSON, CSV, YAML, Excel (.xlsx)** (real multi-sheet workbooks via `exceljs`), network map, and Sparkplug report. Filenames are sanitised (no path traversal).
 
-### 📤 **Export & Reporting**
-- **Multi-format Data Export**:
-  - JSON, CSV, Excel, YAML formats
-  - Network topology maps (PNG, SVG, JSON)
-  - Sparkplug B device reports
-  - Custom time-range exports
-- **AI-Generated Reports** with insights and recommendations
-- **Session Replay** capabilities for debugging
+### 📊 UI
+- ✅ Dashboard plus functional pages for **Brokers, Topics Explorer, Sparkplug, AI Assistant, Data Export, and Settings** — all wired to live store data and driving real actions over Socket.IO (connect/subscribe/publish/query/export). Charts via chart.js.
 
-### 🎨 **Modern UI/UX**
-- **Beautiful, Responsive Design** with dark/light theme support
-- **Multiple Panel Layout**:
-  - Broker & Client List Panel
-  - Interactive Topology View
-  - Smart Data Table View
-  - Sparkplug Tree View
-  - AI Assistant Chat Panel
-  - Live Message Log Viewer
-- **Customizable Dashboard** with drag-and-drop panels
-- **Mobile-Friendly** responsive design
-
-## 🏗️ Architecture
-
-### Backend (Node.js + Express)
-```
-server/
-├── index.js                 # Main server entry point
-├── services/                # Core business logic
-│   ├── mqttDiscovery.js     # Network scanning & broker discovery
-│   ├── mqttClientManager.js # MQTT connection management
-│   ├── sparkplugDecoder.js  # Protobuf decoding for Sparkplug B
-│   ├── aiService.js         # GPT-4 integration & AI analysis
-│   ├── networkScanner.js    # Advanced network discovery
-│   └── dataExporter.js      # Multi-format data export
-├── routes/                  # API endpoints
-│   ├── api.js              # General system APIs
-│   ├── mqtt.js             # MQTT-specific APIs
-│   └── ai.js               # AI service APIs
-└── .env.example            # Environment configuration
-```
-
-### Frontend (React + TailwindCSS)
-```
-client/
-├── src/
-│   ├── components/         # React components
-│   ├── hooks/             # Custom React hooks
-│   ├── services/          # API service layer
-│   ├── store/             # State management (Zustand)
-│   ├── utils/             # Utility functions
-│   └── types/             # TypeScript definitions
-├── index.html             # Main HTML template
-├── vite.config.js         # Vite build configuration
-└── tailwind.config.js     # TailwindCSS theme
-```
-
-### Technology Stack
-
-**Backend:**
-- **Node.js + Express** - Web server framework
-- **Socket.IO** - Real-time WebSocket communication
-- **MQTT.js** - MQTT protocol implementation
-- **Protobuf.js** - Sparkplug B message decoding
-- **OpenAI API** - GPT-4 integration for AI features
-- **node-nmap** - Network discovery and port scanning
-- **Bonjour/mDNS** - Service discovery
-
-**Frontend:**
-- **React 18** - Modern UI framework
-- **Vite** - Fast build tool and dev server
-- **TailwindCSS** - Utility-first CSS framework
-- **D3.js + Cytoscape.js** - Interactive network visualizations
-- **Zustand** - Lightweight state management
-- **Socket.IO Client** - Real-time data updates
-- **Framer Motion** - Smooth animations
-
-**DevOps & Deployment:**
-- **Docker** - Containerization
-- **Docker Compose** - Multi-service orchestration
-- **Environment-based Configuration**
-- **Production-ready** with PM2 process management
-
-## 🚀 Quick Start
+## 🚀 Quick start
 
 ### Prerequisites
-- **Node.js 18+** and npm
-- **Docker & Docker Compose** (optional)
-- **OpenAI API Key** (for AI features)
+- **Node.js 20+** and npm
+- (Optional) an **OpenAI API key** for real AI responses
 
-### Installation
-
-1. **Clone the repository**
+### Install
 ```bash
-git clone https://github.com/your-repo/mqtt-explore.git
-cd mqtt-explore
-```
+git clone https://github.com/zbest1000/Mqtt_explore.git
+cd Mqtt_explore
 
-2. **Install dependencies**
-```bash
-# Install root dependencies
-npm install
-
-# Install all project dependencies
+# Installs root, server, and client deps. The client needs --legacy-peer-deps
+# (handled by this script).
 npm run install:all
 ```
 
-3. **Configure environment**
+To enable real AI responses, also install the OpenAI SDK in the server workspace:
 ```bash
-# Copy environment template
+cd server && npm install openai
+```
+
+### Configure
+```bash
 cp server/.env.example server/.env
-
-# Edit configuration (add your OpenAI API key)
-nano server/.env
+# Edit server/.env — set APP_ACCESS_TOKEN before exposing the server, and
+# OPENAI_API_KEY if you want real AI responses.
 ```
 
-4. **Start development servers**
+### Run (development)
 ```bash
-# Start both frontend and backend
-npm run dev
-
-# Or start individually
-npm run server:dev  # Backend on http://localhost:5000
-npm run client:dev  # Frontend on http://localhost:3000
+npm run dev            # backend on :5000, frontend (Vite) on :3000
+# or individually:
+npm run server:dev
+npm run client:dev
 ```
+Open http://localhost:3000. The Vite dev server proxies `/api` and `/socket.io` to the backend on :5000, so no client URL configuration is needed.
 
-5. **Open your browser**
-Navigate to `http://localhost:3000` to access MQTT Explore
-
-### Docker Deployment
-
-1. **Build and run with Docker Compose**
+### Run (production-style)
 ```bash
-docker-compose up -d
+npm run build          # builds the client into client/dist
+NODE_ENV=production npm start   # server serves the built client on :5000
 ```
 
-2. **Access the application**
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:5000/api`
+## 🔒 Security
 
-## 📖 Usage Guide
+Authentication is **opt-in but built in**:
 
-### 1. **Network Discovery**
-- Click "Start Discovery" to automatically scan for MQTT brokers
-- Configure network range, ports, and discovery methods
-- View discovered brokers in the Broker List panel
-
-### 2. **Connect to MQTT Brokers**
-- Select a discovered broker or add custom connection details
-- Configure authentication (username/password, TLS certificates)
-- Monitor connection status and metrics
-
-### 3. **Explore Topics & Messages**
-- View live topic hierarchy in the Smart Table View
-- Monitor real-time message flows in the Topology View
-- Filter and search messages in the Message Log Viewer
-
-### 4. **Sparkplug B Analysis**
-- Automatic detection and decoding of Sparkplug B messages
-- Navigate the Group → Edge Node → Device hierarchy
-- Monitor industrial metrics and device health
-
-### 5. **AI Assistant**
-- Ask natural language questions about your MQTT network
-- Get intelligent insights and recommendations
-- Generate automated reports and analysis
-
-### 6. **Data Export**
-- Export network data in multiple formats
-- Generate network topology diagrams
-- Create comprehensive reports for documentation
+- Set `APP_ACCESS_TOKEN` in `server/.env`. When set, every `/api` route and the Socket.IO handshake require it (HTTP: `Authorization: Bearer <token>` or `x-api-token`; the client reads `VITE_ACCESS_TOKEN`). When **unset**, the API is open and the server logs a warning — fine for localhost, not for shared/exposed use.
+- `helmet` security headers, `express-rate-limit` (stricter on AI and network endpoints), CORS scoped to `CLIENT_URL`, and a 1 MB request-body limit are all active.
+- The network scanner validates targets (strict IPv4/CIDR) and MQTT connect targets (protocol/port/host). Optional `MQTT_ALLOWED_HOSTS` restricts which brokers clients may reach. Note: because this is a LAN tool, connecting to private IP ranges is intentionally allowed — protect the server with `APP_ACCESS_TOKEN` rather than relying on network-level blocks.
+- `AUTO_START_DISCOVERY` defaults to **false** — scanning is an explicit action.
 
 ## 🔧 Configuration
 
-### Environment Variables
+Key `server/.env` variables (see `server/.env.example` for the full list):
 
-```bash
-# Server Configuration
-PORT=5000
-NODE_ENV=development
-CLIENT_URL=http://localhost:3000
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `5000` | Backend port |
+| `CLIENT_URL` | `http://localhost:3000` | Allowed CORS origin |
+| `APP_ACCESS_TOKEN` | _(empty)_ | Enables auth when set |
+| `OPENAI_API_KEY` | _(empty)_ | Enables real AI responses |
+| `AUTO_START_DISCOVERY` | `false` | Auto-scan the LAN on boot |
+| `RATE_LIMIT_WINDOW` / `RATE_LIMIT_MAX` | `15` / `100` | API rate limit |
+| `MQTT_ALLOWED_HOSTS` | _(empty)_ | Optional broker allow-list |
 
-# AI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
+## 🏗️ Architecture
 
-# MQTT Discovery
-AUTO_START_DISCOVERY=true
-DEFAULT_NETWORK_RANGE=192.168.1.0/24
-MAX_CONNECTIONS=10
-
-# Security
-ENABLE_CORS=true
-RATE_LIMIT_WINDOW=15
-RATE_LIMIT_MAX=100
+```
+client/  React 18 + Vite + Zustand + Tailwind (dashboard, Socket.IO client)
+server/  Express + Socket.IO
+  ├─ routes/     HTTP endpoints (api, mqtt, ai)
+  ├─ services/   mqttDiscovery, mqttClientManager, sparkplugDecoder,
+  │              networkScanner, aiService, dataExporter
+  └─ middleware/ auth (token gate for HTTP + sockets)
 ```
 
-### Network Discovery Settings
-- **Port Range**: Customize which ports to scan for MQTT brokers
-- **Network Range**: Define CIDR ranges for network discovery
-- **Discovery Methods**: Enable/disable mDNS, SSDP, port scanning
-- **Timeouts**: Configure connection and scan timeouts
+State is held in memory (no database). Real-time updates flow over Socket.IO, scoped to the owning browser.
 
-### AI Configuration
-- **OpenAI API**: Requires valid API key for AI features
-- **Local LLM**: Support for local models via LangChain/Ollama
-- **Query Suggestions**: Customizable suggested queries
+## 📖 API (selected)
 
-## 🔒 Security Features
+| Method & path | Purpose |
+|---|---|
+| `GET /health` | Public health check |
+| `GET /api/status`, `GET /api/metrics` | System status / metrics |
+| `POST /api/mqtt/connect`, `/api/mqtt/subscribe`, `/api/mqtt/publish` | MQTT operations |
+| `POST /api/network/scan/start` | Start a network scan |
+| `POST /api/ai/query`, `/api/ai/insights` | AI query / insights |
+| `POST /api/export` | Export collected data |
 
-- **TLS/SSL Support** for secure MQTT connections
-- **Certificate Management** for client authentication
-- **Data Sanitization** before AI processing
-- **Rate Limiting** on API endpoints
-- **CORS Protection** with configurable origins
-- **Input Validation** and sanitization
+Real-time is primarily driven over Socket.IO events (`connect-mqtt`, `mqtt-message`, `start-network-scan`, …).
 
-## 🧪 Testing Mode
+## 📋 Project status
 
-MQTT Explore includes a built-in testing mode with:
-- **Mock MQTT Broker** using Aedes
-- **Simulated Sparkplug B Clients** with fake device metrics
-- **Synthetic Traffic Generation** for testing visualizations
-- **Network Simulation** tools for development
+This project began as an ambitious prototype. The following are **honest** current states:
 
-## 📊 API Documentation
+- **Real:** MQTT connect/subscribe/publish, Sparkplug B decoding, TCP port-scan + mDNS discovery, network scanner, JSON/CSV/YAML/Excel export, all six feature pages wired to live data, token auth, rate limiting, per-socket event scoping.
+- **Demo/limited:** AI runs in mock mode without an OpenAI key; SSDP discovery is real but off by default (rarely finds MQTT).
+- **Not implemented:** Docker/Kubernetes deployment, PM2 config, a built-in mock broker / traffic simulator.
 
-### REST API Endpoints
-
-**System Status**
-- `GET /api/status` - System health and service status
-- `GET /api/metrics` - Performance metrics
-
-**MQTT Management**
-- `POST /api/mqtt/connect` - Connect to MQTT broker
-- `GET /api/mqtt/connections` - List active connections
-- `POST /api/mqtt/subscribe` - Subscribe to topic
-- `POST /api/mqtt/publish` - Publish message
-
-**AI Services**
-- `POST /api/ai/query` - Process natural language query
-- `POST /api/ai/insights` - Generate network insights
-- `POST /api/ai/classify` - Classify message payload
-
-**Data Export**
-- `POST /api/export` - Export data in various formats
-- `GET /api/export/history` - Export history
-
-### WebSocket Events
-
-**Real-time Updates**
-- `broker-discovered` - New MQTT broker found
-- `mqtt-message` - Live MQTT message received
-- `connection-status` - Connection state changes
-- `ai-response` - AI query results
-
-## 🛠️ Development
-
-### Project Structure
-```
-mqtt-explore/
-├── server/               # Backend Node.js application
-├── client/               # Frontend React application
-├── docker-compose.yml    # Container orchestration
-├── package.json          # Root package configuration
-└── README.md            # This file
-```
-
-### Development Workflow
-1. **Backend**: Server runs on port 5000 with hot reload
-2. **Frontend**: Vite dev server on port 3000 with HMR
-3. **Proxy**: Frontend proxies API calls to backend
-4. **Real-time**: Socket.IO for live data updates
-
-### Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 🐳 Docker Support
-
-### Development
-```bash
-docker-compose -f docker-compose.dev.yml up
-```
-
-### Production
-```bash
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-### Custom Images
-```bash
-# Build custom images
-docker build -t mqtt-explore-server ./server
-docker build -t mqtt-explore-client ./client
-```
-
-## 🚀 Deployment Options
-
-### Traditional Server
-1. Install Node.js and dependencies
-2. Build frontend: `npm run build`
-3. Start with PM2: `pm2 start ecosystem.config.js`
-
-### Docker Container
-1. Use provided Docker Compose files
-2. Configure environment variables
-3. Deploy with `docker-compose up -d`
-
-### Kubernetes
-1. Use provided Kubernetes manifests
-2. Configure secrets and config maps
-3. Deploy with `kubectl apply -f k8s/`
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-**Connection Problems**
-- Verify network connectivity to MQTT brokers
-- Check firewall settings for ports 1883/8883
-- Validate authentication credentials
-
-**Discovery Issues**
-- Ensure nmap is installed for port scanning
-- Check network permissions for discovery tools
-- Verify multicast support for mDNS
-
-**AI Features Not Working**
-- Verify OpenAI API key is configured
-- Check API quota and billing status
-- Ensure internet connectivity for API calls
-
-**Performance Issues**
-- Adjust message buffer sizes
-- Limit concurrent connections
-- Monitor memory usage and tune accordingly
-
-### Logs and Debugging
-```bash
-# Server logs
-npm run server:dev
-
-# Enable debug logging
-DEBUG=mqtt-explore:* npm run server:dev
-
-# Docker logs
-docker-compose logs -f
-```
+Contributions that turn a 🚧/⚠️ into a ✅ are welcome.
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## 📞 Support
-
-- **Documentation**: [docs.mqtt-explore.com](https://docs.mqtt-explore.com)
-- **Issues**: [GitHub Issues](https://github.com/your-repo/mqtt-explore/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-repo/mqtt-explore/discussions)
-- **Email**: support@mqtt-explore.com
-
-## 🏆 Acknowledgments
-
-- **MQTT.js** - Excellent MQTT implementation
-- **Sparkplug Working Group** - Industrial IoT standards
-- **OpenAI** - AI capabilities and GPT-4 API
-- **Open Source Community** - All the amazing libraries used
-
----
-
-**Built with ❤️ for the IoT and Industrial Automation community**
-
-*MQTT Explore - Making MQTT networks visible, understandable, and manageable.*
+MIT — see [LICENSE](LICENSE).

@@ -1,7 +1,11 @@
 class APIService {
   constructor() {
-    this.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
+    // Same-origin by default: the Vite dev server proxies /api to the backend,
+    // and in production the backend serves the built client, so relative URLs work.
+    this.baseURL = import.meta.env.VITE_API_URL || ''
     this.timeout = 30000 // 30 seconds
+    // Sent as a Bearer token when the server enforces APP_ACCESS_TOKEN.
+    this.accessToken = import.meta.env.VITE_ACCESS_TOKEN || ''
   }
 
   // Helper method for making requests
@@ -10,6 +14,7 @@ class APIService {
     const config = {
       headers: {
         'Content-Type': 'application/json',
+        ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}),
         ...options.headers
       },
       timeout: this.timeout,

@@ -39,7 +39,7 @@ router.post('/query', async (req, res) => {
   } catch (error) {
     console.error('AI query error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -62,7 +62,7 @@ router.post('/insights', async (req, res) => {
   } catch (error) {
     console.error('AI insights error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -89,7 +89,7 @@ router.post('/classify', async (req, res) => {
   } catch (error) {
     console.error('AI classify error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -205,7 +205,7 @@ router.post('/analyze/sparkplug', async (req, res) => {
   } catch (error) {
     console.error('AI Sparkplug analysis error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -249,7 +249,7 @@ router.post('/analyze/network', async (req, res) => {
   } catch (error) {
     console.error('AI network analysis error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -313,7 +313,7 @@ router.post('/analyze/topics', async (req, res) => {
   } catch (error) {
     console.error('AI topic analysis error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -359,7 +359,7 @@ router.post('/report', async (req, res) => {
   } catch (error) {
     console.error('AI report generation error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -399,7 +399,7 @@ router.post('/troubleshoot', async (req, res) => {
   } catch (error) {
     console.error('AI troubleshoot error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -427,7 +427,7 @@ router.get('/summary', async (req, res) => {
   } catch (error) {
     console.error('AI summary error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }
@@ -463,7 +463,7 @@ router.post('/batch', async (req, res) => {
       } catch (error) {
         results.push({
           query: query,
-          error: error.message,
+          error: 'Internal server error',
           success: false,
           timestamp: new Date()
         });
@@ -478,7 +478,7 @@ router.post('/batch', async (req, res) => {
   } catch (error) {
     console.error('AI batch error:', error);
     res.status(500).json({ 
-      error: error.message,
+      error: 'Internal server error',
       available: services.aiService.isAvailable()
     });
   }

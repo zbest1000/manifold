@@ -1,68 +1,81 @@
 const { EventEmitter } = require('events');
-const nmap = require('node-nmap');
-const ping = require('ping');
 const net = require('net');
+
+// Pure-JS TCP scanner. Deliberately has NO external dependencies (previously
+// required node-nmap + ping, which were never installed and crashed the server
+// on boot). Host liveness and port state are inferred from TCP connect results.
+const DEFAULT_PORTS = '1883,8883,1884,8884,1888,8888,80,443,22,502,102,44818,4840';
+const CONNECT_TIMEOUT_MS = 800; // per-port connect timeout during a port sweep
+const LIVENESS_TIMEOUT_MS = 600; // per-probe timeout when inferring host liveness
+const PROBE_TIMEOUT_MS = 5000; // MQTT CONNECT/CONNACK probe timeout
+const HOST_CONCURRENCY = 64; // parallel host-liveness probes
+const PORT_CONCURRENCY = 100; // parallel port connects within a host sweep
+const MAX_HISTORY_ENTRIES = 100;
+const MAX_RESULT_ENTRIES = 50; // bound scanResults growth (was an unbounded leak)
+const LIVENESS_PORTS = [1883, 8883, 80, 443, 22]; // any response => host is up
 
 class NetworkScanner extends EventEmitter {
   constructor(io) {
     super();
     this.io = io;
-    this.isScanning = false;
+    // NOTE: state flag is `scanning`, NOT `isScanning`. A boolean property named
+    // isScanning would shadow the isScanning() method on the instance.
+    this.scanning = false;
+    this.currentScanId = null;
     this.scanResults = new Map();
     this.scanHistory = [];
-    this.maxHistoryEntries = 100;
   }
 
   async startScan(options = {}) {
-    if (this.isScanning) {
+    if (this.scanning) {
       throw new Error('Scan already in progress');
     }
 
-    this.isScanning = true;
-    const scanId = `scan_${Date.now()}`;
-    
-    const defaultOptions = {
+    const scanOptions = {
       target: '192.168.1.0/24',
-      ports: '1883,8883,1884,8884,1888,8888,80,443,22,502,102',
-      timeout: 10000,
-      intensive: false,
+      ports: DEFAULT_PORTS,
       serviceDetection: true,
-      osDetection: false
+      ...options
     };
 
-    const scanOptions = { ...defaultOptions, ...options };
-    
+    this.validateTarget(scanOptions.target);
+    const ports = this.parsePorts(scanOptions.ports);
+
+    this.scanning = true;
+    const scanId = `scan_${Date.now()}`;
+    this.currentScanId = scanId;
+    const startedAt = Date.now();
+
     console.log(`🔍 Starting network scan: ${scanOptions.target}`);
     this.io.emit('network-scan-started', { scanId, options: scanOptions });
 
     try {
-      const results = await this.performComprehensiveScan(scanOptions, scanId);
-      
+      const results = await this.performScan(scanOptions, ports, scanId);
+
       this.scanResults.set(scanId, {
         id: scanId,
         options: scanOptions,
-        results: results,
+        results,
         timestamp: new Date(),
-        duration: Date.now() - parseInt(scanId.split('_')[1])
+        duration: Date.now() - startedAt
       });
-
+      this.pruneResults();
       this.addToHistory(scanId, results);
-      this.isScanning = false;
 
       console.log(`✅ Network scan completed: ${results.hosts.length} hosts found`);
       this.io.emit('network-scan-completed', { scanId, results });
-
       return results;
-
     } catch (error) {
-      this.isScanning = false;
       console.error('Network scan failed:', error);
       this.io.emit('network-scan-error', { scanId, error: error.message });
       throw error;
+    } finally {
+      this.scanning = false;
+      this.currentScanId = null;
     }
   }
 
-  async performComprehensiveScan(options, scanId) {
+  async performScan(options, ports, scanId) {
     const results = {
       hosts: [],
       mqttBrokers: [],
@@ -77,209 +90,155 @@ class NetworkScanner extends EventEmitter {
       }
     };
 
-    // Emit progress updates
+    // Phase 1: host discovery
     this.io.emit('network-scan-progress', { scanId, phase: 'host-discovery', progress: 0 });
-
-    // Phase 1: Host Discovery
     const aliveHosts = await this.discoverHosts(options.target);
+    results.summary.totalHosts = aliveHosts.length;
     this.io.emit('network-scan-progress', { scanId, phase: 'host-discovery', progress: 100 });
 
-    results.summary.totalHosts = aliveHosts.length;
-
-    // Phase 2: Port Scanning
-    this.io.emit('network-scan-progress', { scanId, phase: 'port-scanning', progress: 0 });
-    
+    // Phase 2: port scanning
     for (let i = 0; i < aliveHosts.length; i++) {
+      if (!this.scanning) {
+        break;
+      }
       const host = aliveHosts[i];
-      const progress = Math.round((i / aliveHosts.length) * 100);
-      
-      this.io.emit('network-scan-progress', { 
-        scanId, 
-        phase: 'port-scanning', 
+      const progress = Math.round((i / Math.max(aliveHosts.length, 1)) * 100);
+      this.io.emit('network-scan-progress', {
+        scanId,
+        phase: 'port-scanning',
         progress,
-        currentHost: host.ip 
+        currentHost: host.ip
       });
 
-      try {
-        const hostInfo = await this.scanHost(host.ip, options);
-        results.hosts.push(hostInfo);
-
-        // Categorize discovered services
-        this.categorizeHost(hostInfo, results);
-
-      } catch (error) {
-        console.error(`Failed to scan host ${host.ip}:`, error);
-      }
+      const hostInfo = await this.scanHost(host.ip, ports);
+      results.hosts.push(hostInfo);
+      this.categorizeHost(hostInfo, results);
     }
 
-    // Phase 3: Service Detection (if enabled)
+    // Phase 3: MQTT broker probing (optional)
     if (options.serviceDetection) {
       this.io.emit('network-scan-progress', { scanId, phase: 'service-detection', progress: 0 });
-      await this.performServiceDetection(results, scanId);
+      await this.probeDiscoveredBrokers(results, scanId);
     }
 
     this.io.emit('network-scan-progress', { scanId, phase: 'completed', progress: 100 });
-
     return results;
   }
 
   async discoverHosts(target) {
-    const hosts = [];
-    
-    if (target.includes('/')) {
-      // CIDR range scanning
-      const [baseIp, mask] = target.split('/');
-      const maskBits = parseInt(mask);
-      
-      if (maskBits >= 24) {
-        // For /24 networks and smaller, ping all IPs
-        const baseOctets = baseIp.split('.').slice(0, 3);
-        const promises = [];
-        
-        for (let i = 1; i <= 254; i++) {
-          const ip = `${baseOctets.join('.')}.${i}`;
-          promises.push(this.pingHost(ip));
-        }
+    const ips = this.expandTarget(target);
 
-        const results = await Promise.allSettled(promises);
-        results.forEach((result, index) => {
-          if (result.status === 'fulfilled' && result.value.alive) {
-            hosts.push(result.value);
-          }
-        });
-      } else {
-        // For larger networks, use nmap for efficiency
-        return this.nmapHostDiscovery(target);
-      }
-    } else {
-      // Single host
-      const result = await this.pingHost(target);
-      if (result.alive) {
-        hosts.push(result);
-      }
+    // Single host: skip liveness gating and let the port scan speak for itself.
+    if (ips.length === 1) {
+      return [{ ip: ips[0], alive: true }];
     }
 
-    return hosts;
-  }
-
-  async nmapHostDiscovery(target) {
-    return new Promise((resolve, reject) => {
-      nmap.discover(target, (error, report) => {
-        if (error) {
-          return reject(error);
+    const alive = [];
+    await this.runPool(
+      ips,
+      async (ip) => {
+        if (await this.isHostAlive(ip)) {
+          alive.push({ ip, alive: true });
         }
-
-        const hosts = report.map(host => ({
-          ip: host.ip,
-          hostname: host.hostname,
-          alive: true,
-          mac: host.mac,
-          vendor: host.vendor
-        }));
-
-        resolve(hosts);
-      });
-    });
+      },
+      HOST_CONCURRENCY
+    );
+    return alive;
   }
 
-  async pingHost(ip) {
-    try {
-      const result = await ping.promise.probe(ip, { timeout: 2 });
-      return {
-        ip: ip,
-        hostname: result.host,
-        alive: result.alive,
-        time: result.time
+  async isHostAlive(ip) {
+    const states = await Promise.all(
+      LIVENESS_PORTS.map((port) => this.tcpProbe(ip, port, LIVENESS_TIMEOUT_MS))
+    );
+    // 'open' or 'closed' (ECONNREFUSED) both prove the host answered.
+    return states.some((state) => state === 'open' || state === 'closed');
+  }
+
+  async scanHost(ip, ports) {
+    const openPorts = [];
+    await this.runPool(
+      ports,
+      async (port) => {
+        const state = await this.tcpProbe(ip, port, CONNECT_TIMEOUT_MS);
+        if (state === 'open') {
+          openPorts.push(port);
+        }
+      },
+      PORT_CONCURRENCY
+    );
+
+    openPorts.sort((a, b) => a - b);
+    return {
+      ip,
+      hostname: null,
+      openPorts,
+      services: openPorts.map((port) => this.identifyService(port)),
+      os: null
+    };
+  }
+
+  // Resolves 'open' | 'closed' | 'filtered' without ever throwing.
+  tcpProbe(ip, port, timeout) {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+      const finish = (state) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        socket.destroy();
+        resolve(state);
       };
-    } catch (error) {
-      return { ip: ip, alive: false, error: error.message };
-    }
-  }
 
-  async scanHost(ip, options) {
-    return new Promise((resolve, reject) => {
-      const ports = options.ports.split(',').map(p => p.trim());
-      
-      nmap.scan({
-        range: [ip],
-        ports: ports.join(','),
-        timeout: options.timeout
-      }, (error, report) => {
-        if (error) {
-          return reject(error);
-        }
+      socket.setTimeout(timeout);
+      socket.once('connect', () => finish('open'));
+      socket.once('timeout', () => finish('filtered'));
+      socket.once('error', (error) => finish(error.code === 'ECONNREFUSED' ? 'closed' : 'filtered'));
 
-        if (report.length === 0) {
-          return resolve({
-            ip: ip,
-            hostname: null,
-            openPorts: [],
-            services: [],
-            os: null
-          });
-        }
-
-        const host = report[0];
-        const hostInfo = {
-          ip: host.ip,
-          hostname: host.hostname,
-          openPorts: host.openPorts || [],
-          services: [],
-          os: host.osNmap || null,
-          mac: host.mac,
-          vendor: host.vendor
-        };
-
-        // Process open ports and detect services
-        hostInfo.openPorts.forEach(port => {
-          const service = this.identifyService(port.port, port.service);
-          hostInfo.services.push(service);
-        });
-
-        resolve(hostInfo);
-      });
+      try {
+        socket.connect(port, ip);
+      } catch (error) {
+        finish('filtered');
+      }
     });
   }
 
-  identifyService(port, serviceName) {
+  identifyService(port) {
     const service = {
-      port: parseInt(port),
-      name: serviceName || 'unknown',
+      port,
+      name: 'unknown',
       type: 'unknown',
       confidence: 'low',
       details: {}
     };
 
-    // MQTT brokers
-    if ([1883, 8883, 1884, 8884, 1888, 8888].includes(service.port)) {
+    if ([1883, 8883, 1884, 8884, 1888, 8888].includes(port)) {
       service.type = 'mqtt';
-      service.name = service.port === 8883 ? 'mqtts' : 'mqtt';
+      service.name = port === 8883 || port === 8884 ? 'mqtts' : 'mqtt';
       service.confidence = 'high';
-    }
-    // Web services
-    else if ([80, 443, 8080, 8443].includes(service.port)) {
+    } else if ([80, 443, 8080, 8443].includes(port)) {
       service.type = 'web';
-      service.name = service.port === 443 || service.port === 8443 ? 'https' : 'http';
+      service.name = port === 443 || port === 8443 ? 'https' : 'http';
       service.confidence = 'high';
-    }
-    // Industrial protocols
-    else if (service.port === 502) {
+    } else if (port === 502) {
       service.type = 'industrial';
       service.name = 'modbus';
       service.confidence = 'medium';
-    }
-    else if (service.port === 102) {
+    } else if (port === 102) {
       service.type = 'industrial';
       service.name = 's7comm';
       service.confidence = 'medium';
-    }
-    else if (service.port === 44818) {
+    } else if (port === 44818) {
+      // 44818 is EtherNet/IP (CIP), not OPC-UA. OPC-UA is 4840.
+      service.type = 'industrial';
+      service.name = 'ethernet-ip';
+      service.confidence = 'medium';
+    } else if (port === 4840) {
       service.type = 'industrial';
       service.name = 'opc-ua';
       service.confidence = 'medium';
-    }
-    // SSH
-    else if (service.port === 22) {
+    } else if (port === 22) {
       service.type = 'management';
       service.name = 'ssh';
       service.confidence = 'high';
@@ -289,80 +248,57 @@ class NetworkScanner extends EventEmitter {
   }
 
   categorizeHost(hostInfo, results) {
-    let isMqttBroker = false;
-    let isWebService = false;
-    let isIndustrialDevice = false;
+    const types = new Set(hostInfo.services.map((s) => s.type));
 
-    hostInfo.services.forEach(service => {
-      switch (service.type) {
-        case 'mqtt':
-          isMqttBroker = true;
-          break;
-        case 'web':
-          isWebService = true;
-          break;
-        case 'industrial':
-          isIndustrialDevice = true;
-          break;
-      }
-    });
-
-    if (isMqttBroker) {
+    if (types.has('mqtt')) {
       results.mqttBrokers.push(hostInfo);
       results.summary.mqttBrokers++;
     }
-
-    if (isWebService) {
+    if (types.has('web')) {
       results.webServices.push(hostInfo);
       results.summary.webServices++;
     }
-
-    if (isIndustrialDevice) {
+    if (types.has('industrial')) {
       results.industrialDevices.push(hostInfo);
       results.summary.industrialDevices++;
     }
-
-    if (!isMqttBroker && !isWebService && !isIndustrialDevice && hostInfo.services.length > 0) {
+    if (!types.has('mqtt') && !types.has('web') && !types.has('industrial') && hostInfo.services.length > 0) {
       results.summary.unknownServices++;
     }
   }
 
-  async performServiceDetection(results, scanId) {
-    const mqttBrokers = results.mqttBrokers;
-    
-    for (let i = 0; i < mqttBrokers.length; i++) {
-      const broker = mqttBrokers[i];
-      const progress = Math.round((i / mqttBrokers.length) * 100);
-      
-      this.io.emit('network-scan-progress', { 
-        scanId, 
-        phase: 'service-detection', 
+  async probeDiscoveredBrokers(results, scanId) {
+    const brokers = results.mqttBrokers;
+    for (let i = 0; i < brokers.length; i++) {
+      if (!this.scanning) {
+        break;
+      }
+      const broker = brokers[i];
+      const progress = Math.round((i / Math.max(brokers.length, 1)) * 100);
+      this.io.emit('network-scan-progress', {
+        scanId,
+        phase: 'service-detection',
         progress,
-        currentHost: broker.ip 
+        currentHost: broker.ip
       });
 
-      // Test MQTT connectivity for discovered brokers
       for (const service of broker.services) {
-        if (service.type === 'mqtt') {
-          try {
-            const mqttInfo = await this.probeMQTTBroker(broker.ip, service.port);
-            service.details = mqttInfo;
-            service.confidence = 'high';
-          } catch (error) {
-            service.details = { error: error.message };
-          }
+        if (service.type !== 'mqtt') {
+          continue;
+        }
+        try {
+          service.details = await this.probeMQTTBroker(broker.ip, service.port);
+          service.confidence = 'high';
+        } catch (error) {
+          service.details = { error: error.message };
         }
       }
     }
   }
 
-  async probeMQTTBroker(host, port) {
+  probeMQTTBroker(host, port) {
     return new Promise((resolve, reject) => {
       const socket = new net.Socket();
-      const timeout = 5000;
-      
-      socket.setTimeout(timeout);
-
       const probeInfo = {
         responsive: false,
         protocolVersion: null,
@@ -370,69 +306,151 @@ class NetworkScanner extends EventEmitter {
         features: []
       };
 
+      socket.setTimeout(PROBE_TIMEOUT_MS);
+
       socket.connect(port, host, () => {
         probeInfo.responsive = true;
-
-        // Send MQTT CONNECT packet
-        const connectPacket = Buffer.from([
-          0x10, 0x2a, // Fixed header: CONNECT, Remaining Length
-          0x00, 0x04, 'M', 'Q', 'T', 'T', // Protocol Name
-          0x04, // Protocol Level (MQTT 3.1.1)
-          0x02, // Connect Flags (Clean Session)
-          0x00, 0x3c, // Keep Alive (60 seconds)
-          0x00, 0x16, // Client ID Length
-          'N', 'e', 't', 'w', 'o', 'r', 'k', 'S', 'c', 'a', 'n', 'n', 'e', 'r', '1', '2', '3', '4', '5', '6', '7', '8'
-        ]);
-
-        socket.write(connectPacket);
+        socket.write(this.buildConnectPacket('MQTTExplore-probe'));
       });
 
-      socket.on('data', (data) => {
-        try {
-          if (data.length >= 4 && data[0] === 0x20) { // CONNACK
-            probeInfo.protocolVersion = 'MQTT 3.1.1';
-            const returnCode = data[3];
-            
-            switch (returnCode) {
-              case 0:
-                probeInfo.authRequired = false;
-                probeInfo.features.push('Anonymous access allowed');
-                break;
-              case 4:
-                probeInfo.authRequired = true;
-                probeInfo.features.push('Authentication required');
-                break;
-              case 5:
-                probeInfo.authRequired = true;
-                probeInfo.features.push('Authorization required');
-                break;
-              default:
-                probeInfo.features.push(`Connection refused (code: ${returnCode})`);
-            }
+      socket.once('data', (data) => {
+        // CONNACK has packet type 0x20 in the first byte.
+        if (data.length >= 4 && data[0] === 0x20) {
+          probeInfo.protocolVersion = 'MQTT 3.1.1';
+          const returnCode = data[3];
+          switch (returnCode) {
+            case 0:
+              probeInfo.authRequired = false;
+              probeInfo.features.push('Anonymous access allowed');
+              break;
+            case 4:
+            case 5:
+              probeInfo.authRequired = true;
+              probeInfo.features.push('Authentication required');
+              break;
+            default:
+              probeInfo.features.push(`Connection refused (code: ${returnCode})`);
           }
-        } catch (error) {
-          console.error('Error parsing MQTT response:', error);
         }
-        
         socket.end();
         resolve(probeInfo);
       });
 
-      socket.on('error', (error) => {
-        reject(error);
-      });
-
-      socket.on('timeout', () => {
+      socket.once('timeout', () => {
         socket.destroy();
         reject(new Error('Connection timeout'));
+      });
+
+      socket.once('error', (error) => {
+        socket.destroy();
+        reject(error);
       });
     });
   }
 
+  // Builds a spec-correct MQTT 3.1.1 CONNECT packet. The previous implementation
+  // passed string characters inside Buffer.from([...]), which coerces them to 0x00.
+  buildConnectPacket(clientId) {
+    const protocolName = Buffer.from('MQTT', 'utf8');
+    const clientIdBuf = Buffer.from(clientId, 'utf8');
+
+    const variableHeader = Buffer.concat([
+      this.encodeUtf8String(protocolName),
+      Buffer.from([0x04]), // protocol level 4 (MQTT 3.1.1)
+      Buffer.from([0x02]), // connect flags: clean session
+      Buffer.from([0x00, 0x3c]) // keep-alive: 60s
+    ]);
+    const payload = this.encodeUtf8String(clientIdBuf);
+    const body = Buffer.concat([variableHeader, payload]);
+
+    return Buffer.concat([
+      Buffer.from([0x10]), // CONNECT packet type
+      this.encodeRemainingLength(body.length),
+      body
+    ]);
+  }
+
+  encodeUtf8String(buf) {
+    return Buffer.concat([Buffer.from([(buf.length >> 8) & 0xff, buf.length & 0xff]), buf]);
+  }
+
+  encodeRemainingLength(length) {
+    const bytes = [];
+    let value = length;
+    do {
+      let byte = value % 128;
+      value = Math.floor(value / 128);
+      if (value > 0) {
+        byte |= 0x80;
+      }
+      bytes.push(byte);
+    } while (value > 0);
+    return Buffer.from(bytes);
+  }
+
+  // Bounded-concurrency worker pool. Aborts cleanly if scanning is stopped.
+  async runPool(items, worker, concurrency) {
+    let index = 0;
+    const runNext = async () => {
+      while (index < items.length && this.scanning) {
+        const current = index++;
+        await worker(items[current], current);
+      }
+    };
+    const runners = Array.from({ length: Math.min(concurrency, items.length) }, runNext);
+    await Promise.all(runners);
+  }
+
+  validateTarget(target) {
+    if (typeof target !== 'string') {
+      throw new Error('Scan target must be a string');
+    }
+    // Strict IPv4 or IPv4/CIDR. Also blocks argument-injection style targets.
+    if (!/^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/.test(target)) {
+      throw new Error(`Invalid scan target: ${target}`);
+    }
+    const [ip, mask] = target.split('/');
+    if (ip.split('.').some((octet) => Number(octet) > 255)) {
+      throw new Error(`Invalid IP address in target: ${target}`);
+    }
+    if (mask !== undefined && Number(mask) > 32) {
+      throw new Error(`Invalid CIDR mask in target: ${target}`);
+    }
+  }
+
+  parsePorts(ports) {
+    const raw = String(ports);
+    if (!/^[\d,\s]+$/.test(raw)) {
+      throw new Error('Invalid ports specification');
+    }
+    const list = raw
+      .split(',')
+      .map((p) => parseInt(p.trim(), 10))
+      .filter((p) => Number.isInteger(p) && p >= 1 && p <= 65535);
+    if (list.length === 0) {
+      throw new Error('No valid ports specified');
+    }
+    return Array.from(new Set(list));
+  }
+
+  expandTarget(target) {
+    if (!target.includes('/')) {
+      return [target];
+    }
+    // Pure-JS mode scans the /24 that contains the base address. Ranges wider
+    // than /24 are intentionally not expanded (would be 65k+ probes).
+    const base = target.split('/')[0].split('.').slice(0, 3).join('.');
+    const ips = [];
+    for (let i = 1; i <= 254; i++) {
+      ips.push(`${base}.${i}`);
+    }
+    return ips;
+  }
+
   stopScan() {
-    this.isScanning = false;
+    this.scanning = false;
     console.log('⏹️  Network scan stopped');
-    this.io.emit('network-scan-stopped');
+    this.io.emit('network-scan-stopped', { scanId: this.currentScanId });
   }
 
   addToHistory(scanId, results) {
@@ -442,10 +460,18 @@ class NetworkScanner extends EventEmitter {
       summary: results.summary,
       hostsFound: results.hosts.length
     });
+    if (this.scanHistory.length > MAX_HISTORY_ENTRIES) {
+      this.scanHistory = this.scanHistory.slice(0, MAX_HISTORY_ENTRIES);
+    }
+  }
 
-    // Keep history manageable
-    if (this.scanHistory.length > this.maxHistoryEntries) {
-      this.scanHistory = this.scanHistory.slice(0, this.maxHistoryEntries);
+  pruneResults() {
+    if (this.scanResults.size <= MAX_RESULT_ENTRIES) {
+      return;
+    }
+    const keys = Array.from(this.scanResults.keys());
+    for (const key of keys.slice(0, keys.length - MAX_RESULT_ENTRIES)) {
+      this.scanResults.delete(key);
     }
   }
 
@@ -467,47 +493,26 @@ class NetworkScanner extends EventEmitter {
   }
 
   isScanning() {
-    return this.isScanning;
+    return this.scanning;
   }
 
   getStatus() {
     return {
-      isScanning: this.isScanning,
+      isScanning: this.scanning,
       totalScans: this.scanResults.size,
       historyEntries: this.scanHistory.length
     };
   }
 
-  // Quick network health check
-  async quickHealthCheck(targets = ['8.8.8.8', '1.1.1.1']) {
-    const results = {
-      internetAccess: false,
-      dnsResolution: false,
-      averageLatency: null,
+  async quickHealthCheck(targets = ['1.1.1.1', '8.8.8.8']) {
+    const states = await Promise.all(targets.map((t) => this.tcpProbe(t, 53, 1000)));
+    const reachable = states.filter((s) => s === 'open' || s === 'closed').length;
+    return {
+      internetAccess: reachable > 0,
+      targetsChecked: targets.length,
+      reachable,
       timestamp: new Date()
     };
-
-    try {
-      const pingPromises = targets.map(target => this.pingHost(target));
-      const pingResults = await Promise.allSettled(pingPromises);
-      
-      const successfulPings = pingResults
-        .filter(result => result.status === 'fulfilled' && result.value.alive)
-        .map(result => result.value);
-
-      if (successfulPings.length > 0) {
-        results.internetAccess = true;
-        results.dnsResolution = true;
-        
-        const totalTime = successfulPings.reduce((sum, ping) => sum + (ping.time || 0), 0);
-        results.averageLatency = totalTime / successfulPings.length;
-      }
-
-    } catch (error) {
-      console.error('Network health check failed:', error);
-    }
-
-    return results;
   }
 }
 

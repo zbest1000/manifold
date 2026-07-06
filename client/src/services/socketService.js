@@ -17,14 +17,18 @@ class SocketService {
     this.lastError = null
     
     // Configuration
-    this.serverUrl = import.meta.env.VITE_WS_URL || 'http://localhost:3001'
+    // Same-origin by default: Vite proxies /socket.io (ws) to the backend in dev,
+    // and the backend serves the client in production.
+    this.serverUrl = import.meta.env.VITE_WS_URL || window.location.origin
     this.options = {
       autoConnect: false,
       reconnection: true,
       reconnectionAttempts: this.maxReconnectAttempts,
       reconnectionDelay: this.reconnectDelay,
       timeout: 20000,
-      forceNew: true
+      forceNew: true,
+      // Sent to the Socket.IO handshake guard when the server enforces a token.
+      auth: { token: import.meta.env.VITE_ACCESS_TOKEN || '' }
     }
   }
 
