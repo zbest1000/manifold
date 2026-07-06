@@ -1,541 +1,238 @@
 const express = require('express');
 const router = express.Router();
 
-// Get all MQTT connections
-router.get('/connections', (req, res) => {
-  const { services } = req.app.locals;
-  
+// GET /api/mqtt/brokers — list connections
+router.get('/brokers', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  res.json({ brokers: mqttManager.getConnections() });
+});
+
+// POST /api/mqtt/brokers — connect to a broker (profile persisted for restart)
+router.post('/brokers', (req, res) => {
+  const { mqttManager, profiles } = req.app.locals.services;
   try {
-    const connections = services.mqttClientManager.getConnectionStatus();
-    res.json(connections);
+    const result = mqttManager.connectToBroker(req.body || {});
+    profiles?.upsertBroker(result.brokerId, { ...(req.body || {}), id: result.brokerId });
+    res.status(202).json(result);
   } catch (error) {
-    console.error('Get MQTT connections error:', error);
-    res.status(500).json({ error: 'Failed to get MQTT connections' });
+    res.status(400).json({ error: error.message });
   }
 });
 
-// Connect to an MQTT broker
-router.post('/connect', async (req, res) => {
-  const { services } = req.app.locals;
-  
+// GET /api/mqtt/brokers/:brokerId
+router.get('/brokers/:brokerId', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const connection = mqttManager.getConnection(req.params.brokerId);
+  if (!connection) return res.status(404).json({ error: 'Broker not found' });
+  res.json({
+    broker: connection,
+    subscriptions: mqttManager.getSubscriptions(req.params.brokerId)
+  });
+});
+
+// DELETE /api/mqtt/brokers/:brokerId — disconnect (profile removed)
+router.delete('/brokers/:brokerId', (req, res) => {
+  const { mqttManager, profiles } = req.app.locals.services;
   try {
-    const connectionConfig = req.body;
-    
-    // Validate required fields
-    if (!connectionConfig.host || !connectionConfig.port) {
-      return res.status(400).json({ error: 'Host and port are required' });
+    const result = mqttManager.disconnectFromBroker(req.params.brokerId);
+    profiles?.removeBroker(req.params.brokerId);
+    res.json(result);
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+});
+
+// GET /api/mqtt/brokers/:brokerId/topics?limit=100000
+// Bounded so a broker with millions of topics can't produce an unbounded
+// response; the live stream keeps filling the client's index beyond the limit.
+router.get('/brokers/:brokerId/topics', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const limit = Math.min(Number(req.query.limit) || 100000, 500000);
+  const { topics, total, dropped } = mqttManager.getTopics(req.params.brokerId, { limit });
+  res.json({ topics, total, dropped, truncated: total > topics.length });
+});
+
+// GET /api/mqtt/brokers/:brokerId/messages?topic=...&limit=50
+router.get('/brokers/:brokerId/messages', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const { topic, limit } = req.query;
+  if (!topic) return res.status(400).json({ error: 'topic query parameter is required' });
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const messages = mqttManager.getMessages(
+    req.params.brokerId,
+    topic,
+    Math.min(Number(limit) || 50, 500)
+  );
+  res.json({ topic, count: messages.length, messages });
+});
+
+// GET /api/mqtt/brokers/:brokerId/sparkplug — Sparkplug B device topology
+// (real publishing endpoints: Group → Edge Node → Device, with online state and
+// each endpoint's metric set). Empty until Sparkplug traffic is observed.
+router.get('/brokers/:brokerId/sparkplug', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  res.json(mqttManager.getSparkplug(req.params.brokerId));
+});
+
+// GET /api/mqtt/brokers/:brokerId/sys — broker `$SYS` health + audit stats.
+// NOTE: standard MQTT (and the `$SYS` tree) exposes broker health and client /
+// subscription COUNTS, not a per-client "who subscribes to what" map. That
+// requires a broker admin API (EMQX/HiveMQ REST, mosquitto_ctrl); reported here
+// via `subscriberVisibility` so the UI can be honest about it.
+router.get('/brokers/:brokerId/sys', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const sys = mqttManager.getSysStats(req.params.brokerId);
+  res.json({
+    ...sys,
+    subscriberVisibility: {
+      perClientSubscriptions: false,
+      reason:
+        'Core MQTT and $SYS expose aggregate counts only. Per-client subscriptions require a broker admin API (e.g. EMQX/HiveMQ REST or mosquitto_ctrl).'
     }
+  });
+});
 
-    const socketId = req.headers['x-socket-id'] || 'api-client';
-    const result = await services.mqttClientManager.connectToBroker(connectionConfig, socketId);
-    
-    res.json({
-      success: true,
-      message: 'Connection attempt started',
-      brokerId: result.brokerId,
-      status: result.status
-    });
+// GET/POST/DELETE /api/mqtt/brokers/:brokerId/admin — broker admin API config
+// (the ONLY honest source of per-client subscriptions). Secret is never echoed.
+router.get('/brokers/:brokerId/admin', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  res.json(mqttManager.getBrokerAdmin(req.params.brokerId));
+});
+
+router.post('/brokers/:brokerId/admin', (req, res) => {
+  const { mqttManager, profiles } = req.app.locals.services;
+  try {
+    const result = mqttManager.setBrokerAdmin(req.params.brokerId, req.body || {});
+    profiles?.setBrokerAdmin(req.params.brokerId, req.body || {});
+    res.json(result);
   } catch (error) {
-    console.error('MQTT connect error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(400).json({ error: error.message });
   }
 });
 
-// Disconnect from an MQTT broker
-router.post('/disconnect/:brokerId', (req, res) => {
-  const { services } = req.app.locals;
-  const { brokerId } = req.params;
-  
-  try {
-    services.mqttClientManager.disconnectFromBroker(brokerId);
-    res.json({
-      success: true,
-      message: `Disconnected from broker ${brokerId}`
-    });
-  } catch (error) {
-    console.error('MQTT disconnect error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+router.delete('/brokers/:brokerId/admin', (req, res) => {
+  const { mqttManager, profiles } = req.app.locals.services;
+  profiles?.clearBrokerAdmin(req.params.brokerId);
+  res.json(mqttManager.clearBrokerAdmin(req.params.brokerId));
 });
 
-// Subscribe to a topic
-router.post('/subscribe', (req, res) => {
-  const { services } = req.app.locals;
-  
-  try {
-    const { brokerId, topic, qos = 0 } = req.body;
-    
-    if (!brokerId || !topic) {
-      return res.status(400).json({ error: 'Broker ID and topic are required' });
-    }
-
-    services.mqttClientManager.subscribeToTopic(brokerId, topic, qos);
-    
-    res.json({
-      success: true,
-      message: `Subscribed to topic ${topic}`,
-      brokerId,
-      topic,
-      qos
-    });
-  } catch (error) {
-    console.error('MQTT subscribe error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+// GET /api/mqtt/brokers/:brokerId/admin/pubsub[?resolve=1&sampleLimit=25]
+// Clients + their subscriptions fetched live from the configured broker admin
+// API (e.g. EMQX REST) — "who subscribes to what", which core MQTT / $SYS cannot
+// provide. With ?resolve=1 each unique filter is additionally RESOLVED against
+// the observed topic set (exact match counts, covering roots, topic samples), so
+// a broad filter like `spBv1.0/#` shows the concrete topics it actually receives.
+router.get('/brokers/:brokerId/admin/pubsub', async (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
   }
-});
-
-// Unsubscribe from a topic
-router.post('/unsubscribe', (req, res) => {
-  const { services } = req.app.locals;
-  
   try {
-    const { brokerId, topic } = req.body;
-    
-    if (!brokerId || !topic) {
-      return res.status(400).json({ error: 'Broker ID and topic are required' });
-    }
-
-    services.mqttClientManager.unsubscribeFromTopic(brokerId, topic);
-    
-    res.json({
-      success: true,
-      message: `Unsubscribed from topic ${topic}`,
-      brokerId,
-      topic
-    });
-  } catch (error) {
-    console.error('MQTT unsubscribe error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Publish a message
-router.post('/publish', (req, res) => {
-  const { services } = req.app.locals;
-  
-  try {
-    const { brokerId, topic, payload, options = {} } = req.body;
-    
-    if (!brokerId || !topic || payload === undefined) {
-      return res.status(400).json({ error: 'Broker ID, topic, and payload are required' });
-    }
-
-    services.mqttClientManager.publishMessage(brokerId, topic, payload, options);
-    
-    res.json({
-      success: true,
-      message: `Message published to topic ${topic}`,
-      brokerId,
-      topic,
-      options
-    });
-  } catch (error) {
-    console.error('MQTT publish error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get topics for a broker
-router.get('/:brokerId/topics', (req, res) => {
-  const { services } = req.app.locals;
-  const { brokerId } = req.params;
-  
-  try {
-    const topics = services.mqttClientManager.getTopicsByBroker(brokerId);
-    res.json(topics);
-  } catch (error) {
-    console.error('Get broker topics error:', error);
-    res.status(500).json({ error: 'Failed to get broker topics' });
-  }
-});
-
-// Get messages for a specific topic
-router.get('/:brokerId/topics/:topicName/messages', (req, res) => {
-  const { services } = req.app.locals;
-  const { brokerId, topicName } = req.params;
-  const { limit = 100, offset = 0 } = req.query;
-  
-  try {
-    const topic = decodeURIComponent(topicName);
-    const messages = services.mqttClientManager.getMessagesForTopic(
-      brokerId, 
-      topic, 
-      parseInt(limit)
-    );
-    
-    // Apply offset if needed
-    const startIndex = parseInt(offset);
-    const paginatedMessages = messages.slice(startIndex, startIndex + parseInt(limit));
-    
-    res.json({
-      messages: paginatedMessages,
-      total: messages.length,
-      limit: parseInt(limit),
-      offset: startIndex
-    });
-  } catch (error) {
-    console.error('Get topic messages error:', error);
-    res.status(500).json({ error: 'Failed to get topic messages' });
-  }
-});
-
-// Get Sparkplug B specific data
-router.get('/sparkplug/data', (req, res) => {
-  const { services } = req.app.locals;
-  
-  try {
-    const allData = services.mqttClientManager.getAllData();
-    const sparkplugData = {
-      groups: {},
-      totalMessages: 0,
-      messageTypes: {},
-      edgeNodes: new Set(),
-      devices: new Set(),
-      metrics: []
-    };
-
-    // Process all messages to extract Sparkplug B data
-    Object.entries(allData.messages || {}).forEach(([brokerId, messages]) => {
-      messages.forEach(msg => {
-        if (msg.sparkplug) {
-          sparkplugData.totalMessages++;
-          
-          const topicParts = msg.topic.split('/');
-          if (topicParts.length >= 4 && topicParts[0] === 'spBv1.0') {
-            const groupId = topicParts[1];
-            const messageType = topicParts[2];
-            const edgeNodeId = topicParts[3];
-            const deviceId = topicParts.length > 4 ? topicParts.slice(4).join('/') : null;
-
-            // Count message types
-            sparkplugData.messageTypes[messageType] = 
-              (sparkplugData.messageTypes[messageType] || 0) + 1;
-
-            // Track edge nodes and devices
-            sparkplugData.edgeNodes.add(edgeNodeId);
-            if (deviceId) {
-              sparkplugData.devices.add(deviceId);
-            }
-
-            // Initialize group if needed
-            if (!sparkplugData.groups[groupId]) {
-              sparkplugData.groups[groupId] = {
-                id: groupId,
-                edgeNodes: {},
-                messageCount: 0,
-                lastActivity: null
-              };
-            }
-
-            const group = sparkplugData.groups[groupId];
-            group.messageCount++;
-            group.lastActivity = msg.timestamp;
-
-            // Initialize edge node if needed
-            if (!group.edgeNodes[edgeNodeId]) {
-              group.edgeNodes[edgeNodeId] = {
-                id: edgeNodeId,
-                devices: {},
-                messageCount: 0,
-                lastActivity: null,
-                metrics: []
-              };
-            }
-
-            const edgeNode = group.edgeNodes[edgeNodeId];
-            edgeNode.messageCount++;
-            edgeNode.lastActivity = msg.timestamp;
-
-            // Process device if present
-            if (deviceId) {
-              if (!edgeNode.devices[deviceId]) {
-                edgeNode.devices[deviceId] = {
-                  id: deviceId,
-                  messageCount: 0,
-                  lastActivity: null,
-                  metrics: []
-                };
-              }
-
-              const device = edgeNode.devices[deviceId];
-              device.messageCount++;
-              device.lastActivity = msg.timestamp;
-
-              // Add metrics to device
-              if (msg.sparkplug.metrics) {
-                device.metrics.push(...msg.sparkplug.metrics.map(metric => ({
-                  ...metric,
-                  timestamp: msg.timestamp,
-                  messageType
-                })));
-              }
-            } else {
-              // Add metrics to edge node
-              if (msg.sparkplug.metrics) {
-                edgeNode.metrics.push(...msg.sparkplug.metrics.map(metric => ({
-                  ...metric,
-                  timestamp: msg.timestamp,
-                  messageType
-                })));
-              }
-            }
-
-            // Add to global metrics
-            if (msg.sparkplug.metrics) {
-              sparkplugData.metrics.push(...msg.sparkplug.metrics.map(metric => ({
-                ...metric,
-                timestamp: msg.timestamp,
-                groupId,
-                edgeNodeId,
-                deviceId,
-                messageType,
-                brokerId
-              })));
-            }
-          }
-        }
-      });
-    });
-
-    // Convert sets to arrays
-    sparkplugData.edgeNodes = Array.from(sparkplugData.edgeNodes);
-    sparkplugData.devices = Array.from(sparkplugData.devices);
-
-    res.json(sparkplugData);
-  } catch (error) {
-    console.error('Get Sparkplug data error:', error);
-    res.status(500).json({ error: 'Failed to get Sparkplug data' });
-  }
-});
-
-// Get Sparkplug B data for a specific group
-router.get('/sparkplug/groups/:groupId', (req, res) => {
-  const { services } = req.app.locals;
-  const { groupId } = req.params;
-  
-  try {
-    const allData = services.mqttClientManager.getAllData();
-    const groupData = {
-      id: groupId,
-      edgeNodes: {},
-      messages: [],
-      metrics: [],
-      summary: {
-        messageCount: 0,
-        edgeNodeCount: 0,
-        deviceCount: 0,
-        metricCount: 0,
-        messageTypes: {}
+    const pubsub = await mqttManager.fetchAdminPubSub(req.params.brokerId);
+    if (req.query.resolve === '1' && pubsub.configured) {
+      const sampleLimit = Math.min(Number(req.query.sampleLimit) || 50, 2000);
+      const filters = pubsub.subscriptions.map((s) => s.topic);
+      const resolved = mqttManager.resolveSubscriptions(req.params.brokerId, filters, { sampleLimit });
+      if (resolved) {
+        pubsub.resolution = {
+          topicTotal: resolved.topicTotal,
+          dropped: resolved.dropped,
+          generation: resolved.generation,
+          byFilter: Object.fromEntries(resolved.results.map((r) => [r.filter, r]))
+        };
       }
-    };
-
-    // Filter messages for this group
-    Object.entries(allData.messages || {}).forEach(([brokerId, messages]) => {
-      messages.forEach(msg => {
-        if (msg.sparkplug && msg.topic.startsWith(`spBv1.0/${groupId}/`)) {
-          groupData.messages.push(msg);
-          groupData.summary.messageCount++;
-
-          const topicParts = msg.topic.split('/');
-          const messageType = topicParts[2];
-          const edgeNodeId = topicParts[3];
-          const deviceId = topicParts.length > 4 ? topicParts.slice(4).join('/') : null;
-
-          // Count message types
-          groupData.summary.messageTypes[messageType] = 
-            (groupData.summary.messageTypes[messageType] || 0) + 1;
-
-          // Process edge nodes
-          if (!groupData.edgeNodes[edgeNodeId]) {
-            groupData.edgeNodes[edgeNodeId] = {
-              id: edgeNodeId,
-              devices: {},
-              messageCount: 0,
-              metrics: []
-            };
-            groupData.summary.edgeNodeCount++;
-          }
-
-          const edgeNode = groupData.edgeNodes[edgeNodeId];
-          edgeNode.messageCount++;
-
-          // Process devices
-          if (deviceId) {
-            if (!edgeNode.devices[deviceId]) {
-              edgeNode.devices[deviceId] = {
-                id: deviceId,
-                messageCount: 0,
-                metrics: []
-              };
-              groupData.summary.deviceCount++;
-            }
-
-            edgeNode.devices[deviceId].messageCount++;
-          }
-
-          // Process metrics
-          if (msg.sparkplug.metrics) {
-            groupData.summary.metricCount += msg.sparkplug.metrics.length;
-            groupData.metrics.push(...msg.sparkplug.metrics.map(metric => ({
-              ...metric,
-              timestamp: msg.timestamp,
-              edgeNodeId,
-              deviceId,
-              messageType,
-              brokerId
-            })));
-          }
-        }
-      });
-    });
-
-    res.json(groupData);
+    }
+    res.json(pubsub);
   } catch (error) {
-    console.error('Get Sparkplug group data error:', error);
-    res.status(500).json({ error: 'Failed to get Sparkplug group data' });
+    res.status(502).json({ error: error.message });
   }
 });
 
-// Classify a payload using AI
-router.post('/classify-payload', async (req, res) => {
-  const { services } = req.app.locals;
-  
-  try {
-    const { payload, topic, metadata = {} } = req.body;
-    
-    if (!payload || !topic) {
-      return res.status(400).json({ error: 'Payload and topic are required' });
-    }
+// POST /api/mqtt/brokers/:brokerId/subscriptions/resolve { filters, sampleLimit?, rootsLimit? }
+// Standalone wildcard-resolution primitive: what would these filters receive,
+// given the topics actually observed on this broker? Counts are always exact;
+// samples/roots are bounded.
+router.post('/brokers/:brokerId/subscriptions/resolve', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const { filters, sampleLimit, rootsLimit } = req.body || {};
+  if (!Array.isArray(filters) || filters.length === 0) {
+    return res.status(400).json({ error: 'filters[] is required' });
+  }
+  if (filters.length > 5000) {
+    return res.status(400).json({ error: 'too many filters (max 5000)' });
+  }
+  const result = mqttManager.resolveSubscriptions(req.params.brokerId, filters, {
+    sampleLimit: Math.min(Number(sampleLimit) || 100, 2000),
+    rootsLimit: Math.min(Number(rootsLimit) || 50, 500)
+  });
+  res.json(result);
+});
 
-    const classification = await services.aiService.classifyPayload(payload, topic, metadata);
-    
-    res.json({
-      success: true,
-      classification: classification
-    });
+// GET /api/mqtt/brokers/:brokerId/topictree?prefix=a/b&limit=500
+// One level of the observed topic tree with subtree counts — lazy drill-down for
+// the Flows lineage view (never ships a whole subtree).
+router.get('/brokers/:brokerId/topictree', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const limit = Math.min(Number(req.query.limit) || 500, 2000);
+  res.json(mqttManager.getTopicChildren(req.params.brokerId, req.query.prefix || '', { limit }));
+});
+
+// POST /api/mqtt/brokers/:brokerId/subscribe { topic, qos }
+router.post('/brokers/:brokerId/subscribe', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const { topic, qos } = req.body || {};
+  if (!topic) return res.status(400).json({ error: 'topic is required' });
+  try {
+    mqttManager.subscribe(req.params.brokerId, topic, qos || 0);
+    res.status(202).json({ brokerId: req.params.brokerId, topic, qos: qos || 0 });
   } catch (error) {
-    console.error('Classify payload error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(400).json({ error: error.message });
   }
 });
 
-// Get broker connection metrics
-router.get('/:brokerId/metrics', (req, res) => {
-  const { services } = req.app.locals;
-  const { brokerId } = req.params;
-  
+// POST /api/mqtt/brokers/:brokerId/unsubscribe { topic }
+router.post('/brokers/:brokerId/unsubscribe', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const { topic } = req.body || {};
+  if (!topic) return res.status(400).json({ error: 'topic is required' });
   try {
-    const allData = services.mqttClientManager.getAllData();
-    const connectionInfo = allData.connections[brokerId];
-    const metrics = allData.metrics[brokerId];
-    
-    if (!connectionInfo) {
-      return res.status(404).json({ error: 'Broker not found' });
-    }
-
-    res.json({
-      brokerId,
-      connection: connectionInfo,
-      metrics: metrics || {},
-      timestamp: new Date()
-    });
+    mqttManager.unsubscribe(req.params.brokerId, topic);
+    res.status(202).json({ brokerId: req.params.brokerId, topic });
   } catch (error) {
-    console.error('Get broker metrics error:', error);
-    res.status(500).json({ error: 'Failed to get broker metrics' });
+    res.status(400).json({ error: error.message });
   }
 });
 
-// Test MQTT connection without establishing persistent connection
-router.post('/test-connection', async (req, res) => {
-  const mqtt = require('mqtt');
-  
+// POST /api/mqtt/brokers/:brokerId/publish { topic, payload, qos, retain }
+router.post('/brokers/:brokerId/publish', async (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const { topic, payload, qos, retain } = req.body || {};
+  if (!topic) return res.status(400).json({ error: 'topic is required' });
   try {
-    const { host, port, protocol = 'mqtt', username, password, timeout = 10000 } = req.body;
-    
-    if (!host || !port) {
-      return res.status(400).json({ error: 'Host and port are required' });
-    }
-
-    const brokerUrl = `${protocol}://${host}:${port}`;
-    const options = {
-      connectTimeout: timeout,
-      reconnectPeriod: 0, // Don't reconnect
-      clean: true
-    };
-
-    if (username) {
-      options.username = username;
-      options.password = password || '';
-    }
-
-    const testClient = mqtt.connect(brokerUrl, options);
-    
-    const testResult = await new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        testClient.end();
-        reject(new Error('Connection timeout'));
-      }, timeout);
-
-      testClient.on('connect', (connack) => {
-        clearTimeout(timeoutId);
-        testClient.end();
-        resolve({
-          success: true,
-          message: 'Connection successful',
-          connack: connack,
-          brokerUrl: brokerUrl
-        });
-      });
-
-      testClient.on('error', (error) => {
-        clearTimeout(timeoutId);
-        testClient.end();
-        reject(error);
-      });
-    });
-
-    res.json(testResult);
+    const result = await mqttManager.publish(req.params.brokerId, topic, payload ?? '', { qos, retain });
+    res.json(result);
   } catch (error) {
-    console.error('Test connection error:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Internal server error' 
-    });
-  }
-});
-
-// Get live message feed for a broker (for SSE or polling)
-router.get('/:brokerId/live-feed', (req, res) => {
-  const { services } = req.app.locals;
-  const { brokerId } = req.params;
-  const { since, limit = 50 } = req.query;
-  
-  try {
-    const allData = services.mqttClientManager.getAllData();
-    const messages = allData.messages[brokerId] || [];
-    
-    let filteredMessages = messages;
-    
-    // Filter by timestamp if 'since' parameter is provided
-    if (since) {
-      const sinceDate = new Date(since);
-      filteredMessages = messages.filter(msg => 
-        new Date(msg.timestamp) > sinceDate
-      );
-    }
-
-    // Apply limit
-    const recentMessages = filteredMessages.slice(-parseInt(limit));
-    
-    res.json({
-      brokerId,
-      messages: recentMessages,
-      total: filteredMessages.length,
-      timestamp: new Date()
-    });
-  } catch (error) {
-    console.error('Get live feed error:', error);
-    res.status(500).json({ error: 'Failed to get live feed' });
+    res.status(400).json({ error: error.message });
   }
 });
 

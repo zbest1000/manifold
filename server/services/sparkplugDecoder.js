@@ -5,14 +5,10 @@ class SparkplugDecoder {
   constructor() {
     this.root = null;
     this.Payload = null;
-    // alias -> name maps captured from BIRTH certificates, keyed by device scope.
-    this.aliasMaps = new Map();
     this.initializeProtobuf();
   }
 
-  // Synchronous: protobuf.parse is sync, so this.Payload is ready before the
-  // constructor returns. The previous async version raced early decode() calls.
-  initializeProtobuf() {
+  async initializeProtobuf() {
     try {
       // Define Sparkplug B protobuf schema inline for simplicity
       const protoSchema = `
@@ -132,10 +128,7 @@ class SparkplugDecoder {
         }
       `;
 
-      // keepCase: true keeps proto field names as snake_case (int_value,
-      // is_historical, num_of_columns, ...). Without it protobufjs camel-cases
-      // them and every multi-word/oneof field read below silently misses.
-      this.root = protobuf.parse(protoSchema, { keepCase: true }).root;
+      this.root = protobuf.parse(protoSchema).root;
       this.Payload = this.root.lookupType('Payload');
       
       console.log('✅ Sparkplug B protobuf schema initialized');
@@ -145,113 +138,29 @@ class SparkplugDecoder {
     }
   }
 
-  decode(buffer, topic = null) {
-    // STATE messages are NOT protobuf — the payload is a UTF-8 string / small JSON.
-    if (topic && SparkplugDecoder.isStateTopic(topic)) {
-      return this.decodeState(buffer, topic);
-    }
-
+  decode(buffer) {
     if (!this.Payload) {
       throw new Error('Protobuf schema not initialized');
     }
 
     try {
+      // Decode the protobuf message
       const message = this.Payload.decode(buffer);
       const object = this.Payload.toObject(message, {
         longs: String,
         enums: String,
         bytes: String,
-        // defaults:false so an absent alias/timestamp/seq stays undefined instead
-        // of being fabricated as "0" / the 1970 epoch.
-        defaults: false,
+        defaults: true,
         arrays: true,
         objects: true,
         oneofs: true
       });
 
-      const processed = this.processSparkplugPayload(object);
-      if (topic) {
-        this.applyAliasResolution(processed, topic);
-      }
-      return processed;
+      // Process and enhance the decoded payload
+      return this.processSparkplugPayload(object);
     } catch (error) {
       console.error('Failed to decode Sparkplug payload:', error);
       throw error;
-    }
-  }
-
-  static isStateTopic(topic) {
-    return typeof topic === 'string' && topic.startsWith('spBv1.0/STATE/');
-  }
-
-  decodeState(buffer, topic) {
-    const raw = buffer.toString('utf8').trim();
-    let online = null;
-    let payload = raw;
-    try {
-      const json = JSON.parse(raw);
-      payload = json;
-      if (typeof json.online === 'boolean') {
-        online = json.online;
-      }
-    } catch (error) {
-      const upper = raw.toUpperCase();
-      if (upper === 'ONLINE') {
-        online = true;
-      } else if (upper === 'OFFLINE') {
-        online = false;
-      }
-    }
-    return {
-      messageType: 'STATE',
-      scadaHostId: topic.split('/').slice(2).join('/'),
-      online,
-      raw: payload,
-      metrics: []
-    };
-  }
-
-  // BIRTH certificates publish each metric with name + alias; subsequent DATA
-  // messages publish alias only. Cache the mapping per device scope and backfill
-  // names onto DATA metrics.
-  aliasScope(info) {
-    return info.deviceId
-      ? `${info.groupId}/${info.edgeNodeId}/${info.deviceId}`
-      : `${info.groupId}/${info.edgeNodeId}`;
-  }
-
-  applyAliasResolution(processed, topic) {
-    const info = SparkplugDecoder.parseSparkplugTopic(topic);
-    if (!info) {
-      return;
-    }
-    const scope = this.aliasScope(info);
-    const type = info.messageType;
-
-    if (type === 'NBIRTH' || type === 'DBIRTH') {
-      const map = new Map();
-      processed.metrics.forEach(metric => {
-        if (metric.name && metric.alias !== undefined && metric.alias !== null) {
-          map.set(String(metric.alias), metric.name);
-        }
-      });
-      this.aliasMaps.set(scope, map);
-    } else if (type === 'NDATA' || type === 'DDATA' || type === 'NCMD' || type === 'DCMD') {
-      const map = this.aliasMaps.get(scope);
-      if (map) {
-        processed.metrics.forEach(metric => {
-          if (!metric.name && metric.alias !== undefined && metric.alias !== null) {
-            const resolved = map.get(String(metric.alias));
-            if (resolved) {
-              metric.name = resolved;
-              metric.aliasResolved = true;
-              metric.description = this.generateMetricDescription(metric);
-            }
-          }
-        });
-      }
-    } else if (type === 'NDEATH' || type === 'DDEATH') {
-      this.aliasMaps.delete(scope);
     }
   }
 
@@ -280,7 +189,7 @@ class SparkplugDecoder {
         const dataType = this.getDataTypeName(metric.datatype);
         processed.summary.dataTypes[dataType] = (processed.summary.dataTypes[dataType] || 0) + 1;
         
-        if (metric.alias !== undefined && metric.alias !== null) {
+        if (metric.alias) {
           processed.summary.aliases.push(metric.alias);
         }
 
@@ -319,10 +228,9 @@ class SparkplugDecoder {
   }
 
   extractMetricValue(metric) {
-    // int_value/long_value arrive in UNSIGNED protobuf fields; signed Sparkplug
-    // types (Int8/16/32/64) must be reinterpreted per the metric's datatype.
-    if (metric.int_value !== undefined) return this.reinterpretInt(metric.int_value, metric.datatype);
-    if (metric.long_value !== undefined) return this.reinterpretLong(metric.long_value, metric.datatype);
+    // Extract value based on the oneof field
+    if (metric.int_value !== undefined) return metric.int_value;
+    if (metric.long_value !== undefined) return metric.long_value;
     if (metric.float_value !== undefined) return metric.float_value;
     if (metric.double_value !== undefined) return metric.double_value;
     if (metric.boolean_value !== undefined) return metric.boolean_value;
@@ -333,29 +241,6 @@ class SparkplugDecoder {
     if (metric.extension_value !== undefined) return this.processPropertySet(metric.extension_value);
 
     return null;
-  }
-
-  reinterpretInt(value, datatype) {
-    const v = Number(value) >>> 0; // interpret the raw bits as uint32 first
-    switch (datatype) {
-      case 1: return (v << 24) >> 24; // Int8
-      case 2: return (v << 16) >> 16; // Int16
-      case 3: return v | 0;           // Int32
-      default: return v;              // UInt8/16/32 (and anything else)
-    }
-  }
-
-  reinterpretLong(value, datatype) {
-    // long_value arrives as a string (longs: String). Int64 (datatype 4) is
-    // re-signed; UInt64 and DateTime keep the unsigned value.
-    if (datatype === 4) {
-      try {
-        return BigInt.asIntN(64, BigInt(value)).toString();
-      } catch (error) {
-        return value;
-      }
-    }
-    return value;
   }
 
   processPropertySet(propertySet) {
@@ -500,13 +385,13 @@ class SparkplugDecoder {
       case 'Double':
         return typeof value === 'number' ? value.toFixed(2) : value.toString();
       case 'DateTime':
-        return new Date(Number(value)).toISOString();
+        return new Date(value).toISOString();
       case 'DataSet':
         return `DataSet(${value.rows ? value.rows.length : 0} rows)`;
       case 'Template':
         return `Template(${value.metrics ? value.metrics.length : 0} metrics)`;
       case 'Bytes':
-        return `Bytes(${typeof value === 'string' ? Buffer.from(value, 'base64').length : (value.length || 0)} bytes)`;
+        return `Bytes(${value.length || 0} bytes)`;
       default:
         return value.toString();
     }

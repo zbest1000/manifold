@@ -2,173 +2,198 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config();
 
-const { httpAuth, socketAuth } = require('./middleware/auth');
+const MqttManager = require('./services/mqttManager');
+const OpcuaManager = require('./services/opcuaManager');
+const DiscoveryService = require('./services/discovery');
+const CesmiiClient = require('./services/cesmiiClient');
+const I3xClient = require('./services/i3xClient');
+const ProfileStore = require('./services/profileStore');
 
-// Import custom modules
-const MQTTDiscoveryService = require('./services/mqttDiscovery');
-const MQTTClientManager = require('./services/mqttClientManager');
-const SparkplugDecoder = require('./services/sparkplugDecoder');
-const AIService = require('./services/aiService');
-const NetworkScanner = require('./services/networkScanner');
-const DataExporter = require('./services/dataExporter');
-
-// Import routes
-const apiRoutes = require('./routes/api');
 const mqttRoutes = require('./routes/mqtt');
-const aiRoutes = require('./routes/ai');
+const opcuaRoutes = require('./routes/opcua');
+const systemRoutes = require('./routes/system');
+const cesmiiRoutes = require('./routes/cesmii');
+const i3xRoutes = require('./routes/i3x');
+const layoutRoutes = require('./routes/layout');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: process.env.CLIENT_URL || 'http://localhost:3000',
+    methods: ['GET', 'POST']
   }
 });
 
-// Security middleware. CSP is disabled because the SPA it serves uses inline
-// assets; the rest of helmet's headers (nosniff, frameguard, HSTS, ...) apply.
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting: a general limit on the whole API plus a stricter limit on the
-// expensive/abusable endpoints (AI calls, network scanning).
-const rateWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW || '15', 10) * 60 * 1000;
-const globalLimiter = rateLimit({
-  windowMs: rateWindowMs,
-  max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
-  standardHeaders: true,
-  legacyHeaders: false
-});
-const strictLimiter = rateLimit({
-  windowMs: rateWindowMs,
-  max: parseInt(process.env.RATE_LIMIT_MAX_STRICT || '20', 10),
-  standardHeaders: true,
-  legacyHeaders: false
-});
-app.use('/api/ai', strictLimiter);
-app.use('/api/network', strictLimiter);
-// Auth + general rate limit gate every /api route (health check stays public).
-app.use('/api', globalLimiter, httpAuth);
+// ---- Authentication -------------------------------------------------------
+// This is a CONTROL PLANE, not a viewer: the API can publish to brokers
+// (including Sparkplug commands that actuate equipment), disconnect
+// connections, and start network scans. Set TC_AUTH_TOKEN to require a bearer
+// token on every /api route and on the Socket.IO handshake. Without it the
+// server runs open (dev convenience) and says so loudly at startup.
+const AUTH_TOKEN = process.env.TC_AUTH_TOKEN || '';
 
-// Serve static files in production
+function tokenMatches(candidate) {
+  if (typeof candidate !== 'string' || candidate.length === 0) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(AUTH_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+app.use('/api', (req, res, next) => {
+  if (!AUTH_TOKEN) return next();
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (tokenMatches(token)) return next();
+  res.status(401).json({ error: 'Unauthorized: missing or invalid bearer token' });
+});
+
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../client/dist')));
 }
 
-// Initialize services
-const mqttDiscovery = new MQTTDiscoveryService(io);
-const mqttClientManager = new MQTTClientManager(io);
-const sparkplugDecoder = new SparkplugDecoder();
-const aiService = new AIService();
-const networkScanner = new NetworkScanner(io);
-const dataExporter = new DataExporter();
+const mqttManager = new MqttManager(io);
+const opcuaManager = new OpcuaManager(io);
+const i3x = new I3xClient();
+const discovery = new DiscoveryService(io, { i3x });
+const cesmii = new CesmiiClient();
+const profiles = new ProfileStore();
 
-// Store services in app locals for access in routes
-app.locals.services = {
-  mqttDiscovery,
-  mqttClientManager,
-  sparkplugDecoder,
-  aiService,
-  networkScanner,
-  dataExporter
-};
+app.locals.services = { mqttManager, opcuaManager, discovery, cesmii, i3x, profiles };
 
-// Routes
-app.use('/api', apiRoutes);
-app.use('/api/mqtt', mqttRoutes);
-app.use('/api/ai', aiRoutes);
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    services: {
-      mqtt: mqttClientManager.getConnectionStatus(),
-      ai: aiService.isAvailable(),
-      scanner: networkScanner.isScanning()
-    }
-  });
-});
-
-// Reject unauthenticated sockets during the handshake (enforced only when
-// APP_ACCESS_TOKEN is set).
-io.use(socketAuth);
-
-// Wraps a socket handler so a thrown error or rejected promise emits an error
-// back to that client instead of crashing the Node process.
-function safeOn(socket, event, handler) {
-  socket.on(event, async (...args) => {
+// Restore saved connection profiles so a server restart doesn't lose state.
+// Every restore is individually try/caught: an unreachable broker must not stop
+// the rest from coming back.
+function restoreProfiles() {
+  for (const entry of profiles.brokers()) {
     try {
-      await handler(...args);
+      mqttManager.connectToBroker(entry.config);
+      if (entry.admin) mqttManager.setBrokerAdmin(entry.config.id, entry.admin);
     } catch (error) {
-      console.error(`Socket handler error [${event}]:`, error.message);
-      socket.emit('server-error', { event, error: error.message });
+      console.warn(`restore: mqtt broker ${entry.config?.host}:${entry.config?.port}: ${error.message}`);
     }
-  });
+  }
+  for (const config of profiles.opcuaEndpoints()) {
+    opcuaManager.connect(config).catch((error) => {
+      console.warn(`restore: opcua ${config.endpointUrl}: ${error.message}`);
+    });
+  }
+  if (profiles.data.cesmii) {
+    try {
+      cesmii.configure(profiles.data.cesmii);
+    } catch (error) {
+      console.warn(`restore: cesmii: ${error.message}`);
+    }
+  }
+  if (profiles.data.i3x) {
+    i3x.connect(profiles.data.i3x).catch((error) => {
+      console.warn(`restore: i3x ${profiles.data.i3x?.baseUrl}: ${error.message}`);
+    });
+  }
 }
+if (process.env.TC_NO_RESTORE !== '1') restoreProfiles();
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+app.use('/api/mqtt', mqttRoutes);
+app.use('/api/opcua', opcuaRoutes);
+app.use('/api/system', systemRoutes);
+app.use('/api/cesmii', cesmiiRoutes);
+app.use('/api/i3x', i3xRoutes);
+app.use('/api/layout', layoutRoutes);
 
-  // MQTT Discovery events
-  safeOn(socket, 'start-discovery', (options) => mqttDiscovery.startDiscovery(options));
-  safeOn(socket, 'stop-discovery', () => mqttDiscovery.stopDiscovery());
-
-  // MQTT Connection events
-  safeOn(socket, 'connect-mqtt', (connectionConfig) => mqttClientManager.connectToBroker(connectionConfig, socket.id));
-  safeOn(socket, 'disconnect-mqtt', (brokerId) => mqttClientManager.disconnectFromBroker(brokerId));
-  safeOn(socket, 'subscribe-topic', (data) => mqttClientManager.subscribeToTopic(data.brokerId, data.topic, data.qos));
-  safeOn(socket, 'unsubscribe-topic', (data) => mqttClientManager.unsubscribeFromTopic(data.brokerId, data.topic));
-  safeOn(socket, 'publish-message', (data) => mqttClientManager.publishMessage(data.brokerId, data.topic, data.payload, data.options));
-
-  // Network scanning events
-  safeOn(socket, 'start-network-scan', (options) => networkScanner.startScan(options));
-  safeOn(socket, 'stop-network-scan', () => networkScanner.stopScan());
-
-  // AI Query events
-  safeOn(socket, 'ai-query', async (query) => {
-    try {
-      const response = await aiService.processQuery(query, mqttClientManager.getAllData());
-      socket.emit('ai-response', { query, response });
-    } catch (error) {
-      socket.emit('ai-error', { query, error: error.message });
-    }
-  });
-
-  // Data export events
-  safeOn(socket, 'export-data', async (options) => {
-    try {
-      const exportData = await dataExporter.exportData(mqttClientManager.getAllData(), options);
-      socket.emit('export-ready', exportData);
-    } catch (error) {
-      socket.emit('export-error', { error: error.message });
-    }
-  });
-
-  safeOn(socket, 'disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-    mqttClientManager.cleanupSocketConnections(socket.id);
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    mqttConnections: mqttManager.getConnections().length,
+    opcuaConnections: opcuaManager.getConnections().length
   });
 });
 
-// Error handling middleware
+io.use((socket, next) => {
+  if (!AUTH_TOKEN) return next();
+  if (tokenMatches(socket.handshake.auth?.token)) return next();
+  next(new Error('Unauthorized'));
+});
+
+io.on('connection', (socket) => {
+  // Push current state so late-joining clients hydrate immediately
+  socket.emit('state-snapshot', {
+    mqtt: mqttManager.getConnections(),
+    opcua: opcuaManager.getConnections(),
+    discovery: { scanning: discovery.isScanning(), results: discovery.getLastResults() }
+  });
+
+  socket.on('connect-mqtt', (config, ack) => {
+    try {
+      const result = mqttManager.connectToBroker(config || {});
+      if (typeof ack === 'function') ack({ ok: true, ...result });
+    } catch (error) {
+      if (typeof ack === 'function') ack({ ok: false, error: error.message });
+      socket.emit('mqtt-error', { error: error.message });
+    }
+  });
+
+  socket.on('disconnect-mqtt', (brokerId) => {
+    try {
+      mqttManager.disconnectFromBroker(brokerId);
+    } catch {
+      // already gone
+    }
+  });
+
+  socket.on('subscribe-topic', ({ brokerId, topic, qos } = {}) => {
+    try {
+      mqttManager.subscribe(brokerId, topic, qos || 0);
+    } catch (error) {
+      socket.emit('subscription-error', { brokerId, topic, error: error.message });
+    }
+  });
+
+  socket.on('unsubscribe-topic', ({ brokerId, topic } = {}) => {
+    try {
+      mqttManager.unsubscribe(brokerId, topic);
+    } catch (error) {
+      socket.emit('unsubscription-error', { brokerId, topic, error: error.message });
+    }
+  });
+
+  socket.on('publish-message', ({ brokerId, topic, payload, options } = {}) => {
+    mqttManager.publish(brokerId, topic, payload, options).catch((error) => {
+      socket.emit('publish-error', { brokerId, topic, error: error.message });
+    });
+  });
+
+  socket.on('start-discovery', (options) => {
+    discovery.startScan(options || {}).catch((error) => {
+      socket.emit('discovery-error', { error: error.message });
+    });
+  });
+
+  socket.on('stop-discovery', () => discovery.stopScan());
+
+  socket.on('opcua-monitor', ({ connectionId, nodeId, samplingInterval } = {}) => {
+    opcuaManager.monitor(connectionId, nodeId, samplingInterval).catch((error) => {
+      socket.emit('opcua-error', { connectionId, nodeId, error: error.message });
+    });
+  });
+
+  socket.on('opcua-unmonitor', ({ connectionId, nodeId } = {}) => {
+    opcuaManager.unmonitor(connectionId, nodeId).catch(() => {});
+  });
+});
+
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-// Serve React app in production
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../client/dist/index.html'));
@@ -176,18 +201,24 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const PORT = process.env.PORT || 5000;
-// Only listen when run directly (node index.js). When required by tests we export
-// the app so supertest can exercise it without binding a port.
-if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`🚀 MQTT Explore Server running on port ${PORT}`);
-    console.log(`📡 WebSocket server ready for real-time communication`);
+server.listen(PORT, () => {
+  console.log(`Topic Canvas server listening on port ${PORT}`);
+  if (!AUTH_TOKEN) {
+    console.warn(
+      '⚠️  TC_AUTH_TOKEN is not set — the API and socket are UNAUTHENTICATED. ' +
+        'Anyone who can reach this port can publish to brokers and start scans. ' +
+        'Set TC_AUTH_TOKEN before exposing this beyond localhost.'
+    );
+  }
+});
 
-    // Start background services
-    if (process.env.AUTO_START_DISCOVERY === 'true') {
-      mqttDiscovery.startDiscovery();
-    }
-  });
-}
+const shutdown = async () => {
+  mqttManager.shutdown();
+  await opcuaManager.shutdown();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 module.exports = { app, server, io };
