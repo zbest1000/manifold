@@ -63,9 +63,9 @@ class MqttManager extends EventEmitter {
 
     const options = {
       clientId,
-      keepalive: config.keepalive || 60,
-      connectTimeout: config.timeout || 15000,
-      reconnectPeriod: config.reconnect === false ? 0 : 5000,
+      keepalive: Number(config.keepalive) || 60,
+      connectTimeout: Number(config.timeout) || 15000,
+      reconnectPeriod: config.reconnect === false ? 0 : Number(config.reconnectPeriod) || 5000,
       clean: config.cleanSession !== false,
       rejectUnauthorized: config.rejectUnauthorized !== false
     };
@@ -91,6 +91,9 @@ class MqttManager extends EventEmitter {
       clientId,
       username: config.username || null,
       autoSubscribe: config.autoSubscribe !== false,
+      // 0 = reconnect forever (mqtt.js default); >0 = give up after N attempts.
+      maxReconnect: Number(config.maxReconnect) > 0 ? Number(config.maxReconnect) : 0,
+      reconnectCount: 0,
       status: 'connecting',
       connectedAt: null,
       lastActivity: new Date(),
@@ -125,6 +128,7 @@ class MqttManager extends EventEmitter {
       info.status = 'connected';
       info.connectedAt = new Date();
       info.lastError = null;
+      info.reconnectCount = 0; // a successful connect resets the retry counter
       this.io.emit('mqtt-connected', { brokerId, connection: this.publicInfo(info) });
 
       if (info.autoSubscribe) {
@@ -148,15 +152,26 @@ class MqttManager extends EventEmitter {
     });
 
     client.on('close', () => {
-      if (info.status !== 'disconnected') {
+      // Keep an explicit 'error' (e.g. gave-up-after-max-retries) rather than
+      // downgrading it to 'offline'.
+      if (info.status !== 'disconnected' && info.status !== 'error') {
         info.status = 'offline';
         this.io.emit('mqtt-offline', { brokerId });
       }
     });
 
     client.on('reconnect', () => {
+      info.reconnectCount = (info.reconnectCount || 0) + 1;
+      if (info.maxReconnect && info.reconnectCount > info.maxReconnect) {
+        info.status = 'error';
+        info.lastError = `Gave up after ${info.maxReconnect} reconnect attempt(s)`;
+        info.metrics.errors++;
+        this.io.emit('mqtt-error', { brokerId, error: info.lastError });
+        client.end(true);
+        return;
+      }
       info.status = 'reconnecting';
-      this.io.emit('mqtt-reconnecting', { brokerId });
+      this.io.emit('mqtt-reconnecting', { brokerId, attempt: info.reconnectCount });
     });
   }
 

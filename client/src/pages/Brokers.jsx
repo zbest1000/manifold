@@ -1,17 +1,37 @@
 import { useState } from 'react';
-import { Radio, Plus, Trash2, Server } from 'lucide-react';
+import { Radio, Plus, Trash2, Server, ChevronRight } from 'lucide-react';
+import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
 import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 
-const BLANK = { name: '', host: 'localhost', port: 1883, protocol: 'mqtt', username: '', password: '' };
+const BLANK = {
+  name: '',
+  host: 'localhost',
+  port: 1883,
+  protocol: 'mqtt',
+  username: '',
+  password: '',
+  // Connection config (advanced)
+  clientId: '',
+  keepalive: 60,
+  timeout: 15000,
+  reconnect: true,
+  reconnectPeriod: 5000,
+  maxReconnect: 0,
+  cleanSession: true,
+  autoSubscribe: true,
+  rejectUnauthorized: true
+};
 
 export default function Brokers() {
   const brokers = useStore((s) => s.brokers);
+  const openLog = useStore((s) => s.openLog);
   const [form, setForm] = useState(BLANK);
   const [showForm, setShowForm] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const connect = async () => {
@@ -19,10 +39,21 @@ export default function Brokers() {
     setBusy(true);
     try {
       await api.connectBroker({
-        ...form,
+        name: form.name || undefined,
+        host: form.host,
         port: Number(form.port),
+        protocol: form.protocol,
         username: form.username || undefined,
-        password: form.password || undefined
+        password: form.password || undefined,
+        clientId: form.clientId || undefined,
+        keepalive: Number(form.keepalive) || 60,
+        timeout: Number(form.timeout) || 15000,
+        reconnect: form.reconnect,
+        reconnectPeriod: Number(form.reconnectPeriod) || 5000,
+        maxReconnect: Number(form.maxReconnect) || 0,
+        cleanSession: form.cleanSession,
+        autoSubscribe: form.autoSubscribe,
+        rejectUnauthorized: form.rejectUnauthorized
       });
       toast.success('Connecting to broker…');
       setForm(BLANK);
@@ -85,6 +116,62 @@ export default function Brokers() {
                 <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
               </Field>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="mt-4 flex items-center gap-1.5 text-xs font-medium text-slate-400 transition hover:text-slate-200"
+            >
+              <ChevronRight size={14} className={clsx('transition-transform', showAdvanced && 'rotate-90')} />
+              Connection config — retries, timeouts, keep-alive
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 grid grid-cols-1 gap-4 rounded-xl border border-white/5 bg-surface-950/40 p-4 sm:grid-cols-2">
+                <Field label="Client ID (optional)">
+                  <Input
+                    value={form.clientId}
+                    onChange={(e) => setForm({ ...form, clientId: e.target.value })}
+                    placeholder="auto-generated"
+                  />
+                </Field>
+                <Field label="Keep-alive (seconds)">
+                  <Input type="number" value={form.keepalive} onChange={(e) => setForm({ ...form, keepalive: e.target.value })} />
+                </Field>
+                <Field label="Connect timeout (ms)">
+                  <Input type="number" value={form.timeout} onChange={(e) => setForm({ ...form, timeout: e.target.value })} />
+                </Field>
+                <Field label="Reconnect delay (ms)">
+                  <Input
+                    type="number"
+                    value={form.reconnectPeriod}
+                    disabled={!form.reconnect}
+                    onChange={(e) => setForm({ ...form, reconnectPeriod: e.target.value })}
+                  />
+                </Field>
+                <Field label="Max reconnect attempts (0 = unlimited)">
+                  <Input
+                    type="number"
+                    value={form.maxReconnect}
+                    disabled={!form.reconnect}
+                    onChange={(e) => setForm({ ...form, maxReconnect: e.target.value })}
+                  />
+                </Field>
+                <div className="flex flex-col justify-center gap-2.5">
+                  <Check label="Auto-reconnect" checked={form.reconnect} onChange={(v) => setForm({ ...form, reconnect: v })} />
+                  <Check label="Clean session" checked={form.cleanSession} onChange={(v) => setForm({ ...form, cleanSession: v })} />
+                  <Check label="Auto-subscribe to #" checked={form.autoSubscribe} onChange={(v) => setForm({ ...form, autoSubscribe: v })} />
+                  {form.protocol === 'mqtts' && (
+                    <Check
+                      label="Verify TLS certificate"
+                      checked={form.rejectUnauthorized}
+                      onChange={(v) => setForm({ ...form, rejectUnauthorized: v })}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setShowForm(false)}>
                 Cancel
@@ -124,7 +211,12 @@ export default function Brokers() {
                 <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                   <Metric label="Messages" value={b.metrics?.messagesReceived ?? 0} />
                   <Metric label="Topics" value={b.metrics?.topicCount ?? 0} />
-                  <Metric label="Errors" value={b.metrics?.errors ?? 0} />
+                  <Metric
+                    label="Errors"
+                    value={b.metrics?.errors ?? 0}
+                    onClick={() => openLog(b.id)}
+                    valueClassName={(b.metrics?.errors ?? 0) > 0 ? 'text-rose-300' : undefined}
+                  />
                 </div>
                 <div className="mt-4 flex justify-end">
                   <Button variant="danger" size="sm" onClick={() => disconnect(b.id)}>
@@ -140,11 +232,34 @@ export default function Brokers() {
   );
 }
 
-function Metric({ label, value }) {
+function Metric({ label, value, onClick, valueClassName }) {
+  const clickable = typeof onClick === 'function';
+  const Comp = clickable ? 'button' : 'div';
   return (
-    <div className="rounded-lg bg-white/[0.03] py-2">
-      <p className="text-lg font-semibold text-slate-100">{value}</p>
+    <Comp
+      onClick={onClick}
+      title={clickable ? 'View in log' : undefined}
+      className={clsx(
+        'w-full rounded-lg bg-white/[0.03] py-2',
+        clickable && 'cursor-pointer transition hover:bg-white/[0.08]'
+      )}
+    >
+      <p className={clsx('text-lg font-semibold text-slate-100', valueClassName)}>{value}</p>
       <p className="text-[11px] text-slate-500">{label}</p>
-    </div>
+    </Comp>
+  );
+}
+
+function Check({ label, checked, onChange }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 rounded border-white/20 bg-surface-950 text-accent-500 focus:ring-2 focus:ring-accent-500/40"
+      />
+      {label}
+    </label>
   );
 }

@@ -3,6 +3,7 @@ import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory,
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot } from './ui';
+import ErrorLog from './ErrorLog';
 
 // Task-shaped nav: explore (Topics), audit (Flows), then per-protocol sources.
 // Flows is top-level — producer → topic → consumer visibility is a primary job
@@ -73,6 +74,9 @@ export default function Layout() {
           <div className="flex items-center justify-between text-slate-500">
             <span>OPC UA</span>
             <span className="mono text-slate-300">{opcua.length}</span>
+          </div>
+          <div className="pt-1">
+            <ErrorLog />
           </div>
         </div>
       </aside>

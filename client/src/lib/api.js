@@ -1,5 +1,7 @@
 // Thin REST client for the Topic Canvas backend. All calls are relative so the
 // Vite dev proxy (and production static serving) route them to the API.
+import { useStore } from '@/store/store';
+import { humanizeError } from '@/lib/humanizeError';
 
 // Bearer token for servers started with TC_AUTH_TOKEN. Kept in localStorage and
 // attached to every request; the AuthGate sets it after the user unlocks.
@@ -14,14 +16,22 @@ export function setAuthToken(token) {
 
 async function request(path, options = {}) {
   const token = getAuthToken();
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
-    }
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {})
+      }
+    });
+  } catch (e) {
+    // Network-level failure (server unreachable, CORS, etc.)
+    const h = humanizeError(e.message || 'Network request failed');
+    useStore.getState().pushLog('error', 'api', h.summary, { path, raw: e.message, code: h.code, hint: h.hint });
+    throw new Error(h.summary);
+  }
   const text = await res.text();
   let body = {};
   try {
@@ -30,7 +40,10 @@ async function request(path, options = {}) {
     body = { raw: text };
   }
   if (!res.ok) {
-    throw new Error(body.error || `Request failed (${res.status})`);
+    const raw = body.error || `Request failed (${res.status})`;
+    const h = humanizeError(raw);
+    useStore.getState().pushLog('error', 'api', h.summary, { path, status: res.status, raw, code: h.code, hint: h.hint });
+    throw new Error(h.summary);
   }
   return body;
 }
