@@ -25,6 +25,7 @@ class HistoryStore {
     this.file = path.join(dir, 'history.json');
     this.timer = null;
     this.lastSeq = -1; // manager.msgSeq watermark — skip writes when idle
+    this.writing = false; // async write in flight
   }
 
   start() {
@@ -38,23 +39,46 @@ class HistoryStore {
     this.timer = null;
   }
 
-  snapshot() {
+  /**
+   * Snapshot the rings. The periodic path is ASYNC (serialization is cheap,
+   * but a multi-MB write must not block the event loop mid-traffic); shutdown
+   * passes { sync: true } because the process is about to exit.
+   */
+  snapshot({ sync = false } = {}) {
     if (this.manager.msgSeq === this.lastSeq) return false; // nothing new
+    if (this.writing && !sync) return false; // previous async write still going
     this.lastSeq = this.manager.msgSeq;
     const out = {};
     for (const [brokerId, ring] of this.manager.recent) {
       if (ring.length) out[brokerId] = ring.slice(-MAX_PER_BROKER);
     }
+    const body = JSON.stringify({ savedAt: new Date().toISOString(), brokers: out });
+    const tmp = `${this.file}.tmp`;
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-      const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ savedAt: new Date().toISOString(), brokers: out }), { mode: 0o600 });
-      fs.renameSync(tmp, this.file);
-      return true;
     } catch (error) {
       console.warn(`historyStore: snapshot failed: ${error.message}`);
       return false;
     }
+    if (sync) {
+      try {
+        fs.writeFileSync(tmp, body, { mode: 0o600 });
+        fs.renameSync(tmp, this.file);
+        return true;
+      } catch (error) {
+        console.warn(`historyStore: snapshot failed: ${error.message}`);
+        return false;
+      }
+    }
+    this.writing = true;
+    fs.promises
+      .writeFile(tmp, body, { mode: 0o600 })
+      .then(() => fs.promises.rename(tmp, this.file))
+      .catch((error) => console.warn(`historyStore: snapshot failed: ${error.message}`))
+      .finally(() => {
+        this.writing = false;
+      });
+    return true;
   }
 
   /** Refill still-empty rings from the last snapshot (call after profile restore). */

@@ -5,7 +5,7 @@ const path = require('path');
 
 // DataOps collections stored alongside connection profiles. Generic CRUD keeps
 // the store from growing three near-identical method triples per module.
-const COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts'];
+const COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings'];
 function emptyCollections() {
   return Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));
 }
@@ -31,6 +31,11 @@ class ProfileStore {
     this.dir = dir;
     this.file = path.join(dir, 'profiles.json');
     this.data = { mqtt: {}, opcua: {}, cesmii: null, i3x: null, mounts: {}, alertRules: {}, ...emptyCollections() };
+    // Monotonic revision, bumped on every save. Hot-path consumers (pipeline/
+    // recorder/contract/model engines) compile the collections into matcher
+    // tables and only rebuild when this changes — so the per-message cost is a
+    // number comparison, not Object.values() + filter parsing per engine.
+    this.rev = 1;
     this._load();
   }
 
@@ -53,10 +58,11 @@ class ProfileStore {
   }
 
   _save() {
+    this.rev++;
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       const tmp = `${this.file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+      fs.writeFileSync(tmp, JSON.stringify({ schemaVersion: 1, ...this.data }, null, 2), { mode: 0o600 });
       fs.renameSync(tmp, this.file);
     } catch (error) {
       console.error('profileStore: failed to persist profiles:', error.message);

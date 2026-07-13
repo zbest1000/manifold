@@ -6,6 +6,7 @@ import {
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
+import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
 import ViewTab from '@/components/ViewTab';
@@ -57,13 +58,26 @@ export default function Pipelines() {
 
 const brokerName = (brokers, id) => brokers.find((b) => b.id === id)?.name || (id ? `${id.slice(0, 8)}…` : '—');
 
+// Poll for CONFIG (which changes rarely); live numbers arrive pushed over the
+// socket. Hidden tabs don't poll at all — timers on background dashboards are
+// wasted requests.
 function usePoll(fn, ms = 5000, deps = []) {
   useEffect(() => {
     fn();
-    const t = setInterval(fn, ms);
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') fn();
+    }, ms);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
+}
+
+/** Live engine metrics pushed by the server every 2s over the shared socket. */
+function useEngineMetrics(onMetrics) {
+  useEffect(() => {
+    socket.on('engine-metrics', onMetrics);
+    return () => socket.off('engine-metrics', onMetrics);
+  }, [onMetrics]);
 }
 
 // ---------------------------------------------------------------- Routes tab
@@ -75,7 +89,8 @@ const TRANSFORM_DEFAULTS = {
   set: { type: 'set', values: {} },
   scale: { type: 'scale', field: '', mul: 1, add: 0 },
   numeric: { type: 'numeric', field: '' },
-  sparkplugFlatten: { type: 'sparkplugFlatten' }
+  sparkplugFlatten: { type: 'sparkplugFlatten' },
+  envelope: { type: 'envelope' }
 };
 
 function RoutesTab({ brokers }) {
@@ -88,7 +103,10 @@ function RoutesTab({ brokers }) {
     api.listPipelines().then(setData).catch(() => {});
     api.listHistorians().then((r) => setHistorians(r.historians)).catch(() => {});
   }, []);
-  usePoll(load, 5000, [load]);
+  usePoll(load, 15000, [load]); // config only — numbers stream in below
+  useEngineMetrics(
+    useCallback((m) => setData((prev) => ({ ...prev, metrics: m.pipelines || prev.metrics, outbox: m.outbox || prev.outbox })), [])
+  );
 
   const blank = () => ({
     name: '',
@@ -329,6 +347,7 @@ function TransformRow({ t, onChange, onRemove }) {
       )}
       {t.type === 'numeric' && input({ value: t.field || '', style: { width: 120 }, placeholder: 'field (optional)', onChange: (e) => onChange({ ...t, field: e.target.value }) })}
       {t.type === 'sparkplugFlatten' && <span className="text-slate-500">metrics[] → {'{name: value}'}</span>}
+      {t.type === 'envelope' && <span className="text-slate-500">wrap as {'{v, t, q}'} (value, source ts, quality)</span>}
       <button onClick={onRemove} className="ml-auto rounded p-1 text-slate-500 hover:bg-white/10 hover:text-rose-300">
         <Trash2 size={12} />
       </button>
@@ -486,12 +505,14 @@ function ModelsTab({ brokers }) {
 
 function HistoriansTab() {
   const [data, setData] = useState({ historians: [], types: [] });
+  const [outbox, setOutbox] = useState({});
   const [form, setForm] = useState({ type: 'influxdb', name: '', url: '', org: '', bucket: '', token: '', measurement: '', dataset: '', writePath: '', apiKey: '' });
   const [testing, setTesting] = useState(null); // id -> result
   const load = useCallback(() => api.listHistorians().then(setData).catch(() => {}), []);
   useEffect(() => {
     load();
   }, [load]);
+  useEngineMetrics(useCallback((m) => m.outbox && setOutbox(m.outbox), []));
 
   const save = async () => {
     try {
@@ -528,6 +549,19 @@ function HistoriansTab() {
                 {h.url}
                 {h.type === 'influxdb' ? ` · org=${h.org} bucket=${h.bucket}` : ` · dataset=${h.dataset}`}
               </p>
+              {outbox[h.id] && (
+                <p className="mt-0.5 text-[11px]">
+                  <span className="text-slate-500">store-and-forward: </span>
+                  <span className="font-mono text-slate-400">
+                    {outbox[h.id].written.toLocaleString()} written · {outbox[h.id].queued} queued
+                    {outbox[h.id].spillBytes > 0 && (
+                      <span className="text-amber-300"> · {(outbox[h.id].spillBytes / 1024).toFixed(1)} KB spilled to disk</span>
+                    )}
+                    {outbox[h.id].dropped > 0 && <span className="text-rose-300"> · {outbox[h.id].dropped} dropped</span>}
+                  </span>
+                  {outbox[h.id].lastError && <span className="ml-1 text-rose-300">· {outbox[h.id].lastError}</span>}
+                </p>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {testing?.id === h.id && testing.state === 'ok' && <CheckCircle2 size={15} className="text-emerald-400" />}

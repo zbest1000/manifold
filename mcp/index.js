@@ -371,6 +371,32 @@ server.tool(
 );
 
 server.tool(
+  'bindings_list',
+  'Tag bindings: device tags (OPC UA nodes, Sparkplug metrics) bound into the UNS, with per-binding publish/deadband/error status and Sparkplug edge-node session state.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/tags/bindings'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'audit_recent',
+  'Recent audit-trail entries: every mutating API call and control socket event (role, route, outcome), newest first. Requires the admin token.',
+  { limit: z.number().optional() },
+  async ({ limit }) => {
+    try {
+      return ok(await api(`/api/audit${limit ? `?limit=${Number(limit)}` : ''}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
   'mqtt_admin_pubsub',
   'Per-client subscriptions from the broker admin API (must be configured in the UI first), optionally wildcard-resolved against observed topics — the full "who receives what" map that core MQTT cannot provide.',
   {

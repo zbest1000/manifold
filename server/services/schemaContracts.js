@@ -1,6 +1,6 @@
 'use strict';
 
-const { matchFilter } = require('./mqttMatch');
+const { matchParts, compiledView } = require('./mqttMatch');
 
 /**
  * Schema contracts — payload shape as a first-class, watchable promise.
@@ -36,27 +36,41 @@ function inferSchema(value) {
   return { type: 'string' };
 }
 
-/** Structural diff: expected schema vs actual value. Returns violations. */
+/** Structural type name without building a schema object (hot-path cheap). */
+function typeName(value) {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) return 'array';
+  const t = typeof value;
+  if (t === 'object') return 'object';
+  if (t === 'number' || t === 'string' || t === 'boolean') return t;
+  return 'string';
+}
+
+/**
+ * Structural diff: expected schema vs actual value. Returns violations.
+ * Runs per matching message, so it compares types directly rather than
+ * re-inferring a schema object per node.
+ */
 function validate(schema, value, path = '', out = []) {
-  const actual = inferSchema(value);
-  if (schema.type === 'object' && actual.type === 'object') {
+  const actual = typeName(value);
+  if (schema.type === 'object' && actual === 'object') {
     for (const [k, sub] of Object.entries(schema.props || {})) {
-      if (!(k in (value || {}))) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
+      if (!(k in value)) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
       else validate(sub, value[k], path ? `${path}.${k}` : k, out);
     }
-    for (const k of Object.keys(value || {})) {
-      if (!(k in (schema.props || {}))) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: inferSchema(value[k]).type });
+    for (const k of Object.keys(value)) {
+      if (!(k in (schema.props || {}))) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: typeName(value[k]) });
     }
     return out;
   }
-  if (schema.type === 'array' && actual.type === 'array') {
+  if (schema.type === 'array' && actual === 'array') {
     if (value.length) validate(schema.items || { type: 'null' }, value[0], `${path}[0]`, out);
     return out;
   }
-  if (schema.type !== actual.type) {
+  if (schema.type !== actual) {
     // null → anything is drift too, but a locked 'null' schema means "we never
     // saw a real payload"; don't punish the first real value's arrival type.
-    if (schema.type !== 'null') out.push({ path: path || '(root)', kind: 'type-changed', expected: schema.type, got: actual.type });
+    if (schema.type !== 'null') out.push({ path: path || '(root)', kind: 'type-changed', expected: schema.type, got: actual });
   }
   return out;
 }
@@ -70,6 +84,12 @@ class SchemaContracts {
     this.counters = new Map(); // contractId -> { checked, violations, lastViolation }
     this.onMessage = this.onMessage.bind(this);
     this.started = false;
+    this.table = compiledView(profiles, () =>
+      this.profiles
+        .listIn('contracts')
+        .filter((c) => c.enabled !== false && c.brokerId && c.filter && c.schema)
+        .map((c) => ({ contract: c, parts: String(c.filter).split('/') }))
+    );
   }
 
   start() {
@@ -93,10 +113,12 @@ class SchemaContracts {
   }
 
   onMessage(msg) {
-    for (const contract of this.profiles.listIn('contracts')) {
-      if (contract.enabled === false) continue;
+    const table = this.table();
+    if (!table.length) return;
+    const topicParts = msg.topic.split('/');
+    for (const { contract, parts } of table) {
       if (contract.brokerId !== msg.brokerId) continue;
-      if (!matchFilter(contract.filter, msg.topic)) continue;
+      if (!matchParts(parts, topicParts)) continue;
       const c = this._counter(contract.id);
       c.checked++;
       const found = validate(contract.schema, msg.payload);

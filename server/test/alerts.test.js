@@ -119,8 +119,8 @@ test('historyStore snapshots recent rings and restores them into empty rings', (
   ]);
   m1.msgSeq = 2;
   const h1 = new HistoryStore(m1, dir);
-  assert.strictEqual(h1.snapshot(), true);
-  assert.strictEqual(h1.snapshot(), false, 'idle managers must not rewrite the snapshot');
+  assert.strictEqual(h1.snapshot({ sync: true }), true);
+  assert.strictEqual(h1.snapshot({ sync: true }), false, 'idle managers must not rewrite the snapshot');
 
   const m2 = new MqttManager({ emit() {} });
   m2.recent.set('bk', []); // broker reconnected, ring empty

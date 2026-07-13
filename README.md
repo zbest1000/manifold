@@ -144,6 +144,43 @@ MCP-capable client at the included MCP server.
   violations the moment a publisher drifts: missing fields, new fields, type
   changes, with exact paths. Catches the "firmware update silently changed the
   payload" failure before consumers do.
+- **Tags: browse devices, bind into the UNS** — a unified tag browser over the
+  drivers Manifold already speaks: the **OPC UA address space** (lazy,
+  node-class aware), the **Sparkplug device registry** (Group → Edge → Device →
+  metrics, reconstructed from BIRTH certificates), and the **MQTT topic trie**.
+  Tick tags, hit *Add to UNS*, and a wizard binds them to a destination:
+  plain MQTT topics (raw value or **TVQ envelope** `{v,t,q}`) or a proper
+  **Sparkplug B device**. Report-by-exception (**absolute deadband**) and
+  per-binding sampling for OPC UA sources; OPC UA status codes map to real
+  quality (Good 192 / Uncertain 64 / Bad 0). **CSV tag import** takes
+  Kepware/Ignition-style `nodeId,name` exports straight into the selection.
+  Bindings are read-only by design — Manifold monitors and republishes, it
+  never writes to a device.
+- **A spec-respecting Sparkplug B publisher** — bindings that target Sparkplug
+  run on a dedicated session per (broker, group, edge node) with the lifecycle
+  the spec demands: CONNECT with an NDEATH will carrying the session's bdSeq,
+  NBIRTH (seq 0, `Node Control/Rebirth`), DBIRTH before any DDATA, seq
+  numbering mod 256 across all node messages, rebirth on NCMD, and clean
+  DDEATH/NDEATH on shutdown. Verified against a real broker in CI.
+- **Store-and-forward historian delivery** — every point bound for InfluxDB /
+  Timebase goes through a persistent outbox: failed writes spill to disk,
+  survive restarts, and drain oldest-first when the historian recovers. Bounds
+  are explicit and *reported* (queue depth, spill bytes, dropped counts in the
+  UI and `/metrics`) — a historian outage delays data, it doesn't delete it.
+- **Roles + audit trail** — `TC_AUTH_TOKEN` (admin) plus optional
+  `TC_VIEWER_TOKEN` (read-only: GETs succeed, every mutation and control
+  socket event is refused). Every mutating API call and socket command lands
+  in an **audit log** (role, IP, route, outcome; secrets redacted) — in the
+  Settings UI and append-only on disk.
+- **Watchable by your monitoring** — `GET /metrics` exposes Prometheus metrics
+  for Manifold itself: event-loop delay percentiles, per-broker ingest, per-route
+  pipeline counters, outbox depth, contract violations, binding publishes. Live
+  engine metrics also stream to the UI over the existing socket instead of REST
+  polling (hidden tabs don't poll at all).
+- **Configuration as code** — export the entire DataOps setup (pipelines,
+  models, historians, recordings, contracts, bindings, mounts, alert rules) as
+  one JSON document with secrets stripped; import merges by id and keeps stored
+  secrets. Reviewable in git, promotable between environments.
 - **Alert rules** — active watching, not just looking: *branch silent* (nothing
   under a path for N seconds), *topic silent*, and *new topic appears* (under an
   optional prefix). Rules persist, are evaluated server-side every 15s against
@@ -288,6 +325,7 @@ backend.
 | `uns_tree` / `uns_lint` / `uns_events` | Nested UNS tree (exact counts, depth-capped), namespace conformance lint, namespace event feed |
 | `pipelines_list` / `pipeline_preview` | DataOps routes with live metrics; dry-run a route against observed topics |
 | `historians_list` / `models_list` / `contracts_violations` | Historian connections, contextualization models, schema-drift events |
+| `bindings_list` / `audit_recent` | Tag bindings with publish/deadband status; the audit trail |
 | `opcua_connect` / `opcua_disconnect` / `opcua_list_connections` | Manage OPC UA connections |
 | `opcua_browse` / `opcua_read` / `opcua_monitor` | Walk the address space, read and monitor nodes |
 | `cesmii_configure` / `cesmii_status` | Configure and authenticate a CESMII SMIP instance |
@@ -325,6 +363,11 @@ backend.
 | `GET/POST/DELETE` | `/api/recorder` · `GET /:id/data` | Recordings (file or historian) + bounded read-back |
 | `POST/DELETE` | `/api/recorder/replay` | Start/stop replaying a recording onto a broker |
 | `GET/POST/DELETE` | `/api/contracts` · `/infer` · `/violations` | Schema contracts: infer, lock, drift feed |
+| `GET` | `/api/tags/sources` · `/browse` | Unified tag browser (OPC UA / Sparkplug / MQTT) |
+| `GET/POST/DELETE` | `/api/tags/bindings` | Tag bindings into the UNS (deadband, TVQ, Sparkplug out) |
+| `GET` | `/api/audit` | Audit trail of mutating actions (admin only) |
+| `GET/POST` | `/api/system/config/export` · `/import` | Configuration as code (secrets stripped/preserved) |
+| `GET` | `/metrics` | Prometheus metrics for Manifold itself |
 | `GET` | `/api/mqtt/brokers/:id/messages?topic=` | Recent messages for a topic |
 | `POST` | `/api/mqtt/brokers/:id/publish` | Publish (`{ topic, payload, qos?, retain? }`) |
 | `POST` | `/api/opcua/connections` | Connect (`{ endpointUrl, securityMode?, ... }`) |
@@ -358,7 +401,12 @@ delivered over Socket.IO.
   REST servers), the alert engine (firing/resolve transitions, watermarks,
   webhooks), history snapshot/restore, auth, profile persistence, CESMII config
   validation, and an HTTP smoke test that boots the app and exercises the REST
-  surface.
+  surface. **Integration tests run against a real in-process MQTT broker**
+  (aedes): the manager, a pipeline route, and the Sparkplug B publisher are
+  exercised end-to-end with an independent witness client — including the
+  NBIRTH → DBIRTH → DDATA → DDEATH/NDEATH lifecycle and seq numbering. An
+  RBAC suite boots the app with admin + viewer tokens and covers roles, the
+  audit trail, `/metrics`, and config export/import.
 
 - **Client tests** run on Vitest over the pure logic modules (topic-filter
   matching, graph builders/collapse/coverage, UNS tree building, payload diff):

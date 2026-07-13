@@ -122,6 +122,19 @@ export const api = {
   saveModel: (m) => request('/api/models', { method: 'POST', body: JSON.stringify(m) }),
   deleteModel: (id) => request(`/api/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  // Tag browser + bindings
+  tagSources: () => request('/api/tags/sources'),
+  tagBrowse: (type, id, node = '') =>
+    request(`/api/tags/browse?type=${encodeURIComponent(type)}&id=${encodeURIComponent(id)}&node=${encodeURIComponent(node)}`),
+  listBindings: () => request('/api/tags/bindings'),
+  saveBinding: (b) => request('/api/tags/bindings', { method: 'POST', body: JSON.stringify(b) }),
+  deleteBinding: (id) => request(`/api/tags/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Config as code + audit
+  exportConfig: () => request('/api/system/config/export'),
+  importConfig: (cfg) => request('/api/system/config/import', { method: 'POST', body: JSON.stringify(cfg) }),
+  auditRecent: (limit = 100) => request(`/api/audit?limit=${limit}`),
+
   // Alerts
   listAlertRules: () => request('/api/alerts/rules'),
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),

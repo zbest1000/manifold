@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Palette, Terminal, Info, Check, BellRing, Trash2, Plus } from 'lucide-react';
+import { Palette, Terminal, Info, Check, BellRing, Trash2, Plus, FileDown, FileUp, ScrollText } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
@@ -81,6 +81,10 @@ export default function Settings() {
 
         <AlertRulesCard />
 
+        <ConfigCard />
+
+        <AuditCard />
+
         <Card className="p-5">
           <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
             <Terminal size={16} className="text-accent-400" /> MCP integration
@@ -112,6 +116,106 @@ export default function Settings() {
         </Card>
       </div>
     </div>
+  );
+}
+
+// Config as code: the whole DataOps configuration (routes, models, historians,
+// recordings, contracts, bindings, mounts, alert rules) as one reviewable JSON
+// file. Secrets are stripped on export and preserved server-side on re-import.
+function ConfigCard() {
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const doExport = async () => {
+    try {
+      const cfg = await api.exportConfig();
+      const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'manifold-config.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      // pushLog captured it
+    }
+  };
+
+  const doImport = async (file) => {
+    setImporting(true);
+    setResult(null);
+    try {
+      const cfg = JSON.parse(await file.text());
+      const res = await api.importConfig(cfg);
+      setResult(res.imported);
+    } catch (e) {
+      setResult({ error: e.message });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <Card className="p-5">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
+        <FileDown size={16} className="text-accent-400" /> Configuration as code
+      </h2>
+      <p className="mb-3 text-sm text-slate-400">
+        Export pipelines, models, historians, recordings, contracts, tag bindings, mounts, and alert rules as one JSON
+        file — reviewable in git, promotable between environments. Credentials are never exported; stored secrets
+        survive a re-import.
+      </p>
+      <div className="flex items-center gap-2">
+        <Button variant="outline" onClick={doExport}>
+          <FileDown size={14} className="mr-1" /> Export config
+        </Button>
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 px-3.5 py-2 text-sm text-slate-200 hover:bg-white/5">
+          <FileUp size={14} /> {importing ? 'Importing…' : 'Import config'}
+          <input type="file" accept=".json" className="hidden" onChange={(e) => e.target.files?.[0] && doImport(e.target.files[0])} />
+        </label>
+      </div>
+      {result && (
+        <p className={clsx('mt-2 text-xs', result.error ? 'text-rose-300' : 'text-emerald-300')}>
+          {result.error || `Imported: ${Object.entries(result).map(([k, v]) => `${k} ${v}`).join(', ')}`}
+        </p>
+      )}
+    </Card>
+  );
+}
+
+// Audit trail: every mutating action against the control plane, newest first.
+function AuditCard() {
+  const [events, setEvents] = useState([]);
+  useEffect(() => {
+    const load = () => api.auditRecent(50).then((r) => setEvents(r.events)).catch(() => {});
+    load();
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') load();
+    }, 10_000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <Card className="p-5">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
+        <ScrollText size={16} className="text-accent-400" /> Audit trail
+      </h2>
+      <p className="mb-3 text-sm text-slate-400">
+        Who changed what: every mutating API call and control socket event, with role and outcome. Persisted to
+        <span className="mono"> data/audit.jsonl</span>; secrets are redacted before logging.
+      </p>
+      {events.length === 0 && <p className="text-xs text-slate-500">No mutating actions recorded yet.</p>}
+      <div className="max-h-56 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+        {events.map((e, i) => (
+          <div key={i} className="flex items-baseline gap-2 rounded bg-black/20 px-2 py-1">
+            <span className="shrink-0 text-slate-500">{new Date(e.ts).toLocaleTimeString()}</span>
+            <span className={clsx('shrink-0', e.status >= 400 ? 'text-rose-300' : 'text-emerald-300')}>{e.status || e.method}</span>
+            <span className="shrink-0 text-sky-300">{e.role}</span>
+            <span className="min-w-0 truncate text-slate-300">
+              {e.method} {e.path}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

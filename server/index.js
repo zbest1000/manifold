@@ -19,6 +19,11 @@ const Recorder = require('./services/recorder');
 const Replayer = require('./services/replayer');
 const { SchemaContracts } = require('./services/schemaContracts');
 const ModelEngine = require('./services/modelEngine');
+const HistorianOutbox = require('./services/historianOutbox');
+const { AuditLog } = require('./services/auditLog');
+const metricsExporter = require('./services/metricsExporter');
+const SparkplugPublisher = require('./services/sparkplugPublisher');
+const { TagBindings } = require('./services/tagBindings');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -33,6 +38,7 @@ const pipelineRoutes = require('./routes/pipelines');
 const recorderRoutes = require('./routes/recorder');
 const contractRoutes = require('./routes/contracts');
 const modelRoutes = require('./routes/models');
+const tagRoutes = require('./routes/tags');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,27 +52,41 @@ const io = socketIo(server, {
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// ---- Authentication -------------------------------------------------------
+// ---- Authentication + roles -------------------------------------------------
 // This is a CONTROL PLANE, not a viewer: the API can publish to brokers
 // (including Sparkplug commands that actuate equipment), disconnect
 // connections, and start network scans. Set TC_AUTH_TOKEN to require a bearer
-// token on every /api route and on the Socket.IO handshake. Without it the
-// server runs open (dev convenience) and says so loudly at startup.
+// token on every /api route and on the Socket.IO handshake. TC_VIEWER_TOKEN
+// (optional) grants a READ-ONLY role: GETs succeed, every mutation is 403 —
+// hand it to dashboards and observers instead of the admin token. Without any
+// token the server runs open (dev convenience) and says so loudly at startup.
 const AUTH_TOKEN = process.env.TC_AUTH_TOKEN || '';
+const VIEWER_TOKEN = process.env.TC_VIEWER_TOKEN || '';
 
-function tokenMatches(candidate) {
-  if (typeof candidate !== 'string' || candidate.length === 0) return false;
+function timingEqual(candidate, expected) {
+  if (typeof candidate !== 'string' || candidate.length === 0 || !expected) return false;
   const a = Buffer.from(candidate);
-  const b = Buffer.from(AUTH_TOKEN);
+  const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function roleForToken(token) {
+  if (!AUTH_TOKEN) return 'admin'; // open mode
+  if (timingEqual(token, AUTH_TOKEN)) return 'admin';
+  if (VIEWER_TOKEN && timingEqual(token, VIEWER_TOKEN)) return 'viewer';
+  return null;
+}
+
 app.use('/api', (req, res, next) => {
-  if (!AUTH_TOKEN) return next();
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (tokenMatches(token)) return next();
-  res.status(401).json({ error: 'Unauthorized: missing or invalid bearer token' });
+  const role = roleForToken(token);
+  if (!role) return res.status(401).json({ error: 'Unauthorized: missing or invalid bearer token' });
+  if (role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return res.status(403).json({ error: 'Forbidden: viewer token is read-only' });
+  }
+  req.role = role;
+  next();
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -81,16 +101,24 @@ const cesmii = new CesmiiClient();
 const profiles = new ProfileStore();
 const history = new HistoryStore(mqttManager);
 const alerts = new AlertEngine({ io, profiles, mqttManager });
-const pipelines = new PipelineEngine({ mqttManager, profiles });
-const recorder = new Recorder({ mqttManager, profiles });
+const outbox = new HistorianOutbox({ profiles });
+const pipelines = new PipelineEngine({ mqttManager, profiles, outbox });
+const recorder = new Recorder({ mqttManager, profiles, outbox });
 const replayer = new Replayer({ mqttManager, recorder });
 const contracts = new SchemaContracts({ mqttManager, profiles, io });
 const models = new ModelEngine({ mqttManager, profiles });
+const audit = new AuditLog();
+const sparkplugPublisher = new SparkplugPublisher({ profiles });
+const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher });
 
 app.locals.services = {
   mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
-  pipelines, recorder, replayer, contracts, models
+  pipelines, recorder, replayer, contracts, models,
+  outbox, audit, sparkplugPublisher, bindings
 };
+
+// Every mutating API call lands in the audit trail (role, ip, route, outcome).
+app.use('/api', audit.middleware());
 
 // Restore saved connection profiles so a server restart doesn't lose state.
 // Every restore is individually try/caught: an unreachable broker must not stop
@@ -129,10 +157,26 @@ if (process.env.TC_NO_RESTORE !== '1') {
 }
 history.start();
 alerts.start();
+outbox.start();
 pipelines.start();
 recorder.start();
 contracts.start();
 models.start();
+bindings.start();
+
+// Engine metrics stream over the socket the client already holds — the UI
+// shouldn't have to poll REST for numbers we can push.
+const engineMetricsTimer = setInterval(() => {
+  if (io.engine.clientsCount === 0) return;
+  io.emit('engine-metrics', {
+    pipelines: pipelines.getMetrics(),
+    outbox: outbox.getStats(),
+    bindings: bindings.getStatus(),
+    sparkplug: sparkplugPublisher.getStatus(),
+    contracts: contracts.getCounters()
+  });
+}, 2000);
+engineMetricsTimer.unref?.();
 
 app.use('/api/mqtt', mqttRoutes);
 app.use('/api/opcua', opcuaRoutes);
@@ -147,6 +191,13 @@ app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/recorder', recorderRoutes);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/models', modelRoutes);
+app.use('/api/tags', tagRoutes);
+
+// GET /api/audit — recent mutating actions, newest first (admin only)
+app.get('/api/audit', (req, res) => {
+  if (req.role === 'viewer') return res.status(403).json({ error: 'Forbidden' });
+  res.json({ events: audit.recent(Math.min(Number(req.query.limit) || 200, 500)) });
+});
 
 app.get('/health', (req, res) => {
   res.json({
@@ -157,13 +208,38 @@ app.get('/health', (req, res) => {
   });
 });
 
-io.use((socket, next) => {
-  if (!AUTH_TOKEN) return next();
-  if (tokenMatches(socket.handshake.auth?.token)) return next();
-  next(new Error('Unauthorized'));
+// GET /metrics — Prometheus exposition for Manifold itself. Counters only, no
+// topic names or payloads, so like /health it stays open for scrapers.
+app.get('/metrics', (req, res) => {
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+  res.send(metricsExporter.render(app.locals.services));
 });
 
+io.use((socket, next) => {
+  const role = roleForToken(socket.handshake.auth?.token);
+  if (!role) return next(new Error('Unauthorized'));
+  socket.data.role = role;
+  next();
+});
+
+// Socket events that change state — read-only sockets can't fire them, and
+// the ones that can are audited like their REST equivalents.
+const MUTATING_EVENTS = new Set([
+  'connect-mqtt', 'disconnect-mqtt', 'subscribe-topic', 'unsubscribe-topic',
+  'publish-message', 'start-discovery', 'stop-discovery', 'opcua-monitor', 'opcua-unmonitor'
+]);
+
 io.on('connection', (socket) => {
+  socket.use((packet, next) => {
+    if (!MUTATING_EVENTS.has(packet[0])) return next();
+    if (socket.data.role === 'viewer') {
+      socket.emit('error-message', { error: `viewer token is read-only ("${packet[0]}" denied)` });
+      return; // drop the packet
+    }
+    audit.record({ role: socket.data.role || 'open', ip: socket.handshake.address, method: 'SOCKET', path: packet[0] });
+    next();
+  });
+
   // Push current state so late-joining clients hydrate immediately
   socket.emit('state-snapshot', {
     mqtt: mqttManager.getConnections(),
@@ -254,16 +330,19 @@ server.listen(PORT, () => {
 });
 
 const shutdown = async () => {
-  history.snapshot(); // final flush before rings are torn down
+  history.snapshot({ sync: true }); // final flush before rings are torn down
   history.stop();
   alerts.stop();
-  await pipelines.flushHistorians().catch(() => {});
   pipelines.stop();
-  await recorder.flushHistorians().catch(() => {});
   recorder.stop();
+  await outbox.flush().catch(() => {}); // last chance to deliver; failures spill to disk
+  outbox.stop();
   replayer.stop();
   contracts.stop();
   models.stop();
+  bindings.stop();
+  await sparkplugPublisher.stop().catch(() => {}); // clean NDEATHs, not broker-side wills
+  audit.close();
   mqttManager.shutdown();
   await opcuaManager.shutdown();
   server.close(() => process.exit(0));

@@ -9,7 +9,13 @@ import Cesmii from './pages/Cesmii';
 import I3x from './pages/I3x';
 import Flows from './pages/Flows';
 import Uns from './pages/Uns';
-import Pipelines from './pages/Pipelines';
+
+// Route-level code splitting: the DataOps and Tags surfaces are heavy and not
+// every session opens them — they load on first visit, not in the main bundle.
+const Pipelines = lazy(() => import('./pages/Pipelines'));
+const Tags = lazy(() => import('./pages/Tags'));
+
+const Loading = () => <div className="grid h-full place-items-center text-sm text-slate-500">Loading…</div>;
 import Discovery from './pages/Discovery';
 import Settings from './pages/Settings';
 
@@ -28,7 +34,8 @@ export default function App() {
         <Route path="i3x" element={<I3x />} />
         <Route path="flows" element={<Flows />} />
         <Route path="uns" element={<Uns />} />
-        <Route path="pipelines" element={<Pipelines />} />
+        <Route path="pipelines" element={<Suspense fallback={<Loading />}><Pipelines /></Suspense>} />
+        <Route path="tags" element={<Suspense fallback={<Loading />}><Tags /></Suspense>} />
         <Route path="discovery" element={<Discovery />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />

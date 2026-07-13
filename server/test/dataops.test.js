@@ -6,6 +6,7 @@ const path = require('path');
 
 const { matchFilter } = require('../services/mqttMatch');
 const historians = require('../services/historians');
+const HistorianOutbox = require('../services/historianOutbox');
 const { PipelineEngine, applyTransforms, applyTemplate } = require('../services/pipelineEngine');
 const Recorder = require('../services/recorder');
 const Replayer = require('../services/replayer');
@@ -181,32 +182,104 @@ test('pipeline routes match, transform, publish, and block feedback loops', asyn
   m.shutdown();
 });
 
-test('pipeline historian target buffers and flushes via the backend', async () => {
+test('pipeline historian target delivers through the outbox', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-ob-'));
   const m = new MqttManager({ emit() {} });
   let captured;
   const fetchImpl = async (url, opts) => {
     captured = { url, body: opts.body };
     return { ok: true, status: 204, text: async () => '' };
   };
-  const eng = new PipelineEngine({
-    mqttManager: m,
-    profiles: fakeProfiles({
-      pipelines: {
-        r: { id: 'r', enabled: true, source: { brokerId: 'b1', filter: 'plant/#' }, transforms: [{ type: 'numeric' }], target: { type: 'historian', historianId: 'h1' } }
-      },
-      historians: { h1: { id: 'h1', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk' } }
-    }),
-    fetchImpl
+  const profiles = fakeProfiles({
+    pipelines: {
+      r: { id: 'r', enabled: true, source: { brokerId: 'b1', filter: 'plant/#' }, transforms: [{ type: 'numeric' }], target: { type: 'historian', historianId: 'h1' } }
+    },
+    historians: { h1: { id: 'h1', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk' } }
   });
+  const outbox = new HistorianOutbox({ profiles, dir, fetchImpl });
+  const eng = new PipelineEngine({ mqttManager: m, profiles, outbox });
   eng.start();
   m.emit('message', msg('b1', 'plant/temp', '20.5'));
   m.emit('message', msg('b1', 'plant/label', 'text-drops-via-numeric'));
-  await eng.flushHistorians();
+  await outbox.flush();
   assert.ok(captured, 'influx write must have happened');
   assert.match(captured.body, /topic=plant\/temp value=20\.5/);
   assert.ok(!captured.body.includes('label'), 'numeric transform filtered the non-numeric point');
   eng.stop();
   m.shutdown();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('outbox store-and-forward: failed writes spill to disk and drain on recovery', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-ob-'));
+  let failing = true;
+  const writes = [];
+  const fetchImpl = async (url, opts) => {
+    if (failing) return { ok: false, status: 503, text: async () => 'down' };
+    writes.push(opts.body);
+    return { ok: true, status: 204, text: async () => '' };
+  };
+  const profiles = fakeProfiles({ historians: { h1: { id: 'h1', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk' } } });
+  const outbox = new HistorianOutbox({ profiles, dir, fetchImpl });
+
+  outbox.enqueue('h1', [{ tag: 'a/t', ts: 1000, value: 1 }]);
+  await outbox.flush(); // historian down → spill
+  let stats = outbox.getStats().h1;
+  assert.strictEqual(stats.spilled, 1);
+  assert.ok(stats.spillBytes > 0, 'points must be on disk while the historian is down');
+  assert.match(stats.lastError, /503/);
+
+  // A restart must not lose the spill: a fresh outbox over the same dir drains it.
+  failing = false;
+  const outbox2 = new HistorianOutbox({ profiles, dir, fetchImpl });
+  outbox2.enqueue('h1', [{ tag: 'a/t', ts: 2000, value: 2 }]);
+  await outbox2.flush();
+  stats = outbox2.getStats().h1;
+  assert.strictEqual(stats.drained, 1, 'spilled point recovered after restart');
+  assert.strictEqual(stats.written, 2);
+  assert.strictEqual(stats.spillBytes, 0, 'spill file removed after drain');
+  // spilled (older) point must have been written before the new one
+  assert.match(writes[0], /value=1 1000/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('pipeline hop guard blocks indirect A→B→A cycles', async () => {
+  const m = new MqttManager({ emit() {} });
+  const published = [];
+  m.publish = async (brokerId, topic, payload) => {
+    published.push(topic);
+  };
+  const profiles = fakeProfiles({
+    pipelines: {
+      ab: { id: 'ab', enabled: true, source: { brokerId: 'b1', filter: 'a/#' }, transforms: [{ type: 'repath', to: 'b/{2-}' }], target: { type: 'mqtt', brokerId: 'b1' } },
+      ba: { id: 'ba', enabled: true, source: { brokerId: 'b1', filter: 'b/#' }, transforms: [{ type: 'repath', to: 'a/{2-}' }], target: { type: 'mqtt', brokerId: 'b1' } }
+    }
+  });
+  const eng = new PipelineEngine({ mqttManager: m, profiles, outbox: null });
+  eng.start();
+  // Simulate the broker echoing each publish back through the tap.
+  let guard = 0;
+  const origPublish = m.publish;
+  m.publish = async (brokerId, topic, payload) => {
+    await origPublish(brokerId, topic, payload);
+    if (guard++ < 50) m.emit('message', msg(brokerId, topic, payload));
+  };
+  m.emit('message', msg('b1', 'a/x', 1));
+  await new Promise((r) => setTimeout(r, 50));
+  const metrics = eng.getMetrics();
+  const blocked = (metrics.ab?.loopBlocked || 0) + (metrics.ba?.loopBlocked || 0);
+  assert.ok(blocked >= 1, 'cycle must be cut by the hop guard');
+  assert.ok(published.length <= 6, `hop guard must stop the ping-pong (published ${published.length})`);
+  eng.stop();
+  m.shutdown();
+});
+
+test('envelope transform wraps values as TVQ', () => {
+  const out = applyTransforms([{ type: 'repath', to: 'uns/{2-}' }, { type: 'envelope' }], msg('b', 'raw/line/temp', 21.5));
+  assert.strictEqual(out.topic, 'uns/line/temp');
+  assert.strictEqual(out.payload.v, 21.5);
+  assert.strictEqual(out.payload.q, 192);
+  assert.ok(Number.isFinite(out.payload.t));
 });
 
 test('pipeline preview dry-runs against observed topics without publishing', () => {

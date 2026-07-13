@@ -25,6 +25,7 @@ class Replayer {
 
   async start({ recordingId, brokerId, speed = 1, loop = false, topicPrefix = '' }) {
     if (this.active) throw new Error('a replay is already running — stop it first');
+    await this.recorder.sync?.(recordingId); // flush buffered writes first
     const file = this.recorder.filePath(recordingId);
     if (!fs.existsSync(file)) throw new Error('recording has no data file');
     this.manager.requireClient(brokerId); // throws unless connected
@@ -54,6 +55,7 @@ class Replayer {
       total: messages.length,
       published: 0,
       errors: 0,
+      gapsClamped: 0, // gaps longer than 60s are shortened — counted, not hidden
       startedAt: Date.now()
     };
     this._scheduleNext();
@@ -74,6 +76,7 @@ class Replayer {
     const cur = this.messages[a.index];
     const prev = a.index > 0 ? this.messages[a.index - 1] : cur;
     const gap = Math.max(0, cur.t - prev.t) / a.speed;
+    if (gap > 60_000) a.gapsClamped++;
     this.timer = setTimeout(() => this._publishCurrent(), Math.min(gap, 60_000));
     this.timer.unref?.();
   }

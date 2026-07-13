@@ -5,7 +5,7 @@ const router = express.Router();
 // Pipeline routes: source → transforms → target, persisted in profiles and
 // executed by the PipelineEngine on the live (coalesced) message stream.
 
-const TRANSFORM_TYPES = ['repath', 'pick', 'rename', 'set', 'scale', 'numeric', 'sparkplugFlatten'];
+const TRANSFORM_TYPES = ['repath', 'pick', 'rename', 'set', 'scale', 'numeric', 'sparkplugFlatten', 'envelope'];
 
 function validateRoute(body) {
   if (!body.source?.brokerId || !body.source?.filter) return 'source.brokerId and source.filter are required';
@@ -23,12 +23,13 @@ function validateRoute(body) {
   return null;
 }
 
-// GET /api/pipelines — routes + live metrics
+// GET /api/pipelines — routes + live metrics + store-and-forward outbox health
 router.get('/', (req, res) => {
-  const { profiles, pipelines } = req.app.locals.services;
+  const { profiles, pipelines, outbox } = req.app.locals.services;
   res.json({
     routes: profiles.listIn('pipelines'),
     metrics: pipelines.getMetrics(),
+    outbox: outbox ? outbox.getStats() : {},
     transformTypes: TRANSFORM_TYPES
   });
 });

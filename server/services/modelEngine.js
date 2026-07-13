@@ -1,6 +1,6 @@
 'use strict';
 
-const { matchFilter } = require('./mqttMatch');
+const { compiledView } = require('./mqttMatch');
 
 /**
  * Model engine — the contextualization layer (the HighByte-shaped idea):
@@ -28,6 +28,23 @@ class ModelEngine {
     this.state = new Map(); // modelId -> { values: Map(attr -> {value, ts}), publishes, errors, lastError, lastPublish, debounce, timer }
     this.onMessage = this.onMessage.bind(this);
     this.started = false;
+    // Compiled source index: exact (broker, topic) -> [{ model, attr }].
+    // Model sources are exact topics, so dispatch is one Map lookup per message
+    // instead of a models × attributes scan.
+    this.index = compiledView(profiles, () => {
+      const idx = new Map();
+      for (const model of this.profiles.listIn('models')) {
+        if (model.enabled === false) continue;
+        for (const attr of model.attributes || []) {
+          const src = attr.source || {};
+          if (!src.brokerId || !src.topic) continue;
+          const key = `${src.brokerId} ${src.topic}`;
+          if (!idx.has(key)) idx.set(key, []);
+          idx.get(key).push({ model, attr });
+        }
+      }
+      return idx;
+    });
   }
 
   start() {
@@ -79,22 +96,20 @@ class ModelEngine {
   }
 
   onMessage(msg) {
-    for (const model of this.profiles.listIn('models')) {
-      if (model.enabled === false) continue;
-      let touched = false;
-      for (const attr of model.attributes || []) {
-        const src = attr.source || {};
-        if (src.brokerId !== msg.brokerId || src.topic !== msg.topic) continue;
-        const value = src.field && msg.payload && typeof msg.payload === 'object' ? msg.payload[src.field] : msg.payload;
-        this._state(model.id).values.set(attr.name, { value, ts: Date.now() });
-        touched = true;
-      }
-      if (touched && model.publishMode !== 'interval') {
-        const s = this._state(model.id);
-        clearTimeout(s.debounce);
-        s.debounce = setTimeout(() => this.publish(model), DEBOUNCE_MS);
-        s.debounce.unref?.();
-      }
+    const hits = this.index().get(`${msg.brokerId} ${msg.topic}`);
+    if (!hits) return;
+    const touched = new Set();
+    for (const { model, attr } of hits) {
+      const src = attr.source;
+      const value = src.field && msg.payload && typeof msg.payload === 'object' ? msg.payload[src.field] : msg.payload;
+      this._state(model.id).values.set(attr.name, { value, ts: Date.now() });
+      if (model.publishMode !== 'interval') touched.add(model);
+    }
+    for (const model of touched) {
+      const s = this._state(model.id);
+      clearTimeout(s.debounce);
+      s.debounce = setTimeout(() => this.publish(model), DEBOUNCE_MS);
+      s.debounce.unref?.();
     }
   }
 
@@ -107,10 +122,20 @@ class ModelEngine {
       s.lastError = 'loop blocked: an attribute sources the model output topic';
       return;
     }
-    const payload = { _ts: new Date().toISOString() };
+    const now = Date.now();
+    const staleMs = Number(model.staleMs) > 0 ? Number(model.staleMs) : 60_000;
+    const payload = { _ts: new Date(now).toISOString() };
     for (const attr of model.attributes || []) {
       const v = s.values.get(attr.name);
-      payload[attr.name] = v ? v.value : null;
+      if (model.envelope) {
+        // TVQ per attribute: a consumer can tell "never seen" (q=0) from
+        // "stale" (q=64, OPC uncertain) from "fresh" — instead of a bare null.
+        payload[attr.name] = v
+          ? { v: v.value, t: v.ts, q: now - v.ts > staleMs ? 64 : 192 }
+          : { v: null, t: null, q: 0 };
+      } else {
+        payload[attr.name] = v ? v.value : null;
+      }
     }
     this.manager
       .publish(target.brokerId, target.topic, payload, { retain: Boolean(target.retain) })
