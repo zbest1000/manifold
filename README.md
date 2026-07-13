@@ -52,6 +52,14 @@ MCP-capable client at the included MCP server.
   organic, force-directed arrangement server-side (Graphviz `sfdp`, up to 30k
   nodes) — the classic "network graph" look at scale, instead of the
   deterministic radial default.
+- **UNS: live Unified-Namespace topology** — the whole namespace as an
+  ISA-95-style hierarchy (**Namespace → Business Unit → Site → Area → Line →
+  Cell**) on a light, dotted canvas: badge nodes with level glyphs and captions,
+  expand/collapse per branch, and edges that turn into animated dashed green
+  while data is actually **publishing** through that branch (quiet gray when
+  silent). Header chips show every connected source (MQTT brokers, OPC UA, i3X)
+  and the live message rate; scope to one namespace or view all side by side.
+  Built entirely from observed traffic — the same stream the topic graph uses.
 - **Flows: producer → topic → consumer lineage** — live visibility into who
   publishes and who receives what on a broker.
   - *Producers* — the real publishing endpoints of Sparkplug traffic:
