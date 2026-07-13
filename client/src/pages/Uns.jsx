@@ -3,9 +3,9 @@ import { Link } from 'react-router-dom';
 import { Network, Radio, Cpu, Boxes, X, Activity } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
-import UnsTopology, { buildUnsTree, levelName, levelColor, DEFAULT_LEVELS } from '@/graph/UnsTopology';
+import UnsTopology, { buildUnsTree, levelName, levelColor, lastActive, DEFAULT_LEVELS } from '@/graph/UnsTopology';
 import PageHeader from '@/components/PageHeader';
-import { Card, Button, EmptyState } from '@/components/ui';
+import { Button, EmptyState } from '@/components/ui';
 import { formatDistanceToNow } from 'date-fns';
 
 /**
@@ -130,7 +130,38 @@ export default function Uns() {
           )}
         </div>
 
-        <UnsTopology roots={roots} selectedId={selected?.id || null} onSelect={setSelected} />
+        <div className="flex h-full w-full">
+          <div className="relative min-w-0 flex-1">
+            <UnsTopology roots={roots} selectedId={selected?.id || null} onSelect={setSelected} />
+          </div>
+          {/* Docked detail column — never overlays the canvas, so it can't block
+              nodes, labels, or the second click of a double-click. */}
+          {selected && (
+            <aside className="w-72 shrink-0 overflow-y-auto border-l border-white/5 bg-surface-900/40 p-3">
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-slate-100">{selected.name}</div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: levelColor(selected.depth) }}>
+                    {levelName(selected.depth)}
+                  </div>
+                </div>
+                <button aria-label="Close details" onClick={() => setSelected(null)} className="rounded p-1 text-slate-400 hover:bg-white/10">
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="space-y-1 text-xs text-slate-400">
+                {selected.path && (
+                  <div className="truncate font-mono text-[11px] text-slate-300" title={selected.path}>
+                    {selected.path}
+                  </div>
+                )}
+                <Row k="Topics in branch" v={selected.topicCount.toLocaleString()} />
+                <Row k="Direct children" v={selected.children.size.toLocaleString()} />
+                <LiveRow node={selected} />
+              </div>
+            </aside>
+          )}
+        </div>
 
         {/* Legend, matching the visual language */}
         <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300/60 bg-white/85 px-3 py-2 text-[11px] text-slate-600 shadow-sm backdrop-blur">
@@ -151,34 +182,6 @@ export default function Uns() {
           <span className="text-slate-400">double-click / ± to expand</span>
         </div>
 
-        {/* Detail panel */}
-        {selected && (
-          <div className="absolute right-4 top-4 z-10 w-72">
-            <Card className="border-slate-300/70 bg-white/95 p-3 text-slate-800 shadow-lg backdrop-blur">
-              <div className="mb-1 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-900">{selected.name}</div>
-                  <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: levelColor(selected.depth) }}>
-                    {levelName(selected.depth)}
-                  </div>
-                </div>
-                <button onClick={() => setSelected(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
-                  <X size={14} />
-                </button>
-              </div>
-              <div className="space-y-1 text-xs text-slate-500">
-                {selected.path && (
-                  <div className="truncate font-mono text-[11px] text-slate-600" title={selected.path}>
-                    {selected.path}
-                  </div>
-                )}
-                <Row k="Topics in branch" v={selected.topicCount.toLocaleString()} />
-                <Row k="Direct children" v={selected.children.size.toLocaleString()} />
-                <LiveRow node={selected} />
-              </div>
-            </Card>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -191,15 +194,15 @@ function LiveRow({ node }) {
     const t = setInterval(() => force((v) => v + 1), 1000);
     return () => clearInterval(t);
   }, []);
-  const ts = node.__lastActive; // not tracked on the tree; show via activity map fallback
-  return ts ? <Row k="Last activity" v={formatDistanceToNow(ts, { addSuffix: true })} /> : null;
+  const ts = lastActive(node);
+  return ts ? <Row k="Last activity" v={formatDistanceToNow(ts, { addSuffix: true })} /> : <Row k="Last activity" v="—" />;
 }
 
 function Row({ k, v }) {
   return (
     <div className="flex justify-between gap-2">
-      <span>{k}</span>
-      <span className="font-medium text-slate-700">{v}</span>
+      <span className="text-slate-500">{k}</span>
+      <span className="font-medium text-slate-200">{v}</span>
     </div>
   );
 }

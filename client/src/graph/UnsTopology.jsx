@@ -25,8 +25,10 @@ const LEVEL_COLORS = ['#2563eb', '#3b82f6', '#16a34a', '#22c55e', '#0d9488', '#6
 
 const LIVE_WINDOW_MS = 10_000; // branch counts as "publishing" this long after a message
 const PULSE_MS = 700; // node ring flash right after a message
-const ROW_H = 78;
-const COL_W = 210;
+// Row height covers the badge PLUS its three-line label block so neighboring
+// labels can never collide vertically.
+const ROW_H = 96;
+const COL_W = 224;
 const R = 21; // node radius
 
 // Shared activity map (`${brokerId}:${path}` -> last-message ts). Written by the
@@ -90,9 +92,49 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const sizeRef = useRef({ w: 0, h: 0 });
   const transformRef = useRef({ x: 130, y: 60, k: 1 });
   const visibleRef = useRef([]); // laid-out visible nodes for hit-testing
+  // Manual drag offsets on top of the computed layout, keyed `${brokerId}:${path}`.
+  // They survive expand/collapse relayouts; "Auto arrange" clears them.
+  const manualRef = useRef(new Map());
+  const fittedRef = useRef(false);
   const rafRef = useRef(0);
   const selectedRef = useRef(selectedId);
   selectedRef.current = selectedId;
+
+  // Final position of a laid node = tidy-layout position + any manual offset.
+  const posOf = useCallback((l) => {
+    const off = manualRef.current.get(`${l.node.brokerId}:${l.node.path}`);
+    return off ? { x: l.x + off.dx, y: l.y + off.dy } : { x: l.x, y: l.y };
+  }, []);
+
+  // Fit the whole visible arrangement (including label blocks) into the viewport.
+  const fitAll = useCallback(() => {
+    const nodes = visibleRef.current;
+    const { w, h } = sizeRef.current;
+    if (!nodes.length || !w) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const l of nodes) {
+      const p = posOf(l);
+      minX = Math.min(minX, p.x - 70);
+      maxX = Math.max(maxX, p.x + 70);
+      minY = Math.min(minY, p.y - R - 10);
+      maxY = Math.max(maxY, p.y + R + 50); // label block below the badge
+    }
+    const k = Math.max(0.2, Math.min(1.4, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 60) / Math.max(maxY - minY, 1))));
+    // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
+    const t = transformRef.current;
+    t.k = k;
+    t.x = w / 2 - (k * (minX + maxX)) / 2;
+    t.y = h / 2 - (k * (minY + maxY)) / 2;
+  }, [posOf]);
+
+  // Auto arrange: drop every manual offset and re-frame the tidy layout.
+  const autoArrange = useCallback(() => {
+    manualRef.current.clear();
+    fitAll();
+  }, [fitAll]);
 
   // Expanded paths per broker. Default: namespace + first level open.
   const [expanded, setExpanded] = useState(() => new Set());
@@ -168,15 +210,25 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   useEffect(() => {
     visibleRef.current = layout.nodes;
+    // First real layout: frame everything instead of starting at a fixed origin.
+    if (!fittedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
+      fitAll();
+      fittedRef.current = true;
+    }
     // Read-only hook for e2e tests / screenshot tooling: world coordinates of
-    // the visible nodes plus the current view transform.
+    // the visible nodes (manual offsets applied) plus the current view transform.
     if (typeof window !== 'undefined') {
       window.__unsLayout = {
-        transform: transformRef.current,
-        nodes: layout.nodes.map((l) => ({ name: l.node.name, path: l.node.path, x: l.x, y: l.y, open: l.open, hasKids: l.hasKids, depth: l.node.depth }))
+        get transform() {
+          return { ...transformRef.current };
+        },
+        nodes: layout.nodes.map((l) => {
+          const p = posOf(l);
+          return { name: l.node.name, path: l.node.path, x: p.x, y: p.y, open: l.open, hasKids: l.hasKids, depth: l.node.depth };
+        })
       };
     }
-  }, [layout]);
+  }, [layout, fitAll, posOf]);
 
   // ---- Drawing ----
   const draw = useCallback(() => {
@@ -216,12 +268,14 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // Edges first: animated dashed green while the child branch is publishing.
     for (const e of layout.edges) {
       const live = now - liveAt(e.to.node) < LIVE_WINDOW_MS;
-      const x1 = e.from.x + R + 3;
-      const x2 = e.to.x - R - 3;
+      const a = posOf(e.from);
+      const b = posOf(e.to);
+      const x1 = a.x + R + 3;
+      const x2 = b.x - R - 3;
       const mx = (x1 + x2) / 2;
       ctx.beginPath();
-      ctx.moveTo(x1, e.from.y);
-      ctx.bezierCurveTo(mx, e.from.y, mx, e.to.y, x2, e.to.y);
+      ctx.moveTo(x1, a.y);
+      ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
       if (live) {
         ctx.strokeStyle = 'rgba(34,197,94,0.75)';
         ctx.lineWidth = 1.6;
@@ -239,6 +293,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // Nodes: white badge, level ring, glyph, name + LEVEL caption, +/- affordance.
     for (const l of layout.nodes) {
       const n = l.node;
+      const P = posOf(l);
       const color = levelColor(n.depth);
       const last = liveAt(n);
       const pulsing = now - last < PULSE_MS;
@@ -247,14 +302,14 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (pulsing) {
         const p = 1 - (now - last) / PULSE_MS;
         ctx.beginPath();
-        ctx.arc(l.x, l.y, R + 4 + 8 * (1 - p), 0, Math.PI * 2);
+        ctx.arc(P.x, P.y, R + 4 + 8 * (1 - p), 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(34,197,94,${0.5 * p})`;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
 
       ctx.beginPath();
-      ctx.arc(l.x, l.y, R, 0, Math.PI * 2);
+      ctx.arc(P.x, P.y, R, 0, Math.PI * 2);
       ctx.fillStyle = '#ffffff';
       ctx.shadowColor = 'rgba(15,23,42,0.10)';
       ctx.shadowBlur = 6;
@@ -267,12 +322,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.strokeStyle = n.id === selectedRef.current ? '#f59e0b' : color;
       ctx.stroke();
 
-      drawGlyph(ctx, l.x, l.y, n.depth, color);
+      drawGlyph(ctx, P.x, P.y, n.depth, color);
 
       // live dot on the badge edge
       if (live) {
         ctx.beginPath();
-        ctx.arc(l.x + R * 0.72, l.y - R * 0.72, 3.4, 0, Math.PI * 2);
+        ctx.arc(P.x + R * 0.72, P.y - R * 0.72, 3.4, 0, Math.PI * 2);
         ctx.fillStyle = '#22c55e';
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
@@ -283,7 +338,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       // expand / collapse affordance
       if (l.hasKids) {
         ctx.beginPath();
-        ctx.arc(l.x, l.y + R + 1, 6.5, 0, Math.PI * 2);
+        ctx.arc(P.x, P.y + R + 1, 6.5, 0, Math.PI * 2);
         ctx.fillStyle = '#ffffff';
         ctx.fill();
         ctx.strokeStyle = '#94a3b8';
@@ -292,32 +347,39 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         ctx.strokeStyle = '#475569';
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.moveTo(l.x - 3, l.y + R + 1);
-        ctx.lineTo(l.x + 3, l.y + R + 1);
+        ctx.moveTo(P.x - 3, P.y + R + 1);
+        ctx.lineTo(P.x + 3, P.y + R + 1);
         if (!l.open) {
-          ctx.moveTo(l.x, l.y + R - 2);
-          ctx.lineTo(l.x, l.y + R + 4);
+          ctx.moveTo(P.x, P.y + R - 2);
+          ctx.lineTo(P.x, P.y + R + 4);
         }
         ctx.stroke();
       }
 
       // labels
+      // Labels get a paper-colored halo so crossing edges never block the text.
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#1e293b';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#f6f7f9';
+      ctx.lineWidth = 4;
       ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
-      ctx.fillText(truncate(n.name, 22), l.x, l.y + R + 22);
-      ctx.fillStyle = '#94a3b8';
+      ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 22);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 22);
       ctx.font = '600 8.5px ui-sans-serif, system-ui, sans-serif';
-      ctx.fillText(levelName(n.depth, levels).toUpperCase(), l.x, l.y + R + 33);
+      ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       if (n.topicCount > 0 && n.children.size > 0) {
-        ctx.fillStyle = '#b0b8c4';
         ctx.font = '500 8.5px ui-sans-serif, system-ui, sans-serif';
-        ctx.fillText(`${n.topicCount.toLocaleString()} topics`, l.x, l.y + R + 43);
+        ctx.strokeText(`${n.topicCount.toLocaleString()} topics`, P.x, P.y + R + 43);
+        ctx.fillStyle = '#b0b8c4';
+        ctx.fillText(`${n.topicCount.toLocaleString()} topics`, P.x, P.y + R + 43);
       }
     }
 
     ctx.restore();
-  }, [layout, levels]);
+  }, [layout, levels, posOf]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
   useEffect(() => {
@@ -359,45 +421,75 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       return { x: (e.clientX - rect.left - t.x) / t.k, y: (e.clientY - rect.top - t.y) / t.k };
     };
 
-    const pick = (p) => {
+    const pick = (pt) => {
       for (const l of visibleRef.current) {
-        const dx = p.x - l.x;
-        const dy = p.y - l.y;
+        const P = posOf(l);
+        const dx = pt.x - P.x;
+        const dy = pt.y - P.y;
         if (dx * dx + dy * dy <= (R + 10) * (R + 10)) return l;
       }
       return null;
     };
 
-    let dragging = false;
+    // Drag on a node moves THAT node (manual rearrangement); drag on empty
+    // canvas pans the view. Click = select, click on ± (or double-click) =
+    // expand/collapse. "Auto arrange" clears all manual moves.
+    let mode = null; // 'pan' | 'node'
+    let grabbed = null; // laid node being moved
     let moved = 0;
     let last = { x: 0, y: 0 };
     const onDown = (e) => {
-      dragging = true;
       moved = 0;
       last = { x: e.clientX, y: e.clientY };
+      grabbed = pick(toWorld(e));
+      mode = grabbed ? 'node' : 'pan';
     };
     const onMove = (e) => {
-      if (!dragging) return;
+      if (!mode) {
+        // hover cursor feedback
+        const over = pick(toWorld(e));
+        canvas.style.cursor = over ? 'grab' : 'default';
+        return;
+      }
       const dx = e.clientX - last.x;
       const dy = e.clientY - last.y;
       moved += Math.abs(dx) + Math.abs(dy);
       last = { x: e.clientX, y: e.clientY };
-      transformRef.current.x += dx;
-      transformRef.current.y += dy;
+      if (mode === 'pan') {
+        transformRef.current.x += dx;
+        transformRef.current.y += dy;
+      } else if (grabbed) {
+        const k = transformRef.current.k;
+        const key = `${grabbed.node.brokerId}:${grabbed.node.path}`;
+        const off = manualRef.current.get(key) || { dx: 0, dy: 0 };
+        manualRef.current.set(key, { dx: off.dx + dx / k, dy: off.dy + dy / k });
+        canvas.style.cursor = 'grabbing';
+      }
     };
+    let pendingSelect = 0;
     const onUp = (e) => {
       const wasDrag = moved >= 6;
-      dragging = false;
-      if (wasDrag) return;
-      const p = toWorld(e);
-      const hit = pick(p);
-      if (!hit) return;
+      const hit = grabbed;
+      mode = null;
+      grabbed = null;
+      canvas.style.cursor = 'default';
+      if (wasDrag || !hit) return;
       // Click near the +/- affordance (below the badge) toggles expansion.
-      const nearToggle = hit.hasKids && p.y > hit.y + R - 6 && Math.abs(p.x - hit.x) < 12;
-      if (nearToggle) toggle(hit.node);
-      else onSelect?.(hit.node);
+      const p = toWorld(e);
+      const P = posOf(hit);
+      const nearToggle = hit.hasKids && p.y > P.y + R - 6 && Math.abs(p.x - P.x) < 12;
+      if (nearToggle) {
+        toggle(hit.node);
+        return;
+      }
+      // Defer selection briefly so a double-click (expand) doesn't also select —
+      // opening the detail panel mid-gesture would move the canvas under the
+      // second click.
+      clearTimeout(pendingSelect);
+      pendingSelect = setTimeout(() => onSelect?.(hit.node), 260);
     };
     const onDbl = (e) => {
+      clearTimeout(pendingSelect);
       const hit = pick(toWorld(e));
       if (hit?.hasKids) toggle(hit.node);
     };
@@ -420,6 +512,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     canvas.addEventListener('dblclick', onDbl);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => {
+      clearTimeout(pendingSelect);
       ro.disconnect();
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
@@ -428,7 +521,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onSelect]);
+  }, [onSelect, posOf]);
 
   const toggle = (node) => {
     const key = `${node.brokerId}:${node.path}`;
@@ -450,7 +543,23 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="h-full w-full cursor-grab active:cursor-grabbing" />
+      <canvas ref={canvasRef} className="h-full w-full" />
+      <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+        <button
+          onClick={autoArrange}
+          title="Reset manual node positions to the tidy layout and fit to view"
+          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
+        >
+          Auto arrange
+        </button>
+        <button
+          onClick={fitAll}
+          title="Fit the current arrangement to the viewport (keeps manual moves)"
+          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
+        >
+          Fit
+        </button>
+      </div>
     </div>
   );
 }

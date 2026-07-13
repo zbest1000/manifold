@@ -57,7 +57,11 @@ MCP-capable client at the included MCP server.
   Cell**) on a light, dotted canvas: badge nodes with level glyphs and captions,
   expand/collapse per branch, and edges that turn into animated dashed green
   while data is actually **publishing** through that branch (quiet gray when
-  silent). Header chips show every connected source (MQTT brokers, OPC UA, i3X)
+  silent). Nodes can be **dragged to rearrange** the map by hand (edges follow);
+  **Auto arrange** resets to the tidy layout and refits the view, **Fit** reframes
+  while keeping manual moves. Labels get halo rendering and generous row spacing
+  so text is never obscured by crossing edges, and the detail panel docks beside
+  the canvas instead of covering it. Header chips show every connected source (MQTT brokers, OPC UA, i3X)
   and the live message rate; scope to one namespace or view all side by side.
   Built entirely from observed traffic — the same stream the topic graph uses.
 - **Flows: producer → topic → consumer lineage** — live visibility into who
