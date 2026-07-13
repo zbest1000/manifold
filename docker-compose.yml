@@ -1,4 +1,4 @@
-# Topic Canvas — full local test stack.
+# Manifold — full local test stack.
 #
 #   docker compose up --build
 #   → open http://localhost:5000

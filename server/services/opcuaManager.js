@@ -53,7 +53,7 @@ class OpcuaManager extends EventEmitter {
     }
 
     const client = OPCUAClient.create({
-      applicationName: 'TopicCanvas',
+      applicationName: 'Manifold',
       endpointMustExist: false,
       securityMode: MessageSecurityMode[config.securityMode] ?? MessageSecurityMode.None,
       securityPolicy: SecurityPolicy[config.securityPolicy] ?? SecurityPolicy.None,

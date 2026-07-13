@@ -202,7 +202,7 @@ if (process.env.NODE_ENV === 'production') {
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Topic Canvas server listening on port ${PORT}`);
+  console.log(`Manifold server listening on port ${PORT}`);
   if (!AUTH_TOKEN) {
     console.warn(
       '⚠️  TC_AUTH_TOKEN is not set — the API and socket are UNAUTHENTICATED. ' +

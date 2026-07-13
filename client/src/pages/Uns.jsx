@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Network, Radio, Cpu, Boxes, X, Activity } from 'lucide-react';
+import { Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
 import UnsTopology, { buildUnsTree, levelName, levelColor, lastActive, DEFAULT_LEVELS } from '@/graph/UnsTopology';
+import { resolveIconName, getIconImage } from '@/graph/unsIcons';
 import PageHeader from '@/components/PageHeader';
+import GraphTree from '@/components/GraphTree';
+import ViewTab from '@/components/ViewTab';
 import { Button, EmptyState } from '@/components/ui';
 import { formatDistanceToNow } from 'date-fns';
+
+// Icon picker pulls the full Lucide set — its own chunk, loaded on demand.
+const UnsIconPicker = lazy(() => import('@/components/UnsIconPicker'));
 
 /**
  * UNS — the Unified Namespace topology. One live map of the whole namespace,
@@ -20,7 +26,11 @@ export default function Uns() {
   const opcua = useStore((s) => s.opcua);
   const topicVersionMap = useStore((s) => s.topicVersion);
   const [scope, setScope] = useState('all'); // 'all' | brokerId
+  const [view, setView] = useState('topology'); // 'topology' | 'tree'
+  const [treeFilter, setTreeFilter] = useState('');
   const [selected, setSelected] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [iconTick, setIconTick] = useState(0); // bump after a pick so previews refresh
   const [i3xStatus, setI3xStatus] = useState(null);
   const [rate, setRate] = useState(0);
   const rateCount = useRef(0);
@@ -68,6 +78,22 @@ export default function Uns() {
     [versionKey]
   );
 
+  // Flat {nodes, links} projection of the same forest for the Tree view, plus an
+  // id -> UNS-node index so tree selection drives the same detail panel.
+  const flat = useMemo(() => {
+    const nodes = [];
+    const links = [];
+    const byId = new Map();
+    const walk = (n, parentId) => {
+      nodes.push({ id: n.id, label: n.name, group: 'topic', kind: 'uns', meta: { level: levelName(n.depth) } });
+      byId.set(n.id, n);
+      if (parentId) links.push({ source: parentId, target: n.id });
+      for (const c of n.children.values()) walk(c, n.id);
+    };
+    for (const r of roots) walk(r, null);
+    return { nodes, links, byId };
+  }, [roots]);
+
   if (!connected.length) {
     return (
       <div className="flex h-full flex-col">
@@ -92,23 +118,30 @@ export default function Uns() {
         title="Unified Namespace"
         subtitle="live topology"
         actions={
-          <select
-            value={scope}
-            onChange={(e) => setScope(e.target.value)}
-            className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-          >
-            <option value="all">All namespaces</option>
-            {connected.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <div className="flex overflow-hidden rounded-xl border border-white/10">
+              <ViewTab active={view === 'topology'} onClick={() => setView('topology')} icon={Share2} label="Topology" />
+              <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
+            </div>
+            <select
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
+            >
+              <option value="all">All namespaces</option>
+              {connected.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
         }
       />
 
       <div className="relative min-h-0 flex-1">
-        {/* Source + rate chips, in the reference style */}
+        {/* Source + rate chips, in the reference style (topology surface only) */}
+        {view === 'topology' && (
         <div className="pointer-events-none absolute left-4 top-4 z-10 flex flex-wrap items-center gap-2">
           <Chip tone="live">
             <Activity size={12} /> live · {rate.toLocaleString()}/s
@@ -129,11 +162,33 @@ export default function Uns() {
             </Chip>
           )}
         </div>
+        )}
 
         <div className="flex h-full w-full">
+          {view === 'tree' ? (
+            <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30">
+              <div className="flex items-center gap-1.5 border-b border-white/5 px-3 py-2">
+                <Search size={14} className="text-slate-500" />
+                <input
+                  value={treeFilter}
+                  onChange={(e) => setTreeFilter(e.target.value)}
+                  placeholder="Filter namespace…"
+                  className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none"
+                />
+              </div>
+              <GraphTree
+                nodes={flat.nodes}
+                links={flat.links}
+                selectedId={selected?.id || null}
+                onSelect={(n) => setSelected(flat.byId.get(n.id) || null)}
+                filter={treeFilter}
+              />
+            </div>
+          ) : (
           <div className="relative min-w-0 flex-1">
             <UnsTopology roots={roots} selectedId={selected?.id || null} onSelect={setSelected} />
           </div>
+          )}
           {/* Docked detail column — never overlays the canvas, so it can't block
               nodes, labels, or the second click of a double-click. */}
           {selected && (
@@ -158,12 +213,20 @@ export default function Uns() {
                 <Row k="Topics in branch" v={selected.topicCount.toLocaleString()} />
                 <Row k="Direct children" v={selected.children.size.toLocaleString()} />
                 <LiveRow node={selected} />
+                <IconRow key={iconTick} node={selected} onChange={() => setPickerOpen(true)} />
               </div>
             </aside>
           )}
         </div>
 
-        {/* Legend, matching the visual language */}
+        {pickerOpen && selected && (
+          <Suspense fallback={null}>
+            <UnsIconPicker node={selected} onClose={() => setPickerOpen(false)} onPicked={() => setIconTick((v) => v + 1)} />
+          </Suspense>
+        )}
+
+        {/* Legend, matching the visual language (topology surface only) */}
+        {view === 'topology' && (
         <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300/60 bg-white/85 px-3 py-2 text-[11px] text-slate-600 shadow-sm backdrop-blur">
           {DEFAULT_LEVELS.slice(0, 4).map((lvl, i) => (
             <span key={lvl} className="inline-flex items-center gap-1.5">
@@ -181,8 +244,25 @@ export default function Uns() {
           </span>
           <span className="text-slate-400">double-click / ± to expand</span>
         </div>
+        )}
 
       </div>
+    </div>
+  );
+}
+
+function IconRow({ node, onChange }) {
+  const name = resolveIconName(node);
+  const img = getIconImage(name, '#cbd5e1', 40);
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1.5">
+      <span className="flex items-center gap-2 text-slate-400">
+        {img && <img src={img.src} alt="" className="h-4 w-4" />}
+        <span className="font-mono text-[11px]">{name}</span>
+      </span>
+      <button onClick={onChange} className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent-300 hover:bg-white/10">
+        <Pencil size={11} /> change
+      </button>
     </div>
   );
 }

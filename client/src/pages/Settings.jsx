@@ -7,7 +7,7 @@ import PageHeader from '@/components/PageHeader';
 
 const MCP_SNIPPET = `{
   "mcpServers": {
-    "topic-canvas": {
+    "manifold": {
       "command": "node",
       "args": ["/absolute/path/to/mcp/index.js"],
       "env": { "TOPIC_CANVAS_API_URL": "http://localhost:5000" }
@@ -81,7 +81,7 @@ export default function Settings() {
             <Terminal size={16} className="text-accent-400" /> MCP integration
           </h2>
           <p className="mb-3 text-sm text-slate-400">
-            Topic Canvas ships an MCP server so AI assistants and agents can discover brokers, browse topics,
+            Manifold ships an MCP server so AI assistants and agents can discover brokers, browse topics,
             read payloads, and walk OPC UA address spaces through the same backend. Add this to your MCP client
             config:
           </p>
@@ -101,7 +101,7 @@ export default function Settings() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Client</span>
-              <span className="mono text-slate-300">Topic Canvas 2.0</span>
+              <span className="mono text-slate-300">Manifold 2.0</span>
             </div>
           </div>
         </Card>

@@ -35,8 +35,8 @@ export default function Layout() {
             <Share2 size={18} className="text-white" />
           </div>
           <div>
-            <p className="text-sm font-semibold leading-tight">Topic Canvas</p>
-            <p className="text-[11px] text-slate-500">MQTT · OPC UA</p>
+            <p className="text-sm font-semibold leading-tight">Manifold</p>
+            <p className="text-[11px] text-slate-500">UNS · MQTT · OPC UA</p>
           </div>
         </div>
 

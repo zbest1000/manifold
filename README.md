@@ -1,12 +1,17 @@
-# Topic Canvas
+# Manifold
 
-**A node-graph explorer for MQTT and OPC UA networks.**
+**One live map of your industrial data — UNS, MQTT, OPC UA, CESMII, i3X.**
 
-Topic Canvas connects to MQTT brokers and OPC UA servers, streams their data in
-real time, and renders the topic namespace / address space as an interactive,
-force-directed **node graph** with a live data panel. It ships with a
-**Model Context Protocol (MCP) server** so AI assistants and agents can drive the
-same backend programmatically.
+Like its namesake, Manifold joins many pipes into one system: it connects to
+MQTT brokers and OPC UA servers, streams their data in real time, and renders
+it as a live **Unified-Namespace topology** (ISA-95 levels, publishing branches
+lit up), interactive **node graphs** of every topic namespace / address space,
+and **Flows** — producer → topic → consumer lineage with wildcard subscriptions
+resolved against reality. It ships with a **Model Context Protocol (MCP)
+server** so AI assistants and agents can drive the same backend
+programmatically.
+
+*(Formerly "Topic Canvas" — renamed as the tool outgrew topic visualization.)*
 
 There is no built-in "AI assistant" chat or mock data — the app does real
 protocol work and exposes it cleanly. If you want AI in the loop, point any
@@ -103,7 +108,7 @@ MCP-capable client at the included MCP server.
 ## Architecture
 
 ```
-Topic Canvas
+Manifold
 ├── server/   Node.js + Express + Socket.IO backend
 │             MQTT (mqtt.js) · OPC UA (node-opcua) · CESMII SMIP · i3X · discovery · Sparkplug B
 ├── client/   React + Vite + Tailwind frontend
@@ -158,7 +163,7 @@ npm start          # serves the API and the built client from the backend
 
 ### Authentication & persistence
 
-Topic Canvas is a **control plane** — it can publish to brokers (including
+Manifold is a **control plane** — it can publish to brokers (including
 Sparkplug commands that actuate equipment), disconnect connections, and start
 network scans. Before exposing it beyond localhost:
 
@@ -194,7 +199,7 @@ backend.
 ```json
 {
   "mcpServers": {
-    "topic-canvas": {
+    "manifold": {
       "command": "node",
       "args": ["/absolute/path/to/mcp/index.js"],
       "env": { "TOPIC_CANVAS_API_URL": "http://localhost:5000" }

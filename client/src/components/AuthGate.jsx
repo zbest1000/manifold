@@ -47,7 +47,7 @@ export default function AuthGate({ children }) {
     <div className="grid h-screen place-items-center bg-surface-950 p-6">
       <Card className="w-full max-w-sm p-6">
         <div className="mb-1 flex items-center gap-2 text-base font-semibold text-slate-100">
-          <Lock size={18} className="text-accent-400" /> Topic Canvas is locked
+          <Lock size={18} className="text-accent-400" /> Manifold is locked
         </div>
         <p className="mb-4 text-xs leading-relaxed text-slate-400">
           This server requires an access token (<code>TC_AUTH_TOKEN</code>). Enter it to unlock the console — it controls live brokers and equipment, so it&apos;s not open by default.

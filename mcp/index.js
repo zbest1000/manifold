@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 /**
- * Topic Canvas MCP server.
+ * Manifold MCP server.
  *
  * Exposes the MQTT + OPC UA exploration backend as Model Context Protocol tools
  * so any MCP-capable client (Claude Desktop, IDE agents, etc.) can discover
  * brokers, browse topics, read live payloads, and walk an OPC UA address space.
  *
  * It is a thin, stateless bridge over the backend REST API — start the backend
- * first (default http://localhost:5000) and point TOPIC_CANVAS_API_URL at it.
+ * first (default http://localhost:5000) and point MANIFOLD_API_URL at it
+ * (TOPIC_CANVAS_API_URL is still honored for existing setups).
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const API_URL = (process.env.TOPIC_CANVAS_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+const API_URL = (process.env.MANIFOLD_API_URL || process.env.TOPIC_CANVAS_API_URL || 'http://localhost:5000').replace(/\/$/, '');
 // Matches the backend's TC_AUTH_TOKEN when the server runs authenticated.
 const AUTH_TOKEN = process.env.TC_AUTH_TOKEN || process.env.TOPIC_CANVAS_TOKEN || '';
 
@@ -30,7 +31,7 @@ async function api(path, options = {}) {
       }
     });
   } catch (error) {
-    throw new Error(`Cannot reach Topic Canvas backend at ${API_URL}: ${error.message}`);
+    throw new Error(`Cannot reach Manifold backend at ${API_URL}: ${error.message}`);
   }
   const text = await res.text();
   let body;
@@ -53,14 +54,14 @@ function fail(error) {
   return { isError: true, content: [{ type: 'text', text: `Error: ${error.message}` }] };
 }
 
-const server = new McpServer({ name: 'topic-canvas', version: '2.0.0' });
+const server = new McpServer({ name: 'manifold', version: '2.0.0' });
 
 // ---------------------------------------------------------------------------
 // System / discovery
 // ---------------------------------------------------------------------------
 server.tool(
   'system_status',
-  'Get the current status of the Topic Canvas backend: connected MQTT brokers, OPC UA endpoints, and discovery state.',
+  'Get the current status of the Manifold backend: connected MQTT brokers, OPC UA endpoints, and discovery state.',
   {},
   async () => {
     try {
@@ -638,4 +639,4 @@ server.tool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`Topic Canvas MCP server running (backend: ${API_URL})`);
+console.error(`Manifold MCP server running (backend: ${API_URL})`);

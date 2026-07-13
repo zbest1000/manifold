@@ -1,4 +1,4 @@
-// Thin REST client for the Topic Canvas backend. All calls are relative so the
+// Thin REST client for the Manifold backend. All calls are relative so the
 // Vite dev proxy (and production static serving) route them to the API.
 import { useStore } from '@/store/store';
 import { humanizeError } from '@/lib/humanizeError';

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onMessageActivity } from '@/store/store';
+import { resolveIconName, getIconImage, loadIcons } from './unsIcons';
 
 /**
  * UNS topology renderer — the Unified-Namespace lens on the data fabric.
@@ -149,6 +150,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     setExpanded(seed);
     setInitialized(true);
   }, [roots, initialized]);
+
+  // Warm the icon set (lazy chunk) so badges upgrade from glyphs to icons.
+  useEffect(() => {
+    loadIcons();
+  }, []);
 
   // Live activity: stamp every ancestor path of each incoming topic.
   useEffect(
@@ -322,7 +328,13 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.strokeStyle = n.id === selectedRef.current ? '#f59e0b' : color;
       ctx.stroke();
 
-      drawGlyph(ctx, P.x, P.y, n.depth, color);
+      // Lucide icon when rasterized; geometric glyph until then (or if unknown).
+      const iconImg = getIconImage(resolveIconName(n), color, 40);
+      if (iconImg && iconImg.complete && iconImg.naturalWidth > 0) {
+        ctx.drawImage(iconImg, P.x - 11, P.y - 11, 22, 22);
+      } else {
+        drawGlyph(ctx, P.x, P.y, n.depth, color);
+      }
 
       // live dot on the badge edge
       if (live) {

@@ -58,7 +58,7 @@ class MqttManager extends EventEmitter {
 
     const port = Number(config.port) || (config.protocol === 'mqtts' ? 8883 : 1883);
     const protocol = config.protocol || (port === 8883 ? 'mqtts' : 'mqtt');
-    const clientId = config.clientId || `topic-canvas_${Date.now()}`;
+    const clientId = config.clientId || `manifold_${Date.now()}`;
     const brokerUrl = `${protocol}://${config.host}:${port}`;
 
     const options = {
