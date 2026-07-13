@@ -27,6 +27,7 @@ class TopicStore {
     this.topics = new Array(this.cap); // slot -> topic (reverse of index; enables incremental consumers)
     this.firstSeen = new Float64Array(this.cap); // slot -> first-observation ts
     this.events = []; // bounded ring of namespace events (new topics only — rare in steady state)
+    this.eventSeq = 0; // monotonic event id — lets consumers watermark exactly (ms timestamps collide)
     this.dirty = new Set();
     this.maxTopics = maxTopics;
     this.total = 0;
@@ -71,7 +72,7 @@ class TopicStore {
       // entry (drives the UNS "namespace events" feed). Bounded hard. $-topics
       // ($SYS etc.) are broker plumbing, not namespace changes.
       if (topic.charCodeAt(0) !== 36 /* '$' */) {
-        this.events.push({ type: 'topic-added', topic, ts: this.firstSeen[slot] });
+        this.events.push({ type: 'topic-added', topic, ts: this.firstSeen[slot], seq: ++this.eventSeq });
         if (this.events.length > 2000) this.events.splice(0, this.events.length - 2000);
       }
     }

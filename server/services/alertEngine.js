@@ -58,7 +58,7 @@ class AlertEngine {
     for (const rule of rules) {
       try {
         if (rule.enabled === false) continue;
-        if (rule.type === 'new-topic') this._evalNewTopic(rule, now);
+        if (rule.type === 'new-topic') this._evalNewTopic(rule);
         else if (rule.type === 'branch-silent' || rule.type === 'topic-silent') this._evalSilent(rule, now);
       } catch (error) {
         // One bad rule (e.g. broker gone) must not stop the rest.
@@ -70,7 +70,7 @@ class AlertEngine {
   _ruleState(rule) {
     let s = this.state.get(rule.id);
     if (!s) {
-      s = { firing: false, since: 0, watermark: Date.now() };
+      s = { firing: false, since: 0, armed: false, watermark: 0 };
       this.state.set(rule.id, s);
     }
     return s;
@@ -106,15 +106,22 @@ class AlertEngine {
     }
   }
 
-  _evalNewTopic(rule, now) {
+  _evalNewTopic(rule) {
     const store = this.manager.stores.get(rule.brokerId);
     if (!store) return;
     const s = this._ruleState(rule);
+    // Watermark on the store's monotonic event seq, not wall-clock time — two
+    // events in the same millisecond would otherwise slip past a ts watermark.
+    if (!s.armed) {
+      s.armed = true;
+      s.watermark = store.eventSeq; // pre-existing topics never fire
+      return;
+    }
     const prefix = rule.prefix || '';
     const fresh = store.events.filter(
-      (e) => e.type === 'topic-added' && e.ts > s.watermark && (!prefix || e.topic.startsWith(prefix))
+      (e) => e.type === 'topic-added' && e.seq > s.watermark && (!prefix || e.topic.startsWith(prefix))
     );
-    s.watermark = now;
+    s.watermark = store.eventSeq;
     for (const e of fresh.slice(0, 20)) {
       this._emit(rule, 'event', { topic: e.topic, detail: `New topic appeared: ${e.topic}` });
     }
