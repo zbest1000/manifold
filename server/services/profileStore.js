@@ -16,13 +16,14 @@ const path = require('path');
  *
  * Shape:
  *   { mqtt: { [id]: { config, admin? } }, opcua: { [id]: config },
- *     cesmii: config|null, i3x: config|null }
+ *     cesmii: config|null, i3x: config|null,
+ *     mounts: { [id]: mount }, alertRules: { [id]: rule } }
  */
 class ProfileStore {
   constructor(dir = process.env.TC_DATA_DIR || path.join(__dirname, '..', 'data')) {
     this.dir = dir;
     this.file = path.join(dir, 'profiles.json');
-    this.data = { mqtt: {}, opcua: {}, cesmii: null, i3x: null };
+    this.data = { mqtt: {}, opcua: {}, cesmii: null, i3x: null, mounts: {}, alertRules: {} };
     this._load();
   }
 
@@ -34,7 +35,9 @@ class ProfileStore {
         mqtt: parsed.mqtt || {},
         opcua: parsed.opcua || {},
         cesmii: parsed.cesmii || null,
-        i3x: parsed.i3x || null
+        i3x: parsed.i3x || null,
+        mounts: parsed.mounts || {},
+        alertRules: parsed.alertRules || {}
       };
     } catch {
       // no file yet, or unreadable/corrupt — start clean, don't crash the server
@@ -118,6 +121,46 @@ class ProfileStore {
   clearI3x() {
     this.data.i3x = null;
     this._save();
+  }
+
+  // ---- UNS mounts (external sources grafted into the namespace view) ----
+  upsertMount(id, mount) {
+    this.data.mounts[id] = { ...mount, id };
+    this._save();
+    return this.data.mounts[id];
+  }
+
+  removeMount(id) {
+    if (this.data.mounts[id]) {
+      delete this.data.mounts[id];
+      this._save();
+      return true;
+    }
+    return false;
+  }
+
+  mounts() {
+    return Object.values(this.data.mounts);
+  }
+
+  // ---- alert rules ----
+  upsertAlertRule(id, rule) {
+    this.data.alertRules[id] = { ...rule, id };
+    this._save();
+    return this.data.alertRules[id];
+  }
+
+  removeAlertRule(id) {
+    if (this.data.alertRules[id]) {
+      delete this.data.alertRules[id];
+      this._save();
+      return true;
+    }
+    return false;
+  }
+
+  alertRules() {
+    return Object.values(this.data.alertRules);
   }
 }
 

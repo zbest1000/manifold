@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import { Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil } from 'lucide-react';
+import {
+  Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil,
+  ShieldCheck, History, Layers, Plug, Trash2, Plus
+} from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
-import UnsTopology, { buildUnsTree, levelName, levelColor, lastActive, DEFAULT_LEVELS } from '@/graph/UnsTopology';
+import UnsTopology, {
+  buildUnsTree, levelName, levelColor, lastActive, nodeValue, nodeRate, staleness, expectedInterval, DEFAULT_LEVELS
+} from '@/graph/UnsTopology';
+import { buildMountRoots } from '@/graph/unsMounts';
 import { resolveIconName, getIconImage } from '@/graph/unsIcons';
 import PageHeader from '@/components/PageHeader';
 import GraphTree from '@/components/GraphTree';
@@ -13,6 +19,17 @@ import { formatDistanceToNow } from 'date-fns';
 
 // Icon picker pulls the full Lucide set — its own chunk, loaded on demand.
 const UnsIconPicker = lazy(() => import('@/components/UnsIconPicker'));
+
+const LEVELS_KEY = 'tc.unsLevels';
+function loadLevels() {
+  try {
+    const raw = localStorage.getItem(LEVELS_KEY);
+    const arr = raw ? JSON.parse(raw) : null;
+    return Array.isArray(arr) && arr.length >= 2 ? arr.map(String) : [...DEFAULT_LEVELS];
+  } catch {
+    return [...DEFAULT_LEVELS];
+  }
+}
 
 /**
  * UNS — the Unified Namespace topology. One live map of the whole namespace,
@@ -34,6 +51,16 @@ export default function Uns() {
   const [i3xStatus, setI3xStatus] = useState(null);
   const [rate, setRate] = useState(0);
   const rateCount = useRef(0);
+  // Side panel (docked, right): 'lint' | 'events' | null. The node detail
+  // column shows when no panel is open.
+  const [panel, setPanel] = useState(null);
+  // Editable level ladder (persisted).
+  const [levels, setLevels] = useState(loadLevels);
+  const [levelsOpen, setLevelsOpen] = useState(false);
+  // Mounts: external sources grafted into the forest.
+  const [mounts, setMounts] = useState([]);
+  const [mountRoots, setMountRoots] = useState([]);
+  const [mountsOpen, setMountsOpen] = useState(false);
 
   const connected = brokers.filter((b) => b.status === 'connected');
   const setTopics = useStore((s) => s.setTopics);
@@ -69,13 +96,37 @@ export default function Uns() {
     api.i3xStatus().then(setI3xStatus).catch(() => {});
   }, []);
 
+  // Mounts: load config, then resolve each into a namespace root.
+  const [mountTick, setMountTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    api
+      .listMounts()
+      .then(async ({ mounts: list }) => {
+        if (!alive) return;
+        setMounts(list);
+        const roots = await buildMountRoots(list, { opcuaConnections: opcua });
+        if (alive) setMountRoots(roots);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mountTick, opcua.map((c) => c.id).join('|')]);
+
   const scoped = scope === 'all' ? connected : connected.filter((b) => b.id === scope);
   // Rebuild namespace trees only when the topic SET changes on a scoped broker.
   const versionKey = scoped.map((b) => `${b.id}:${topicVersionMap[b.id] || 0}`).join('|');
-  const roots = useMemo(
+  const brokerRoots = useMemo(
     () => scoped.map((b) => buildUnsTree(b, useStore.getState().getTopics(b.id))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [versionKey]
+  );
+  // Mounted sources appear in the "all" scope alongside broker namespaces.
+  const roots = useMemo(
+    () => (scope === 'all' ? [...brokerRoots, ...mountRoots] : brokerRoots),
+    [brokerRoots, mountRoots, scope]
   );
 
   // Flat {nodes, links} projection of the same forest for the Tree view, plus an
@@ -85,16 +136,31 @@ export default function Uns() {
     const links = [];
     const byId = new Map();
     const walk = (n, parentId) => {
-      nodes.push({ id: n.id, label: n.name, group: 'topic', kind: 'uns', meta: { level: levelName(n.depth) } });
+      nodes.push({ id: n.id, label: n.name, group: 'topic', kind: 'uns', meta: { level: levelName(n.depth, levels) } });
       byId.set(n.id, n);
       if (parentId) links.push({ source: parentId, target: n.id });
       for (const c of n.children.values()) walk(c, n.id);
     };
     for (const r of roots) walk(r, null);
     return { nodes, links, byId };
-  }, [roots]);
+  }, [roots, levels]);
 
-  if (!connected.length) {
+  const saveLevels = (next) => {
+    setLevels(next);
+    try {
+      localStorage.setItem(LEVELS_KEY, JSON.stringify(next));
+    } catch {
+      // persistence is best-effort
+    }
+  };
+
+  // Jump from a lint finding / event to the node in the namespace.
+  const jumpTo = (brokerId, path) => {
+    const node = flat.byId.get(`uns:${brokerId}:${path}`);
+    if (node) setSelected(node);
+  };
+
+  if (!connected.length && !mountRoots.length) {
     return (
       <div className="flex h-full flex-col">
         <PageHeader title="Unified Namespace" subtitle="Live topology of the whole namespace, by ISA-95 level" />
@@ -123,6 +189,20 @@ export default function Uns() {
               <ViewTab active={view === 'topology'} onClick={() => setView('topology')} icon={Share2} label="Topology" />
               <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
             </div>
+            <HeaderButton
+              icon={ShieldCheck}
+              label="Lint"
+              active={panel === 'lint'}
+              onClick={() => setPanel((p) => (p === 'lint' ? null : 'lint'))}
+            />
+            <HeaderButton
+              icon={History}
+              label="Events"
+              active={panel === 'events'}
+              onClick={() => setPanel((p) => (p === 'events' ? null : 'events'))}
+            />
+            <HeaderButton icon={Layers} label="Levels" active={levelsOpen} onClick={() => setLevelsOpen((v) => !v)} />
+            <HeaderButton icon={Plug} label="Mounts" active={mountsOpen} onClick={() => setMountsOpen((v) => !v)} />
             <select
               value={scope}
               onChange={(e) => setScope(e.target.value)}
@@ -164,6 +244,17 @@ export default function Uns() {
         </div>
         )}
 
+        {levelsOpen && <LevelsEditor levels={levels} onSave={saveLevels} onClose={() => setLevelsOpen(false)} />}
+        {mountsOpen && (
+          <MountManager
+            mounts={mounts}
+            opcua={opcua}
+            i3xStatus={i3xStatus}
+            onChanged={() => setMountTick((v) => v + 1)}
+            onClose={() => setMountsOpen(false)}
+          />
+        )}
+
         <div className="flex h-full w-full">
           {view === 'tree' ? (
             <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30">
@@ -186,18 +277,22 @@ export default function Uns() {
             </div>
           ) : (
           <div className="relative min-w-0 flex-1">
-            <UnsTopology roots={roots} selectedId={selected?.id || null} onSelect={setSelected} />
+            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} />
           </div>
           )}
-          {/* Docked detail column — never overlays the canvas, so it can't block
-              nodes, labels, or the second click of a double-click. */}
-          {selected && (
+
+          {/* Docked right column: lint / events panel when open, else node detail.
+              Never overlays the canvas, so it can't block nodes or the second
+              click of a double-click. */}
+          {panel === 'lint' && <LintPanel brokers={scoped} onJump={jumpTo} onClose={() => setPanel(null)} />}
+          {panel === 'events' && <EventsPanel brokers={scoped} onJump={jumpTo} onClose={() => setPanel(null)} />}
+          {!panel && selected && (
             <aside className="w-72 shrink-0 overflow-y-auto border-l border-white/5 bg-surface-900/40 p-3">
               <div className="mb-1 flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-100">{selected.name}</div>
                   <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: levelColor(selected.depth) }}>
-                    {levelName(selected.depth)}
+                    {levelName(selected.depth, levels)}
                   </div>
                 </div>
                 <button aria-label="Close details" onClick={() => setSelected(null)} className="rounded p-1 text-slate-400 hover:bg-white/10">
@@ -212,7 +307,7 @@ export default function Uns() {
                 )}
                 <Row k="Topics in branch" v={selected.topicCount.toLocaleString()} />
                 <Row k="Direct children" v={selected.children.size.toLocaleString()} />
-                <LiveRow node={selected} />
+                <LiveRows node={selected} />
                 <IconRow key={iconTick} node={selected} onChange={() => setPickerOpen(true)} />
               </div>
             </aside>
@@ -228,7 +323,7 @@ export default function Uns() {
         {/* Legend, matching the visual language (topology surface only) */}
         {view === 'topology' && (
         <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300/60 bg-white/85 px-3 py-2 text-[11px] text-slate-600 shadow-sm backdrop-blur">
-          {DEFAULT_LEVELS.slice(0, 4).map((lvl, i) => (
+          {levels.slice(0, 4).map((lvl, i) => (
             <span key={lvl} className="inline-flex items-center gap-1.5">
               <span className="inline-block h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: levelColor(i) }} />
               {lvl}
@@ -239,8 +334,10 @@ export default function Uns() {
             publishing
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#94a3b8" strokeWidth="1" /></svg>
-            not live
+            <span className="inline-block h-2 w-2 rounded-full bg-amber-500" /> overdue
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-full bg-red-500" /> dead
           </span>
           <span className="text-slate-400">double-click / ± to expand</span>
         </div>
@@ -250,6 +347,340 @@ export default function Uns() {
     </div>
   );
 }
+
+function HeaderButton({ icon: Icon, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-sm transition ${
+        active
+          ? 'border-accent-500/40 bg-accent-500/15 text-accent-300'
+          : 'border-white/10 bg-surface-950/60 text-slate-300 hover:bg-white/5'
+      }`}
+    >
+      <Icon size={15} /> {label}
+    </button>
+  );
+}
+
+// ---- Level ladder editor -----------------------------------------------------
+
+function LevelsEditor({ levels, onSave, onClose }) {
+  const [draft, setDraft] = useState(levels);
+  const set = (i, v) => setDraft((d) => d.map((x, j) => (j === i ? v : x)));
+  return (
+    <div className="absolute right-4 top-4 z-20 w-72 rounded-xl border border-white/10 bg-surface-900/95 p-3 shadow-xl backdrop-blur">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-100">Level ladder</span>
+        <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
+          <X size={14} />
+        </button>
+      </div>
+      <p className="mb-2 text-[11px] text-slate-500">
+        Names for each hierarchy depth (ISA-95 by default). The last name repeats for deeper levels.
+      </p>
+      <div className="space-y-1.5">
+        {draft.map((lvl, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <span className="w-4 text-right font-mono text-[10px] text-slate-500">{i}</span>
+            <input
+              value={lvl}
+              onChange={(e) => set(i, e.target.value)}
+              className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 focus:border-accent-500/60 focus:outline-none"
+            />
+            {draft.length > 2 && (
+              <button
+                aria-label="Remove level"
+                onClick={() => setDraft((d) => d.filter((_, j) => j !== i))}
+                className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-red-400"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center justify-between">
+        <button
+          onClick={() => setDraft((d) => [...d, `Level ${d.length}`])}
+          className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-accent-300 hover:bg-white/10"
+        >
+          <Plus size={12} /> add level
+        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setDraft([...DEFAULT_LEVELS])}
+            className="rounded px-2 py-1 text-[11px] text-slate-400 hover:bg-white/10"
+          >
+            Reset
+          </button>
+          <button
+            onClick={() => {
+              const clean = draft.map((s) => s.trim()).filter(Boolean);
+              if (clean.length >= 2) {
+                onSave(clean);
+                onClose();
+              }
+            }}
+            className="rounded-lg bg-accent-500/20 px-2.5 py-1 text-[11px] font-medium text-accent-200 hover:bg-accent-500/30"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Mount manager -------------------------------------------------------------
+
+function MountManager({ mounts, opcua, i3xStatus, onChanged, onClose }) {
+  const [type, setType] = useState('opcua');
+  const [connectionId, setConnectionId] = useState('');
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const connectedOpcua = opcua.filter((c) => c.status === 'connected');
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      await api.addMount({ type, connectionId: type === 'opcua' ? connectionId || connectedOpcua[0]?.id : null, label: label || null });
+      setLabel('');
+      onChanged();
+    } catch {
+      // pushLog already captured it
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id) => {
+    try {
+      await api.removeMount(id);
+      onChanged();
+    } catch {
+      // pushLog already captured it
+    }
+  };
+
+  return (
+    <div className="absolute right-4 top-4 z-20 w-80 rounded-xl border border-white/10 bg-surface-900/95 p-3 shadow-xl backdrop-blur">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-100">Mounted sources</span>
+        <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
+          <X size={14} />
+        </button>
+      </div>
+      <p className="mb-2 text-[11px] text-slate-500">
+        Graft OPC UA address spaces and the i3X object graph into the namespace forest. Structure only — mounted nodes
+        don't stream values.
+      </p>
+      {mounts.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {mounts.map((m) => (
+            <div key={m.id} className="flex items-center justify-between rounded-lg bg-black/20 px-2 py-1.5 text-xs">
+              <span className="truncate text-slate-300">
+                <span className="mr-1.5 rounded bg-white/10 px-1 py-0.5 font-mono text-[10px] uppercase">{m.type}</span>
+                {m.label || m.connectionId || 'i3X namespace'}
+              </span>
+              <button aria-label="Remove mount" onClick={() => remove(m.id)} className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-red-400">
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1.5">
+        <div className="flex gap-1.5">
+          <select
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+            className="rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 focus:outline-none"
+          >
+            <option value="opcua">OPC UA</option>
+            <option value="i3x">i3X</option>
+          </select>
+          {type === 'opcua' && (
+            <select
+              value={connectionId}
+              onChange={(e) => setConnectionId(e.target.value)}
+              className="min-w-0 flex-1 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 focus:outline-none"
+            >
+              {connectedOpcua.length === 0 && <option value="">no connections</option>}
+              {connectedOpcua.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name || c.endpointUrl}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Label (optional)"
+          className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:border-accent-500/60 focus:outline-none"
+        />
+        <button
+          onClick={add}
+          disabled={busy || (type === 'opcua' && connectedOpcua.length === 0) || (type === 'i3x' && !i3xStatus?.configured)}
+          className="w-full rounded-lg bg-accent-500/20 px-2.5 py-1.5 text-[11px] font-medium text-accent-200 hover:bg-accent-500/30 disabled:opacity-40"
+        >
+          Mount source
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Lint panel ------------------------------------------------------------------
+
+const SEV_COLOR = { error: 'text-red-400', warn: 'text-amber-400', info: 'text-sky-400' };
+
+function LintPanel({ brokers, onJump, onClose }) {
+  const [reports, setReports] = useState(null); // [{ broker, report }]
+  useEffect(() => {
+    let alive = true;
+    Promise.all(
+      brokers.map((b) =>
+        api
+          .unsLint(b.id)
+          .then((report) => ({ broker: b, report }))
+          .catch(() => ({ broker: b, report: null }))
+      )
+    ).then((r) => alive && setReports(r));
+    return () => {
+      alive = false;
+    };
+  }, [brokers]);
+
+  return (
+    <aside className="flex w-80 shrink-0 flex-col border-l border-white/5 bg-surface-900/40">
+      <PanelHeader icon={ShieldCheck} title="Namespace lint" onClose={onClose} />
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {!reports && <p className="text-xs text-slate-500">Analyzing namespace…</p>}
+        {reports?.map(({ broker, report }) => (
+          <div key={broker.id}>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="truncate text-xs font-semibold text-slate-200">{broker.name}</span>
+              {report && <ScoreBadge score={report.score} />}
+            </div>
+            {!report && <p className="text-[11px] text-slate-500">lint unavailable</p>}
+            {report && report.findings.length === 0 && (
+              <p className="text-[11px] text-emerald-400">No structural issues found in {report.stats.topics.toLocaleString()} topics.</p>
+            )}
+            {report?.findings.map((f, i) => (
+              <button
+                key={i}
+                onClick={() => f.path && onJump(broker.id, f.path)}
+                className="mb-1 block w-full rounded-lg bg-black/20 px-2 py-1.5 text-left text-[11px] hover:bg-white/5"
+              >
+                <span className={`font-semibold ${SEV_COLOR[f.severity] || 'text-slate-300'}`}>{f.title}</span>
+                {f.path && <span className="ml-1 break-all font-mono text-[10px] text-slate-400">{f.path}</span>}
+                <div className="mt-0.5 text-slate-500">{f.detail}</div>
+              </button>
+            ))}
+            {report?.truncated && (
+              <p className="text-[10px] text-slate-500">
+                Findings truncated — totals: {Object.entries(report.stats.byRule).map(([r, c]) => `${r}: ${c}`).join(', ')}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function ScoreBadge({ score }) {
+  const color = score >= 85 ? 'text-emerald-400 border-emerald-500/40' : score >= 60 ? 'text-amber-400 border-amber-500/40' : 'text-red-400 border-red-500/40';
+  return <span className={`rounded-lg border px-1.5 py-0.5 font-mono text-[11px] ${color}`}>{score}/100</span>;
+}
+
+// ---- Events panel -------------------------------------------------------------------
+
+const EVENT_LABEL = {
+  'topic-added': 'new topic',
+  'edge-birth': 'edge online',
+  'edge-death': 'edge offline',
+  'device-birth': 'device online',
+  'device-death': 'device offline'
+};
+const EVENT_COLOR = {
+  'topic-added': 'text-sky-400',
+  'edge-birth': 'text-emerald-400',
+  'device-birth': 'text-emerald-400',
+  'edge-death': 'text-red-400',
+  'device-death': 'text-red-400'
+};
+
+function EventsPanel({ brokers, onJump, onClose }) {
+  const [events, setEvents] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      Promise.all(
+        brokers.map((b) =>
+          api
+            .unsEvents(b.id)
+            .then((r) => r.events.map((e) => ({ ...e, brokerId: b.id, brokerName: b.name })))
+            .catch(() => [])
+        )
+      ).then((all) => {
+        if (!alive) return;
+        setEvents(all.flat().sort((a, b) => b.ts - a.ts).slice(0, 300));
+      });
+    load();
+    const t = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [brokers]);
+
+  return (
+    <aside className="flex w-80 shrink-0 flex-col border-l border-white/5 bg-surface-900/40">
+      <PanelHeader icon={History} title="Namespace events" onClose={onClose} />
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {!events && <p className="text-xs text-slate-500">Loading…</p>}
+        {events?.length === 0 && <p className="text-xs text-slate-500">No events yet — new topics and Sparkplug BIRTH/DEATH show up here.</p>}
+        {events?.map((e, i) => (
+          <button
+            key={i}
+            onClick={() => e.topic && onJump(e.brokerId, e.topic.split('/').filter(Boolean).join('/'))}
+            className="mb-1 block w-full rounded-lg bg-black/20 px-2 py-1.5 text-left text-[11px] hover:bg-white/5"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className={`font-semibold ${EVENT_COLOR[e.type] || 'text-slate-300'}`}>
+                {EVENT_LABEL[e.type] || e.type}
+                {e.cascaded ? ' (cascade)' : ''}
+              </span>
+              <span className="shrink-0 text-[10px] text-slate-500">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
+            </div>
+            <div className="mt-0.5 break-all font-mono text-[10px] text-slate-400">
+              {e.topic || [e.group, e.edgeNode, e.device].filter(Boolean).join(' / ')}
+            </div>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function PanelHeader({ icon: Icon, title, onClose }) {
+  return (
+    <div className="flex items-center justify-between border-b border-white/5 px-3 py-2.5">
+      <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-100">
+        <Icon size={14} className="text-accent-300" /> {title}
+      </span>
+      <button aria-label={`Close ${title}`} onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+// ---- Detail-panel rows ------------------------------------------------------------
 
 function IconRow({ node, onChange }) {
   const name = resolveIconName(node);
@@ -267,7 +698,10 @@ function IconRow({ node, onChange }) {
   );
 }
 
-function LiveRow({ node }) {
+const STALE_LABEL = { fresh: 'fresh', overdue: 'overdue', dead: 'dead' };
+const STALE_CLASS = { fresh: 'text-emerald-400', overdue: 'text-amber-400', dead: 'text-red-400' };
+
+function LiveRows({ node }) {
   // Re-read liveness once a second while the panel is open.
   const [, force] = useState(0);
   useEffect(() => {
@@ -275,7 +709,33 @@ function LiveRow({ node }) {
     return () => clearInterval(t);
   }, []);
   const ts = lastActive(node);
-  return ts ? <Row k="Last activity" v={formatDistanceToNow(ts, { addSuffix: true })} /> : <Row k="Last activity" v="—" />;
+  const val = nodeValue(node);
+  const rate = nodeRate(node);
+  const stale = node.children.size === 0 ? staleness(node) : null;
+  const interval = expectedInterval(node);
+  return (
+    <>
+      <Row k="Last activity" v={ts ? formatDistanceToNow(ts, { addSuffix: true }) : '—'} />
+      {rate > 0 && <Row k="Rate" v={`${rate.toLocaleString()} msg/s`} />}
+      {val && (
+        <div className="rounded-lg bg-black/20 px-2 py-1.5">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-slate-500">Latest value</div>
+          <div className="break-all font-mono text-[11px] text-teal-300">{val.value.slice(0, 300)}</div>
+        </div>
+      )}
+      {stale && (
+        <Row
+          k="Staleness"
+          v={
+            <span className={STALE_CLASS[stale]}>
+              {STALE_LABEL[stale]}
+              {interval > 0 ? ` (~every ${Math.round(interval / 1000) || 1}s)` : ''}
+            </span>
+          }
+        />
+      )}
+    </>
+  );
 }
 
 function Row({ k, v }) {

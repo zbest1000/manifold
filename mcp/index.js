@@ -250,6 +250,59 @@ server.tool(
 );
 
 server.tool(
+  'uns_tree',
+  'Nested Unified Namespace tree observed on a broker (depth- and node-capped skeleton). Every node carries its exact subtree topic count even when children are cut off, so large namespaces summarize honestly. Use prefix to drill below the cut.',
+  {
+    brokerId: z.string(),
+    prefix: z.string().optional().describe('Start below this path instead of the namespace root.'),
+    depth: z.number().optional().describe('Levels to expand (default 4, max 12).'),
+    maxNodes: z.number().optional().describe('Total node cap (default 2000, max 10000).')
+  },
+  async ({ brokerId, prefix, depth, maxNodes }) => {
+    try {
+      const q = new URLSearchParams({
+        ...(prefix ? { prefix } : {}),
+        ...(depth ? { depth: String(depth) } : {}),
+        ...(maxNodes ? { maxNodes: String(maxNodes) } : {})
+      });
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/uns/tree?${q}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'uns_lint',
+  'UNS conformance lint over the observed namespace: mixed naming conventions among siblings, payloads on branch nodes, empty segments, whitespace in names, redundant single-child chains, uneven leaf depth. Returns a 0-100 score, bounded findings, and exact per-rule counts.',
+  { brokerId: z.string() },
+  async ({ brokerId }) => {
+    try {
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/uns/lint`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'uns_events',
+  'Namespace event feed for a broker, newest first: new topics appearing plus Sparkplug BIRTH/DEATH lifecycle events (edge nodes and devices coming online/offline, including cascaded device deaths).',
+  {
+    brokerId: z.string(),
+    limit: z.number().optional().describe('Max events (default 200, max 2000).')
+  },
+  async ({ brokerId, limit }) => {
+    try {
+      const q = limit ? `?limit=${Number(limit)}` : '';
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/uns/events${q}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
   'mqtt_admin_pubsub',
   'Per-client subscriptions from the broker admin API (must be configured in the UI first), optionally wildcard-resolved against observed topics — the full "who receives what" map that core MQTT cannot provide.',
   {

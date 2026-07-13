@@ -35,9 +35,56 @@ const R = 21; // node radius
 // Shared activity map (`${brokerId}:${path}` -> last-message ts). Written by the
 // renderer's activity subscription, readable by the page's detail panel.
 export const unsLiveMap = new Map();
+// Latest decoded value per LEAF topic path (`${brokerId}:${path}` -> { value, ts }).
+export const unsValueMap = new Map();
+// Rolling msgs/s per path, aggregated up the ancestor chain; rolled once a second.
+export const unsRateMap = new Map();
+const rateCounters = new Map();
+// Inter-arrival EMA per leaf topic — the basis for honest staleness: a topic
+// that publishes every 500ms is "overdue" seconds after it stops; a daily
+// report topic isn't stale for hours.
+const gapStats = new Map(); // key -> { emaGap, lastTs }
 
 export function lastActive(node) {
   return unsLiveMap.get(`${node.brokerId}:${node.path}`) || 0;
+}
+
+export function nodeValue(node) {
+  return unsValueMap.get(`${node.brokerId}:${node.path}`) || null;
+}
+
+export function nodeRate(node) {
+  return unsRateMap.get(`${node.brokerId}:${node.path}`) || 0;
+}
+
+/**
+ * Staleness verdict for a leaf topic: null (not enough data yet), 'fresh',
+ * 'overdue' (3× its own typical interval, min 15s), or 'dead' (10×, min 2min).
+ */
+export function staleness(node) {
+  const s = gapStats.get(`${node.brokerId}:${node.path}`);
+  if (!s || !s.emaGap) return null;
+  const age = Date.now() - s.lastTs;
+  if (age > Math.max(s.emaGap * 10, 120_000)) return 'dead';
+  if (age > Math.max(s.emaGap * 3, 15_000)) return 'overdue';
+  return 'fresh';
+}
+
+export function expectedInterval(node) {
+  const s = gapStats.get(`${node.brokerId}:${node.path}`);
+  return s?.emaGap || 0;
+}
+
+function formatValue(payload) {
+  if (payload === null || payload === undefined) return '';
+  if (typeof payload === 'object') {
+    try {
+      return JSON.stringify(payload);
+    } catch {
+      return '[object]';
+    }
+  }
+  return String(payload);
 }
 
 export function levelName(depth, levels = DEFAULT_LEVELS) {
@@ -156,22 +203,47 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     loadIcons();
   }, []);
 
-  // Live activity: stamp every ancestor path of each incoming topic.
-  useEffect(
-    () =>
-      onMessageActivity((msg) => {
-        if (!msg?.topic || msg.topic.startsWith('$')) return;
-        const now = Date.now();
-        unsLiveMap.set(`${msg.brokerId}:`, now);
-        const segs = msg.topic.split('/').filter(Boolean);
-        let path = '';
-        for (let i = 0; i < segs.length; i++) {
-          path = i === 0 ? segs[i] : `${path}/${segs[i]}`;
-          unsLiveMap.set(`${msg.brokerId}:${path}`, now);
-        }
-      }),
-    []
-  );
+  // Live activity: stamp every ancestor path of each incoming topic, count it
+  // for per-branch rates, and record the leaf's value + inter-arrival EMA.
+  useEffect(() => {
+    const off = onMessageActivity((msg) => {
+      if (!msg?.topic || msg.topic.startsWith('$')) return;
+      const now = Date.now();
+      const rootKey = `${msg.brokerId}:`;
+      unsLiveMap.set(rootKey, now);
+      rateCounters.set(rootKey, (rateCounters.get(rootKey) || 0) + 1);
+      const segs = msg.topic.split('/').filter(Boolean);
+      let path = '';
+      for (let i = 0; i < segs.length; i++) {
+        path = i === 0 ? segs[i] : `${path}/${segs[i]}`;
+        const key = `${msg.brokerId}:${path}`;
+        unsLiveMap.set(key, now);
+        rateCounters.set(key, (rateCounters.get(key) || 0) + 1);
+      }
+      // Leaf bookkeeping: latest value + typical publish interval.
+      const leafKey = `${msg.brokerId}:${path}`;
+      unsValueMap.set(leafKey, { value: formatValue(msg.payload), ts: now });
+      const s = gapStats.get(leafKey);
+      if (s) {
+        const gap = now - s.lastTs;
+        // Ignore sub-5ms bursts (coalesced batch replay) for the interval model.
+        if (gap > 5) s.emaGap = s.emaGap ? 0.3 * gap + 0.7 * s.emaGap : gap;
+        s.lastTs = now;
+      } else {
+        gapStats.set(leafKey, { emaGap: 0, lastTs: now });
+      }
+    });
+    // Roll counters into rates once a second.
+    const roller = setInterval(() => {
+      unsRateMap.clear();
+      for (const [key, count] of rateCounters) unsRateMap.set(key, count);
+      rateCounters.clear();
+    }, 1000);
+    return () => {
+      off?.();
+      clearInterval(roller);
+    };
+  }, []);
 
   // ---- Tidy tree layout over the EXPANDED portion of the forest ----
   const layout = useMemo(() => {
@@ -336,11 +408,15 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         drawGlyph(ctx, P.x, P.y, n.depth, color);
       }
 
-      // live dot on the badge edge
-      if (live) {
+      // Status dot on the badge edge: green = publishing now; amber = overdue
+      // (silent 3× its typical interval); red = dead (10×). Staleness only
+      // applies to leaves — they own a publish cadence; branches just aggregate.
+      const stale = n.children.size === 0 ? staleness(n) : null;
+      const dotColor = live ? '#22c55e' : stale === 'dead' ? '#ef4444' : stale === 'overdue' ? '#f59e0b' : null;
+      if (dotColor) {
         ctx.beginPath();
         ctx.arc(P.x + R * 0.72, P.y - R * 0.72, 3.4, 0, Math.PI * 2);
-        ctx.fillStyle = '#22c55e';
+        ctx.fillStyle = dotColor;
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.4;
@@ -382,11 +458,27 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       ctx.fillStyle = '#94a3b8';
       ctx.fillText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
-      if (n.topicCount > 0 && n.children.size > 0) {
-        ctx.font = '500 8.5px ui-sans-serif, system-ui, sans-serif';
-        ctx.strokeText(`${n.topicCount.toLocaleString()} topics`, P.x, P.y + R + 43);
-        ctx.fillStyle = '#b0b8c4';
-        ctx.fillText(`${n.topicCount.toLocaleString()} topics`, P.x, P.y + R + 43);
+      if (n.children.size > 0) {
+        // Branch third line: subtree size, plus live throughput when flowing.
+        if (n.topicCount > 0) {
+          const rate = unsRateMap.get(`${n.brokerId}:${n.path}`) || 0;
+          const line = rate > 0 ? `${n.topicCount.toLocaleString()} topics · ${rate.toLocaleString()}/s` : `${n.topicCount.toLocaleString()} topics`;
+          ctx.font = '500 8.5px ui-sans-serif, system-ui, sans-serif';
+          ctx.strokeText(line, P.x, P.y + R + 43);
+          ctx.fillStyle = rate > 0 ? '#16a34a' : '#b0b8c4';
+          ctx.fillText(line, P.x, P.y + R + 43);
+        }
+      } else {
+        // Leaf third line: the topic's latest VALUE — the namespace becomes a
+        // live dashboard, not just a map.
+        const v = unsValueMap.get(`${n.brokerId}:${n.path}`);
+        if (v && v.value !== '') {
+          const text = truncate(v.value, 24);
+          ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.strokeText(text, P.x, P.y + R + 44);
+          ctx.fillStyle = stale === 'dead' ? '#ef4444' : stale === 'overdue' ? '#b45309' : '#0f766e';
+          ctx.fillText(text, P.x, P.y + R + 44);
+        }
       }
     }
 

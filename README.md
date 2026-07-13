@@ -69,6 +69,20 @@ MCP-capable client at the included MCP server.
   the canvas instead of covering it. Header chips show every connected source (MQTT brokers, OPC UA, i3X)
   and the live message rate; scope to one namespace or view all side by side.
   Built entirely from observed traffic — the same stream the topic graph uses.
+  The namespace is also a **live dashboard**: leaf badges show each topic's
+  **latest value**, branch badges show **per-branch msg/s** while data flows,
+  and every leaf gets **staleness detection** calibrated to its *own* publish
+  cadence (inter-arrival EMA): green = fresh, amber = overdue (3× its typical
+  interval), red = dead (10×). A **Lint** panel scores the namespace 0–100 and
+  lists structural findings (mixed naming conventions among siblings, payloads
+  on branch nodes, empty `//` segments, whitespace in names, redundant
+  single-child chains, wildly uneven leaf depth) with jump-to-node; an
+  **Events** feed streams namespace changes (new topics appearing, Sparkplug
+  BIRTH/DEATH lifecycle incl. cascaded device deaths); the ISA-95 **level
+  ladder is editable** (rename/add/remove levels, persisted); and **Mounts**
+  graft non-MQTT sources — an **OPC UA address space** or the **i3X object
+  graph** — into the same namespace forest, because a UNS is more than one
+  broker.
 - **Flows: producer → topic → consumer lineage** — live visibility into who
   publishes and who receives what on a broker.
   - *Producers* — the real publishing endpoints of Sparkplug traffic:
@@ -80,7 +94,8 @@ MCP-capable client at the included MCP server.
   - *Consumers, with wildcards resolved* — a subscription filter is a query, not
     a destination: two clients on `spBv1.0/#` can effectively receive completely
     different concrete topics. The Consumers tab fetches per-client subscriptions
-    from a **broker admin API** (EMQX v5 REST; key stored server-side) and
+    from a **broker admin API** (EMQX v5 REST or HiveMQ Enterprise REST; key
+    stored server-side) and
     **resolves every filter against the actually-observed topic set** using a
     server-side topic trie: exact match counts (never truncated), covering
     subtree roots, and drill-down to the concrete leaf topics — with proper MQTT
@@ -88,9 +103,27 @@ MCP-capable client at the included MCP server.
     groups). Dormant filters (matching nothing) are flagged — dead wiring is a
     finding. A **"show coverage on topic map"** action paints exactly what a
     client receives onto the main topic graph.
+  - *Consumer rates* — EMQX exposes cumulative per-client traffic counters;
+    Manifold diffs them between refreshes into live **per-client msg/s in/out**
+    on the client card.
   - *Honesty:* MQTT and `$SYS` expose only aggregate counts; per-client
     subscriptions require the admin API, and the UI says so plainly rather than
-    implying it can see more than MQTT allows.
+    implying it can see more than MQTT allows. Mosquitto has **no** admin API
+    that lists live per-client subscriptions (`mosquitto_ctrl` manages accounts
+    and ACLs, not subscriptions), so there is nothing to integrate against —
+    for mosquitto, wildcard resolution over observed traffic is the ceiling.
+- **Alert rules** — active watching, not just looking: *branch silent* (nothing
+  under a path for N seconds), *topic silent*, and *new topic appears* (under an
+  optional prefix). Rules persist, are evaluated server-side every 15s against
+  the same trie/store the UI reads, fire on transitions (firing → resolved), and
+  each rule can POST its events to a **webhook**. Recent alerts show in Settings
+  and stream over the socket.
+- **Message history that survives restarts + payload diff** — the per-broker
+  recent-message rings snapshot to disk periodically and at shutdown, and
+  restore on boot (live traffic always wins over history). In any topic's
+  history panel, pick **two messages to diff**: a structural JSON diff shows
+  exactly which fields changed (`±`), appeared (`+`), or vanished (`−`) between
+  publishes.
 - **Honest network discovery** — TCP port probing across a CIDR range, each hit
   verified with a real protocol handshake. No fabricated results.
 - **CESMII SMIP integration** — connect to a Smart Manufacturing Innovation Platform
@@ -220,6 +253,7 @@ backend.
 | `mqtt_sparkplug_topology` / `mqtt_sys_stats` | Sparkplug device topology and broker `$SYS` health |
 | `mqtt_resolve_subscriptions` / `mqtt_topic_tree` | Resolve wildcard filters against observed topics; walk the topic tree |
 | `mqtt_admin_pubsub` | Per-client subscriptions from the broker admin API (optionally resolved) |
+| `uns_tree` / `uns_lint` / `uns_events` | Nested UNS tree (exact counts, depth-capped), namespace conformance lint, namespace event feed |
 | `opcua_connect` / `opcua_disconnect` / `opcua_list_connections` | Manage OPC UA connections |
 | `opcua_browse` / `opcua_read` / `opcua_monitor` | Walk the address space, read and monitor nodes |
 | `cesmii_configure` / `cesmii_status` | Configure and authenticate a CESMII SMIP instance |
@@ -245,6 +279,12 @@ backend.
 | `POST` | `/api/mqtt/brokers/:id/subscriptions/resolve` | Resolve wildcard filters against observed topics (`{ filters }`) |
 | `GET` | `/api/mqtt/brokers/:id/topictree?prefix=` | One level of the observed topic tree with subtree counts |
 | `GET` | `/api/mqtt/brokers/:id/admin/pubsub?resolve=1` | Per-client subscriptions from the broker admin API, wildcard-resolved |
+| `GET` | `/api/mqtt/brokers/:id/uns/tree?prefix=&depth=` | Nested namespace skeleton (exact subtree counts, depth/node-capped) |
+| `GET` | `/api/mqtt/brokers/:id/uns/lint` | Namespace conformance report (score + findings) |
+| `GET` | `/api/mqtt/brokers/:id/uns/events` | Namespace event feed (new topics + Sparkplug BIRTH/DEATH) |
+| `GET/POST/DELETE` | `/api/uns/mounts` | Mount OPC UA / i3X sources into the UNS view |
+| `GET/POST/DELETE` | `/api/alerts/rules` | Alert rules (branch-silent, topic-silent, new-topic) |
+| `GET` | `/api/alerts/events` | Recent alert firings |
 | `GET` | `/api/mqtt/brokers/:id/messages?topic=` | Recent messages for a topic |
 | `POST` | `/api/mqtt/brokers/:id/publish` | Publish (`{ topic, payload, qos?, retain? }`) |
 | `POST` | `/api/opcua/connections` | Connect (`{ endpointUrl, securityMode?, ... }`) |
@@ -272,13 +312,24 @@ delivered over Socket.IO.
   cd server && npm test
   ```
 
-  They cover CIDR expansion, MQTT message-type / Sparkplug detection, CESMII config
+  They cover CIDR expansion, MQTT message-type / Sparkplug detection, the topic
+  trie (wildcard semantics), UNS lint rules, the namespace tree/event feeds, the
+  read-path decode cache, broker-admin backends (EMQX + HiveMQ, against fake
+  REST servers), the alert engine (firing/resolve transitions, watermarks,
+  webhooks), history snapshot/restore, auth, profile persistence, CESMII config
   validation, and an HTTP smoke test that boots the app and exercises the REST
   surface.
 
+- **Client tests** run on Vitest over the pure logic modules (topic-filter
+  matching, graph builders/collapse/coverage, UNS tree building, payload diff):
+
+  ```bash
+  cd client && npm test
+  ```
+
 - **GitHub Actions** (`.github/workflows/ci.yml`) runs on every push and PR to
-  `main`: server tests on Node 20/22, a client production build, and an MCP
-  server load check.
+  `main`: server tests on Node 20/22, client tests + production build, and an
+  MCP server load check.
 
 ---
 

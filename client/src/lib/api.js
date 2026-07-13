@@ -73,6 +73,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ filters, ...opts })
     }),
+  unsTree: (id, { prefix = '', depth = 4, maxNodes = 2000 } = {}) =>
+    request(
+      `/api/mqtt/brokers/${encodeURIComponent(id)}/uns/tree?prefix=${encodeURIComponent(prefix)}&depth=${depth}&maxNodes=${maxNodes}`
+    ),
+  unsLint: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/uns/lint`),
+  unsEvents: (id, limit = 200) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/uns/events?limit=${limit}`),
+
+  // UNS mounts (external sources grafted into the namespace view)
+  listMounts: () => request('/api/uns/mounts'),
+  addMount: (mount) => request('/api/uns/mounts', { method: 'POST', body: JSON.stringify(mount) }),
+  removeMount: (id) => request(`/api/uns/mounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Alerts
+  listAlertRules: () => request('/api/alerts/rules'),
+  saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
+  deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
+
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
   subscribe: (id, topic, qos = 0) =>

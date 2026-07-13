@@ -6,6 +6,7 @@ const SparkplugRegistry = require('./sparkplugRegistry');
 const TopicStore = require('./topicStore');
 const TopicTrie = require('./topicTrie');
 const brokerAdmin = require('./brokerAdmin');
+const { lintTrie } = require('./unsLint');
 
 const STATS_INTERVAL_MS = 2000;
 const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -32,6 +33,7 @@ class MqttManager extends EventEmitter {
     this.tries = new Map(); // brokerId -> { trie, indexedThrough } (lazy; built on first resolve)
     this.sys = new Map(); // brokerId -> Set($SYS topic) — keeps /sys reads O(sys), not O(topics)
     this.recent = new Map(); // brokerId -> recent message ring (bounded)
+    this.rowCache = new Map(); // brokerId -> Map(slot -> { count, row }) — read-path decode cache
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
@@ -114,6 +116,7 @@ class MqttManager extends EventEmitter {
     this.sparkplug.set(brokerId, new SparkplugRegistry());
     this.sys.set(brokerId, new Set());
     this.recent.set(brokerId, []);
+    this.rowCache.set(brokerId, new Map());
     this.subscriptions.set(brokerId, new Set());
     this.setupClientEventHandlers(client, brokerId);
 
@@ -353,6 +356,7 @@ class MqttManager extends EventEmitter {
     this.tries.delete(brokerId);
     this.sys.delete(brokerId);
     this.recent.delete(brokerId);
+    this.rowCache.delete(brokerId);
     this.subscriptions.delete(brokerId);
     this.io.emit('mqtt-disconnected', { brokerId });
     return { brokerId, status: 'disconnected' };
@@ -429,9 +433,17 @@ class MqttManager extends EventEmitter {
     const store = this.stores.get(brokerId);
     if (!store) return { topics: [], total: 0, dropped: 0 };
 
+    // Read-path decode cache: on large brokers most topics are idle between
+    // snapshot calls (retained config, birth certificates, slow sensors), so the
+    // JSON parse + type detection from the previous call is still valid. A row's
+    // `count` increments on every ingest, making it a perfect version stamp:
+    // cache the projected object per slot and reuse it while count is unchanged.
+    const cache = this.rowCache.get(brokerId);
     const topics = store.getTopics(limit).map((row) => {
+      const hit = cache?.get(row.slot);
+      if (hit && hit.count === row.count) return hit.obj;
       const msg = this.buildMessage(brokerId, row);
-      return {
+      const obj = {
         topic: row.topic,
         messageCount: row.count,
         lastActivity: msg.timestamp,
@@ -440,6 +452,8 @@ class MqttManager extends EventEmitter {
         retain: msg.retain,
         payload: msg.payload
       };
+      cache?.set(row.slot, { count: row.count, obj });
+      return obj;
     });
     return { topics, total: store.topicCount(), dropped: store.dropped };
   }
@@ -612,6 +626,111 @@ class MqttManager extends EventEmitter {
     return out;
   }
 
+  // ---- UNS namespace services ----------------------------------------------
+
+  /** UNS conformance lint over the observed namespace (see unsLint.js). */
+  lintNamespace(brokerId, opts = {}) {
+    const trie = this.getTrie(brokerId);
+    if (!trie) return null;
+    return lintTrie(trie, opts);
+  }
+
+  /**
+   * Namespace event feed: new-topic appearances (from the store) merged with
+   * Sparkplug BIRTH/DEATH lifecycle events (from the registry), newest first.
+   * Both sources are bounded rings, so this is O(events), never O(topics).
+   */
+  getNamespaceEvents(brokerId, { limit = 200 } = {}) {
+    const store = this.stores.get(brokerId);
+    if (!store) return null;
+    const registry = this.sparkplug.get(brokerId);
+    const merged = [...store.events, ...(registry?.events || [])];
+    merged.sort((a, b) => b.ts - a.ts);
+    return {
+      events: merged.slice(0, limit),
+      total: merged.length,
+      truncated: merged.length > limit
+    };
+  }
+
+  /**
+   * Nested topic-tree summary for the UNS module and MCP (`uns_tree`). Depth-
+   * and node-capped so a multimillion-topic broker returns a bounded skeleton:
+   * every returned node carries its exact subtreeCount even when its children
+   * are cut off, so nothing is silently hidden.
+   */
+  getUnsTree(brokerId, { depth = 4, maxNodes = 2000, prefix = '' } = {}) {
+    const store = this.stores.get(brokerId);
+    const trie = this.getTrie(brokerId);
+    if (!store || !trie) return null;
+
+    let root = trie.root;
+    if (prefix) {
+      for (const seg of String(prefix).split('/')) {
+        root = root.children?.get(seg);
+        if (!root) return { prefix, nodes: [], total: store.topicCount(), truncated: false };
+      }
+    }
+
+    let used = 0;
+    let truncated = false;
+    const build = (node, path, name, d) => {
+      used++;
+      const out = {
+        name,
+        path,
+        count: node.subtreeCount,
+        isTopic: node.slot >= 0
+      };
+      if (node.slot >= 0) {
+        out.ts = store.ts[node.slot];
+        out.msgCount = store.count[node.slot];
+      }
+      if (node.children && d < depth) {
+        const kids = [];
+        for (const [seg, child] of node.children) {
+          if (!path && seg.startsWith('$')) continue; // $SYS etc. is broker plumbing, not namespace
+          if (used >= maxNodes) { truncated = true; break; }
+          kids.push(build(child, path ? `${path}/${seg}` : seg, seg, d + 1));
+        }
+        if (kids.length) out.children = kids;
+      } else if (node.children && node.children.size > 0) {
+        truncated = true; // depth-cut: subtreeCount still tells the whole story
+      }
+      return out;
+    };
+
+    const nodes = [];
+    for (const [seg, child] of root.children || []) {
+      if (!prefix && seg.startsWith('$')) continue;
+      if (used >= maxNodes) { truncated = true; break; }
+      nodes.push(build(child, prefix ? `${prefix}/${seg}` : seg, seg, 1));
+    }
+    return { prefix, nodes, total: store.topicCount(), truncated };
+  }
+
+  /** Newest message ts anywhere under `path` ('' = whole namespace). O(subtree). */
+  branchLastActivity(brokerId, path = '') {
+    const store = this.stores.get(brokerId);
+    const trie = this.getTrie(brokerId);
+    if (!store || !trie) return null;
+    let node = trie.root;
+    if (path) {
+      for (const seg of String(path).split('/')) {
+        node = node.children?.get(seg);
+        if (!node) return 0; // branch never observed
+      }
+    }
+    let max = 0;
+    const stack = [node];
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.slot >= 0 && store.ts[n.slot] > max) max = store.ts[n.slot];
+      if (n.children) for (const c of n.children.values()) stack.push(c);
+    }
+    return max;
+  }
+
   shutdown() {
     clearInterval(this.cleanupTimer);
     clearInterval(this.statsTimer);
@@ -625,6 +744,7 @@ class MqttManager extends EventEmitter {
     this.tries.clear();
     this.sys.clear();
     this.recent.clear();
+    this.rowCache.clear();
   }
 }
 

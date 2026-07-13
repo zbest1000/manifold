@@ -12,6 +12,8 @@ const DiscoveryService = require('./services/discovery');
 const CesmiiClient = require('./services/cesmiiClient');
 const I3xClient = require('./services/i3xClient');
 const ProfileStore = require('./services/profileStore');
+const HistoryStore = require('./services/historyStore');
+const { AlertEngine } = require('./services/alertEngine');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -19,6 +21,8 @@ const systemRoutes = require('./routes/system');
 const cesmiiRoutes = require('./routes/cesmii');
 const i3xRoutes = require('./routes/i3x');
 const layoutRoutes = require('./routes/layout');
+const unsRoutes = require('./routes/uns');
+const alertRoutes = require('./routes/alerts');
 
 const app = express();
 const server = http.createServer(app);
@@ -65,8 +69,10 @@ const i3x = new I3xClient();
 const discovery = new DiscoveryService(io, { i3x });
 const cesmii = new CesmiiClient();
 const profiles = new ProfileStore();
+const history = new HistoryStore(mqttManager);
+const alerts = new AlertEngine({ io, profiles, mqttManager });
 
-app.locals.services = { mqttManager, opcuaManager, discovery, cesmii, i3x, profiles };
+app.locals.services = { mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts };
 
 // Restore saved connection profiles so a server restart doesn't lose state.
 // Every restore is individually try/caught: an unreachable broker must not stop
@@ -98,7 +104,13 @@ function restoreProfiles() {
     });
   }
 }
-if (process.env.TC_NO_RESTORE !== '1') restoreProfiles();
+if (process.env.TC_NO_RESTORE !== '1') {
+  restoreProfiles();
+  const restoredMsgs = history.restore();
+  if (restoredMsgs) console.log(`history: restored ${restoredMsgs} recent message(s)`);
+}
+history.start();
+alerts.start();
 
 app.use('/api/mqtt', mqttRoutes);
 app.use('/api/opcua', opcuaRoutes);
@@ -106,6 +118,8 @@ app.use('/api/system', systemRoutes);
 app.use('/api/cesmii', cesmiiRoutes);
 app.use('/api/i3x', i3xRoutes);
 app.use('/api/layout', layoutRoutes);
+app.use('/api/uns', unsRoutes);
+app.use('/api/alerts', alertRoutes);
 
 app.get('/health', (req, res) => {
   res.json({
@@ -213,6 +227,9 @@ server.listen(PORT, () => {
 });
 
 const shutdown = async () => {
+  history.snapshot(); // final flush before rings are torn down
+  history.stop();
+  alerts.stop();
   mqttManager.shutdown();
   await opcuaManager.shutdown();
   server.close(() => process.exit(0));
