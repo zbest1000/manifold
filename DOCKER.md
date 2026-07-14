@@ -21,7 +21,7 @@ server dependencies). Subsequent starts are fast.
 | `opcua` | `mcr.microsoft.com/iotedge/opc-plc` | Simulated OPC UA server | `50000` |
 | `simulator` | built from `docker/simulator` | Publishes MQTT + Sparkplug B traffic | — |
 
-## It just works
+## Pre-seeded demo data
 
 The app is **pre-seeded** (via `docker/app/seed/profiles.json`) to auto-connect
 on startup to:
