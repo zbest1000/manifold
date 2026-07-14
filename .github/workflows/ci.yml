@@ -67,6 +67,14 @@ jobs:
         image: emqx/emqx:5.8
         ports:
           - 1883:1883
+        env:
+          # Stock EMQX's default file ACL denies wildcard '#' subscriptions at
+          # QoS 1+ from non-localhost — and with deny_action=ignore the SUBACK
+          # still "succeeds", so the client can't even detect it. A real EMQX
+          # deployment backing a UNS platform grants this permission; mirror
+          # that here so CI exercises QoS-1 intake the way production runs.
+          EMQX_AUTHORIZATION__NO_MATCH: allow
+          EMQX_AUTHORIZATION__SOURCES: '[]'
       influxdb:
         image: influxdb:2.7
         ports:
@@ -110,7 +118,9 @@ jobs:
         working-directory: server
         env:
           INTEGRATION: '1'
-        run: node --test --test-concurrency=1 test/services-int.test.js
+        # Direct execution (no `node --test`) — the runner's child-process IPC
+        # intermittently corrupts on CI ("Unable to deserialize cloned data").
+        run: node test/services-int.test.js
       - name: Dump service container state on failure
         if: failure()
         run: docker ps -a && for c in $(docker ps -aq); do echo "===== $c"; docker logs --tail 50 "$c" 2>&1 | tail -50; done

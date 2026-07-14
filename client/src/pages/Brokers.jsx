@@ -161,6 +161,11 @@ export default function Brokers() {
                     <option value={1}>QoS 1 — at least once (default)</option>
                     <option value={2}>QoS 2 — exactly once</option>
                   </select>
+                  <p className="mt-1 text-[11px] leading-snug text-slate-500">
+                    If the broker refuses the wildcard grant, intake retries at QoS 0 automatically. Note: stock EMQX
+                    <em> silently</em> denies '#' at QoS 1+ (default ACL + deny_action=ignore) — allow it in the broker
+                    ACL, or pick QoS 0 here if no data appears.
+                  </p>
                 </Field>
                 <Field label="Max reconnect attempts (0 = unlimited)">
                   <Input
