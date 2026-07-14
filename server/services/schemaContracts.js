@@ -115,7 +115,7 @@ class SchemaContracts {
   onMessage(msg) {
     const table = this.table();
     if (!table.length) return;
-    const topicParts = msg.topic.split('/');
+    const topicParts = msg.topicParts || msg.topic.split('/');
     for (const { contract, parts } of table) {
       if (contract.brokerId !== msg.brokerId) continue;
       if (!matchParts(parts, topicParts)) continue;

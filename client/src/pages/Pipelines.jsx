@@ -506,7 +506,7 @@ function ModelsTab({ brokers }) {
 function HistoriansTab() {
   const [data, setData] = useState({ historians: [], types: [] });
   const [outbox, setOutbox] = useState({});
-  const [form, setForm] = useState({ type: 'influxdb', name: '', url: '', org: '', bucket: '', token: '', measurement: '', dataset: '', stream: '', messageType: '', writePath: '', apiKey: '', apiSecret: '', host: '', port: '', database: '', user: '', password: '', table: '', ssl: false });
+  const [form, setForm] = useState({ type: 'influxdb', name: '', url: '', org: '', bucket: '', token: '', measurement: '', dataset: '', stream: '', messageType: '', writePath: '', apiKey: '', apiSecret: '', host: '', port: '', database: '', user: '', password: '', table: '', ssl: false, dropPolicy: 'newest' });
   const [testing, setTesting] = useState(null); // id -> result
   const load = useCallback(() => api.listHistorians().then(setData).catch(() => {}), []);
   useEffect(() => {
@@ -596,6 +596,12 @@ function HistoriansTab() {
           </Field>
           <Field label="Name">
             <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="plant historian" />
+          </Field>
+          <Field label="When offline buffer is full">
+            <select value={form.dropPolicy} onChange={(e) => setForm({ ...form, dropPolicy: e.target.value })} className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200">
+              <option value="newest">Drop newest (keep outage start)</option>
+              <option value="oldest">Drop oldest (keep latest data)</option>
+            </select>
           </Field>
           {form.type !== 'timescaledb' && (
             <Field label="URL" className="col-span-2">

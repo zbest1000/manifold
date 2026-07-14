@@ -26,10 +26,11 @@ const BATCH = 1000;
 const SPILL_MAX_BYTES = 20 * 1024 * 1024;
 
 class HistorianOutbox {
-  constructor({ profiles, dir = process.env.TC_DATA_DIR || path.join(__dirname, '..', 'data'), fetchImpl = globalThis.fetch }) {
+  constructor({ profiles, dir = process.env.TC_DATA_DIR || path.join(__dirname, '..', 'data'), fetchImpl = globalThis.fetch, spillMaxBytes = SPILL_MAX_BYTES }) {
     this.profiles = profiles;
     this.dir = path.join(dir, 'outbox');
     this.fetchImpl = fetchImpl;
+    this.spillMaxBytes = spillMaxBytes;
     this.queues = new Map(); // historianId -> points[]
     this.stats = new Map(); // historianId -> { written, spilled, drained, dropped, lastError, lastWrite }
     this.timer = null;
@@ -85,9 +86,34 @@ class HistorianOutbox {
         // no spill yet
       }
       const lines = points.map((p) => JSON.stringify(p)).join('\n') + '\n';
-      if (size + lines.length > SPILL_MAX_BYTES) {
-        s.dropped += points.length;
-        s.lastError = `spill cap reached (${SPILL_MAX_BYTES} bytes) — dropping new points`;
+      if (size + lines.length > this.spillMaxBytes) {
+        // At the cap something must go; which end is a per-historian choice.
+        // 'oldest' (keep newest — what most historians want: recent data is
+        // most valuable) rewrites the file head; default keeps the outage's
+        // beginning and drops incoming. Either way the count is reported.
+        const conn = this.profiles.getIn('historians', id);
+        if (conn?.dropPolicy === 'oldest') {
+          const raw = fs.readFileSync(file, 'utf8');
+          const needed = size + lines.length - this.spillMaxBytes;
+          let cut = 0;
+          let droppedOld = 0;
+          while (cut < needed && cut < raw.length) {
+            const nl = raw.indexOf('\n', cut);
+            if (nl === -1) {
+              cut = raw.length;
+            } else {
+              cut = nl + 1;
+            }
+            droppedOld++;
+          }
+          fs.writeFileSync(file, raw.slice(cut) + lines, { mode: 0o600 });
+          s.spilled += points.length;
+          s.dropped += droppedOld;
+          s.lastError = `spill cap: dropped ${droppedOld} oldest point(s) to keep newest`;
+        } else {
+          s.dropped += points.length;
+          s.lastError = `spill cap reached (${this.spillMaxBytes} bytes) — dropping new points`;
+        }
         return;
       }
       fs.appendFileSync(file, lines, { mode: 0o600 });

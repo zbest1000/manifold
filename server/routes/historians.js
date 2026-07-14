@@ -20,7 +20,7 @@ router.post('/', (req, res) => {
   const { profiles } = req.app.locals.services;
   const {
     id, name, type, url, org, bucket, token, measurement, dataset, stream, messageType, writePath,
-    apiKey, apiSecret, host, port, database, user, password, ssl, table
+    apiKey, apiSecret, host, port, database, user, password, ssl, table, dropPolicy
   } = req.body || {};
   if (!historians.supportedTypes().includes(type)) {
     return res.status(400).json({ error: `type must be one of: ${historians.supportedTypes().join(', ')}` });
@@ -52,6 +52,7 @@ router.post('/', (req, res) => {
     user: user || null,
     ssl: Boolean(ssl),
     table: table || null,
+    dropPolicy: dropPolicy === 'oldest' ? 'oldest' : 'newest',
     // keep the stored secret when the client omits it on edit
     token: token !== undefined ? token : existing?.token || null,
     apiKey: apiKey !== undefined ? apiKey : existing?.apiKey || null,

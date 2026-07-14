@@ -131,7 +131,7 @@ class TagBindings {
     const bindings = this.spIndex();
     if (!bindings.length || !msg.sparkplug || !Array.isArray(msg.sparkplug.metrics)) return;
     // Topic: spBv1.0/{group}/{type}/{edge}[/{device}]
-    const parts = msg.topic.split('/');
+    const parts = msg.topicParts || msg.topic.split('/');
     if (parts[0] !== 'spBv1.0' || !/^(N|D)(DATA|BIRTH)$/.test(parts[2] || '')) return;
     const [, group, , edge, device = null] = parts;
 

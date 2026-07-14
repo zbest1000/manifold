@@ -33,6 +33,7 @@ class MqttManager extends EventEmitter {
     this.tries = new Map(); // brokerId -> { trie, indexedThrough } (lazy; built on first resolve)
     this.sys = new Map(); // brokerId -> Set($SYS topic) — keeps /sys reads O(sys), not O(topics)
     this.recent = new Map(); // brokerId -> recent message ring (bounded)
+    this.topicMeta = new Map(); // brokerId -> Array(slot -> {type, spark}) — a topic's classification never changes
     this.rowCache = new Map(); // brokerId -> Map(slot -> { count, row }) — read-path decode cache
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
@@ -93,6 +94,10 @@ class MqttManager extends EventEmitter {
       clientId,
       username: config.username || null,
       autoSubscribe: config.autoSubscribe !== false,
+      // Intake durability: QoS 0 subscriptions silently shed messages under
+      // broker pressure — no pipeline can be more reliable than its intake, so
+      // the explorer subscription defaults to QoS 1.
+      subscribeQos: [0, 1, 2].includes(Number(config.subscribeQos)) ? Number(config.subscribeQos) : 1,
       // 0 = reconnect forever (mqtt.js default); >0 = give up after N attempts.
       maxReconnect: Number(config.maxReconnect) > 0 ? Number(config.maxReconnect) : 0,
       reconnectCount: 0,
@@ -113,6 +118,7 @@ class MqttManager extends EventEmitter {
     this.connections.set(brokerId, info);
     this.clients.set(brokerId, client);
     this.stores.set(brokerId, new TopicStore(MAX_TOPICS));
+    this.topicMeta.set(brokerId, []);
     this.sparkplug.set(brokerId, new SparkplugRegistry());
     this.sys.set(brokerId, new Set());
     this.recent.set(brokerId, []);
@@ -135,10 +141,11 @@ class MqttManager extends EventEmitter {
       this.io.emit('mqtt-connected', { brokerId, connection: this.publicInfo(info) });
 
       if (info.autoSubscribe) {
-        this.subscribe(brokerId, '#', 0);
+        this.subscribe(brokerId, '#', info.subscribeQos);
         // `#` does not match topics beginning with `$` (MQTT spec), so subscribe
         // to the broker's `$SYS` tree separately for audit/health stats. Brokers
-        // that don't publish `$SYS` simply deliver nothing here.
+        // that don't publish `$SYS` simply deliver nothing here ($SYS stays QoS 0
+        // — it's periodic diagnostics, losing one sample is meaningless).
         this.subscribe(brokerId, '$SYS/#', 0);
       }
     });
@@ -214,10 +221,24 @@ class MqttManager extends EventEmitter {
       payloadFormat = 'json';
     } catch {
       payload = text;
-      if (/�/.test(text)) {
+      if (text.includes('�')) {
         payloadFormat = 'binary';
         payload = message.toString('base64');
       }
+    }
+
+    // Topic classification is a pure function of the topic string — cache it
+    // by slot instead of re-running the substring scans per flushed message.
+    let meta;
+    const metaArr = this.topicMeta.get(brokerId);
+    if (metaArr && row.slot !== undefined) {
+      meta = metaArr[row.slot];
+      if (!meta) {
+        meta = { type: this.detectMessageType(row.topic, payload), spark: this.isSparkplugTopic(row.topic) };
+        metaArr[row.slot] = meta;
+      }
+    } else {
+      meta = { type: this.detectMessageType(row.topic, payload), spark: this.isSparkplugTopic(row.topic) };
     }
 
     const messageObj = {
@@ -230,10 +251,10 @@ class MqttManager extends EventEmitter {
       retain: row.retain,
       timestamp: new Date(row.ts).toISOString(),
       size: message.length,
-      type: this.detectMessageType(row.topic, payload)
+      type: meta.type === 'json' || meta.type === 'text' ? (typeof payload === 'object' && payload !== null ? 'json' : 'text') : meta.type
     };
 
-    if (this.isSparkplugTopic(row.topic)) {
+    if (meta.spark) {
       try {
         messageObj.sparkplug = this.sparkplugDecoder.decode(message);
         messageObj.type = 'sparkplug';
@@ -265,6 +286,8 @@ class MqttManager extends EventEmitter {
     const tap = this.listenerCount('message') > 0;
     for (const row of rows) {
       const messageObj = this.buildMessage(brokerId, row);
+      // Split once here; every tap engine matches on segments.
+      if (tap) messageObj.topicParts = messageObj.topic.split('/');
       lastActivity = messageObj.timestamp;
 
       // Fold Sparkplug traffic into the device topology (identity from the topic,
@@ -291,7 +314,9 @@ class MqttManager extends EventEmitter {
     const info = this.connections.get(brokerId);
     if (info && lastActivity) info.lastActivity = new Date(lastActivity);
 
-    if (batch.length) this.io.emit('mqtt-messages', batch);
+    // Serializing the batch for zero sockets is pure waste (headless deploys,
+    // MCP-only usage) — skip the emit when nobody is listening.
+    if (batch.length && (this.io.engine?.clientsCount ?? 1) > 0) this.io.emit('mqtt-messages', batch);
   }
 
   flushBatches() {
@@ -357,6 +382,7 @@ class MqttManager extends EventEmitter {
     }
     this.connections.delete(brokerId);
     this.stores.delete(brokerId);
+    this.topicMeta.delete(brokerId);
     this.sparkplug.delete(brokerId);
     this.admin.delete(brokerId);
     this.tries.delete(brokerId);
@@ -745,6 +771,7 @@ class MqttManager extends EventEmitter {
     this.clients.clear();
     this.connections.clear();
     this.stores.clear();
+    this.topicMeta.clear();
     this.sparkplug.clear();
     this.admin.clear();
     this.tries.clear();

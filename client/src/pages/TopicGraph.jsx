@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -6,8 +6,19 @@ import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
-import ForceGraph3D from '@/graph/ForceGraph3D';
-import WebGLGraph from '@/graph/WebGLGraph';
+
+// Heavy renderers load on demand: three.js (3D view) and the WebGL big-graph
+// renderer aren't part of the initial bundle — most sessions never open them.
+const ForceGraph3D = lazy(() => import('@/graph/ForceGraph3D'));
+const WebGLGraph = lazy(() => import('@/graph/WebGLGraph'));
+
+function RendererLoading() {
+  return (
+    <div className="flex h-full items-center justify-center text-xs text-slate-500">
+      <Loader2 size={14} className="mr-2 animate-spin" /> Loading renderer…
+    </div>
+  );
+}
 import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
@@ -286,7 +297,9 @@ export default function TopicGraph() {
           </div>
         ) : view === '3d' ? (
           <div className="relative flex-1">
-            <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+            <Suspense fallback={<RendererLoading />}>
+              <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+            </Suspense>
             <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
               Drag to rotate · scroll to zoom · click a node for details
             </div>
@@ -308,7 +321,9 @@ export default function TopicGraph() {
             {showAll ? (
               // GPU renderer for the "show everything" view — one draw call per
               // frame plus a viewport-culled label overlay stays smooth at 60k+.
-              <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} positions={forcePositions} />
+              <Suspense fallback={<RendererLoading />}>
+                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} positions={forcePositions} />
+              </Suspense>
             ) : (
               <ForceGraph
                 ref={graphRef}

@@ -58,12 +58,16 @@ function escFieldString(s) {
 }
 
 function toLineProtocol(points, measurement) {
+  // Numerics and strings go to DIFFERENT fields (`value` vs `raw`): InfluxDB
+  // locks a field's type per shard, so a topic that alternates 21.5 / "error"
+  // would otherwise get its writes rejected — and with store-and-forward those
+  // rejects would spill and retry forever. Two fields make mixed topics legal.
   const lines = [];
   for (const p of points) {
     const num = typeof p.value === 'number' ? p.value : Number(p.value);
     const field = Number.isFinite(num)
       ? `value=${num}`
-      : `value="${escFieldString(typeof p.value === 'object' ? JSON.stringify(p.value) : p.value)}"`;
+      : `raw="${escFieldString(typeof p.value === 'object' ? JSON.stringify(p.value) : p.value)}"`;
     lines.push(`${escMeasurement(measurement)},topic=${escTag(p.tag)} ${field} ${Math.round(p.ts)}`);
   }
   return lines.join('\n');

@@ -88,7 +88,7 @@ class Recorder {
   onMessage(msg) {
     const table = this.table();
     if (!table.length) return;
-    const topicParts = msg.topic.split('/');
+    const topicParts = msg.topicParts || msg.topic.split('/');
 
     for (const { rec, parts } of table) {
       if (rec.brokerId !== msg.brokerId) continue;

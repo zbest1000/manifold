@@ -69,7 +69,9 @@ test('influxdb backend writes line protocol with escaping and token auth', async
   assert.strictEqual(captured.opts.headers.Authorization, 'Token sekrit');
   const lines = captured.opts.body.split('\n');
   assert.strictEqual(lines[0], 'plant\\ data,topic=a\\,b\\ c/temp value=21.5 1700000000000');
-  assert.strictEqual(lines[1], 'plant\\ data,topic=x/state value="running" 1700000000001');
+  // strings land in a SEPARATE field so a mixed-type topic can't poison the
+  // numeric field's shard type
+  assert.strictEqual(lines[1], 'plant\\ data,topic=x/state raw="running" 1700000000001');
 });
 
 test('timebase backend groups TVQs per tag into the dataset', async () => {
@@ -297,6 +299,48 @@ test('outbox store-and-forward: failed writes spill to disk and drain on recover
   assert.strictEqual(stats.spillBytes, 0, 'spill file removed after drain');
   // spilled (older) point must have been written before the new one
   assert.match(writes[0], /value=1 1000/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('outbox spill cap honors dropPolicy: oldest rewrites the file head, newest drops incoming', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-ob-'));
+  const fetchImpl = async () => ({ ok: false, status: 503, text: async () => 'down' });
+  const point = (n) => ({ tag: 'a/t', ts: n, value: n });
+  const lineBytes = JSON.stringify(point(1)).length + 1;
+  const profiles = fakeProfiles({
+    historians: {
+      hNew: { id: 'hNew', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk' },
+      hOld: { id: 'hOld', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk', dropPolicy: 'oldest' }
+    }
+  });
+  // Cap fits exactly 3 lines; every point serializes to the same length.
+  const outbox = new HistorianOutbox({ profiles, dir, fetchImpl, spillMaxBytes: lineBytes * 3 });
+
+  // Later flush rounds retry the spill and overwrite lastError with the plain
+  // write failure, so capture each policy message right after it fires.
+  const capMessages = {};
+  for (const id of ['hNew', 'hOld']) {
+    outbox.enqueue(id, [point(1), point(2), point(3)]);
+    await outbox.flush(); // historian down → 3 points spill, file is at cap
+    outbox.enqueue(id, [point(4)]);
+    await outbox.flush(); // over cap → policy decides which end goes
+    capMessages[id] = outbox.getStats()[id].lastError;
+  }
+
+  const readTs = (id) =>
+    fs
+      .readFileSync(outbox.spillPath(id), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).ts);
+
+  assert.deepStrictEqual(readTs('hNew'), [1, 2, 3], 'default keeps the outage start, drops the new point');
+  assert.strictEqual(outbox.getStats().hNew.dropped, 1);
+  assert.match(capMessages.hNew, /dropping new/);
+
+  assert.deepStrictEqual(readTs('hOld'), [2, 3, 4], 'oldest policy cuts the head to keep the newest point');
+  assert.strictEqual(outbox.getStats().hOld.dropped, 1);
+  assert.match(capMessages.hOld, /oldest/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

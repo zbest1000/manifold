@@ -44,6 +44,9 @@ const rateCounters = new Map();
 // that publishes every 500ms is "overdue" seconds after it stops; a daily
 // report topic isn't stale for hours.
 const gapStats = new Map(); // key -> { emaGap, lastTs }
+// Last time ANY message hit the namespace — the idle-throttle signal for the
+// draw loop (a quiet namespace has nothing animating, so 60fps is waste).
+let lastDataAt = 0;
 
 export function lastActive(node) {
   return unsLiveMap.get(`${node.brokerId}:${node.path}`) || 0;
@@ -145,6 +148,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const manualRef = useRef(new Map());
   const fittedRef = useRef(false);
   const rafRef = useRef(0);
+  const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
   const selectedRef = useRef(selectedId);
   selectedRef.current = selectedId;
 
@@ -209,6 +213,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const off = onMessageActivity((msg) => {
       if (!msg?.topic || msg.topic.startsWith('$')) return;
       const now = Date.now();
+      lastDataAt = now;
       const rootKey = `${msg.brokerId}:`;
       unsLiveMap.set(rootKey, now);
       rateCounters.set(rootKey, (rateCounters.get(rootKey) || 0) + 1);
@@ -486,11 +491,19 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, [layout, levels, posOf]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
+  // Idle throttle: pulses/dashes only animate around live traffic and
+  // interaction; a quiet view redraws at ~8fps instead of burning 60.
   useEffect(() => {
     let running = true;
-    const tick = () => {
+    let lastDraw = 0;
+    const tick = (ts) => {
       if (!running) return;
-      draw();
+      const now = Date.now();
+      const active = now - lastDataAt < 3000 || now - interactAt.current < 1000;
+      if (active || ts - lastDraw >= 125) {
+        lastDraw = ts;
+        draw();
+      }
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -543,12 +556,14 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     let moved = 0;
     let last = { x: 0, y: 0 };
     const onDown = (e) => {
+      interactAt.current = Date.now();
       moved = 0;
       last = { x: e.clientX, y: e.clientY };
       grabbed = pick(toWorld(e));
       mode = grabbed ? 'node' : 'pan';
     };
     const onMove = (e) => {
+      interactAt.current = Date.now();
       if (!mode) {
         // hover cursor feedback
         const over = pick(toWorld(e));
@@ -598,6 +613,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (hit?.hasKids) toggle(hit.node);
     };
     const onWheel = (e) => {
+      interactAt.current = Date.now();
       e.preventDefault();
       const t = transformRef.current;
       const rect = canvas.getBoundingClientRect();
