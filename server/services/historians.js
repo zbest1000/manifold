@@ -201,7 +201,15 @@ function pgEntryFor(conn) {
         user: conn.user,
         password: conn.password || undefined,
         ssl: conn.ssl ? { rejectUnauthorized: false } : undefined,
-        max: 4
+        max: 4,
+        // Bounded waits: pg's defaults block FOREVER on an unreachable host,
+        // which turns "database down" into a hung process (seen as CI jobs
+        // spinning for hours). A write outage must surface as an error the
+        // outbox can spill on, and idle pools must never pin the event loop.
+        connectionTimeoutMillis: 10_000,
+        query_timeout: 30_000,
+        idleTimeoutMillis: 30_000,
+        allowExitOnIdle: true
       }),
       schemaReady: new Set()
     };

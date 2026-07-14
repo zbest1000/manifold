@@ -6,10 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# A new push supersedes any still-running CI for the same ref — without this,
+# a hung integration job spins for the full 6-hour runner limit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   server:
     name: Server (tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         # Node 22 LTS only. Node 18 lacks the require(ESM) support node-opcua
@@ -33,6 +40,7 @@ jobs:
   client:
     name: Client (tests + build)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,6 +59,9 @@ jobs:
   integration:
     name: Server (real EMQX + InfluxDB)
     runs-on: ubuntu-latest
+    # A hung service connection must fail the job in minutes, not spin for the
+    # runner's 6-hour default.
+    timeout-minutes: 15
     services:
       emqx:
         image: emqx/emqx:5.8
@@ -84,15 +95,25 @@ jobs:
         working-directory: server
         run: npm install --no-audit --no-fund
       - name: Wait for services
+        # Waiting silently through a dead service just moves the failure into
+        # the tests as a hang — fail HERE, by name, if anything never opens.
         run: |
+          wait_port() {
+            for i in $(seq 1 30); do (exec 3<>"/dev/tcp/127.0.0.1/$2") 2>/dev/null && return 0; sleep 2; done
+            echo "::error::service $1 never opened port $2"; return 1
+          }
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8086/health && break; sleep 2; done
-          for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/1883) 2>/dev/null && break; sleep 2; done
-          for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8086/health || { echo "::error::influxdb never became healthy"; exit 1; }
+          wait_port emqx 1883
+          wait_port timescaledb 5432
       - name: Run real-service integration tests
         working-directory: server
         env:
           INTEGRATION: '1'
         run: node --test --test-concurrency=1 test/services-int.test.js
+      - name: Dump service container state on failure
+        if: failure()
+        run: docker ps -a && for c in $(docker ps -aq); do echo "===== $c"; docker logs --tail 50 "$c" 2>&1 | tail -50; done
 
   mcp:
     name: MCP server (load check)
