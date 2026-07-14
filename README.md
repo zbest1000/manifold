@@ -31,7 +31,7 @@ Manifold connects to brokers and servers, streams their data in real time, and r
 **Operations**
 - Token auth with admin and read-only roles, audit log, Prometheus `/metrics`, config export/import with secrets stripped.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works: system design, the message hot path, the API surface, protocol notes, and testing.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works: system design, the message hot path, the API surface, protocol notes, and testing. Operational guides (broker ACLs, historian setup, transform reference, troubleshooting) live in the [wiki](../../wiki), generated from [`docs/wiki/`](docs/wiki).
 
 ## Quick start
 
