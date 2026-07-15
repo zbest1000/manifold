@@ -1,41 +1,61 @@
-# Getting started
+# 🏁 Getting started
 
-## Requirements
+> **Goal:** a running Manifold with a live broker connected, in about five minutes.
 
-- Node.js ≥ 20.19 (or 22+). The OPC UA dependency chain needs `require(ESM)` support.
+## What you need
 
-## Install and run
+- Node.js **≥ 20.19** (or 22+) — the OPC UA driver needs modern `require(ESM)` support.
+- An MQTT broker to point at — or none at all: the Docker stack ships one with simulated traffic.
+
+## Option A — run from source
 
 ```bash
 npm run install:all
 npm run dev            # client on :3000, backend on :5000 (proxied)
 ```
 
-Production:
+For production:
 
 ```bash
 npm run build          # builds the client into client/dist
 npm start              # serves API + built client on :5000
 ```
 
-Docker demo stack (broker + OPC UA simulator + traffic generator, pre-wired):
+## Option B — Docker demo stack
+
+One command brings up Manifold, a Mosquitto broker, an OPC UA simulator, and a
+traffic generator publishing plain MQTT and Sparkplug B — pre-wired, so the UI
+is alive the moment it loads:
 
 ```bash
 docker compose up --build
 # open http://localhost:5000
 ```
 
-## First broker
+## Your first broker
 
-1. Open **MQTT Brokers** → *Add broker*.
-2. Enter host and port. Manifold auto-subscribes to `#` (QoS 1 by default) and
-   `$SYS/#` (QoS 0) once connected.
-3. Topics appear under **Topics**; the ISA-95 view builds itself under **UNS**
-   from the same traffic.
+```mermaid
+flowchart LR
+    A[Add broker<br/>host + port] --> B[Manifold connects and<br/>subscribes to everything]
+    B --> C[Topics page<br/>live tree + graphs]
+    B --> D[UNS page<br/>ISA-95 topology builds itself]
+```
 
-If the broker is a stock EMQX and no data appears, read
-[Broker Setup](Broker-Setup) — EMQX's default ACL silently denies wildcard
-subscriptions at QoS 1.
+1. Open **MQTT Brokers** → *Add broker*, enter host and port.
+2. On connect, Manifold auto-subscribes to `#` (QoS 1 by default) and
+   `$SYS/#` (QoS 0) — no topic list to configure.
+3. Watch **Topics** fill up, then open **UNS**: the ISA-95 topology, live
+   values, and per-branch rates appear with zero registration — it is all
+   derived from observed traffic.
+
+<div align="center">
+<img src="images/broker-form.png" alt="Broker connection form" width="800">
+
+*The connection form. Everything has a sensible default; the QoS setting is explained in [Broker Setup](Broker-Setup).*
+</div>
+
+> ⚠️ **Connected but empty on EMQX?** Stock EMQX silently refuses wildcard
+> subscriptions at QoS 1. Two-minute fix in [Broker Setup](Broker-Setup).
 
 ## Environment variables
 
@@ -47,3 +67,9 @@ subscriptions at QoS 1.
 | `MANIFOLD_DATA_DIR` | Data directory (profiles, history, outbox spill, audit) |
 | `MANIFOLD_NO_RESTORE` | `1` = don't reconnect saved profiles on boot |
 | `CLIENT_URL` | CORS origin for the dev client |
+
+## Where to next
+
+- Wire up consumer lineage and broker health → [Broker Setup](Broker-Setup)
+- Send data to a time-series database → [Historians](Historians)
+- Reshape a messy namespace into a clean UNS → [Pipelines and Models](Pipelines-and-Models)

@@ -1,38 +1,45 @@
-# Tags and Sparkplug
+# 🏷️ Tags and Sparkplug
 
-## Tag browser
+> **Goal:** from "browse a device's tags" to "they live in the UNS" in one
+> wizard — with report-by-exception and real quality codes on the way.
 
-**Tags** unifies the sources Manifold already speaks:
+## The tag browser
 
-- **OPC UA** — the address space of any connected server, browsed lazily.
-- **Sparkplug** — the device registry (Group → Edge → Device → metrics)
-  reconstructed from BIRTH certificates.
-- **MQTT** — the observed topic trie.
+**Tags** unifies every source Manifold already speaks:
 
-Tick tags and use *Add to UNS*. MQTT selections compile into a pipeline route
-(common prefix + repath); OPC UA and Sparkplug selections become bindings.
+| Source | What you browse |
+|---|---|
+| 🖧 OPC UA | the address space of any connected server, loaded lazily |
+| ⚡ Sparkplug | the device registry (Group → Edge → Device → metrics) rebuilt from BIRTH certificates |
+| 📡 MQTT | the observed topic trie |
 
-## Bindings
+Tick tags, hit **Add to UNS**, and the wizard does the right thing per
+source: MQTT selections compile into a pipeline route; OPC UA and Sparkplug
+selections become **bindings**.
 
-A binding publishes source tag values to a destination:
+## How a binding flows
 
-- **MQTT target** — a path template (`site/area/{name}`), raw value or TVQ
-  envelope `{v, t, q}`, optional QoS/retain.
-- **Sparkplug target** — a proper Sparkplug B device under a (broker, group,
-  edge node) session.
+```mermaid
+flowchart LR
+    DEV[device tag<br/>OPC UA monitored item<br/>or Sparkplug metric] --> RBE{changed more than<br/>the deadband?}
+    RBE -->|no| SUP[suppressed<br/>counted, not sent]
+    RBE -->|yes| FMT{format}
+    FMT -->|plain| P1[raw value to MQTT topic]
+    FMT -->|envelope| P2["{v, t, q} with real quality"]
+    FMT -->|sparkplug| P3[DDATA on a proper<br/>Sparkplug B device]
+```
 
-Behavior:
-
-- **Report by exception** — an absolute deadband suppresses numeric changes
-  smaller than the band; non-numeric values publish on change only.
-- **Quality** — OPC UA status codes map to Good 192 / Uncertain 64 / Bad 0
-  and ride in envelope mode.
-- **Read-only** — bindings never write toward a device. There is no write
-  path in the engine.
+- **Report by exception** — an absolute deadband suppresses numeric noise;
+  non-numeric values publish on change only.
+- **Quality is honest** — OPC UA status codes map to Good 192 / Uncertain 64 /
+  Bad 0 and travel inside the envelope.
+- **Read-only by design** — bindings never write toward a device. There is no
+  write path in the engine.
 
 ## CSV import
 
-Tag lists exported from Kepware/Ignition-style tools import directly:
+Tag exports from Kepware/Ignition-style tools drop straight into the
+selection:
 
 ```csv
 nodeId,name
@@ -40,21 +47,28 @@ ns=2;s=Channel1.Device1.Temperature,Temperature
 ns=2;s=Channel1.Device1.Pressure,Pressure
 ```
 
-Rows land in the current selection and go through the same wizard.
-
 ## The Sparkplug B publisher
 
-Bindings that target Sparkplug run on a dedicated MQTT session per
-(broker, group, edge node) implementing the specification lifecycle:
+Bindings that target Sparkplug get a dedicated session per (broker, group,
+edge node) implementing the specification's full lifecycle — consumers with
+Sparkplug state management (Ignition, HiveMQ extensions, Timebase collectors)
+see Manifold as a first-class edge node:
 
-- CONNECT with an NDEATH will carrying the session's `bdSeq`
-- NBIRTH at seq 0 including the `Node Control/Rebirth` metric
-- DBIRTH for each device before any DDATA
-- seq numbering mod 256 across all node messages
-- rebirth on NCMD `Node Control/Rebirth`
-- DDEATH per device and NDEATH on shutdown, with the connection closed
-  gracefully so both frames actually flush
+```mermaid
+sequenceDiagram
+    participant M as Manifold edge node
+    participant B as Broker
 
-Consumers that implement Sparkplug state management (Ignition, HiveMQ
-extensions, Timebase collectors) treat Manifold's output as a first-class
-edge node.
+    M->>B: CONNECT (will = NDEATH with bdSeq)
+    M->>B: NBIRTH seq 0 (Node Control/Rebirth)
+    M->>B: DBIRTH per device
+    loop values
+        M->>B: DDATA (seq mod 256)
+    end
+    B->>M: NCMD Rebirth
+    M->>B: NBIRTH (new cycle)
+    Note over M,B: shutdown: DDEATH per device, then NDEATH,<br/>closed gracefully so both frames flush
+```
+
+> ✅ This lifecycle is exercised frame-by-frame against a real broker in CI —
+> BIRTH ordering, sequence numbering, and death certificates included.
