@@ -1,14 +1,40 @@
-# Troubleshooting
+# 🩺 Troubleshooting
+
+> Start with the decision tree for the most common case — "I connected but
+> see nothing" — then use the symptom table.
+
+## No data appearing?
+
+```mermaid
+flowchart TD
+    A[Broker shows connected,<br/>topic tree empty] --> B{Is it EMQX?}
+    B -->|yes| C[Stock ACL silently denies<br/>wildcard at QoS 1+]
+    C --> C1[Allow the intake user in acl.conf<br/>or set Subscribe QoS 0]
+    B -->|no| D{subscription-downgraded<br/>or subscription-error<br/>in the log?}
+    D -->|downgraded| E[Broker refused QoS 1 loudly -<br/>intake continues at QoS 0.<br/>Grant QoS 1 for durable intake]
+    D -->|error| F[Broker refused entirely -<br/>check broker ACL for the user]
+    D -->|neither| G[Is anything publishing?<br/>Test: publish from the Topics page<br/>and watch it round-trip]
+```
+
+## Symptom table
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Broker shows *connected* but no topics appear (EMQX) | Stock EMQX silently denies `#` at QoS 1+ (default ACL, `deny_action=ignore`) — the SUBACK succeeds but the subscription doesn't exist | Allow the intake user in the broker ACL, or set the broker's *Subscribe QoS* to 0 in Manifold. See [Broker Setup](Broker-Setup) |
-| `subscription-downgraded` events in the log | The broker refused the wildcard grant loudly (SUBACK 0x80); Manifold fell back to QoS 0 | Expected behavior. Grant QoS 1 in the broker ACL if you want durable intake |
-| Historian card shows spill bytes growing | The historian is unreachable or rejecting writes; points are spilling to disk | Check `lastError` on the card, fix connectivity/auth, spill drains oldest-first automatically. At the cap, the drop policy applies |
-| TimescaleDB writes error with a timeout | Database unreachable — connections have bounded timeouts by design | Fix connectivity; queued points spill and recover. A hang instead of an error would mean an outdated build |
-| Flows → Consumers is empty | No broker admin API configured, or the broker is mosquitto (no per-client subscription API) | Configure EMQX/HiveMQ admin credentials on the broker; for mosquitto this data does not exist |
-| Influx rejects writes with a field type conflict | Data written by other tools created the field with a different type in the current shard | Manifold's own writes split `value=` (numeric) and `raw=` (string) and cannot cause this; check other writers to the bucket, or use a fresh bucket |
-| UNS staleness marks a slow topic *dead* | The topic publishes rarely and hasn't established its cadence yet | Staleness is calibrated per topic (EMA of inter-arrival gaps); after a few publishes the thresholds adapt |
-| Sparkplug devices show offline after a broker restart | Edge nodes haven't re-birthed | Per specification, state comes from BIRTH certificates; ask the edge node for a rebirth (NCMD) or wait for its reconnect BIRTH |
-| Server tests fail with "Unable to deserialize cloned data" | Running files through `node --test`'s child-process IPC, which corrupts intermittently | Use `npm test` (the serial in-process runner). This affects the test harness only, never the server |
-| UI shows the unlock screen unexpectedly | `MANIFOLD_AUTH_TOKEN` is set on the server | Enter the token; it is remembered locally. Viewer tokens get read-only access |
+| 🔌 Broker *connected* but no topics (EMQX) | Stock EMQX silently denies `#` at QoS 1+ (`deny_action=ignore`) | Broker ACL allow rule, or *Subscribe QoS* 0 — see [Broker Setup](Broker-Setup) |
+| 🔉 `subscription-downgraded` events | Broker refused the wildcard grant loudly (SUBACK 0x80); Manifold fell back to QoS 0 | Expected. Grant QoS 1 in the broker ACL for durable intake |
+| 💾 Historian spill bytes growing | Historian unreachable or rejecting writes; points spilling to disk | Check `lastError` on the card, fix connectivity/auth — spill drains oldest-first automatically |
+| ⏱️ TimescaleDB write errors with a timeout | Database unreachable — connections have bounded timeouts by design | Fix connectivity; queued points spill and recover |
+| 👥 Flows → Consumers empty | No broker admin API configured, or broker is Mosquitto (no per-client subscription API) | Configure EMQX/HiveMQ admin credentials; for Mosquitto this data does not exist |
+| 🔢 Influx rejects writes: field type conflict | Another writer created the field with a different type in the current shard | Manifold's `value=`/`raw=` split can't cause this — check other writers, or use a fresh bucket |
+| 🕰️ UNS marks a slow topic *dead* | The topic hasn't established its publish cadence yet | Staleness is per-topic (inter-arrival EMA); thresholds adapt after a few publishes |
+| ⚡ Sparkplug devices offline after a broker restart | Edge nodes haven't re-birthed | State comes from BIRTH certificates (per spec); send an NCMD rebirth or wait for reconnect BIRTH |
+| 🧪 Tests fail: "Unable to deserialize cloned data" | `node --test` child-process IPC corruption | Use `npm test` (serial in-process runner). Harness-only issue, never the server |
+| 🔒 Unlock screen appears unexpectedly | `MANIFOLD_AUTH_TOKEN` is set on the server | Enter the token (remembered locally). Viewer tokens get read-only access |
+
+## Still stuck?
+
+- The audit log (**Settings → Audit**) shows every mutation and its outcome.
+- `/metrics` exposes counters for most engines — a zero where you expect
+  traffic points at the failing stage.
+- [Open an issue](https://github.com/zbest1000/manifold/issues) with the
+  symptom, broker type, and any `subscription-*` events from the log.
