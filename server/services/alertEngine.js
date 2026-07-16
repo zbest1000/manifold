@@ -144,7 +144,8 @@ class AlertEngine {
   _ruleState(rule) {
     let s = this.state.get(rule.id);
     if (!s) {
-      s = { firing: false, since: 0, armed: false, watermark: 0, breachedSince: 0, lastValue: null };
+      // silence + new-topic rules only; value-threshold rules use _valueState.
+      s = { firing: false, since: 0, armed: false, watermark: 0 };
       this.state.set(rule.id, s);
     }
     return s;

@@ -45,10 +45,11 @@ export default function Trends() {
     api
       .listHistorians()
       .then((r) => {
-        setHistorians(r.historians || []);
+        const list = r.historians || [];
+        setHistorians(list);
         // Prefer a historian with tag search (timebase queries fine but has
         // no tag-listing API, so it's a worse default).
-        const first = (r.historians || []).find((h) => h.type !== 'timebase') || (r.historians || [])[0];
+        const first = list.find((h) => h.type !== 'timebase') || list[0];
         if (first) setHistId((prev) => prev || first.id);
       })
       .catch(() => {});

@@ -154,23 +154,28 @@ class Recorder {
     );
   }
 
+  /** Stream the parsed JSONL records of a recording (skips blank/corrupt lines). */
+  async *_records(id) {
+    const file = this.filePath(id);
+    if (!fs.existsSync(file)) return;
+    const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+    for await (const line of rl) {
+      if (!line) continue;
+      try {
+        yield JSON.parse(line);
+      } catch {
+        // skip corrupt line
+      }
+    }
+  }
+
   /** Read back a bounded slice of a file recording (newest last). */
   async read(id, { topic = null, from = 0, to = Infinity, limit = 500 } = {}) {
     await this.sync(id);
     const cap = Math.min(Number(limit) || 500, READ_LIMIT_MAX);
-    const file = this.filePath(id);
-    if (!fs.existsSync(file)) return { points: [], total: 0 };
     const out = [];
     let total = 0;
-    const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      let p;
-      try {
-        p = JSON.parse(line);
-      } catch {
-        continue;
-      }
+    for await (const p of this._records(id)) {
       if (p.t < from || p.t > to) continue;
       if (topic && p.topic !== topic) continue;
       total++;
@@ -189,19 +194,9 @@ class Recorder {
    */
   async series(id, { tags = [], from = 0, to = Infinity, maxPoints = 1000 } = {}) {
     await this.sync(id);
-    const file = this.filePath(id);
-    if (!fs.existsSync(file)) return { series: [] };
     const wanted = new Set(tags);
     const byTag = new Map(); // topic -> [[tsMs, value]] in chronological order
-    const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      let p;
-      try {
-        p = JSON.parse(line);
-      } catch {
-        continue;
-      }
+    for await (const p of this._records(id)) {
       if (wanted.size && !wanted.has(p.topic)) continue;
       if (p.t < from || p.t > to) continue;
       const num = typeof p.v === 'number' ? p.v : Number(p.v);
