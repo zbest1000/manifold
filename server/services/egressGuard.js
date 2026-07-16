@@ -18,10 +18,12 @@ const { fetchWithTimeout } = require('./httpTimeout');
  *    169.254.169.254), IPv6 link-local, unspecified, multicast, and reserved /
  *    carrier-grade-NAT space.
  *
- *  - Blocked BY DEFAULT, allowed with MANIFOLD_ALLOW_PRIVATE_TARGETS=1 — RFC1918
- *    and IPv6 ULA. This is an OT tool whose legitimate job is often talking to
- *    LAN devices, so an operator on a plant network opts in explicitly; an
- *    internet-exposed instance stays safe out of the box.
+ *  - ALLOWED by default, blocked with MANIFOLD_BLOCK_PRIVATE_TARGETS=1 — RFC1918
+ *    and IPv6 ULA. This is an OT tool whose entire job is talking to LAN devices:
+ *    Discovery scans the plant subnet, and i3X/CESMII/broker-admin endpoints live
+ *    on-prem. Blocking those by default breaks the product, so private/LAN is
+ *    allowed by default; an internet-exposed instance can opt into blocking it
+ *    (and is already fail-closed to loopback unless a token is set).
  *
  * Hostnames are resolved and every returned address is checked before the
  * connection is made. This stops literal-IP SSRF and hostname-points-inward
@@ -31,7 +33,10 @@ const { fetchWithTimeout } = require('./httpTimeout');
  * residual risk rather than silently implied.
  */
 
-const ALLOW_PRIVATE = process.env.MANIFOLD_ALLOW_PRIVATE_TARGETS === '1';
+// Private/LAN targets are allowed by default (see above). The legacy
+// MANIFOLD_ALLOW_PRIVATE_TARGETS=1 is still honored as an explicit allow;
+// MANIFOLD_BLOCK_PRIVATE_TARGETS=1 hardens an internet-exposed instance.
+const ALLOW_PRIVATE = process.env.MANIFOLD_BLOCK_PRIVATE_TARGETS === '1' ? false : true;
 
 function ipv4ToInt(ip) {
   const parts = ip.split('.').map(Number);
@@ -111,7 +116,7 @@ class EgressBlockedError extends Error {
     super(
       `Egress to ${target} blocked: ${reason}.` +
         (reason === 'private/internal address'
-          ? ' Set MANIFOLD_ALLOW_PRIVATE_TARGETS=1 to allow RFC1918/LAN targets.'
+          ? ' RFC1918/LAN targets are blocked because MANIFOLD_BLOCK_PRIVATE_TARGETS=1 is set; unset it to allow them.'
           : '')
     );
     this.name = 'EgressBlockedError';
