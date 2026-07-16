@@ -555,7 +555,7 @@ function ModelsTab({ brokers }) {
 
 // ---------------------------------------------------------------- Historians tab
 
-const BLANK_HISTORIAN = { type: 'influxdb', name: '', url: '', org: '', bucket: '', token: '', measurement: '', dataset: '', writePath: '', apiKey: '', host: '', port: '', database: '', user: '', password: '', table: '', ssl: false, dropPolicy: 'newest' };
+const BLANK_HISTORIAN = { type: 'influxdb', name: '', url: '', org: '', bucket: '', token: '', measurement: '', dataset: '', writePath: '', apiKey: '', host: '', port: '', database: '', user: '', password: '', table: '', ssl: false, sslInsecure: false, sslRootCert: '', dropPolicy: 'newest' };
 
 function HistoriansTab() {
   const [data, setData] = useState({ historians: [], types: [] });
@@ -613,6 +613,8 @@ function HistoriansTab() {
       user: h.user || '',
       table: h.table || '',
       ssl: Boolean(h.ssl),
+      sslInsecure: Boolean(h.sslInsecure),
+      sslRootCert: h.sslRootCert || '',
       dropPolicy: h.dropPolicy || 'newest'
     });
     setEditingId(h.id);
@@ -761,6 +763,28 @@ function HistoriansTab() {
                 <Input value={form.writePath} onChange={(e) => setForm({ ...form, writePath: e.target.value })} placeholder="default: /api/datasets/{dataset}/data" />
               </Field>
             </>
+          )}
+        </div>
+        <div className="mt-3 rounded-lg border border-white/5 bg-surface-950/40 p-3">
+          <label className="flex items-center gap-2 text-xs text-slate-300">
+            <input type="checkbox" checked={form.sslInsecure} onChange={(e) => setForm({ ...form, sslInsecure: e.target.checked })} />
+            Allow self-signed TLS certificate (skip verification)
+          </label>
+          <p className="mt-1 text-[11px] leading-snug text-slate-500">
+            Needed for on-prem historians with a self-signed certificate — e.g. a default Timebase install, whose HTTP
+            port 307-redirects to a self-signed HTTPS listener. Leave off for internet-facing or properly-certificated
+            targets{form.type === 'timescaledb' ? ' (applies only when SSL is enabled above)' : ''}.
+          </p>
+          {!form.sslInsecure && (
+            <Field label="CA certificate (PEM, optional)" className="mt-2">
+              <textarea
+                value={form.sslRootCert}
+                onChange={(e) => setForm({ ...form, sslRootCert: e.target.value })}
+                rows={3}
+                placeholder="-----BEGIN CERTIFICATE-----"
+                className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-3 py-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
+              />
+            </Field>
           )}
         </div>
         {form.type === 'timebase' && (
