@@ -106,14 +106,16 @@ function Sparkline({ points, warn }) {
 function StatTile({ label, value, unit, history, warn, sub }) {
   return (
     <div className={`rounded-xl border px-3 py-2.5 ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'}`}>
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
+          {/* Wrap the label instead of truncating — "Delivered"/"Bindings published"
+              were cut to "DELI…"/"BINDIN…" in the narrow tiles. */}
+          <p className="text-2xs font-medium uppercase tracking-wide text-slate-500" title={label}>{label}</p>
           <p className={`mt-0.5 text-lg font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
             {value}
             {unit && <span className="ml-1 text-xs font-normal text-slate-500">{unit}</span>}
           </p>
-          {sub && <p className="truncate text-[11px] text-slate-500">{sub}</p>}
+          {sub && <p className="truncate text-2xs text-slate-500">{sub}</p>}
         </div>
         <Sparkline points={history} warn={warn} />
       </div>
@@ -127,7 +129,11 @@ function Section({ icon: Icon, title, children, warn }) {
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
         <Icon size={15} className={warn ? 'text-amber-400' : 'text-accent-400'} /> {title}
       </h2>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{children}</div>
+      {/* auto-fit so tiles never shrink below a label-readable width, whether the
+          section is full-width or half-width */}
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+        {children}
+      </div>
     </Card>
   );
 }
