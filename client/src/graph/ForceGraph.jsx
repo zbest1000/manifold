@@ -69,6 +69,8 @@ const ForceGraph = forwardRef(function ForceGraph(
   const drawRef = useRef(() => {});
   const bigRef = useRef(false);
   const gridRef = useRef(null);
+  const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
+  const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
   const layout = LAYOUTS[layoutId] || LAYOUTS.organic;
@@ -371,13 +373,25 @@ const ForceGraph = forwardRef(function ForceGraph(
     // thousands of nodes is infeasible. Place nodes with a deterministic radial
     // tree (O(n)), build a spatial grid for hit-testing, and rely on viewport
     // culling in draw(). Pan/zoom stay smooth; node dragging is disabled.
+    // Auto-fit the first time real nodes appear so the graph is centered and
+    // fully in view on load, instead of showing a cluster at origin-scale that
+    // the user has to pan/zoom to find. Guarded so it never fights later panning.
+    const autoFit = () => {
+      if (fittedRef.current || !nodesRef.current.length) return;
+      fittedRef.current = true;
+      fitToRef.current();
+    };
+
     const big = nodes.length > 4000;
     bigRef.current = big;
     if (big) {
       radialTreeLayout(nodes, links, depth);
       buildGrid(nodes, gridRef);
       simRef.current = null;
-      requestAnimationFrame(() => draw());
+      requestAnimationFrame(() => {
+        draw();
+        autoFit(); // positions are final immediately for the big radial layout
+      });
       return undefined;
     }
 
@@ -419,6 +433,9 @@ const ForceGraph = forwardRef(function ForceGraph(
         .force('y', forceY(0).strength(layout.gravity));
     }
 
+    // Fit once the force layout has settled (nodes start clustered at origin, so
+    // fitting immediately would frame a dot); 'end' fires when alpha decays out.
+    sim.on('end', autoFit);
     simRef.current = sim;
     return () => sim.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -546,6 +563,10 @@ const ForceGraph = forwardRef(function ForceGraph(
     transformRef.current = t;
     draw();
   }, [draw]);
+
+  useEffect(() => {
+    fitToRef.current = fitTo;
+  }, [fitTo]);
 
   useImperativeHandle(
     ref,

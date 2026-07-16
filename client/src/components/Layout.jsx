@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock } from 'lucide-react';
+import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock, Gauge } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot } from './ui';
@@ -40,7 +40,10 @@ const NAV_GROUPS = [
   },
   {
     label: 'System',
-    items: [{ to: '/settings', label: 'Settings', icon: SettingsIcon }]
+    items: [
+      { to: '/system', label: 'Health', icon: Gauge },
+      { to: '/settings', label: 'Settings', icon: SettingsIcon }
+    ]
   }
 ];
 

@@ -48,9 +48,21 @@ async function request(path, options = {}) {
   return body;
 }
 
+// Fetch the Prometheus /metrics exposition as raw text (it lives outside /api
+// and stays token-optional for scrapers; we attach the token anyway if present).
+async function metricsText() {
+  const token = getAuthToken();
+  const res = await fetch('/metrics', {
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  if (!res.ok) throw new Error(`metrics fetch failed (${res.status})`);
+  return res.text();
+}
+
 export const api = {
   systemStatus: () => request('/api/system/status'),
   whoami: () => request('/api/whoami'),
+  metricsText,
 
   // MQTT
   listBrokers: () => request('/api/mqtt/brokers'),
