@@ -136,6 +136,26 @@ function Section({ icon: Icon, title, children, warn }) {
 const rate = (hist) => (hist && hist.length >= 2 ? Math.max(0, hist[hist.length - 1] - hist[hist.length - 2]) : 0);
 const deltas = (hist) => (hist ? hist.slice(1).map((v, i) => Math.max(0, v - hist[i])) : []);
 
+// Rolling history for a single-labelled (or unlabelled) series, keyed the same
+// way poll() stores it.
+function histFor(hist, name, labels) {
+  const key = name + (labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '');
+  return hist.get(key) || [];
+}
+
+// A gauge reading: current value (through `fmt`) plus a value sparkline.
+function GaugeTile({ metrics, hist, name, labels, label, unit, sub, fmt = fmtInt, warn }) {
+  return <StatTile label={label} value={fmt(val(metrics, name, labels))} unit={unit} sub={sub} warn={warn} history={histFor(hist, name, labels)} />;
+}
+
+// A counter reading: total value plus a per-interval-rate sparkline. `family` is
+// the metric name; `result` an optional result-label filter; warnPositive flags
+// amber once the value is non-zero.
+function CounterTile({ metrics, hist, family, result, label, unit, warnPositive }) {
+  const value = sumBy(metrics, family, result) || 0;
+  return <StatTile label={label} value={fmtInt(value)} unit={unit} warn={warnPositive && value > 0} history={deltas(aggHistory(hist, family, result))} />;
+}
+
 export default function System() {
   const [metrics, setMetrics] = useState(null); // Map(key -> sample)
   const [error, setError] = useState('');
@@ -168,7 +188,7 @@ export default function System() {
     return () => clearInterval(t);
   }, [poll]);
 
-  const h = (name, labels) => historyRef.current.get(name + (labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '')) || [];
+  const hist = historyRef.current;
 
   const brokers = useMemo(() => (metrics ? distinctLabel(metrics, 'manifold_broker_topics', 'broker') : []), [metrics]);
   const recordings = useMemo(() => (metrics ? distinctLabel(metrics, 'manifold_recorder_points_total', 'recording') : []), [metrics]);
@@ -185,6 +205,7 @@ export default function System() {
   }
 
   const loopP99 = val(metrics, 'manifold_event_loop_delay_ms', { quantile: '0.99' });
+  const loopWarn = loopP99 != null && loopP99 > 100;
   const pipelineErrors = (sumBy(metrics, 'manifold_pipeline_messages_total', 'error') || 0) + (sumBy(metrics, 'manifold_pipeline_messages_total', 'loop_blocked') || 0);
   const dropped = sumBy(metrics, 'manifold_outbox_points_total', 'dropped') || 0;
   const spill = val(metrics, 'manifold_outbox_spill_bytes') || sumBy(metrics, 'manifold_outbox_spill_bytes') || 0;
@@ -208,57 +229,67 @@ export default function System() {
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
         {error && <p className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">Last poll failed: {error}</p>}
 
-        <Section icon={Activity} title="Process health" warn={loopP99 != null && loopP99 > 100}>
-          <StatTile label="Uptime" value={fmtUptime(val(metrics, 'manifold_process_uptime_seconds'))} history={h('manifold_process_uptime_seconds')} />
-          <StatTile label="Memory RSS" value={fmtBytes(val(metrics, 'manifold_process_memory_bytes', { kind: 'rss' }))} history={h('manifold_process_memory_bytes', { kind: 'rss' })} />
-          <StatTile label="Heap used" value={fmtBytes(val(metrics, 'manifold_process_memory_bytes', { kind: 'heap_used' }))} history={h('manifold_process_memory_bytes', { kind: 'heap_used' })} />
-          <StatTile
+        <Section icon={Activity} title="Process health" warn={loopWarn}>
+          <GaugeTile metrics={metrics} hist={hist} name="manifold_process_uptime_seconds" label="Uptime" fmt={fmtUptime} />
+          <GaugeTile metrics={metrics} hist={hist} name="manifold_process_memory_bytes" labels={{ kind: 'rss' }} label="Memory RSS" fmt={fmtBytes} />
+          <GaugeTile metrics={metrics} hist={hist} name="manifold_process_memory_bytes" labels={{ kind: 'heap_used' }} label="Heap used" fmt={fmtBytes} />
+          <GaugeTile
+            metrics={metrics}
+            hist={hist}
+            name="manifold_event_loop_delay_ms"
+            labels={{ quantile: '0.99' }}
             label="Event-loop delay p99"
-            value={fmtNum(val(metrics, 'manifold_event_loop_delay_ms', { quantile: '0.99' }), 1)}
             unit="ms"
+            fmt={(v) => fmtNum(v, 1)}
             sub={`p50 ${fmtNum(val(metrics, 'manifold_event_loop_delay_ms', { quantile: '0.5' }), 1)} ms`}
-            history={h('manifold_event_loop_delay_ms', { quantile: '0.99' })}
-            warn={loopP99 != null && loopP99 > 100}
+            warn={loopWarn}
           />
         </Section>
 
         {brokers.length > 0 && (
           <Section icon={Radio} title="Broker ingest">
-            {brokers.map((b) => (
-              <StatTile
-                key={b}
-                label={b}
-                value={fmtInt(val(metrics, 'manifold_broker_topics', { broker: b }))}
-                unit="topics"
-                sub={`${fmtInt(rate(h('manifold_broker_messages_received_total', { broker: b })) / (POLL_MS / 1000))}/s · ${fmtInt(val(metrics, 'manifold_broker_messages_received_total', { broker: b }))} total`}
-                history={deltas(h('manifold_broker_messages_received_total', { broker: b }))}
-              />
-            ))}
+            {brokers.map((b) => {
+              const msgs = histFor(hist, 'manifold_broker_messages_received_total', { broker: b });
+              return (
+                <StatTile
+                  key={b}
+                  label={b}
+                  value={fmtInt(val(metrics, 'manifold_broker_topics', { broker: b }))}
+                  unit="topics"
+                  sub={`${fmtInt(rate(msgs) / (POLL_MS / 1000))}/s · ${fmtInt(val(metrics, 'manifold_broker_messages_received_total', { broker: b }))} total`}
+                  history={deltas(msgs)}
+                />
+              );
+            })}
           </Section>
         )}
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Section icon={Workflow} title="Pipelines" warn={pipelineErrors > 0}>
-            <StatTile label="Delivered" value={fmtInt(sumBy(metrics, 'manifold_pipeline_messages_total', 'delivered'))} history={deltas(aggHistory(historyRef.current, 'manifold_pipeline_messages_total', 'delivered'))} />
-            <StatTile label="Matched" value={fmtInt(sumBy(metrics, 'manifold_pipeline_messages_total', 'matched'))} history={deltas(aggHistory(historyRef.current, 'manifold_pipeline_messages_total', 'matched'))} />
-            <StatTile label="Errors" value={fmtInt(sumBy(metrics, 'manifold_pipeline_messages_total', 'error'))} warn={(sumBy(metrics, 'manifold_pipeline_messages_total', 'error') || 0) > 0} history={deltas(aggHistory(historyRef.current, 'manifold_pipeline_messages_total', 'error'))} />
-            <StatTile label="Loop-blocked" value={fmtInt(sumBy(metrics, 'manifold_pipeline_messages_total', 'loop_blocked'))} warn={(sumBy(metrics, 'manifold_pipeline_messages_total', 'loop_blocked') || 0) > 0} history={deltas(aggHistory(historyRef.current, 'manifold_pipeline_messages_total', 'loop_blocked'))} />
+            {[
+              { label: 'Delivered', result: 'delivered' },
+              { label: 'Matched', result: 'matched' },
+              { label: 'Errors', result: 'error', warnPositive: true },
+              { label: 'Loop-blocked', result: 'loop_blocked', warnPositive: true }
+            ].map((t) => (
+              <CounterTile key={t.result} metrics={metrics} hist={hist} family="manifold_pipeline_messages_total" {...t} />
+            ))}
           </Section>
 
           <Section icon={Database} title="Historian outbox" warn={dropped > 0 || spill > 0}>
-            <StatTile label="Written" value={fmtInt(sumBy(metrics, 'manifold_outbox_points_total', 'written'))} history={deltas(aggHistory(historyRef.current, 'manifold_outbox_points_total', 'written'))} />
-            <StatTile label="Queued" value={fmtInt(sumBy(metrics, 'manifold_outbox_queued_points'))} history={aggHistory(historyRef.current, 'manifold_outbox_queued_points')} />
-            <StatTile label="Spilled" value={fmtBytes(spill)} warn={spill > 0} history={aggHistory(historyRef.current, 'manifold_outbox_spill_bytes')} />
-            <StatTile label="Dropped" value={fmtInt(dropped)} warn={dropped > 0} history={deltas(aggHistory(historyRef.current, 'manifold_outbox_points_total', 'dropped'))} />
+            <CounterTile metrics={metrics} hist={hist} family="manifold_outbox_points_total" result="written" label="Written" />
+            <GaugeTile metrics={metrics} hist={hist} name="manifold_outbox_queued_points" label="Queued" />
+            <StatTile label="Spilled" value={fmtBytes(spill)} warn={spill > 0} history={aggHistory(hist, 'manifold_outbox_spill_bytes')} />
+            <CounterTile metrics={metrics} hist={hist} family="manifold_outbox_points_total" result="dropped" label="Dropped" warnPositive />
           </Section>
         </div>
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Section icon={ShieldCheck} title="Contracts" warn={violations > 0}>
-            <StatTile label="Checks" value={fmtInt(sumBy(metrics, 'manifold_contract_checks_total'))} history={deltas(aggHistory(historyRef.current, 'manifold_contract_checks_total'))} />
-            <StatTile label="Violations" value={fmtInt(violations)} warn={violations > 0} history={deltas(aggHistory(historyRef.current, 'manifold_contract_violations_total'))} />
-            <StatTile label="Alert events" value={fmtInt(val(metrics, 'manifold_alert_events'))} history={h('manifold_alert_events')} />
-            <StatTile label="Bindings published" value={fmtInt(sumBy(metrics, 'manifold_binding_published_total'))} history={deltas(aggHistory(historyRef.current, 'manifold_binding_published_total'))} />
+            <CounterTile metrics={metrics} hist={hist} family="manifold_contract_checks_total" label="Checks" />
+            <CounterTile metrics={metrics} hist={hist} family="manifold_contract_violations_total" label="Violations" warnPositive />
+            <GaugeTile metrics={metrics} hist={hist} name="manifold_alert_events" label="Alert events" />
+            <CounterTile metrics={metrics} hist={hist} family="manifold_binding_published_total" label="Bindings published" />
           </Section>
 
           {recordings.length > 0 && (
@@ -269,7 +300,7 @@ export default function System() {
                   label={r}
                   value={fmtInt(val(metrics, 'manifold_recorder_points_total', { recording: r }))}
                   unit="points"
-                  history={deltas(h('manifold_recorder_points_total', { recording: r }))}
+                  history={deltas(histFor(hist, 'manifold_recorder_points_total', { recording: r }))}
                 />
               ))}
             </Section>
