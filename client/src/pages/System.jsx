@@ -193,12 +193,18 @@ export default function System() {
   const brokers = useMemo(() => (metrics ? distinctLabel(metrics, 'manifold_broker_topics', 'broker') : []), [metrics]);
   const recordings = useMemo(() => (metrics ? distinctLabel(metrics, 'manifold_recorder_points_total', 'recording') : []), [metrics]);
 
-  if (!metrics && error) {
+  // Until the first poll resolves, metrics is null — render a loading/error
+  // state instead of falling through to val()/sumBy(), which iterate over it.
+  if (!metrics) {
     return (
       <div className="flex h-full flex-col">
         <PageHeader title="System" subtitle="Manifold's own health and Prometheus readings" />
         <div className="flex-1 p-6">
-          <EmptyState icon={AlertTriangle} title="Couldn't read /metrics" hint={error} />
+          {error ? (
+            <EmptyState icon={AlertTriangle} title="Couldn't read /metrics" hint={error} />
+          ) : (
+            <div className="grid h-full place-items-center text-sm text-slate-500">Loading health metrics…</div>
+          )}
         </div>
       </div>
     );
