@@ -65,6 +65,7 @@ const AUTO_REFRESH_MS = 30_000;
 
 export default function Trends() {
   const connectedBrokers = useStore((s) => s.brokers).filter((b) => b.status === 'connected');
+  const topicVersion = useStore((s) => s.topicVersion);
   const [sourceType, setSourceType] = useState('live'); // 'live' | 'historian' | 'recording'
   const [historians, setHistorians] = useState([]);
   const [recordings, setRecordings] = useState([]);
@@ -112,9 +113,24 @@ export default function Trends() {
   const usingRecording = sourceType === 'recording';
   const usingLive = sourceType === 'live';
   const selected = useMemo(() => historians.find((h) => h.id === histId) || null, [historians, histId]);
-  // Only historians (except Timebase) offer a tag-listing search; recordings and
-  // live sources are typed by topic path.
-  const searchable = sourceType === 'historian' && selected && selected.type !== 'timebase';
+  // Historians (except Timebase) offer a tag-listing search; the live source
+  // suggests from the broker's observed topics; recordings are typed by path.
+  const searchable = (sourceType === 'historian' && selected && selected.type !== 'timebase') || usingLive;
+
+  // Live topic suggestions from the broker's observed topic set, filtered by the
+  // query — so you can pick a topic to trend instead of typing it blind.
+  const liveSuggestions = useMemo(() => {
+    if (!usingLive || !brokerId) return [];
+    const q = query.trim().toLowerCase();
+    const topics = useStore
+      .getState()
+      .getTopics(brokerId)
+      .map((t) => t.topic || t)
+      .filter((t) => typeof t === 'string' && !t.startsWith('$SYS/'));
+    const filtered = q ? topics.filter((t) => t.toLowerCase().includes(q)) : topics;
+    return filtered.filter((t) => !tags.includes(t)).sort().slice(0, 40);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usingLive, brokerId, query, tags, topicVersion]);
 
   // Debounced tag search against the historian itself.
   useEffect(() => {
@@ -189,7 +205,7 @@ export default function Trends() {
     return () => clearInterval(t);
   }, [autoRefresh, load]);
 
-  const shownSuggestions = suggestions.filter((s) => !tags.includes(s));
+  const shownSuggestions = usingLive ? liveSuggestions : suggestions.filter((s) => !tags.includes(s));
 
   return (
     <div className="flex h-full flex-col">
@@ -274,7 +290,7 @@ export default function Trends() {
                     <div className="flex gap-2">
                       <Input
                         value={query}
-                        placeholder={searchable ? 'Search stored topics… or type a path and press Enter' : 'Type the tag path and press Enter'}
+                        placeholder={usingLive ? 'Search live topics… or type one and press Enter' : searchable ? 'Search stored topics… or type a path and press Enter' : 'Type the tag path and press Enter'}
                         disabled={tags.length >= MAX_TAGS}
                         onChange={(e) => {
                           setQuery(e.target.value);

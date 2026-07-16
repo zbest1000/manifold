@@ -1,7 +1,49 @@
-import { useId, useState } from 'react';
+import { useId, useState, useEffect } from 'react';
+import { HelpCircle, X } from 'lucide-react';
 import clsx from 'clsx';
 
 /** Small reusable presentational primitives shared across pages. */
+
+/**
+ * HelpButton — a "?" control that opens a modal explaining how a feature works.
+ * Put one in a page header; pass the explanation as children (JSX).
+ */
+export function HelpButton({ title = 'How this works', children, label = 'How this works' }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => e.key === 'Escape' && setOpen(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+  return (
+    <>
+      <IconButton icon={HelpCircle} label={label} side="bottom" size={16} onClick={() => setOpen(true)} />
+      {open && (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/60 p-6 backdrop-blur-sm" onClick={() => setOpen(false)}>
+          <div
+            className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-white/10 bg-surface-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label={title}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-base font-semibold text-slate-100">
+                <HelpCircle size={18} className="text-accent-400" /> {title}
+              </h3>
+              <button onClick={() => setOpen(false)} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-3 text-sm leading-relaxed text-slate-300 [&_b]:font-semibold [&_b]:text-slate-100 [&_code]:mono [&_code]:rounded [&_code]:bg-white/5 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs">
+              {children}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 /**
  * Tooltip — a styled, keyboard-and-touch-aware replacement for the native

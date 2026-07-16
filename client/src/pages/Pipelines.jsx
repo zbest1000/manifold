@@ -10,7 +10,7 @@ import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
 import ViewTab from '@/components/ViewTab';
-import { Card, Button, Input, Field, Badge, EmptyState } from '@/components/ui';
+import { Card, Button, Input, Field, Badge, EmptyState, HelpButton } from '@/components/ui';
 import { formatDistanceToNow } from 'date-fns';
 
 /**
@@ -31,12 +31,50 @@ export default function Pipelines() {
         title="Pipelines"
         subtitle="route, reshape, contextualize, and record the live stream"
         actions={
-          <div className="flex overflow-hidden rounded-xl border border-white/10">
-            <ViewTab active={tab === 'routes'} onClick={() => setTab('routes')} icon={Workflow} label="Routes" />
-            <ViewTab active={tab === 'models'} onClick={() => setTab('models')} icon={Boxes} label="Models" />
-            <ViewTab active={tab === 'historians'} onClick={() => setTab('historians')} icon={Database} label="Historians" />
-            <ViewTab active={tab === 'recorder'} onClick={() => setTab('recorder')} icon={CircleDot} label="Recorder" />
-            <ViewTab active={tab === 'contracts'} onClick={() => setTab('contracts')} icon={FileCheck2} label="Contracts" />
+          <div className="flex items-center gap-2">
+            <div className="flex overflow-hidden rounded-xl border border-white/10">
+              <ViewTab active={tab === 'routes'} onClick={() => setTab('routes')} icon={Workflow} label="Routes" />
+              <ViewTab active={tab === 'models'} onClick={() => setTab('models')} icon={Boxes} label="Models" />
+              <ViewTab active={tab === 'historians'} onClick={() => setTab('historians')} icon={Database} label="Historians" />
+              <ViewTab active={tab === 'recorder'} onClick={() => setTab('recorder')} icon={CircleDot} label="Recorder" />
+              <ViewTab active={tab === 'contracts'} onClick={() => setTab('contracts')} icon={FileCheck2} label="Contracts" />
+            </div>
+            <HelpButton title="How Pipelines work">
+              <p>
+                A <b>pipeline</b> continuously reshapes your live message stream and sends the result somewhere. Everything
+                here runs server-side on the messages as they arrive — nothing is stored unless you send it to a historian
+                or recorder.
+              </p>
+              <p>The five tabs are the building blocks:</p>
+              <ul className="list-disc space-y-1.5 pl-5">
+                <li>
+                  <b>Routes</b> — the core. A route is <code>source → transforms → target</code>: subscribe to a topic
+                  filter on a broker, run a chain of transforms (re-path, pick/rename fields, scale, flatten Sparkplug,
+                  wrap in a TVQ envelope…), then publish to a broker topic or write to a historian. Use <b>Dry-run</b> to
+                  preview the in→out mapping against live topics before saving.
+                </li>
+                <li>
+                  <b>Models</b> — merge fields from several topics into one object published at a clean UNS path (e.g. combine
+                  a motor's temp, rpm, and state into one <code>line1/motor1</code> object).
+                </li>
+                <li>
+                  <b>Historians</b> — connections to a time-series database (InfluxDB, TimescaleDB, Timebase). Routes and the
+                  recorder write into these; the <b>Trends</b> page reads them back.
+                </li>
+                <li>
+                  <b>Recorder</b> — capture a topic filter to a local file (or a historian) for later replay or charting —
+                  a lightweight historian with no database.
+                </li>
+                <li>
+                  <b>Contracts</b> — declare the shape a topic's payload should have; Manifold flags drift when a message
+                  stops matching.
+                </li>
+              </ul>
+              <p className="text-slate-400">
+                Typical first pipeline: a <b>Route</b> from <code>sensors/#</code> → a repath transform → a TimescaleDB
+                historian, then chart it under Trends.
+              </p>
+            </HelpButton>
           </div>
         }
       />
