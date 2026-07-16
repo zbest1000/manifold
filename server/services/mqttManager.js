@@ -389,6 +389,12 @@ class MqttManager extends EventEmitter {
         // Raw payload rides along for STATE host certificates, whose
         // online/offline verdict lives in the (non-protobuf) payload body.
         registry.update(messageObj.topic, messageObj.sparkplug || null, row.ts, messageObj.payload);
+        // Resolve alias-only DATA metric names (learned from BIRTH) onto the
+        // object BEFORE the tap, so pipelines / sparkplugFlatten downstream see
+        // real names instead of collapsing every metric into the empty-name key.
+        if (messageObj.sparkplug && Array.isArray(messageObj.sparkplug.metrics)) {
+          registry.resolveMetricNames(messageObj.topic, messageObj.sparkplug.metrics);
+        }
       }
 
       // Message tap for the DataOps engines (pipelines, recorder, contracts,
