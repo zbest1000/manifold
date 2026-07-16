@@ -76,8 +76,8 @@ export default function Layout() {
           collapsed ? 'w-16' : 'w-60'
         )}
       >
-        {/* Brand + collapse toggle */}
-        <div className={clsx('flex items-center py-4', collapsed ? 'flex-col gap-2 px-2' : 'gap-2.5 px-4')}>
+        {/* Brand */}
+        <div className={clsx('flex h-16 shrink-0 items-center', collapsed ? 'justify-center px-2' : 'gap-2.5 px-4')}>
           <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-accent-400 to-accent-600 shadow-lg shadow-accent-500/30">
             <Share2 size={18} className="text-white" />
           </div>
@@ -87,50 +87,47 @@ export default function Layout() {
               <p className="mono truncate text-2xs text-slate-500">UNS · MQTT · OPC UA</p>
             </div>
           )}
-          <IconButton
-            icon={collapsed ? PanelLeftOpen : PanelLeftClose}
-            label={collapsed ? 'Expand sidebar  [' : 'Collapse sidebar  ['}
-            side="right"
-            onClick={toggleNav}
-          />
         </div>
 
         {viewerReadOnly &&
           (collapsed ? (
-            <Tooltip label="Read-only session — changes are rejected" side="right" className="mx-auto mb-2">
-              <span className="grid h-8 w-8 place-items-center rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300">
+            <Tooltip label="Read-only session — changes are rejected" side="right" className="mx-auto mb-1">
+              <span className="grid h-8 w-8 place-items-center rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300">
                 <Lock size={14} />
               </span>
             </Tooltip>
           ) : (
-            <div className="mx-4 mb-2 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-2xs font-medium text-amber-300">
+            <div className="mx-3 mb-1 flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-2xs font-medium text-amber-300">
               <Lock size={12} /> Read-only session
             </div>
           ))}
 
-        <nav className={clsx('flex-1 overflow-y-auto py-1', collapsed ? 'px-2' : 'px-3')}>
+        <nav className={clsx('flex-1 space-y-4 overflow-y-auto py-2', collapsed ? 'px-2' : 'px-3')}>
           {NAV_GROUPS.map((group, gi) => (
-            <div key={group.label || gi} className={gi > 0 ? (collapsed ? 'mt-2 border-t border-white/5 pt-2' : 'mt-3') : ''}>
-              {group.label && !collapsed && (
-                <p className="px-3 pb-1 text-2xs font-semibold uppercase tracking-widest text-slate-600">{group.label}</p>
-              )}
-              <div className="space-y-0.5">
+            <div key={group.label || gi}>
+              {group.label &&
+                (collapsed ? (
+                  gi > 0 && <div className="mx-auto mb-2 h-px w-6 bg-white/10" />
+                ) : (
+                  <p className="px-3 pb-1.5 text-2xs font-semibold uppercase tracking-widest text-slate-600">{group.label}</p>
+                ))}
+              <div className="space-y-1">
                 {group.items.map((item) => (
-                  <Tooltip key={item.to} label={collapsed ? item.label : ''} side="right" className="block">
+                  <Tooltip key={item.to} label={collapsed ? item.label : ''} side="right" block>
                     <NavLink
                       to={item.to}
                       end={item.end}
                       className={({ isActive }) =>
                         clsx(
                           'flex items-center rounded-xl text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
-                          collapsed ? 'h-10 w-full justify-center' : 'gap-3 px-3 py-2',
+                          collapsed ? 'h-11 w-full justify-center' : 'gap-3 px-3 py-2',
                           isActive
                             ? 'bg-accent-500/15 text-accent-300 ring-1 ring-inset ring-accent-500/25'
                             : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
                         )
                       }
                     >
-                      <item.icon size={17} className="shrink-0" />
+                      <item.icon size={18} className="shrink-0" />
                       {!collapsed && item.label}
                     </NavLink>
                   </Tooltip>
@@ -140,33 +137,36 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Status footer */}
+        {/* Footer: live status, logs, collapse toggle */}
         {collapsed ? (
-          <div className="flex flex-col items-center gap-3 border-t border-white/5 py-3">
+          <div className="flex flex-col items-center gap-2 border-t border-white/5 py-3">
             <Tooltip label={connected ? 'Live — socket connected' : 'Offline — reconnecting'} side="right">
               <span className="grid h-8 w-8 place-items-center">
                 <StatusDot status={connected ? 'connected' : 'disconnected'} />
               </span>
             </Tooltip>
             <ErrorLog collapsed />
+            <IconButton icon={PanelLeftOpen} label="Expand sidebar  [" side="right" onClick={toggleNav} />
           </div>
         ) : (
-          <div className="space-y-2 border-t border-white/5 px-4 py-4 text-sm">
-            <div className="flex items-center gap-2 text-slate-400">
-              <StatusDot status={connected ? 'connected' : 'disconnected'} />
-              {connected ? 'Live' : 'Offline'}
+          <div className="space-y-2 border-t border-white/5 px-4 py-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-slate-400">
+                <StatusDot status={connected ? 'connected' : 'disconnected'} />
+                {connected ? 'Live' : 'Offline'}
+              </span>
+              <span className="mono text-2xs text-slate-500">
+                {brokers.length} brokers · {opcua.length} OPC UA
+              </span>
             </div>
-            <div className="flex items-center justify-between text-slate-500">
-              <span>Brokers</span>
-              <span className="mono text-slate-300">{brokers.length}</span>
-            </div>
-            <div className="flex items-center justify-between text-slate-500">
-              <span>OPC UA</span>
-              <span className="mono text-slate-300">{opcua.length}</span>
-            </div>
-            <div className="pt-1">
-              <ErrorLog />
-            </div>
+            <ErrorLog />
+            <button
+              onClick={toggleNav}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-2xs font-medium text-slate-500 transition hover:bg-white/5 hover:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+            >
+              <PanelLeftClose size={14} /> Collapse
+              <kbd className="mono ml-auto rounded border border-white/10 px-1 text-[10px] text-slate-600">[</kbd>
+            </button>
           </div>
         )}
       </aside>

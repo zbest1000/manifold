@@ -9,7 +9,7 @@ import clsx from 'clsx';
  * touch or focus). Wrap any control; the label appears on hover and focus.
  * `side` positions it; default 'top'. Purely CSS-positioned, no portal.
  */
-export function Tooltip({ label, side = 'top', className, children }) {
+export function Tooltip({ label, side = 'top', block = false, className, children }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   if (!label) return children;
@@ -21,7 +21,7 @@ export function Tooltip({ label, side = 'top', className, children }) {
   };
   return (
     <span
-      className={clsx('relative inline-flex', className)}
+      className={clsx('relative', block ? 'flex w-full' : 'inline-flex', className)}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocusCapture={() => setOpen(true)}
