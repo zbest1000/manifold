@@ -36,8 +36,9 @@ PR that closed them is noted inline.
   Expected (needs ≥2 samples, ~6s) but reads as broken on first paint. Consider a
   1-px baseline placeholder until the first two samples land.
 
-- [ ] **Replay scrubber polish (Topics/Trends).** Functional but visually thin;
-  no keyboard control, no time labels on the track. Verify a11y + add tick marks.
+- [ ] **Replay scrubber tick marks.** The scrubber is now a real seek control
+  (drag/click to scrub, arrow keys, speed selector, clock readout, role=slider);
+  remaining polish is optional density tick marks on the track.
 
 - [ ] **Density/spacing audit tail.** Original QA flagged general density on
   UNS/Flows; revisit tile paddings and small-screen breakpoints once the bigger
@@ -45,6 +46,11 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] The replay scrubber (Topics) couldn't be scrubbed: the bar was display
+  only, duration was hardcoded, no speed/time readout, no keyboard path. Rebuilt
+  it as a real seek control (click/drag, arrow-key nudge, Home/End, 0.5x/1x/2x
+  speed, replayed-clock readout) with role=slider + aria attributes and a visible
+  focus ring. (`components/ReplayScrubber.jsx`.)
 - [x] Big brokers (1000+ nodes) rendered as an unreadable wall; in the tree
   layout a thousand leaves fit to a flat horizontal line so no node was
   clickable and the Properties button stayed disabled ("doesn't work"). Seed a
