@@ -45,6 +45,15 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] Big brokers (1000+ nodes) rendered as an unreadable wall; in the tree
+  layout a thousand leaves fit to a flat horizontal line so no node was
+  clickable and the Properties button stayed disabled ("doesn't work"). Seed a
+  collapsed view (top 2 levels) once per broker past 200 nodes, so Topics opens
+  as a clean navigable tree like i3X, with +N badges (double-click to expand).
+  Nodes are selectable again, so Properties works.
+- [x] i3X canvas lacked the Topics feature set. Added Beautify to the 2D toolbar
+  and the full 3D look-and-feel controls (Beautify, auto-rotate, size/link
+  sliders, Properties, Reset view); extracted a shared `Graph3DControls`.
 - [x] A shared Y axis flattened mixed-magnitude tags (temperature ~50 went flat
   next to speed ~1450). Added a Normalize toggle to Trends that rescales each
   series to its own 0-100% range so shapes compare directly; the legend keeps
