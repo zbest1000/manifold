@@ -46,6 +46,12 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] Pipelines transform editor fought the user mid-type: the set / rename /
+  pick inputs derived their value from the parsed model every render, so a
+  half-typed value (`{"site":`) was rejected and reverted on each keystroke,
+  jumping the cursor. Added a `StructuredInput` that buffers raw text, commits
+  when it parses, flags invalid JSON with a red border, and reformats (or
+  reverts to the last good value) on blur. (`pages/Pipelines.jsx`.)
 - [x] The graph tree layout fanned out into a wide, flat horizontal line at the
   leaves. Rewrote it as an indented tree that grows top-to-bottom (one row per
   node, depth = indent, file-explorer style) with a tree-aware fit (width-driven,
