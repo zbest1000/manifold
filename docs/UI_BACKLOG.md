@@ -107,9 +107,18 @@ PR that closed them is noted inline.
     (three.js raycast — camera rotated to align a node to the click point), and
     **UNS** (custom canvas with window `pointerup`, no d3-drag — had to hard-pin
     the node in `manualRef` first because the live 300+/s topology re-lays out and
-    drifts nodes out from under the click). No other selection path was broken;
-    d3-drag was the sole defect. OPC UA uses the same `ForceGraph`, so it inherits
-    the fix.
+    drifts nodes out from under the click), and **OPC UA** (same `ForceGraph`;
+    notably it has *no* Properties button, so click is the only inspect path — the
+    pane opened with the node's OPC UA attributes). No other selection path was
+    broken; d3-drag was the sole defect.
+  - Also verified with real clicks: the **Properties button** reopen flow
+    (select → close pane → button stays enabled → click reopens) and **no console
+    errors** on any interaction. Across five renderers + the button flow the pane
+    is confirmed working; the reported failure is not reproducible in any view.
+    Most likely remaining explanations for a user still seeing it broken: a cached
+    pre-fix `index.html` (hard refresh) or a container recreated from the old image
+    before the rebuild (now baked in). A concrete repro (page + exact action +
+    observed result) would be needed to investigate further.
   - Durable deploy: earlier fixes were hot-copied into the running container
     (`docker cp client/dist → manifold-app`), which is **ephemeral** — a
     `docker compose up` (without `--build`) recreates the container from the old
