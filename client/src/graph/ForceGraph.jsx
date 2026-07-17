@@ -555,10 +555,24 @@ const ForceGraph = forwardRef(function ForceGraph(
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
     const pad = 90;
-    const k = Math.min((w - pad) / Math.max(maxX - minX, 1), (h - pad) / Math.max(maxY - minY, 1), 2.5);
     const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const t = zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k);
+    let k;
+    let tx;
+    let ty;
+    if (layoutModeRef.current === 'tree') {
+      // The indented tree grows top-to-bottom: fit to WIDTH at a readable zoom
+      // and anchor the root near the top (scroll down for the rest) when the
+      // tree is taller than the viewport; centre it vertically when it's short.
+      k = Math.min((w - pad) / Math.max(maxX - minX, 1), 1.5);
+      const treeH = (maxY - minY) * k;
+      tx = w / 2 - k * cx;
+      ty = treeH > h - pad ? pad / 2 - k * minY : h / 2 - k * ((minY + maxY) / 2);
+    } else {
+      k = Math.min((w - pad) / Math.max(maxX - minX, 1), (h - pad) / Math.max(maxY - minY, 1), 2.5);
+      tx = w / 2 - k * cx;
+      ty = h / 2 - k * ((minY + maxY) / 2);
+    }
+    const t = zoomIdentity.translate(tx, ty).scale(k);
     if (selRef.current && zoomRef.current) selRef.current.call(zoomRef.current.transform, t);
     transformRef.current = t;
     draw();
@@ -904,6 +918,11 @@ function computeDepths(nodes, links) {
   return depth;
 }
 
+// Indented tree that grows top-to-bottom: every node gets its own row (DFS
+// order, one below the last), and depth is shown by horizontal indent — like a
+// file explorer. This keeps a large hierarchy a tall, scrollable column with no
+// overlapping labels, instead of a tidy tree that fans out into a wide, flat
+// horizontal line at the leaves.
 function treePositions(nodes, links, layout) {
   // d3's forceLink mutates link.source/target from id strings to node objects
   // once the simulation is set up. This runs afterward, so resolve either shape.
@@ -917,31 +936,23 @@ function treePositions(nodes, links, layout) {
     childrenOf.get(s).push(t);
     hasParent.add(t);
   }
-  const rowGap = layout.rowGap || 90;
-  const colGap = layout.colGap || 46;
+  const rowGap = layout.rowGap || 34; // vertical step: one row per node
+  const indent = layout.colGap || 46; // horizontal step: per depth level
   const pos = new Map();
-  let order = 0;
   const seen = new Set();
+  let row = 0;
 
   const visit = (id, depth) => {
-    if (seen.has(id)) return order * colGap;
+    if (seen.has(id)) return;
     seen.add(id);
-    const kids = (childrenOf.get(id) || []).filter((k) => !seen.has(k));
-    if (kids.length === 0) {
-      const x = order * colGap;
-      order++;
-      pos.set(id, { x, y: depth * rowGap });
-      return x;
-    }
-    const xs = kids.map((k) => visit(k, depth + 1));
-    const x = (Math.min(...xs) + Math.max(...xs)) / 2;
-    pos.set(id, { x, y: depth * rowGap });
-    return x;
+    pos.set(id, { x: depth * indent, y: row * rowGap });
+    row++;
+    for (const c of childrenOf.get(id) || []) visit(c, depth + 1);
   };
 
   const roots = nodes.filter((n) => !hasParent.has(n.id));
   for (const r of roots) visit(r.id, 0);
-  for (const n of nodes) if (!pos.has(n.id)) visit(n.id, 0); // stragglers
+  for (const n of nodes) if (!pos.has(n.id)) visit(n.id, 0); // stragglers (cycles)
 
   const xsAll = [...pos.values()].map((p) => p.x);
   const ysAll = [...pos.values()].map((p) => p.y);

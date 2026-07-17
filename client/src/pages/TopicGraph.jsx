@@ -94,8 +94,6 @@ export default function TopicGraph() {
   const [autoRotate3d, setAutoRotate3d] = useState(false);
   const [beautify3d, setBeautify3d] = useState(false);
   const FORCE_MAX = 30000; // force-layout worker node cap
-  const COLLAPSE_SEED_THRESHOLD = 200; // above this many nodes, open collapsed
-  const COLLAPSE_SEED_DEPTH = 2; // keep the top N levels expanded on load
   const graphRef = useRef(null);
   const graph3dRef = useRef(null);
 
@@ -184,47 +182,53 @@ export default function TopicGraph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fullGraph, collapseKey]
   );
-
-  // Big brokers (hundreds of topics) render as an unreadable wall — worst in the
-  // tree layout, where a thousand leaves fit to a flat horizontal line and no
-  // node is clickable. Seed a collapsed view (top few levels only) once per
-  // broker so the graph opens clean and navigable, like the i3X object tree;
-  // double-click a branch to expand. Runs when the graph first grows past the
-  // threshold, and never fights a manual expand (seeded once per broker id).
-  const seededBrokerRef = useRef(null);
-  useEffect(() => {
-    if (!broker || seededBrokerRef.current === broker.id) return;
-    if (fullGraph.nodes.length <= COLLAPSE_SEED_THRESHOLD) return; // revisit as topics stream in
-    const childrenOf = new Map();
-    const incoming = new Set();
-    for (const l of fullGraph.links) {
-      const s = endId(l.source);
-      const t = endId(l.target);
-      if (!childrenOf.has(s)) childrenOf.set(s, []);
-      childrenOf.get(s).push(t);
-      incoming.add(t);
-    }
-    const depth = new Map();
-    const queue = fullGraph.nodes.filter((n) => !incoming.has(n.id)).map((n) => (depth.set(n.id, 0), [n.id, 0]));
-    while (queue.length) {
-      const [id, d] = queue.shift();
-      for (const c of childrenOf.get(id) || []) {
-        if (!depth.has(c)) {
-          depth.set(c, d + 1);
-          queue.push([c, d + 1]);
-        }
-      }
-    }
-    const seed = new Set();
-    for (const n of fullGraph.nodes) {
-      if ((depth.get(n.id) ?? 0) >= COLLAPSE_SEED_DEPTH && childrenOf.get(n.id)?.length) seed.add(n.id);
-    }
-    seededBrokerRef.current = broker.id;
-    if (seed.size) setCollapsed(seed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broker?.id, fullGraph]);
   // Groups actually present, for the color legend.
   const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
+
+  // Toolbar collapse/expand: collapse everything below `level` (Infinity = show
+  // all). Depth is a BFS from the roots of the full (uncollapsed) graph.
+  // Re-frame the graph after collapse/expand changes the visible node set (the
+  // one-shot auto-fit doesn't re-run, so a new layout would sit off-screen).
+  const refitSoon = useCallback(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => graphRef.current?.fitTo()));
+  }, []);
+
+  const expandToLevel = useCallback(
+    (level) => {
+      if (!Number.isFinite(level)) {
+        setCollapsed(new Set());
+        refitSoon();
+        return;
+      }
+      const childrenOf = new Map();
+      const incoming = new Set();
+      for (const l of fullGraph.links) {
+        const s = endId(l.source);
+        const t = endId(l.target);
+        if (!childrenOf.has(s)) childrenOf.set(s, []);
+        childrenOf.get(s).push(t);
+        incoming.add(t);
+      }
+      const depth = new Map();
+      const queue = fullGraph.nodes.filter((n) => !incoming.has(n.id)).map((n) => (depth.set(n.id, 0), [n.id, 0]));
+      while (queue.length) {
+        const [id, d] = queue.shift();
+        for (const c of childrenOf.get(id) || []) {
+          if (!depth.has(c)) {
+            depth.set(c, d + 1);
+            queue.push([c, d + 1]);
+          }
+        }
+      }
+      const next = new Set();
+      for (const n of fullGraph.nodes) {
+        if ((depth.get(n.id) ?? 0) >= level && childrenOf.get(n.id)?.length) next.add(n.id);
+      }
+      setCollapsed(next);
+      refitSoon();
+    },
+    [fullGraph, refitSoon]
+  );
 
   // "Show coverage on topic map" from the Flows view: jump to the graph so the
   // painted trail is immediately visible.
@@ -488,6 +492,7 @@ export default function TopicGraph() {
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
                   onProperties={() => setPanelOpen(true)}
                   hasSelection={Boolean(selected)}
+                  onExpandLevel={expandToLevel}
                 />
               </>
             )}
