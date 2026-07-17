@@ -81,6 +81,7 @@ export default function Trends() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [normalize, setNormalize] = useState(false);
   const searchSeq = useRef(0);
 
   useEffect(() => {
@@ -437,14 +438,34 @@ export default function Trends() {
                   />
                 </div>
               ) : (
-                <TrendChart
-                  series={data?.series || []}
-                  start={data?.start}
-                  end={data?.end}
-                  loading={loading}
-                  error={error}
-                  height={380}
-                />
+                <>
+                  {(data?.series || []).length > 1 && (
+                    <div className="mb-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setNormalize((v) => !v)}
+                        title="Scale each series to its own range so a small-magnitude tag isn't flattened by a large one"
+                        className={clsx(
+                          'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition',
+                          normalize
+                            ? 'border-accent-500/50 bg-accent-500/15 text-accent-200'
+                            : 'border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                        )}
+                      >
+                        <TrendingUp size={13} /> Normalize
+                      </button>
+                    </div>
+                  )}
+                  <TrendChart
+                    series={data?.series || []}
+                    start={data?.start}
+                    end={data?.end}
+                    loading={loading}
+                    error={error}
+                    height={380}
+                    normalize={normalize}
+                  />
+                </>
               )}
             </Card>
           </>
