@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
 import { Card, Button, EmptyState } from '@/components/ui';
-import { Sparkline } from '@/components/charts';
+import { Sparkline, TimeSeriesChart } from '@/components/charts';
 
 /**
  * System — the tool that watches your namespace, watched. Parses Manifold's own
@@ -86,22 +86,75 @@ function fmtUptime(sec) {
 // --- sparkline ---------------------------------------------------------------
 
 function StatTile({ label, value, unit, history, warn, sub }) {
+  const [open, setOpen] = useState(false);
+  const canChart = (history?.length || 0) >= 2;
   return (
-    <div className={`rounded-xl border px-3 py-2.5 ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          {/* Wrap the label instead of truncating — "Delivered"/"Bindings published"
-              were cut to "DELI…"/"BINDIN…" in the narrow tiles. */}
-          <p className="text-2xs font-medium uppercase tracking-wide text-slate-500" title={label}>{label}</p>
-          <p className={`mt-0.5 text-lg font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
-            {value}
-            {unit && <span className="ml-1 text-xs font-normal text-slate-500">{unit}</span>}
-          </p>
-          {sub && <p className="truncate text-2xs text-slate-500">{sub}</p>}
+    <>
+      <div
+        onClick={() => canChart && setOpen(true)}
+        title={canChart ? 'Click to expand this metric' : undefined}
+        className={`group rounded-xl border px-3 py-2.5 transition ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'} ${canChart ? 'cursor-pointer hover:border-white/15 hover:bg-white/[0.05]' : ''}`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            {/* Wrap the label instead of truncating — "Delivered"/"Bindings published"
+                were cut to "DELI…"/"BINDIN…" in the narrow tiles. */}
+            <p className="flex items-center gap-1 text-2xs font-medium uppercase tracking-wide text-slate-500" title={label}>
+              {label}
+              {canChart && <Maximize2 size={9} className="opacity-0 transition group-hover:opacity-100" />}
+            </p>
+            <p className={`mt-0.5 text-lg font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
+              {value}
+              {unit && <span className="ml-1 text-xs font-normal text-slate-500">{unit}</span>}
+            </p>
+            {sub && <p className="truncate text-2xs text-slate-500">{sub}</p>}
+          </div>
+          <div className="w-24 shrink-0">
+            <Sparkline values={history} warn={warn} height={28} />
+          </div>
         </div>
-        <div className="w-24 shrink-0">
-          <Sparkline values={history} warn={warn} height={28} />
+      </div>
+      {open && <MetricModal label={label} value={value} unit={unit} history={history} warn={warn} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+// Click-to-expand: a full uPlot time chart of a tile's rolling history, on a
+// synthesized time axis (samples are POLL_MS apart, newest = now).
+function MetricModal({ label, value, unit, history, warn, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const series = useMemo(() => {
+    const now = Date.now();
+    const n = history.length;
+    const points = history.map((v, i) => [now - (n - 1 - i) * POLL_MS, v]);
+    return [{ tag: `${label}${unit ? ` (${unit})` : ''}`, points }];
+  }, [history, label, unit]);
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full max-w-3xl rounded-2xl border border-white/10 bg-surface-900 p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={`${label} history`}
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">{label}</h3>
+            <p className={`mt-0.5 text-2xl font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
+              {value}
+              {unit && <span className="ml-1 text-sm font-normal text-slate-500">{unit}</span>}
+            </p>
+            <p className="mt-0.5 text-2xs text-slate-500">last ~{Math.round((history.length * POLL_MS) / 1000)}s · {history.length} samples</p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
+            <X size={16} />
+          </button>
         </div>
+        <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? '#f59e0b' : '#38bdf8')} />
       </div>
     </div>
   );

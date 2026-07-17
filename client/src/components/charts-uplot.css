@@ -1,0 +1,93 @@
+/* Dark-theme overrides for uPlot. The base uPlot.min.css assumes a light page;
+   these re-tone it for Manifold's dark surfaces and float the legend as a
+   compact hover readout instead of a block that eats layout height. */
+
+/* The chart wrapper is the positioning context for the floating legend. */
+.u-ts,
+.u-spark {
+  position: relative;
+}
+
+.u-wrap {
+  position: relative;
+}
+
+/* uPlot renders x-axis tick LABELS as HTML; keep them muted. (y ticks are
+   canvas-drawn and colored via the axis `stroke` option.) */
+.uplot,
+.u-wrap,
+.u-legend {
+  color: #7c8aa0;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Floating legend / hover readout — top-right, over the plot, no layout cost. */
+.u-ts .u-legend {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  margin: 0;
+  padding: 5px 9px;
+  background: rgba(15, 26, 43, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, 0.7);
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: none;
+  z-index: 5;
+  text-align: left;
+}
+
+.u-legend .u-series {
+  padding: 0;
+}
+
+.u-legend .u-series > * {
+  padding: 0 2px;
+}
+
+.u-legend .u-marker {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: none !important;
+}
+
+.u-legend .u-series th {
+  font-weight: 500;
+  color: #cbd5e1;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.u-legend .u-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: #e6edf5;
+}
+
+/* The x row (time) header sits at the top of the readout, dimmer. */
+.u-legend .u-series:first-child th {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* Dimmed toggled-off series (uPlot toggles on legend click — pointer-events are
+   off here so the floating readout stays non-interactive). */
+.u-legend .u-off * {
+  opacity: 0.45;
+}
+
+/* Crosshair. */
+.u-cursor-x,
+.u-cursor-y {
+  border-color: rgba(148, 163, 184, 0.35) !important;
+}
+
+/* Sparklines carry no legend/cursor/axes at all. */
+.u-spark .u-legend {
+  display: none;
+}
