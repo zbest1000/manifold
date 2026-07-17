@@ -21,6 +21,17 @@ PR that closed them is noted inline.
 
 ### Low
 
+- [ ] **Accessibility: muted labels fail WCAG AA contrast.** A Lighthouse audit
+  of the app (Accessibility 95, Best Practices 100) flagged 35 elements below the
+  4.5:1 contrast minimum — worst is `text-slate-600` (#475569) at **2.44** on the
+  `#0d1323` background (small uppercase section labels), plus `text-slate-500`
+  (#64748b) at 3.88 (muted mono captions). These are deliberate muted tones, so
+  bumping them app-wide is a design call (slate-600 → slate-400 clears AA but
+  makes the subtle labels noticeably louder). Worth a considered pass on the muted
+  palette rather than a blind global replace. (The `label-content-name-mismatch`
+  finding — the Logs button's aria-label not containing its visible "Logs" text —
+  was fixed, see Done.)
+
 - [ ] **Demo-config gaps found in a full-UI sweep (not UI bugs; pages render
   fine).** Discovery, CESMII, System/Health, and Settings were all real-click /
   interaction tested and work. Observations worth a demo pass: (a) [fixed — see
@@ -68,6 +79,11 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **Accessibility: Logs button's accessible name didn't match its visible
+  text.** Lighthouse `label-content-name-mismatch`: the expanded Logs button
+  shows "Logs" but its `aria-label` was "View the event log (…)", so the
+  accessible name didn't contain "Logs" — voice-control users saying "click Logs"
+  couldn't target it. Prefixed the aria-label with "Logs — …". (`components/ErrorLog.jsx`.)
 - [x] **Discovery couldn't find OPC UA servers on port 50000 (opc-plc).**
   `DEFAULT_OPCUA_PORTS` was `[4840]` only, so network discovery silently missed
   any OPC UA server on the well-known opc-plc port 50000 — including the demo's own
