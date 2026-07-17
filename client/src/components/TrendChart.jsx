@@ -3,7 +3,7 @@ import { TimeSeriesChart } from './charts';
 
 /**
  * TrendChart — the Trends page's multi-series time chart. Thin wrapper over the
- * shared Recharts TimeSeriesChart so every chart in the app looks the same;
+ * shared uPlot TimeSeriesChart so every chart in the app looks the same;
  * keeps the loading / error / empty states, the categorical palette, and a
  * click-free legend.
  *

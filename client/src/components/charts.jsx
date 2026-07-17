@@ -1,16 +1,19 @@
-import { useId } from 'react';
-import { AreaChart, Area, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-/* eslint-disable react/no-unknown-property */
+import { useEffect, useMemo, useRef } from 'react';
+import uPlot from 'uplot';
+import 'uplot/dist/uPlot.min.css';
+import './charts-uplot.css';
 
 /**
  * Shared chart components — every sparkline and time-series in the app renders
- * through these (Recharts) so they look and behave as one system: same accent,
- * same grid, same tooltip, same number formatting. Dark-theme tuned.
+ * through these. They wrap uPlot (https://github.com/leeoniya/uPlot): a mature,
+ * dependency-free, ~40KB canvas charting engine — the same rendering approach
+ * Grafana's time-series panels use. We don't draw axes/lines/tooltips ourselves;
+ * uPlot does, so every chart shares one look, one crosshair, one readout.
  */
 
 const ACCENT = '#38bdf8';
-const GRID = 'rgba(255,255,255,0.06)';
-const AXIS = '#64748b';
+const GRID = 'rgba(148,163,184,0.14)';
+const AXIS = '#7c8aa0';
 
 export function fmtNum(n) {
   if (n == null || !Number.isFinite(n)) return '—';
@@ -19,150 +22,172 @@ export function fmtNum(n) {
   return Number(n.toFixed(a < 1 ? 4 : a < 100 ? 2 : 1)).toString();
 }
 
-/**
- * Compact inline sparkline. `values` is a number[] (or []). Optional `warn`
- * flips the color to amber. No axes, no interaction — for stat tiles etc.
- */
-export function Sparkline({ values, height = 28, warn = false, area = true }) {
-  const id = useId().replace(/:/g, '');
-  const color = warn ? '#f59e0b' : ACCENT;
-  const nums = (values || []).filter((v) => Number.isFinite(v));
-  if (nums.length < 2) return <div style={{ height, width: '100%' }} />;
-  const data = nums.map((v, i) => ({ i, v }));
-  const min = Math.min(...nums);
-  const max = Math.max(...nums);
-  // A constant series (including all-zero — "0 errors", steady counts) has
-  // nothing to trend: draw a faint flat baseline, never a filled block.
-  const flat = max === min;
-  // Pad the vertical domain so the trace has breathing room instead of jamming
-  // edge-to-edge. Recharts auto-scales to the exact [min,max], which stretches a
-  // near-constant metric's jitter across the full height and — with the fill —
-  // reads as a jagged solid block. Padding keeps it a delicate sparkline.
-  const pad = flat ? 1 : (max - min) * 0.35;
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <AreaChart data={data} margin={{ top: 3, right: 1, bottom: 3, left: 1 }}>
-        <defs>
-          <linearGradient id={`spark-${id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={area && !flat ? 0.18 : 0} />
-            <stop offset="100%" stopColor={color} stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <YAxis hide domain={[min - pad, max + pad]} />
-        <Area
-          type="monotone"
-          dataKey="v"
-          stroke={color}
-          strokeWidth={1.5}
-          strokeOpacity={flat ? 0.45 : 1}
-          fill={`url(#spark-${id})`}
-          isAnimationActive={false}
-          dot={false}
-        />
-      </AreaChart>
-    </ResponsiveContainer>
-  );
+// #rrggbb → rgba(...) with the given alpha.
+function withAlpha(hex, a) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
 }
 
-const tooltipStyle = {
-  background: '#0f1a2b',
-  border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: 10,
-  fontSize: 12,
-  color: '#e6edf5',
-  boxShadow: '0 10px 30px -12px rgba(0,0,0,0.6)'
-};
+// Pad the y-scale so a trace has breathing room instead of jamming edge-to-edge;
+// a constant series (min===max) gets a symmetric band so it reads as a flat line.
+function paddedRange(min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];
+  if (min === max) return [min - 1, max + 1];
+  const pad = (max - min) * 0.35;
+  return [min - pad, max + pad];
+}
 
-function TimeTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{ ...tooltipStyle, padding: '8px 10px' }}>
-      <div style={{ color: '#94a3b8', marginBottom: 4, fontFamily: 'ui-monospace, monospace' }}>
-        {new Date(label).toLocaleTimeString()}
-      </div>
-      {payload.map((p) => (
-        <div key={p.dataKey} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 2, background: p.color }} />
-          <span style={{ color: '#cbd5e1', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
-          <span style={{ marginLeft: 'auto', fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{fmtNum(p.value)}</span>
-        </div>
-      ))}
-    </div>
+// Vertical gradient fill under an area series (returns a canvas gradient uPlot
+// paints each draw). Falls back to a flat wash before the plot box is measured
+// (bbox is empty on the very first draw) — createLinearGradient throws on
+// non-finite coordinates.
+function areaFill(hex) {
+  return (u) => {
+    const top = u.bbox?.top;
+    const h = u.bbox?.height;
+    if (!Number.isFinite(top) || !Number.isFinite(h) || h <= 0) return withAlpha(hex, 0.14);
+    const g = u.ctx.createLinearGradient(0, top, 0, top + h);
+    g.addColorStop(0, withAlpha(hex, 0.28));
+    g.addColorStop(1, withAlpha(hex, 0));
+    return g;
+  };
+}
+
+/**
+ * Minimal responsive uPlot lifecycle wrapper: creates the chart sized to its
+ * container, keeps it sized via a ResizeObserver, and pushes data updates
+ * through setData (no teardown) so live charts stay cheap. The chart is only
+ * rebuilt when `options` changes (a structural change — series count, colors).
+ */
+function UplotChart({ options, data, height, className }) {
+  const wrapRef = useRef(null);
+  const uRef = useRef(null);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const width = Math.max(Math.floor(el.clientWidth), 1);
+    const u = new uPlot({ ...options, width, height }, data, el);
+    uRef.current = u;
+    const ro = new ResizeObserver(() => u.setSize({ width: Math.max(Math.floor(el.clientWidth), 1), height }));
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      u.destroy();
+      uRef.current = null;
+    };
+    // data is intentionally omitted — updates flow through the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options, height]);
+
+  useEffect(() => {
+    if (uRef.current) uRef.current.setData(data);
+  }, [data]);
+
+  return <div ref={wrapRef} className={className} style={{ width: '100%', height }} />;
+}
+
+/**
+ * Compact inline sparkline. `values` is a number[] (or []). Optional `warn`
+ * flips the color to amber. No axes/legend/cursor — for stat tiles etc.
+ */
+export function Sparkline({ values, height = 28, warn = false, area = true }) {
+  const color = warn ? '#f59e0b' : ACCENT;
+  const nums = (values || []).filter((v) => Number.isFinite(v));
+  const flat = nums.length >= 2 && Math.min(...nums) === Math.max(...nums);
+  const data = useMemo(() => [nums.map((_, i) => i), nums], [values]); // eslint-disable-line react-hooks/exhaustive-deps
+  const options = useMemo(
+    () => ({
+      cursor: { show: false },
+      legend: { show: false },
+      scales: { x: { time: false }, y: { range: (_u, dmin, dmax) => paddedRange(dmin, dmax) } },
+      axes: [{ show: false }, { show: false }],
+      series: [
+        {},
+        {
+          stroke: flat ? withAlpha(color, 0.45) : color,
+          width: 1.5,
+          fill: area && !flat ? areaFill(color) : undefined,
+          points: { show: false }
+        }
+      ]
+    }),
+    [color, area, flat]
   );
+  if (nums.length < 2) return <div style={{ height, width: '100%' }} />;
+  return <UplotChart options={options} data={data} height={height} className="u-spark" />;
 }
 
 /**
  * Time-series line/area chart. `series` is the historian shape:
  *   [{ tag, points: [[tsMs, value], ...] }]
- * Multiple series are merged on their union of timestamps (nulls connected), so
- * one series (a topic-history popup) or ten (Trends) render the same way.
+ * Multiple series are merged on their union of timestamps (gaps → null), so one
+ * series (a topic-history popup) or ten (Trends) render the same way.
  * `colorFor(index)` supplies per-series colors; a single series gets an area fill.
  */
 export function TimeSeriesChart({ series = [], height = 260, colorFor, area, showGrid = true }) {
   const single = series.length === 1;
-  const useArea = area ?? single;
-
-  // Merge every series onto a shared, sorted timestamp axis.
-  const rows = new Map();
-  series.forEach((s, si) => {
-    for (const [ts, v] of s.points || []) {
-      if (!Number.isFinite(ts) || v == null) continue;
-      const row = rows.get(ts) || { ts };
-      row[`s${si}`] = v;
-      rows.set(ts, row);
-    }
-  });
-  const data = [...rows.values()].sort((a, b) => a.ts - b.ts);
+  const useArea = (area ?? single) && single;
   const color = (i) => (colorFor ? colorFor(i) : ACCENT);
-  const gid = useId().replace(/:/g, '');
 
-  const xAxis = (
-    <XAxis
-      dataKey="ts"
-      type="number"
-      scale="time"
-      domain={['dataMin', 'dataMax']}
-      tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      stroke={AXIS}
-      tick={{ fontSize: 11, fill: AXIS }}
-      minTickGap={40}
-    />
+  // uPlot data: shared, sorted x in SECONDS (its time scale), each series
+  // aligned with nulls for gaps.
+  const data = useMemo(() => {
+    const tsSet = new Set();
+    for (const s of series) for (const [ts, v] of s.points || []) if (Number.isFinite(ts) && v != null) tsSet.add(ts);
+    const xsMs = [...tsSet].sort((a, b) => a - b);
+    const idx = new Map(xsMs.map((t, i) => [t, i]));
+    const ys = series.map((s) => {
+      const arr = new Array(xsMs.length).fill(null);
+      for (const [ts, v] of s.points || []) if (idx.has(ts)) arr[idx.get(ts)] = v;
+      return arr;
+    });
+    return [xsMs.map((t) => t / 1000), ...ys];
+  }, [series]);
+
+  const options = useMemo(
+    () => ({
+      padding: [10, 14, 2, 2],
+      cursor: { show: true, points: { show: true, size: 6 }, focus: { prox: 24 } },
+      legend: { show: series.length > 0, live: true },
+      scales: { x: { time: true }, y: { range: (_u, dmin, dmax) => paddedRange(dmin, dmax) } },
+      axes: [
+        { stroke: AXIS, grid: { show: false }, ticks: { stroke: GRID, size: 4 }, font: '11px ui-sans-serif, system-ui', space: 60 },
+        {
+          stroke: AXIS,
+          grid: { show: showGrid, stroke: GRID, width: 1 },
+          ticks: { show: false },
+          font: '11px ui-sans-serif, system-ui',
+          size: 52,
+          values: (_u, ticks) => ticks.map(fmtNum)
+        }
+      ],
+      series: [
+        { value: (_u, ts) => (ts == null ? '' : new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })) },
+        ...series.map((s, i) => ({
+          label: s.tag || `series ${i + 1}`,
+          stroke: color(i),
+          width: 2,
+          fill: useArea ? areaFill(color(i)) : undefined,
+          points: { show: false },
+          spanGaps: true,
+          value: (_u, v) => (v == null ? '—' : fmtNum(v))
+        }))
+      ]
+    }),
+    // colorFor is assumed stable; series identity drives structural rebuilds.
+    [series, useArea, showGrid] // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const yAxis = <YAxis stroke={AXIS} tick={{ fontSize: 11, fill: AXIS }} width={44} tickFormatter={fmtNum} domain={['auto', 'auto']} />;
-  const grid = showGrid ? <CartesianGrid stroke={GRID} vertical={false} /> : null;
-  const tip = <Tooltip content={<TimeTooltip />} />;
 
-  // Single series → filled area; multiple → clean lines.
-  if (useArea) {
+  if (!data[0] || data[0].length < 2) {
     return (
-      <ResponsiveContainer width="100%" height={height}>
-        <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-          <defs>
-            <linearGradient id={`ts-${gid}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color(0)} stopOpacity={0.28} />
-              <stop offset="100%" stopColor={color(0)} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          {grid}
-          {xAxis}
-          {yAxis}
-          {tip}
-          <Area type="monotone" dataKey="s0" name={series[0]?.tag} stroke={color(0)} strokeWidth={2} fill={`url(#ts-${gid})`} dot={false} connectNulls isAnimationActive={false} />
-        </AreaChart>
-      </ResponsiveContainer>
+      <div style={{ height }} className="grid place-items-center text-xs text-slate-500">
+        Not enough data to chart yet.
+      </div>
     );
   }
-  return (
-    <ResponsiveContainer width="100%" height={height}>
-      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-        {grid}
-        {xAxis}
-        {yAxis}
-        {tip}
-        {series.map((s, i) => (
-          <Line key={s.tag || i} type="monotone" dataKey={`s${i}`} name={s.tag} stroke={color(i)} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
-  );
+  return <UplotChart options={options} data={data} height={height} className="u-ts" />;
 }
