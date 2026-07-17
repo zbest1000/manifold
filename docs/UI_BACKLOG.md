@@ -19,18 +19,6 @@ PR that closed them is noted inline.
   currently *visibly* broken (their ancestors aren't blur-Cards today), so this
   is preventive — migrate them to the primitive as they're touched.
 
-- [ ] **UNS topology over-zooms when a deep mount is present.** With the demo
-  OPC-UA mount (opc-plc, hundreds of nodes) grafted in, the "fit everything on
-  load" framing shrinks the whole forest to unreadable (k clamps near the 0.2
-  floor). The MQTT broker trees — the thing you usually want — become tiny.
-  Options: (a) exclude/soft-weight deep mounts from the initial fit, (b) fit to
-  the broker subtrees and let the user pan to mounts, or (c) collapse mounts to
-  their root by default. Needs a design call.
-
-- [ ] **OPC-UA / i3X mounts default fully-expanded in UNS.** Compounds the
-  over-zoom above and makes the paper canvas very tall. Mounts probably want to
-  seed collapsed (root only), unlike broker namespaces which seed to level 1.
-
 ### Low
 
 - [ ] **Demo-config gaps found in a full-UI sweep (not UI bugs; pages render
@@ -76,6 +64,17 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **UNS over-zoom: OPC-UA / i3X mounts defaulted fully-expanded.** With the
+  demo OPC-PLC mount grafted in, the topology's initial seed expanded every root's
+  level-1 children — for a mount that meant Objects/Types/Views → ~30 grandchildren
+  (Alarm, Boiler, DeviceSet, ObjectTypes, …), which dominated the forest and
+  shrank the MQTT broker trees (the thing you usually want) to an unreadable
+  sliver. Fixed the seed in `UnsTopology.jsx`: mount roots (`brokerId` starts with
+  `mount:`) open only to their root, showing their level-1 children collapsed;
+  broker namespaces still open to level 1. Verified live: the OPC-PLC mount now
+  shows just Objects/Types/Views collapsed and the broker trees are large and
+  legible. Closes both the "over-zoom" and "mounts fully-expanded" backlog items.
+  (`graph/UnsTopology.jsx`.)
 - [x] **Built-in historian stopped at its file cap, breaking the demo's Trends
   (server-side rollover).** The recorder appended to a JSONL and, at 50 MB, set
   `full = true` and stopped forever — so on a long-running demo, Trends' default
