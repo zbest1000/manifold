@@ -8,21 +8,6 @@ PR that closed them is noted inline.
 
 ### Medium
 
-- [ ] **Built-in historian stops at its file cap, silently breaking the demo's
-  Trends.** The recorder (`server/services/recorder.js`) appends to an
-  append-only JSONL and, at `DEFAULT_MAX_BYTES` (50 MB), sets `s.full = true` and
-  stops recording forever (`lastError: "file cap reached — recording stopped"`).
-  On a long-running demo it fills within hours, after which Trends' default source
-  ("Recording → Built-in historian") returns `{series: []}` for any recent range —
-  the chart shows "No samples…" (now correct after the empty-state fix) but there
-  is simply no recent data. Fix: roll over instead of stopping — when the cap is
-  hit, compact the file to keep roughly the newest half (flush + close the write
-  stream, rewrite the tail aligned to a line boundary, reopen in append mode) so
-  recent history always survives. Needs a server-side change + a recorder test;
-  deferred rather than rushed mid-loop because a bad file rewrite could corrupt or
-  drop recordings. (The existing stuck `demo-historian` file also needs clearing
-  once, since it persists on the `/data` volume across container recreation.)
-
 
 - [~] **Modal portal consistency.** A shared portaled `Modal` primitive now
   exists (`components/ui.jsx`) — it renders through `document.body` (escaping any
@@ -91,6 +76,20 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **Built-in historian stopped at its file cap, breaking the demo's Trends
+  (server-side rollover).** The recorder appended to a JSONL and, at 50 MB, set
+  `full = true` and stopped forever — so on a long-running demo, Trends' default
+  source ("Recording → Built-in historian") returned no recent data (the file was
+  full of stale data). Replaced stop-at-cap with a **two-segment ring buffer**:
+  when the current segment fills (cap/2), rotate it to a `.1` previous segment and
+  start fresh; `_records` reads previous+current so reads still yield
+  oldest→newest, bounded to ~cap total, recording never stops. Updated the
+  existing "stops at cap" test to a rollover test; `remove()` now cleans up the
+  `.1` segment too. Verified: 5 recorder+replayer unit tests pass, and live on the
+  demo — after deploy the stuck `demo-historian` rolled its 50 MB file to `.1`,
+  resumed recording (20k points, `full: false`), the series query returned recent
+  points, and the Trends chart renders again. (`server/services/recorder.js`,
+  `server/test/dataops.test.js`.)
 - [x] **Trends showed a misleading empty state for an empty/stopped recording.**
   Found while sweeping pages. With a source (a recording) and a tag both selected,
   but the recorder returning `{series: []}` (e.g. the built-in historian was full/
