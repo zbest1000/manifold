@@ -46,6 +46,11 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] System health tile grid didn't scale: the Broker-ingest and Recorder
+  sections rendered one tile per broker/recording in a flat grid with no cap,
+  collapse, or filter, and the fixed process metrics scrolled away. Added a
+  ScalableSection with a count badge, a collapse toggle, and a filter past ~12
+  items; pinned the Process-health section (sticky). (`pages/System.jsx`.)
 - [x] Discovery "Connect" was fire-and-forget — a "Connecting…" toast with no
   outcome. The button now reports state inline: Connecting… → Connected (MQTT
   verified against the live broker status) or Failed + Retry with the error.
