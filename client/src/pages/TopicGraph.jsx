@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, ChevronDown, ChevronUp, Sparkles, RotateCw } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, ChevronDown, ChevronUp, Sparkles, RotateCw, PanelRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -20,9 +20,10 @@ function RendererLoading() {
     </div>
   );
 }
-import { buildMqttGraph, collapseGraph, groupColor, GROUP_ORDER } from '@/graph/buildGraph';
-import { DEFAULT_LAYOUT, DEFAULT_STYLE, GRAPH_STYLES } from '@/graph/graphStyles';
+import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
+import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphLegend from '@/components/GraphLegend';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
@@ -72,6 +73,12 @@ export default function TopicGraph() {
   const [brokerId, setBrokerId] = useState(null);
   const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
   const [selected, setSelected] = useState(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  // Selecting a node opens its details panel; the Properties button reopens it.
+  const selectNode = (n) => {
+    setSelected(n);
+    setPanelOpen(Boolean(n));
+  };
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph'); // 'graph' | 'tree'
@@ -92,7 +99,7 @@ export default function TopicGraph() {
   // Select a topic from the tree, shaping it like a graph node so the shared
   // detail panel works for both views.
   const selectTopic = useCallback(
-    (c) =>
+    (c) => {
       setSelected({
         id: `topic:${brokerId}:${c.path}`,
         label: c.name,
@@ -104,7 +111,9 @@ export default function TopicGraph() {
           type: c.stat?.type,
           lastActivity: c.stat?.lastActivity
         }
-      }),
+      });
+      setPanelOpen(true);
+    },
     [brokerId]
   );
 
@@ -378,7 +387,7 @@ export default function TopicGraph() {
                 data={graph}
                 styleId={graphStyle}
                 selectedId={selected?.id || null}
-                onSelect={setSelected}
+                onSelect={selectNode}
                 nodeScale={nodeScale3d}
                 linkOpacity={linkOpacity3d}
                 autoRotate={autoRotate3d}
@@ -386,6 +395,20 @@ export default function TopicGraph() {
               />
             </Suspense>
             <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+              <button
+                onClick={() => selected && setPanelOpen(true)}
+                disabled={!selected}
+                title={selected ? 'Show properties of the selected node' : 'Select a node first'}
+                className={clsx(
+                  'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+                  selected
+                    ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/20 hover:text-slate-100'
+                    : 'cursor-not-allowed border-white/5 bg-surface-900/60 text-slate-600'
+                )}
+              >
+                <PanelRight size={15} />
+                <span className="hidden font-medium sm:inline">Properties</span>
+              </button>
               <button
                 onClick={() => graph3dRef.current?.resetView()}
                 title="Reset the camera to the default angle and zoom"
@@ -421,6 +444,8 @@ export default function TopicGraph() {
                   onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+                  onProperties={() => setPanelOpen(true)}
+                  hasSelection={Boolean(selected)}
                 />
               </>
             )}
@@ -428,7 +453,7 @@ export default function TopicGraph() {
               // GPU renderer for the "show everything" view — one draw call per
               // frame plus a viewport-culled label overlay stays smooth at 60k+.
               <Suspense fallback={<RendererLoading />}>
-                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} positions={forcePositions} />
+                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={selectNode} labelDensity={labelDensity} positions={forcePositions} />
               </Suspense>
             ) : (
               <ForceGraph
@@ -437,7 +462,7 @@ export default function TopicGraph() {
                 styleId={graphStyle}
                 layoutId={graphLayout}
                 selectedId={selected?.id || null}
-                onSelect={setSelected}
+                onSelect={selectNode}
                 onExpand={toggleCollapse}
                 flow={flowEnabled}
                 activitySource={activitySource}
@@ -534,7 +559,7 @@ export default function TopicGraph() {
           </div>
         )}
 
-        {selected && (
+        {selected && panelOpen && (
           <TopicPanel
             node={selected}
             brokerId={brokerId}
@@ -544,7 +569,7 @@ export default function TopicGraph() {
               const n = graph.nodes.find((x) => x.id === id);
               if (n) setSelected(n);
             }}
-            onClose={() => setSelected(null)}
+            onClose={() => setPanelOpen(false)}
           />
         )}
       </div>
@@ -576,47 +601,7 @@ function SegBtn({ active, onClick, disabled, title, children }) {
   );
 }
 
-// Human-readable names for the node groups that carry color meaning.
-const GROUP_LABELS = {
-  broker: 'Broker',
-  server: 'Server',
-  topic: 'Branch',
-  telemetry: 'Telemetry',
-  data: 'Data',
-  command: 'Command',
-  config: 'Config',
-  alarm: 'Alarm',
-  sparkplug: 'Sparkplug'
-};
-
-// Collapsible legend that decodes node color → group for the active style. Only
-// lists groups actually present in the current graph.
-function GraphLegend({ styleId, groups }) {
-  const [open, setOpen] = useState(true);
-  const palette = (GRAPH_STYLES[styleId] || GRAPH_STYLES[DEFAULT_STYLE])?.palette || [];
-  const present = GROUP_ORDER.filter((g) => groups.has(g));
-  if (present.length === 0) return null;
-  return (
-    <div className="pointer-events-auto absolute bottom-4 right-4 z-10 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-slate-300 backdrop-blur">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-slate-400 transition hover:text-slate-200"
-      >
-        Legend {open ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-      </button>
-      {open && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-white/5 px-3 py-2">
-          {present.map((g) => (
-            <span key={g} className="flex items-center gap-1.5 text-[11px]">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: groupColor(g, palette) }} />
-              {GROUP_LABELS[g] || g}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+// Legend + group labels now live in components/GraphLegend.jsx (shared).
 
 // Look-and-feel controls for the 3D view (Beautify + auto-rotate + size/link sliders).
 function Graph3DControls({ beautify, onBeautify, autoRotate, onAutoRotate, nodeScale, onNodeScale, linkOpacity, onLinkOpacity }) {

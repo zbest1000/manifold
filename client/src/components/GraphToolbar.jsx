@@ -10,7 +10,8 @@ import {
   Map as MapIcon,
   Download,
   Maximize2,
-  Sparkles
+  Sparkles,
+  PanelRight
 } from 'lucide-react';
 import clsx from 'clsx';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
@@ -31,7 +32,9 @@ export default function GraphToolbar({
   onExportJson,
   layoutValue,
   onLayoutChange,
-  onBeautify
+  onBeautify,
+  onProperties,
+  hasSelection = false
 }) {
   const {
     graphStyle,
@@ -67,6 +70,24 @@ export default function GraphToolbar({
         )}
         <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
         <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
+        {onProperties && (
+          // Open the selected node's details panel. A reliable, discoverable
+          // replacement for right-click (which the OS/browser can swallow).
+          <button
+            onClick={() => hasSelection && onProperties()}
+            disabled={!hasSelection}
+            title={hasSelection ? 'Show properties of the selected node' : 'Select a node first'}
+            className={clsx(
+              'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+              hasSelection
+                ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/20 hover:text-slate-100'
+                : 'cursor-not-allowed border-white/5 bg-surface-900/60 text-slate-600'
+            )}
+          >
+            <PanelRight size={15} />
+            <span className="hidden font-medium sm:inline">Properties</span>
+          </button>
+        )}
         {onBeautify && (
           // Beautify applies the radial arrangement. It's a toggle, so it lights
           // up only WHILE that layout is active (previously it was styled accent
