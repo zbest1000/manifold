@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
@@ -133,8 +134,12 @@ function MetricModal({ label, value, unit, history, warn, onClose }) {
     const points = history.map((v, i) => [now - (n - 1 - i) * POLL_MS, v]);
     return [{ tag: `${label}${unit ? ` (${unit})` : ''}`, points }];
   }, [history, label, unit]);
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm" onClick={onClose}>
+  // Portal to <body>: the tile lives inside a Card with backdrop-blur, which
+  // becomes the containing block for position:fixed descendants — so an in-tree
+  // modal would be trapped inside (and painted under) that card. Rendering at
+  // the document root escapes it.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/80 p-6" onClick={onClose}>
       <div
         className="w-full max-w-3xl rounded-2xl border border-white/10 bg-surface-900 p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
@@ -156,7 +161,8 @@ function MetricModal({ label, value, unit, history, warn, onClose }) {
         </div>
         <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? '#f59e0b' : '#38bdf8')} />
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
