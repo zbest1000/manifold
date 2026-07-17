@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2 } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -539,6 +539,7 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
   const [retain, setRetain] = useState(false);
   const [diffSel, setDiffSel] = useState([]); // up to two message ids for payload diff
   const [historyOpen, setHistoryOpen] = useState(false); // full history-chart popup
+  const [expanded, setExpanded] = useState(false); // blow the panel up to a large modal
 
   useEffect(() => {
     if (!fullTopic) return;
@@ -547,6 +548,14 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
       .then((res) => setHistory(res.messages.slice().reverse()))
       .catch(() => setHistory([]));
   }, [brokerId, fullTopic]);
+
+  // Esc restores the expanded panel to its docked size.
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const onKey = (e) => e.key === 'Escape' && setExpanded(false);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
 
   // Merge in live messages for this exact topic
   const live = messages.filter((m) => m.topic === fullTopic);
@@ -594,8 +603,8 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
     .filter((p) => p.v != null && Number.isFinite(p.ts));
   const numericSeries = numericPoints.map((p) => p.v);
 
-  return (
-    <aside className="flex w-96 shrink-0 flex-col border-l border-white/5 bg-surface-900/50">
+  const inner = (
+    <>
       <div className="flex items-start justify-between gap-2 border-b border-white/5 px-4 py-3">
         <div className="min-w-0">
           <p className="text-xs uppercase tracking-wide text-slate-500">
@@ -610,9 +619,19 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
             )}
           </div>
         </div>
-        <button onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300">
-          <X size={16} />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? 'Restore panel (Esc)' : 'Expand panel to a larger view'}
+            aria-label={expanded ? 'Restore panel' : 'Expand panel'}
+            className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300"
+          >
+            {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
+          <button onClick={onClose} aria-label="Close panel" className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300">
+            <X size={16} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -750,8 +769,29 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
           </div>
         )}
       </div>
-    </aside>
+    </>
   );
+
+  // Expanded: reflow the same content into a large centered modal so the
+  // decoded Sparkplug metrics and the full history list have room to breathe.
+  if (expanded) {
+    return (
+      <div
+        className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-6 backdrop-blur-sm"
+        onClick={() => setExpanded(false)}
+      >
+        <div
+          className="flex h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-surface-900 shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-label="Topic detail"
+        >
+          {inner}
+        </div>
+      </div>
+    );
+  }
+  return <aside className="flex w-96 shrink-0 flex-col border-l border-white/5 bg-surface-900/50">{inner}</aside>;
 }
 
 // Structural diff of two selected history messages (older → newer). Shows what
