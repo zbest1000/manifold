@@ -68,14 +68,10 @@ export default function GraphToolbar({
         <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
         <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
         {onBeautify && (
-          <button
-            onClick={onBeautify}
-            title="Beautify layout (radial arrangement)"
-            className="flex items-center gap-1.5 rounded-xl border border-accent-500/40 bg-accent-500/10 px-2.5 py-2 text-sm text-accent-200 backdrop-blur transition hover:border-accent-500/70"
-          >
-            <Sparkles size={15} />
-            <span className="hidden font-medium sm:inline">Beautify</span>
-          </button>
+          // Beautify applies the radial arrangement. It's a toggle, so it lights
+          // up only WHILE that layout is active (previously it was styled accent
+          // permanently and looked stuck on).
+          <Toggle active={currentLayout === 'radial'} onClick={onBeautify} icon={Sparkles} label="Beautify" />
         )}
         {onFit && <IconButton onClick={() => onFit()} icon={Maximize2} title="Fit graph to view" />}
         {(onExportPng || onExportJson) && (

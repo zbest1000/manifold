@@ -21,6 +21,7 @@ function RendererLoading() {
   );
 }
 import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
+import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
@@ -81,6 +82,7 @@ export default function TopicGraph() {
   const [forceBusy, setForceBusy] = useState(false);
   const FORCE_MAX = 30000; // force-layout worker node cap
   const graphRef = useRef(null);
+  const graph3dRef = useRef(null);
 
   // Select a topic from the tree, shaping it like a graph node so the shared
   // detail panel works for both views.
@@ -364,10 +366,20 @@ export default function TopicGraph() {
         ) : view === '3d' ? (
           <div className="relative flex-1">
             <Suspense fallback={<RendererLoading />}>
-              <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+              <ForceGraph3D ref={graph3dRef} data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
             </Suspense>
+            <div className="absolute right-4 top-4 z-10">
+              <button
+                onClick={() => graph3dRef.current?.resetView()}
+                title="Reset the camera to the default angle and zoom"
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-sm text-slate-300 backdrop-blur transition hover:border-white/20 hover:text-slate-100"
+              >
+                <Maximize2 size={15} />
+                <span className="hidden font-medium sm:inline">Reset view</span>
+              </button>
+            </div>
             <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-              Drag to rotate · scroll to zoom · click a node for details
+              Drag to rotate. Scroll to zoom. Click a node for details. The style dropdown up top restyles this view too.
             </div>
           </div>
         ) : (
@@ -378,7 +390,7 @@ export default function TopicGraph() {
                 <GraphToolbar
                   showFlow
                   onFit={() => graphRef.current?.fitTo()}
-                  onBeautify={() => setGraphLayout('radial')}
+                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
                 />
