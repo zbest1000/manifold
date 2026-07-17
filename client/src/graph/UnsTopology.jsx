@@ -137,7 +137,7 @@ export function buildUnsTree(broker, topics) {
   return root;
 }
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const sizeRef = useRef({ w: 0, h: 0 });
@@ -146,7 +146,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // Manual drag offsets on top of the computed layout, keyed `${brokerId}:${path}`.
   // They survive expand/collapse relayouts; "Auto arrange" clears them.
   const manualRef = useRef(new Map());
-  const fittedRef = useRef(false);
+  // Set once the user takes control of the camera (pan / zoom / drag / toggle).
+  // Until then the view auto-frames the whole forest as it loads and grows.
+  const userMovedRef = useRef(false);
   const rafRef = useRef(0);
   const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
   const selectedRef = useRef(selectedId);
@@ -188,24 +190,69 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     fitAll();
   }, [fitAll]);
 
-  // Expanded paths per broker. Default: namespace + first level open.
+  // Center the viewport on one laid node at a readable zoom — the target of a
+  // "jump to this node" from the lint / events panels.
+  const centerOn = useCallback(
+    (l) => {
+      const { w, h } = sizeRef.current;
+      if (!w) return;
+      const p = posOf(l);
+      const t = transformRef.current;
+      t.k = Math.min(1.4, Math.max(t.k, 0.8)); // never focus while zoomed way out
+      t.x = w / 2 - t.k * p.x;
+      t.y = h / 2 - t.k * p.y;
+    },
+    [posOf]
+  );
+  // A pending "focus this node" request, applied once the node is laid out.
+  const focusPendingRef = useRef(null);
+
+  // Expanded paths per broker. Default: namespace + first level open. Seeding is
+  // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
+  // still gets auto-expanded, instead of loading collapsed while its siblings
+  // are open. User collapses of already-seeded brokers are preserved.
   const [expanded, setExpanded] = useState(() => new Set());
-  const [initialized, setInitialized] = useState(false);
+  const seededRef = useRef(new Set());
   useEffect(() => {
-    if (initialized || !roots.length) return;
-    const seed = new Set();
-    for (const r of roots) {
-      seed.add(`${r.brokerId}:`);
-      for (const child of r.children.values()) seed.add(`${child.brokerId}:${child.path}`);
-    }
-    setExpanded(seed);
-    setInitialized(true);
-  }, [roots, initialized]);
+    const fresh = roots.filter((r) => !seededRef.current.has(r.brokerId));
+    if (!fresh.length) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const r of fresh) {
+        seededRef.current.add(r.brokerId);
+        next.add(`${r.brokerId}:`);
+        for (const child of r.children.values()) next.add(`${child.brokerId}:${child.path}`);
+      }
+      return next;
+    });
+  }, [roots]);
 
   // Warm the icon set (lazy chunk) so badges upgrade from glyphs to icons.
   useEffect(() => {
     loadIcons();
   }, []);
+
+  // Focus request (from a lint finding / event click): open every ancestor so
+  // the node is on-screen, then queue a center-on that the layout effect applies
+  // once the node has a laid-out position.
+  useEffect(() => {
+    if (!focusTarget?.brokerId || focusTarget.path == null) return;
+    const { brokerId, path } = focusTarget;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.add(`${brokerId}:`);
+      const segs = String(path).split('/').filter(Boolean);
+      let acc = '';
+      // Open ancestors only — the node itself need not be expanded to be visible.
+      for (let i = 0; i < segs.length - 1; i++) {
+        acc = i === 0 ? segs[i] : `${acc}/${segs[i]}`;
+        next.add(`${brokerId}:${acc}`);
+      }
+      return next;
+    });
+    focusPendingRef.current = { brokerId, path: String(path) };
+    userMovedRef.current = true; // a deliberate jump — auto-fit must not override it
+  }, [focusTarget]);
 
   // Live activity: stamp every ancestor path of each incoming topic, count it
   // for per-branch rates, and record the leaf's value + inter-arrival EMA.
@@ -293,10 +340,24 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   useEffect(() => {
     visibleRef.current = layout.nodes;
-    // First real layout: frame everything instead of starting at a fixed origin.
-    if (!fittedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
+    // Auto-frame the whole forest on load AND as it grows — brokers connect,
+    // topics stream in, async mount roots arrive — until the user takes control
+    // of the camera. A one-shot fit locks onto the first partial forest and
+    // leaves all later growth off-center (the reported "doesn't center on
+    // load"); re-fitting until interaction keeps it centered without ever
+    // fighting manual navigation.
+    if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
       fitAll();
-      fittedRef.current = true;
+    }
+    // Apply a queued focus once its node has a position (it may take an extra
+    // layout pass for the just-expanded ancestors to lay the node out).
+    if (focusPendingRef.current) {
+      const { brokerId, path } = focusPendingRef.current;
+      const target = layout.nodes.find((l) => l.node.brokerId === brokerId && l.node.path === path);
+      if (target) {
+        centerOn(target);
+        focusPendingRef.current = null;
+      }
     }
     // Read-only hook for e2e tests / screenshot tooling: world coordinates of
     // the visible nodes (manual offsets applied) plus the current view transform.
@@ -311,7 +372,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         })
       };
     }
-  }, [layout, fitAll, posOf]);
+  }, [layout, fitAll, posOf, centerOn]);
 
   // ---- Drawing ----
   const draw = useCallback(() => {
@@ -574,6 +635,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const dy = e.clientY - last.y;
       moved += Math.abs(dx) + Math.abs(dy);
       last = { x: e.clientX, y: e.clientY };
+      userMovedRef.current = true; // panning or dragging = user owns the camera now
       if (mode === 'pan') {
         transformRef.current.x += dx;
         transformRef.current.y += dy;
@@ -614,6 +676,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
     const onWheel = (e) => {
       interactAt.current = Date.now();
+      userMovedRef.current = true; // zooming = user owns the camera now
       e.preventDefault();
       const t = transformRef.current;
       const rect = canvas.getBoundingClientRect();
@@ -644,6 +707,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, [onSelect, posOf]);
 
   const toggle = (node) => {
+    userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
     const key = `${node.brokerId}:${node.path}`;
     // Collapsing also collapses everything beneath, so re-expanding is tidy.
     const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;
