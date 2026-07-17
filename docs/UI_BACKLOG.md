@@ -78,7 +78,26 @@ PR that closed them is noted inline.
     "last N msgs · Xs", relative "-6.4s → now" readout, oldest→now track labels,
     a "Replaying" indicator while active) instead of an unlabelled media widget
     with a meaningless absolute clock. See the dedicated entry below.
-  - Still open: 3D Activity (size by rate).
+  - 3D Activity: size nodes by live message rate in the 3D view (mirrors the 2D
+    Activity toggle) — active nodes swell up to 2.2x and relax back. See the
+    dedicated entry below.
+  - The graph-overhaul batch (all of the user's explicit graph asks) is now
+    complete.
+- [x] **3D Activity sizing (size nodes by message rate).** The 2D graph had an
+  Activity toggle that swells nodes by their live message rate; the 3D view had
+  Flow (colour pulse) but no size equivalent. Added an Activity toggle to the
+  shared `Graph3DControls` and the rate model to `ForceGraph3D`: a `rateRef`
+  (nodeId→rate) bumped per message, decayed per frame, applied as a per-instance
+  scale on the `InstancedMesh` (base radius × up to 2.2x at saturation), relaxing
+  to base as it decays — the size analogue of the Flow colour pulse, sharing the
+  same activity bus subscription. Kept the on-demand render loop alive via a new
+  `activitySizeRef` (mirroring Flow's `flowRef`) so it animates continuously while
+  on. Verified against the live demo by reading the three.js instance matrices
+  directly: 51 nodes swollen to the exact 2.2x ceiling under traffic, relaxing to
+  base (41→10 swollen) once toggled off. Note: the headless verification browser
+  doesn't fire requestAnimationFrame without a forced paint, so motion was
+  sampled by forcing frames + reading matrix state, not by watching it move.
+  (`graph/ForceGraph3D.jsx`, `components/Graph3DControls.jsx`, `pages/TopicGraph.jsx`.)
 - [x] **Replay "doesn't make sense" (redesign).** The scrubber worked mechanically
   (seek/speed/keyboard) but read as an unlabelled media widget floating over the
   graph: no title, no scope, and an absolute wall-clock readout (`14:32:07`) with

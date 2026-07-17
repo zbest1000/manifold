@@ -23,6 +23,15 @@ const FLOW_COLOR = new THREE.Color('#ffffff'); // nodes flash toward this on a m
 const FLOW_TMP = new THREE.Color(); // reusable scratch for the pulse lerp
 const FLOW_DECAY = 0.9; // per-frame pulse decay
 
+// Activity-sizing: nodes swell with their message rate, then relax back to base.
+const ACT_DECAY = 0.96; // per-frame rate decay (slower than the colour pulse, so size lingers)
+const ACT_MAX = 6; // rate is clamped here before scaling
+const ACT_FACTOR = 0.2; // swell up to 1 + ACT_MAX*ACT_FACTOR = 2.2x at saturation
+const ACT_M4 = new THREE.Matrix4(); // reusable scratch for the per-instance matrix
+const ACT_POS = new THREE.Vector3();
+const ACT_SCL = new THREE.Vector3();
+const ACT_QUAT = new THREE.Quaternion();
+
 /** Strip the alpha channel from an rgba() color (link opacity is constant here). */
 function opaqueColor(color) {
   const m = /^rgba\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,[^)]+\)$/.exec(String(color).trim());
@@ -143,6 +152,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     nodeValues = null, // { [nodeId]: value } for the value line
     nodeShape = 'sphere', // sphere | cube | diamond | tetra | icosa
     flow = false, // flash nodes as messages arrive (live message flow)
+    activitySize = false, // swell nodes by their live message rate
     activitySource = null // (pulse) => unsubscribe; fires a node id per message
   },
   ref
@@ -159,7 +169,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const autoRotateRef = useRef(false); // read by the render loop each frame
   const nodeScaleRef = useRef(nodeScale); // keeps the selection ring hugging scaled nodes
   const flowRef = useRef(false); // keeps the loop alive while message-flow is on
+  const activitySizeRef = useRef(false); // keeps the loop alive while activity-sizing is on
   const pulseRef = useRef(new Map()); // nodeId -> pulse intensity (0..1), decays per frame
+  const rateRef = useRef(new Map()); // nodeId -> message rate, decays per frame (activity sizing)
   const idxRef = useRef(new Map()); // nodeId -> instance index
   const baseColorRef = useRef([]); // per-index base THREE.Color, so a pulse can restore it
   const onSelectRef = useRef(onSelect);
@@ -232,9 +244,51 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
           pulseRef.current.clear();
         }
       }
+      // Activity-sizing: swell active nodes by their message rate, relaxing back
+      // to the stored base scale (radius * point-size multiplier) as it decays.
+      if (rateRef.current.size) {
+        const objs = objsRef.current;
+        const mesh = objs?.nodeMesh;
+        if (mesh && objs.radii) {
+          const idx = idxRef.current;
+          const { radii, positions } = objs;
+          for (const [id, v] of rateRef.current) {
+            const i = idx.get(id);
+            if (i == null) {
+              rateRef.current.delete(id);
+              continue;
+            }
+            const nv = v * ACT_DECAY;
+            const base = radii[i] * nodeScaleRef.current;
+            ACT_POS.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+            if (nv < 0.05) {
+              ACT_SCL.set(base, base, base);
+              rateRef.current.delete(id);
+            } else {
+              const s = base * (1 + Math.min(nv, ACT_MAX) * ACT_FACTOR);
+              ACT_SCL.set(s, s, s);
+              rateRef.current.set(id, nv);
+            }
+            mesh.setMatrixAt(i, ACT_M4.compose(ACT_POS, ACT_QUAT, ACT_SCL));
+          }
+          mesh.instanceMatrix.needsUpdate = true;
+        } else {
+          rateRef.current.clear();
+        }
+      }
       renderFrame();
       const interacting = performance.now() - lastActive < IDLE_MS;
-      if ((interacting || autoRotateRef.current || flowRef.current || pulseRef.current.size) && !document.hidden) raf = requestAnimationFrame(loop);
+      if (
+        (interacting ||
+          autoRotateRef.current ||
+          flowRef.current ||
+          activitySizeRef.current ||
+          pulseRef.current.size ||
+          rateRef.current.size) &&
+        !document.hidden
+      ) {
+        raf = requestAnimationFrame(loop);
+      }
     };
     const requestRender = (sustain = false) => {
       if (sustain) lastActive = performance.now();
@@ -421,6 +475,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     idxRef.current = nodeIndex;
     baseColorRef.current = baseColors;
     pulseRef.current.clear();
+    rateRef.current.clear();
     nodeMesh.instanceMatrix.needsUpdate = true;
     if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
     group.add(nodeMesh);
@@ -526,26 +581,29 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     if (autoRotateRef.current) threeRef.current?.requestRender();
   }, [autoRotate, beautify]);
 
-  // Message-flow: subscribe to the activity bus and flash nodes as messages
-  // arrive. flowRef keeps the on-demand loop running while flow is on.
+  // Live activity: subscribe to the message bus once for both features. Flow
+  // flashes a node's colour; Activity bumps its rate so the render loop swells
+  // it. flowRef keeps the loop running continuously while flow is on; activity
+  // rides the loop only while there are non-zero rates to decay.
   useEffect(() => {
     flowRef.current = flow;
-    if (!flow || !activitySource) {
-      pulseRef.current.clear();
+    activitySizeRef.current = activitySize;
+    threeRef.current?.requestRender(); // kick the loop so a toggle-off can decay out
+    if ((!flow && !activitySize) || !activitySource) {
       return undefined;
     }
-    threeRef.current?.requestRender();
     const unsub = activitySource((id) => {
-      if (idxRef.current.has(id)) {
-        pulseRef.current.set(id, 1);
-        threeRef.current?.requestRender();
-      }
+      if (!idxRef.current.has(id)) return;
+      if (flow) pulseRef.current.set(id, 1);
+      if (activitySize) rateRef.current.set(id, (rateRef.current.get(id) || 0) + 1);
+      threeRef.current?.requestRender();
     });
     return () => {
       if (typeof unsub === 'function') unsub();
       flowRef.current = false;
+      activitySizeRef.current = false;
     };
-  }, [flow, activitySource]);
+  }, [flow, activitySize, activitySource]);
 
   // Node colours: depth-graded ramp when Beautify is on, else the group palette.
   useEffect(() => {

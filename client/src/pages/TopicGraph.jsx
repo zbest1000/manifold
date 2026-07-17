@@ -97,6 +97,7 @@ export default function TopicGraph() {
   const [labelDensity3d, setLabelDensity3d] = useState(0.4);
   const [nodeShape3d, setNodeShape3d] = useState('sphere');
   const [flow3d, setFlow3d] = useState(false);
+  const [activitySize3d, setActivitySize3d] = useState(false);
   const [beautify2d, setBeautify2d] = useState(false); // 2D visual mode: radial + bloom
   const FORCE_MAX = 30000; // force-layout worker node cap
   const graphRef = useRef(null);
@@ -478,6 +479,7 @@ export default function TopicGraph() {
                 nodeValues={showValues ? nodeValues : null}
                 nodeShape={nodeShape3d}
                 flow={flow3d}
+                activitySize={activitySize3d}
                 activitySource={activitySource}
               />
             </Suspense>
@@ -522,6 +524,8 @@ export default function TopicGraph() {
               onNodeShape={setNodeShape3d}
               flow={flow3d}
               onFlow={() => setFlow3d((v) => !v)}
+              activitySize={activitySize3d}
+              onActivitySize={() => setActivitySize3d((v) => !v)}
             />
             <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
               Drag to rotate. Scroll to zoom. Click a node for details. The style dropdown up top restyles this view too.
