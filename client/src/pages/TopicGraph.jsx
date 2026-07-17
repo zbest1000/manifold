@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, PanelRight } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, PanelRight, ChevronDown, Check, Radio } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -21,9 +21,6 @@ function RendererLoading() {
   );
 }
 import { buildMqttGraph, buildAllBrokersGraph, collapseGraph } from '@/graph/buildGraph';
-
-// Sentinel broker id: show every connected broker merged into one graph.
-const ALL_BROKERS = '__all__';
 import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphLegend from '@/components/GraphLegend';
@@ -75,7 +72,7 @@ export default function TopicGraph() {
   const showMinimap = useStore((s) => s.showMinimap);
   const setTopics = useStore((s) => s.setTopics);
 
-  const [brokerId, setBrokerId] = useState(null);
+  const [selectedBrokers, setSelectedBrokers] = useState([]); // broker ids to graph
   const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
   const [selected, setSelected] = useState(null);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -102,6 +99,17 @@ export default function TopicGraph() {
   const graphRef = useRef(null);
   const graph3dRef = useRef(null);
 
+  const connected = brokers.filter((b) => b.status === 'connected');
+  const connectedIds = connected.map((b) => b.id).join(',');
+  // Which brokers to graph. Empty = show none; 1 = single tree; 2+ = merged
+  // multi-broker view. Kept in connected-order so the primary is stable.
+  const activeBrokers = connected.filter((b) => selectedBrokers.includes(b.id));
+  const activeIds = activeBrokers.map((b) => b.id).join(',');
+  const multi = activeBrokers.length > 1;
+  const brokerId = activeBrokers[0]?.id || null; // primary broker for single-broker surfaces
+  const toggleBroker = (id) =>
+    setSelectedBrokers((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
   // Select a topic from the tree, shaping it like a graph node so the shared
   // detail panel works for both views.
   const selectTopic = useCallback(
@@ -123,29 +131,28 @@ export default function TopicGraph() {
     [brokerId]
   );
 
-  const connected = brokers.filter((b) => b.status === 'connected');
-  const connectedIds = connected.map((b) => b.id).join(',');
-  const allMode = brokerId === ALL_BROKERS;
-
-  // Default to the first connected broker (but never clobber the "all" sentinel).
+  // Seed with the first connected broker; prune any that disconnected; never
+  // leave the selection empty while a broker is connected.
   useEffect(() => {
-    if (!brokerId && connected.length) setBrokerId(connected[0].id);
-    if (brokerId && brokerId !== ALL_BROKERS && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
-  }, [connected, brokerId, brokers]);
-
-  // Pull the authoritative topic list for the active broker(s). In all-mode we
-  // fetch every connected broker so the merged graph is complete.
-  useEffect(() => {
-    if (!brokerId) return;
-    const ids = allMode ? connected.map((b) => b.id) : [brokerId];
-    ids.forEach((id) => api.brokerTopics(id).then((res) => setTopics(id, res.topics)).catch(() => {}));
+    if (!connected.length) return;
+    setSelectedBrokers((prev) => {
+      const valid = prev.filter((id) => connected.some((b) => b.id === id));
+      if (valid.length) return valid.length === prev.length ? prev : valid;
+      return [connected[0].id];
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brokerId, allMode, connectedIds, setTopics]);
+  }, [connectedIds]);
+
+  // Pull the authoritative topic list for every active broker.
+  useEffect(() => {
+    activeBrokers.forEach((b) => api.brokerTopics(b.id).then((res) => setTopics(b.id, res.topics)).catch(() => {}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIds, setTopics]);
 
   // Sparkplug host applications (spBv1.0/STATE/*) — polled from the topology
   // snapshot; the strip only shows when the broker actually carries host STATE.
   useEffect(() => {
-    if (!brokerId || allMode) {
+    if (!brokerId || multi) {
       setSpHosts([]);
       return;
     }
@@ -180,15 +187,14 @@ export default function TopicGraph() {
 
   const GRAPH_MAX_NODES = 2500;
   const fullGraph = useMemo(() => {
-    if (allMode) {
-      if (!connected.length) return { nodes: [], links: [] };
-      const topicsByBroker = Object.fromEntries(connected.map((b) => [b.id, useStore.getState().getTopics(b.id)]));
-      return buildAllBrokersGraph(connected, topicsByBroker, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
+    if (!activeBrokers.length) return { nodes: [], links: [] };
+    if (multi) {
+      const topicsByBroker = Object.fromEntries(activeBrokers.map((b) => [b.id, useStore.getState().getTopics(b.id)]));
+      return buildAllBrokersGraph(activeBrokers, topicsByBroker, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
     }
-    if (!broker) return { nodes: [], links: [] };
-    return buildMqttGraph(broker, brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
+    return buildMqttGraph(activeBrokers[0], brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMode, connectedIds, allTopicVersion, broker?.id, brokerTopics, showAll]);
+  }, [activeIds, multi, allTopicVersion, brokerTopics, showAll]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
@@ -372,8 +378,8 @@ export default function TopicGraph() {
       <PageHeader
         title="Topics"
         subtitle={
-          allMode
-            ? `${connected.length} brokers · ${graph.nodes.length} nodes`
+          multi
+            ? `${activeBrokers.length} brokers · ${graph.nodes.length} nodes`
             : broker
               ? `${brokerTopics.length} topics · ${graph.nodes.length} nodes`
               : 'Select a broker'
@@ -385,21 +391,22 @@ export default function TopicGraph() {
               <ViewTab active={view === '3d'} onClick={() => setView('3d')} icon={Box} label="3D" />
               <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
             </div>
-            <select
-              value={brokerId || ''}
-              onChange={(e) => {
-                setBrokerId(e.target.value);
+            <BrokerMultiSelect
+              connected={connected}
+              selected={selectedBrokers}
+              onToggle={(id) => {
+                toggleBroker(id);
                 setSelected(null);
               }}
-              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-            >
-              {connected.length > 1 && <option value={ALL_BROKERS}>All connected brokers ({connected.length})</option>}
-              {connected.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              onOnly={(id) => {
+                setSelectedBrokers([id]);
+                setSelected(null);
+              }}
+              onAll={() => {
+                setSelectedBrokers(connected.map((b) => b.id));
+                setSelected(null);
+              }}
+            />
           </div>
         }
       />
@@ -679,6 +686,66 @@ function SegBtn({ active, onClick, disabled, title, children }) {
 
 // Legend + group labels live in components/GraphLegend.jsx; the 3D look-and-feel
 // controls live in components/Graph3DControls.jsx (both shared across views).
+
+// Multi-select of connected brokers: pick one, several, or all. Selecting 2+
+// merges their topic trees into one graph. Each row can toggle, or "only" it.
+function BrokerMultiSelect({ connected, selected, onToggle, onOnly, onAll }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onDoc);
+    return () => document.removeEventListener('pointerdown', onDoc);
+  }, []);
+  const activeCount = connected.filter((b) => selected.includes(b.id)).length;
+  const label = activeCount === 0 ? 'No brokers' : activeCount === 1 ? connected.find((b) => selected.includes(b.id))?.name : `${activeCount} brokers`;
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 transition hover:border-white/20"
+      >
+        <Radio size={14} className="text-accent-400" />
+        <span className="max-w-[180px] truncate font-medium">{label}</span>
+        <ChevronDown size={14} className={clsx('text-slate-500 transition', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-72 overflow-hidden rounded-xl border border-white/10 bg-surface-900/95 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between border-b border-white/5 px-3 py-1.5">
+            <span className="text-2xs uppercase tracking-wide text-slate-500">Brokers ({connected.length})</span>
+            <button onClick={onAll} className="text-2xs font-medium text-accent-300 hover:text-accent-200">
+              Select all
+            </button>
+          </div>
+          <div className="max-h-72 overflow-y-auto py-1">
+            {connected.map((b) => {
+              const on = selected.includes(b.id);
+              return (
+                <div key={b.id} className="group flex items-center gap-2 px-2 py-1.5 hover:bg-white/5">
+                  <button onClick={() => onToggle(b.id)} className="flex flex-1 items-center gap-2 text-left">
+                    <span className={clsx('grid h-4 w-4 shrink-0 place-items-center rounded border', on ? 'border-accent-500 bg-accent-500/20' : 'border-white/20')}>
+                      {on && <Check size={11} className="text-accent-300" />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{b.name}</span>
+                  </button>
+                  <button
+                    onClick={() => onOnly(b.id)}
+                    className="rounded px-1.5 py-0.5 text-2xs font-medium text-slate-500 opacity-0 transition hover:bg-white/10 hover:text-slate-200 group-hover:opacity-100"
+                    title="Show only this broker"
+                  >
+                    only
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Resolve a link endpoint whether it's still an id string or a d3-mutated node object.
 const endId = (e) => (e && typeof e === 'object' ? e.id : e);
