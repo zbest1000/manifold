@@ -905,12 +905,17 @@ function computeDepths(nodes, links) {
 }
 
 function treePositions(nodes, links, layout) {
+  // d3's forceLink mutates link.source/target from id strings to node objects
+  // once the simulation is set up. This runs afterward, so resolve either shape.
+  const endId = (e) => (e && typeof e === 'object' ? e.id : e);
   const childrenOf = new Map();
   const hasParent = new Set();
   for (const l of links) {
-    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
-    childrenOf.get(l.source).push(l.target);
-    hasParent.add(l.target);
+    const s = endId(l.source);
+    const t = endId(l.target);
+    if (!childrenOf.has(s)) childrenOf.set(s, []);
+    childrenOf.get(s).push(t);
+    hasParent.add(t);
   }
   const rowGap = layout.rowGap || 90;
   const colGap = layout.colGap || 46;
