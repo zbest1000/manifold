@@ -546,6 +546,27 @@ export function groupColor(group, palette) {
 }
 
 /**
+ * Merge every connected broker into one graph, each broker's topic tree hanging
+ * off a synthetic "All brokers" root. Node ids are already namespaced per broker
+ * (broker:ID, topic:ID:PATH) so there are no collisions. A per-broker node budget
+ * keeps one busy broker from crowding out the others.
+ */
+export function buildAllBrokersGraph(brokers, topicsByBroker, { maxNodes = Infinity } = {}) {
+  const perBrokerCap = Number.isFinite(maxNodes) ? Math.max(50, Math.floor(maxNodes / Math.max(1, brokers.length))) : Infinity;
+  const rootId = 'all:root';
+  const nodes = [{ id: rootId, label: 'All brokers', group: 'broker', kind: 'all-root', degree: 0, meta: { allBrokers: true } }];
+  const links = [];
+  for (const b of brokers) {
+    const g = buildMqttGraph(b, topicsByBroker[b.id] || [], { maxNodes: perBrokerCap });
+    for (const n of g.nodes) nodes.push(n);
+    for (const l of g.links) links.push(l);
+    // Hang each broker's root under the synthetic all-root.
+    if (g.nodes.some((n) => n.id === `broker:${b.id}`)) links.push({ source: rootId, target: `broker:${b.id}`, kind: 'broker' });
+  }
+  return { nodes, links };
+}
+
+/**
  * Collapse subtrees: hide every descendant of a node in `collapsed`, and annotate
  * each collapsed node with `collapsedCount` (number of hidden descendants) so the
  * renderer can show a badge. Works on any parent→child link graph.

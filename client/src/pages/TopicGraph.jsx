@@ -20,7 +20,10 @@ function RendererLoading() {
     </div>
   );
 }
-import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
+import { buildMqttGraph, buildAllBrokersGraph, collapseGraph } from '@/graph/buildGraph';
+
+// Sentinel broker id: show every connected broker merged into one graph.
+const ALL_BROKERS = '__all__';
 import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
 import GraphToolbar from '@/components/GraphToolbar';
 import GraphLegend from '@/components/GraphLegend';
@@ -119,26 +122,28 @@ export default function TopicGraph() {
   );
 
   const connected = brokers.filter((b) => b.status === 'connected');
+  const connectedIds = connected.map((b) => b.id).join(',');
+  const allMode = brokerId === ALL_BROKERS;
 
-  // Default to the first connected broker
+  // Default to the first connected broker (but never clobber the "all" sentinel).
   useEffect(() => {
     if (!brokerId && connected.length) setBrokerId(connected[0].id);
-    if (brokerId && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
+    if (brokerId && brokerId !== ALL_BROKERS && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
   }, [connected, brokerId, brokers]);
 
-  // Pull the authoritative topic list when broker changes
+  // Pull the authoritative topic list for the active broker(s). In all-mode we
+  // fetch every connected broker so the merged graph is complete.
   useEffect(() => {
     if (!brokerId) return;
-    api
-      .brokerTopics(brokerId)
-      .then((res) => setTopics(brokerId, res.topics))
-      .catch(() => {});
-  }, [brokerId, setTopics]);
+    const ids = allMode ? connected.map((b) => b.id) : [brokerId];
+    ids.forEach((id) => api.brokerTopics(id).then((res) => setTopics(id, res.topics)).catch(() => {}));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brokerId, allMode, connectedIds, setTopics]);
 
   // Sparkplug host applications (spBv1.0/STATE/*) — polled from the topology
   // snapshot; the strip only shows when the broker actually carries host STATE.
   useEffect(() => {
-    if (!brokerId) {
+    if (!brokerId || allMode) {
       setSpHosts([]);
       return;
     }
@@ -160,6 +165,9 @@ export default function TopicGraph() {
 
   const broker = brokers.find((b) => b.id === brokerId);
   const topicVersion = topicVersionMap[brokerId] || 0;
+  // Combined topic-version across all connected brokers so all-mode recomputes
+  // when ANY broker's topic set changes.
+  const allTopicVersion = connected.reduce((s, b) => s + (topicVersionMap[b.id] || 0), 0);
 
   // Read the topic list from the non-reactive index; recompute only when the
   // topic SET changes (topicVersion), not on every message.
@@ -170,10 +178,15 @@ export default function TopicGraph() {
 
   const GRAPH_MAX_NODES = 2500;
   const fullGraph = useMemo(() => {
+    if (allMode) {
+      if (!connected.length) return { nodes: [], links: [] };
+      const topicsByBroker = Object.fromEntries(connected.map((b) => [b.id, useStore.getState().getTopics(b.id)]));
+      return buildAllBrokersGraph(connected, topicsByBroker, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
+    }
     if (!broker) return { nodes: [], links: [] };
     return buildMqttGraph(broker, brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [broker?.id, brokerTopics, showAll]);
+  }, [allMode, connectedIds, allTopicVersion, broker?.id, brokerTopics, showAll]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
@@ -356,7 +369,13 @@ export default function TopicGraph() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="Topics"
-        subtitle={broker ? `${brokerTopics.length} topics · ${graph.nodes.length} nodes` : 'Select a broker'}
+        subtitle={
+          allMode
+            ? `${connected.length} brokers · ${graph.nodes.length} nodes`
+            : broker
+              ? `${brokerTopics.length} topics · ${graph.nodes.length} nodes`
+              : 'Select a broker'
+        }
         actions={
           <div className="flex items-center gap-2">
             <div className="flex overflow-hidden rounded-xl border border-white/10">
@@ -372,6 +391,7 @@ export default function TopicGraph() {
               }}
               className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
             >
+              {connected.length > 1 && <option value={ALL_BROKERS}>All connected brokers ({connected.length})</option>}
               {connected.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.name}
