@@ -149,6 +149,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // Set once the user takes control of the camera (pan / zoom / drag / toggle).
   // Until then the view auto-frames the whole forest as it loads and grows.
   const userMovedRef = useRef(false);
+  // Multi-select: node keys (`${brokerId}:${path}`) the user has box- or
+  // ctrl-selected. Dragging any one moves the whole group. Kept in a ref (the
+  // draw loop reads it every frame); selCount mirrors its size for the hint.
+  const selRef = useRef(new Set());
+  const boxRef = useRef(null); // active rubber-band box, world coords {x1,y1,x2,y2}
+  const [selCount, setSelCount] = useState(0);
   const rafRef = useRef(0);
   const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
   const selectedRef = useRef(selectedId);
@@ -443,6 +449,17 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const pulsing = now - last < PULSE_MS;
       const live = now - last < LIVE_WINDOW_MS;
 
+      // Multi-select highlight: an accent ring + soft halo on every group member.
+      if (selRef.current.has(`${n.brokerId}:${n.path}`)) {
+        ctx.beginPath();
+        ctx.arc(P.x, P.y, R + 6, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(56,189,248,0.12)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(56,189,248,0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
       if (pulsing) {
         const p = 1 - (now - last) / PULSE_MS;
         ctx.beginPath();
@@ -548,6 +565,22 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       }
     }
 
+    // Rubber-band selection box (drawn in world space; hairline at any zoom).
+    if (boxRef.current) {
+      const b = boxRef.current;
+      const x = Math.min(b.x1, b.x2);
+      const y = Math.min(b.y1, b.y2);
+      const bw = Math.abs(b.x2 - b.x1);
+      const bh = Math.abs(b.y2 - b.y1);
+      ctx.fillStyle = 'rgba(56,189,248,0.08)';
+      ctx.fillRect(x, y, bw, bh);
+      ctx.strokeStyle = 'rgba(56,189,248,0.6)';
+      ctx.lineWidth = 1 / t.k;
+      ctx.setLineDash([4 / t.k, 3 / t.k]);
+      ctx.strokeRect(x, y, bw, bh);
+      ctx.setLineDash([]);
+    }
+
     ctx.restore();
   }, [layout, levels, posOf]);
 
@@ -612,16 +645,39 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // Drag on a node moves THAT node (manual rearrangement); drag on empty
     // canvas pans the view. Click = select, click on ± (or double-click) =
     // expand/collapse. "Auto arrange" clears all manual moves.
-    let mode = null; // 'pan' | 'node'
+    let mode = null; // 'pan' | 'node' | 'box'
     let grabbed = null; // laid node being moved
     let moved = 0;
     let last = { x: 0, y: 0 };
+    let ctrlToggled = false; // a ctrl/⌘-click that toggled selection — onUp skips select
+    const keyOf = (l) => `${l.node.brokerId}:${l.node.path}`;
     const onDown = (e) => {
       interactAt.current = Date.now();
       moved = 0;
+      ctrlToggled = false;
       last = { x: e.clientX, y: e.clientY };
       grabbed = pick(toWorld(e));
-      mode = grabbed ? 'node' : 'pan';
+      if (grabbed && (e.ctrlKey || e.metaKey)) {
+        // Ctrl/⌘-click toggles this node in the multi-selection (no move).
+        const key = keyOf(grabbed);
+        if (selRef.current.has(key)) selRef.current.delete(key);
+        else selRef.current.add(key);
+        setSelCount(selRef.current.size);
+        ctrlToggled = true;
+        grabbed = null;
+        mode = null;
+        return;
+      }
+      if (grabbed) {
+        mode = 'node';
+      } else if (e.shiftKey) {
+        // Shift-drag on empty canvas draws a rubber-band selection box.
+        const p = toWorld(e);
+        boxRef.current = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+        mode = 'box';
+      } else {
+        mode = 'pan';
+      }
     };
     const onMove = (e) => {
       interactAt.current = Date.now();
@@ -639,11 +695,20 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (mode === 'pan') {
         transformRef.current.x += dx;
         transformRef.current.y += dy;
+      } else if (mode === 'box' && boxRef.current) {
+        const p = toWorld(e);
+        boxRef.current.x2 = p.x;
+        boxRef.current.y2 = p.y;
       } else if (grabbed) {
         const k = transformRef.current.k;
-        const key = `${grabbed.node.brokerId}:${grabbed.node.path}`;
-        const off = manualRef.current.get(key) || { dx: 0, dy: 0 };
-        manualRef.current.set(key, { dx: off.dx + dx / k, dy: off.dy + dy / k });
+        const gkey = keyOf(grabbed);
+        // Grabbing a node that's part of the selection drags the WHOLE group;
+        // otherwise just this node.
+        const keys = selRef.current.has(gkey) && selRef.current.size > 1 ? [...selRef.current] : [gkey];
+        for (const key of keys) {
+          const off = manualRef.current.get(key) || { dx: 0, dy: 0 };
+          manualRef.current.set(key, { dx: off.dx + dx / k, dy: off.dy + dy / k });
+        }
         canvas.style.cursor = 'grabbing';
       }
     };
@@ -651,10 +716,38 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const onUp = (e) => {
       const wasDrag = moved >= 6;
       const hit = grabbed;
+      const wasBox = mode === 'box';
+      const box = boxRef.current;
       mode = null;
       grabbed = null;
+      boxRef.current = null;
       canvas.style.cursor = 'default';
-      if (wasDrag || !hit) return;
+      if (ctrlToggled) return; // selection already toggled on pointerdown
+      if (wasBox) {
+        // Finalize the rubber-band: every node whose center is inside joins the
+        // selection (shift keeps the existing selection, else it replaces it).
+        const minX = Math.min(box.x1, box.x2);
+        const maxX = Math.max(box.x1, box.x2);
+        const minY = Math.min(box.y1, box.y2);
+        const maxY = Math.max(box.y1, box.y2);
+        const next = new Set(e.shiftKey ? selRef.current : []);
+        for (const l of visibleRef.current) {
+          const P = posOf(l);
+          if (P.x >= minX && P.x <= maxX && P.y >= minY && P.y <= maxY) next.add(keyOf(l));
+        }
+        selRef.current = next;
+        setSelCount(next.size);
+        return;
+      }
+      if (wasDrag) return;
+      if (!hit) {
+        // Plain click on empty canvas clears the multi-selection.
+        if (selRef.current.size) {
+          selRef.current = new Set();
+          setSelCount(0);
+        }
+        return;
+      }
       // Click near the +/- affordance (below the badge) toggles expansion.
       const p = toWorld(e);
       const P = posOf(hit);
@@ -663,6 +756,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         toggle(hit.node);
         return;
       }
+      // Plain click on a node makes it the sole selection and opens its detail.
+      selRef.current = new Set([keyOf(hit)]);
+      setSelCount(1);
       // Defer selection briefly so a double-click (expand) doesn't also select —
       // opening the detail panel mid-gesture would move the canvas under the
       // second click.
@@ -689,11 +785,20 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       t.k = nk;
     };
 
+    const onKey = (e) => {
+      if (e.key === 'Escape' && selRef.current.size) {
+        selRef.current = new Set();
+        setSelCount(0);
+        interactAt.current = Date.now(); // prompt a redraw so the rings clear now
+      }
+    };
+
     canvas.addEventListener('pointerdown', onDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
     canvas.addEventListener('dblclick', onDbl);
     canvas.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('keydown', onKey);
     return () => {
       clearTimeout(pendingSelect);
       ro.disconnect();
@@ -702,6 +807,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       window.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('dblclick', onDbl);
       canvas.removeEventListener('wheel', onWheel);
+      window.removeEventListener('keydown', onKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onSelect, posOf]);
@@ -729,6 +835,18 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="h-full w-full" />
       <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+        {selCount > 0 && (
+          <button
+            onClick={() => {
+              selRef.current = new Set();
+              setSelCount(0);
+            }}
+            title="Clear the multi-selection (Esc)"
+            className="flex items-center gap-1.5 rounded-lg border border-sky-400/50 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur transition hover:bg-sky-500/25"
+          >
+            {selCount} selected · drag to move · Esc ✕
+          </button>
+        )}
         <button
           onClick={autoArrange}
           title="Reset manual node positions to the tidy layout and fit to view"
