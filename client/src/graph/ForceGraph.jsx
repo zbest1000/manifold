@@ -699,10 +699,21 @@ const ForceGraph = forwardRef(function ForceGraph(
       }
     };
 
+    // Right-click a node to open its properties (suppress the native menu).
+    const onContext = (e) => {
+      const { x, y } = toGraphCoords(e);
+      const hit = pick(x, y);
+      if (hit) {
+        e.preventDefault();
+        cbRef.current.onSelect?.(hit);
+      }
+    };
+
     canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('pointerup', onUp);
     canvas.addEventListener('dblclick', onDblClick);
     canvas.addEventListener('pointermove', onMove);
+    canvas.addEventListener('contextmenu', onContext);
 
     return () => {
       ro.disconnect();
@@ -710,6 +721,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('dblclick', onDblClick);
       canvas.removeEventListener('pointermove', onMove);
+      canvas.removeEventListener('contextmenu', onContext);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -893,12 +905,17 @@ function computeDepths(nodes, links) {
 }
 
 function treePositions(nodes, links, layout) {
+  // d3's forceLink mutates link.source/target from id strings to node objects
+  // once the simulation is set up. This runs afterward, so resolve either shape.
+  const endId = (e) => (e && typeof e === 'object' ? e.id : e);
   const childrenOf = new Map();
   const hasParent = new Set();
   for (const l of links) {
-    if (!childrenOf.has(l.source)) childrenOf.set(l.source, []);
-    childrenOf.get(l.source).push(l.target);
-    hasParent.add(l.target);
+    const s = endId(l.source);
+    const t = endId(l.target);
+    if (!childrenOf.has(s)) childrenOf.set(s, []);
+    childrenOf.get(s).push(t);
+    hasParent.add(t);
   }
   const rowGap = layout.rowGap || 90;
   const colGap = layout.colGap || 46;

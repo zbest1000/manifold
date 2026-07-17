@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2 } from 'lucide-react';
+import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, ChevronDown, ChevronUp, Sparkles, RotateCw, PanelRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -21,7 +21,9 @@ function RendererLoading() {
   );
 }
 import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
+import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphLegend from '@/components/GraphLegend';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
@@ -71,6 +73,12 @@ export default function TopicGraph() {
   const [brokerId, setBrokerId] = useState(null);
   const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
   const [selected, setSelected] = useState(null);
+  const [panelOpen, setPanelOpen] = useState(false);
+  // Selecting a node opens its details panel; the Properties button reopens it.
+  const selectNode = (n) => {
+    setSelected(n);
+    setPanelOpen(Boolean(n));
+  };
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph'); // 'graph' | 'tree'
@@ -79,13 +87,19 @@ export default function TopicGraph() {
   const [labelDensity, setLabelDensity] = useState(0.5); // 0 (off) .. 1 (dense)
   const [forcePositions, setForcePositions] = useState(null); // worker-computed force coords for show-all
   const [forceBusy, setForceBusy] = useState(false);
+  // 3D look-and-feel controls (local — only the style is shared with the 2D views).
+  const [nodeScale3d, setNodeScale3d] = useState(1);
+  const [linkOpacity3d, setLinkOpacity3d] = useState(0.35);
+  const [autoRotate3d, setAutoRotate3d] = useState(false);
+  const [beautify3d, setBeautify3d] = useState(false);
   const FORCE_MAX = 30000; // force-layout worker node cap
   const graphRef = useRef(null);
+  const graph3dRef = useRef(null);
 
   // Select a topic from the tree, shaping it like a graph node so the shared
   // detail panel works for both views.
   const selectTopic = useCallback(
-    (c) =>
+    (c) => {
       setSelected({
         id: `topic:${brokerId}:${c.path}`,
         label: c.name,
@@ -97,7 +111,9 @@ export default function TopicGraph() {
           type: c.stat?.type,
           lastActivity: c.stat?.lastActivity
         }
-      }),
+      });
+      setPanelOpen(true);
+    },
     [brokerId]
   );
 
@@ -165,6 +181,8 @@ export default function TopicGraph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fullGraph, collapseKey]
   );
+  // Groups actually present, for the color legend.
+  const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
 
   // "Show coverage on topic map" from the Flows view: jump to the graph so the
   // painted trail is immediately visible.
@@ -364,11 +382,56 @@ export default function TopicGraph() {
         ) : view === '3d' ? (
           <div className="relative flex-1">
             <Suspense fallback={<RendererLoading />}>
-              <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+              <ForceGraph3D
+                ref={graph3dRef}
+                data={graph}
+                styleId={graphStyle}
+                selectedId={selected?.id || null}
+                onSelect={selectNode}
+                nodeScale={nodeScale3d}
+                linkOpacity={linkOpacity3d}
+                autoRotate={autoRotate3d}
+                beautify={beautify3d}
+              />
             </Suspense>
-            <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-              Drag to rotate · scroll to zoom · click a node for details
+            <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+              <button
+                onClick={() => selected && setPanelOpen(true)}
+                disabled={!selected}
+                title={selected ? 'Show properties of the selected node' : 'Select a node first'}
+                className={clsx(
+                  'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+                  selected
+                    ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/20 hover:text-slate-100'
+                    : 'cursor-not-allowed border-white/5 bg-surface-900/60 text-slate-600'
+                )}
+              >
+                <PanelRight size={15} />
+                <span className="hidden font-medium sm:inline">Properties</span>
+              </button>
+              <button
+                onClick={() => graph3dRef.current?.resetView()}
+                title="Reset the camera to the default angle and zoom"
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-sm text-slate-300 backdrop-blur transition hover:border-white/20 hover:text-slate-100"
+              >
+                <Maximize2 size={15} />
+                <span className="hidden font-medium sm:inline">Reset view</span>
+              </button>
             </div>
+            <Graph3DControls
+              beautify={beautify3d}
+              onBeautify={() => setBeautify3d((v) => !v)}
+              autoRotate={autoRotate3d}
+              onAutoRotate={() => setAutoRotate3d((v) => !v)}
+              nodeScale={nodeScale3d}
+              onNodeScale={setNodeScale3d}
+              linkOpacity={linkOpacity3d}
+              onLinkOpacity={setLinkOpacity3d}
+            />
+            <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+              Drag to rotate. Scroll to zoom. Click a node for details. The style dropdown up top restyles this view too.
+            </div>
+            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         ) : (
           <div className="relative flex-1">
@@ -378,9 +441,11 @@ export default function TopicGraph() {
                 <GraphToolbar
                   showFlow
                   onFit={() => graphRef.current?.fitTo()}
-                  onBeautify={() => setGraphLayout('radial')}
+                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
                   onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+                  onProperties={() => setPanelOpen(true)}
+                  hasSelection={Boolean(selected)}
                 />
               </>
             )}
@@ -388,7 +453,7 @@ export default function TopicGraph() {
               // GPU renderer for the "show everything" view — one draw call per
               // frame plus a viewport-culled label overlay stays smooth at 60k+.
               <Suspense fallback={<RendererLoading />}>
-                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} labelDensity={labelDensity} positions={forcePositions} />
+                <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={selectNode} labelDensity={labelDensity} positions={forcePositions} />
               </Suspense>
             ) : (
               <ForceGraph
@@ -397,7 +462,7 @@ export default function TopicGraph() {
                 styleId={graphStyle}
                 layoutId={graphLayout}
                 selectedId={selected?.id || null}
-                onSelect={setSelected}
+                onSelect={selectNode}
                 onExpand={toggleCollapse}
                 flow={flowEnabled}
                 activitySource={activitySource}
@@ -407,6 +472,7 @@ export default function TopicGraph() {
                 minimap={showMinimap}
               />
             )}
+            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
             {coverage?.brokerId === brokerId && !showAll && (
               // Coverage paint handed over from the Flows view: the highlighted
               // trail is exactly what the chosen client actually receives.
@@ -493,12 +559,17 @@ export default function TopicGraph() {
           </div>
         )}
 
-        {selected && (
+        {selected && panelOpen && (
           <TopicPanel
             node={selected}
             brokerId={brokerId}
             messages={liveMsgs}
-            onClose={() => setSelected(null)}
+            graph={graph}
+            onJump={(id) => {
+              const n = graph.nodes.find((x) => x.id === id);
+              if (n) setSelected(n);
+            }}
+            onClose={() => setPanelOpen(false)}
           />
         )}
       </div>
@@ -530,7 +601,88 @@ function SegBtn({ active, onClick, disabled, title, children }) {
   );
 }
 
-function TopicPanel({ node, brokerId, messages, onClose }) {
+// Legend + group labels now live in components/GraphLegend.jsx (shared).
+
+// Look-and-feel controls for the 3D view (Beautify + auto-rotate + size/link sliders).
+function Graph3DControls({ beautify, onBeautify, autoRotate, onAutoRotate, nodeScale, onNodeScale, linkOpacity, onLinkOpacity }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="absolute left-4 top-4 z-10 w-52 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-slate-300 backdrop-blur">
+      <div className="flex items-stretch">
+        <button
+          onClick={onBeautify}
+          title="Depth-graded colours, glowing links, and a slow spin"
+          className={clsx(
+            'flex flex-1 items-center gap-1.5 px-3 py-2 text-sm font-medium transition',
+            beautify ? 'bg-accent-500/20 text-accent-200' : 'text-slate-300 hover:text-slate-100'
+          )}
+        >
+          <Sparkles size={15} className={beautify ? 'text-accent-300' : ''} /> Beautify
+        </button>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          title="Look and feel"
+          className="border-l border-white/10 px-2.5 text-slate-400 transition hover:text-slate-200"
+        >
+          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      </div>
+      {open && (
+        <div className="space-y-3 border-t border-white/5 px-3 py-3">
+          <button
+            onClick={onAutoRotate}
+            className={clsx(
+              'flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
+              autoRotate ? 'border-accent-500/40 bg-accent-500/15 text-accent-200' : 'border-white/10 text-slate-400 hover:text-slate-200'
+            )}
+          >
+            <RotateCw size={13} className={autoRotate ? 'text-accent-300' : ''} /> Auto-rotate
+          </button>
+          <label className="block">
+            <span className="mb-1 flex justify-between text-[11px] text-slate-400">
+              Node size <span className="tabular-nums text-slate-500">{nodeScale.toFixed(1)}×</span>
+            </span>
+            <input type="range" min="0.5" max="2" step="0.1" value={nodeScale} onChange={(e) => onNodeScale(Number(e.target.value))} className="w-full accent-accent-500" />
+          </label>
+          <label className="block">
+            <span className="mb-1 flex justify-between text-[11px] text-slate-400">
+              Links <span className="tabular-nums text-slate-500">{Math.round(linkOpacity * 100)}%</span>
+            </span>
+            <input type="range" min="0.05" max="0.8" step="0.05" value={linkOpacity} onChange={(e) => onLinkOpacity(Number(e.target.value))} className="w-full accent-accent-500" />
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Resolve a link endpoint whether it's still an id string or a d3-mutated node object.
+const endId = (e) => (e && typeof e === 'object' ? e.id : e);
+
+// One labelled row in the Location card (Parent / Siblings / Children).
+function RelRow({ label, children }) {
+  return (
+    <div className="mb-2 flex items-start gap-2 last:mb-0">
+      <span className="mt-1 w-16 shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+// A jump-to-node chip for a neighbouring topic.
+function RelChip({ node, onJump }) {
+  return (
+    <button
+      onClick={() => onJump?.(node.id)}
+      title={`Jump to ${node.meta?.fullTopic || node.label}`}
+      className="mono inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-300 transition hover:border-accent-500/40 hover:bg-accent-500/10 hover:text-accent-200"
+    >
+      <span className="truncate">{node.label}</span>
+    </button>
+  );
+}
+
+function TopicPanel({ node, brokerId, messages, graph, onJump, onClose }) {
   const meta = node.meta || {};
   const fullTopic = meta.fullTopic;
   const [history, setHistory] = useState([]);
@@ -603,6 +755,19 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
     .filter((p) => p.v != null && Number.isFinite(p.ts));
   const numericSeries = numericPoints.map((p) => p.v);
 
+  // Neighbours in the topic tree, from the graph's parent→child links: the
+  // parent, the siblings under it, and this node's own children. Each is
+  // clickable to jump the selection there.
+  const links = graph?.links || [];
+  const nodeById = (id) => graph?.nodes.find((n) => n.id === id) || null;
+  const parentId = links.find((l) => endId(l.target) === node.id) ? endId(links.find((l) => endId(l.target) === node.id).source) : null;
+  const parentNode = parentId ? nodeById(parentId) : null;
+  const siblings = parentId
+    ? links.filter((l) => endId(l.source) === parentId).map((l) => endId(l.target)).filter((id) => id !== node.id).map(nodeById).filter(Boolean)
+    : [];
+  const children = links.filter((l) => endId(l.source) === node.id).map((l) => endId(l.target)).map(nodeById).filter(Boolean);
+  const segments = fullTopic ? fullTopic.split('/') : [];
+
   const inner = (
     <>
       <div className="flex items-start justify-between gap-2 border-b border-white/5 px-4 py-3">
@@ -644,6 +809,61 @@ function TopicPanel({ node, brokerId, messages, onClose }) {
               label="Last seen"
               value={meta.lastActivity ? formatDistanceToNow(new Date(meta.lastActivity), { addSuffix: true }) : '—'}
             />
+          </div>
+        )}
+
+        {/* Location in the topic tree: a clickable breadcrumb plus the parent,
+            siblings, and children as jump targets. */}
+        {fullTopic && (parentNode || siblings.length > 0 || children.length > 0 || segments.length > 1) && (
+          <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Location</p>
+            <div className="mb-3 flex flex-wrap items-center text-[11px]">
+              {segments.map((seg, i) => {
+                const last = i === segments.length - 1;
+                const path = segments.slice(0, i + 1).join('/');
+                return (
+                  <span key={i} className="flex items-center">
+                    {i > 0 && <span className="px-0.5 text-slate-600">/</span>}
+                    {last ? (
+                      <span className="mono font-medium text-slate-200">{seg}</span>
+                    ) : (
+                      <button
+                        onClick={() => onJump?.(`topic:${brokerId}:${path}`)}
+                        title={`Jump to ${path}`}
+                        className="mono rounded px-1 py-0.5 text-slate-400 transition hover:bg-white/10 hover:text-accent-300"
+                      >
+                        {seg}
+                      </button>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+            {parentNode && (
+              <RelRow label="Parent">
+                <RelChip node={parentNode} onJump={onJump} />
+              </RelRow>
+            )}
+            {siblings.length > 0 && (
+              <RelRow label={`Siblings ${siblings.length}`}>
+                <div className="flex flex-wrap gap-1">
+                  {siblings.slice(0, 30).map((s) => (
+                    <RelChip key={s.id} node={s} onJump={onJump} />
+                  ))}
+                  {siblings.length > 30 && <span className="self-center text-[10px] text-slate-500">+{siblings.length - 30} more</span>}
+                </div>
+              </RelRow>
+            )}
+            {children.length > 0 && (
+              <RelRow label={`Children ${children.length}`}>
+                <div className="flex flex-wrap gap-1">
+                  {children.slice(0, 30).map((c) => (
+                    <RelChip key={c.id} node={c} onJump={onJump} />
+                  ))}
+                  {children.length > 30 && <span className="self-center text-[10px] text-slate-500">+{children.length - 30} more</span>}
+                </div>
+              </RelRow>
+            )}
           </div>
         )}
 

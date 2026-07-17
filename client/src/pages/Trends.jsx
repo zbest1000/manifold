@@ -5,7 +5,7 @@ import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
 import TrendChart, { seriesColor } from '@/components/TrendChart';
-import { Card, Button, Input, Field, EmptyState } from '@/components/ui';
+import { Card, Button, Input, Field, EmptyState, HelpButton } from '@/components/ui';
 
 /**
  * Trends — chart time-series from three sources: a historian, a local file
@@ -81,6 +81,7 @@ export default function Trends() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [normalize, setNormalize] = useState(false);
   const searchSeq = useRef(0);
 
   useEffect(() => {
@@ -100,7 +101,12 @@ export default function Trends() {
       .then((r) => {
         const files = (r.recordings || []).filter((rec) => rec.target?.type !== 'historian');
         setRecordings(files);
-        if (files[0]) setRecId((prev) => prev || files[0].id);
+        if (files[0]) {
+          setRecId((prev) => prev || files[0].id);
+          // A recording has persisted history, so default to it instead of the
+          // memory-only live view — Trends then has data on first load.
+          setSourceType((prev) => (prev === 'live' ? 'recording' : prev));
+        }
       })
       .catch(() => {});
   }, []);
@@ -114,8 +120,8 @@ export default function Trends() {
   const usingLive = sourceType === 'live';
   const selected = useMemo(() => historians.find((h) => h.id === histId) || null, [historians, histId]);
   // Historians (except Timebase) offer a tag-listing search; the live source
-  // suggests from the broker's observed topics; recordings are typed by path.
-  const searchable = (sourceType === 'historian' && selected && selected.type !== 'timebase') || usingLive;
+  // suggests from the broker's observed topics; recordings list captured topics.
+  const searchable = (sourceType === 'historian' && selected && selected.type !== 'timebase') || usingLive || usingRecording;
 
   // Live topic suggestions from the broker's observed topic set, filtered by the
   // query — so you can pick a topic to trend instead of typing it blind.
@@ -132,25 +138,29 @@ export default function Trends() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usingLive, brokerId, query, tags, topicVersion]);
 
-  // Debounced tag search against the historian itself.
+  // Debounced tag search against the active stored source (historian or
+  // recording). The live source suggests locally via liveSuggestions instead.
   useEffect(() => {
-    if (!histId || !searchable) {
+    if (usingLive) {
+      setSuggestions([]);
+      return;
+    }
+    const id = usingRecording ? recId : histId;
+    if (!id || !searchable) {
       setSuggestions([]);
       return;
     }
     const seq = ++searchSeq.current;
     const t = setTimeout(() => {
-      api
-        .historianTags(histId, query, 25)
-        .then((r) => {
-          if (seq === searchSeq.current) setSuggestions(r.tags || []);
-        })
-        .catch(() => {
-          if (seq === searchSeq.current) setSuggestions([]);
-        });
+      const p = usingRecording ? api.recordingTags(id, query, 25) : api.historianTags(id, query, 25);
+      p.then((r) => {
+        if (seq === searchSeq.current) setSuggestions(r.tags || []);
+      }).catch(() => {
+        if (seq === searchSeq.current) setSuggestions([]);
+      });
     }, 300);
     return () => clearTimeout(t);
-  }, [histId, query, searchable]);
+  }, [usingLive, usingRecording, recId, histId, query, searchable]);
 
   const addTag = (raw) => {
     const tag = String(raw || '').trim();
@@ -214,6 +224,32 @@ export default function Trends() {
         subtitle="chart live from the message stream, a historian, or a local recording"
         actions={
           <div className="flex items-center gap-2">
+            <HelpButton title="How Trends works" label="How Trends works">
+              <p>Trends charts numeric values over time. Pick a source, add up to ten tags, and choose a range.</p>
+              <p>Three sources:</p>
+              <ul className="list-disc space-y-1 pl-5">
+                <li>
+                  <b>Live</b>: reads straight from a broker&apos;s recent message stream, held in memory. No historian needed.
+                  Type a topic path such as <code>energy/main/voltage</code> and press Enter. Turn on <b>Auto 30s</b> to keep
+                  it updating.
+                </li>
+                <li>
+                  <b>Historian</b>: reads back from a time-series database you set up under Pipelines, over any range. Search
+                  pulls tag names straight from the historian.
+                </li>
+                <li>
+                  <b>Recording</b>: replays a file captured by the Recorder.
+                </li>
+              </ul>
+              <p>
+                Only numeric values plot. A payload like <code>{'{ value: 401, unit: "V" }'}</code> charts its
+                <code>value</code>; plain numbers chart directly; text is skipped. Hover the chart for the value at a point.
+              </p>
+              <p className="text-slate-400">
+                Nothing to chart? On Live, make sure the broker is publishing numbers to the topic you typed. On Historian,
+                make sure a Pipeline route is writing to it.
+              </p>
+            </HelpButton>
             <Button
               variant={autoRefresh ? 'primary' : 'outline'}
               size="sm"
@@ -402,14 +438,34 @@ export default function Trends() {
                   />
                 </div>
               ) : (
-                <TrendChart
-                  series={data?.series || []}
-                  start={data?.start}
-                  end={data?.end}
-                  loading={loading}
-                  error={error}
-                  height={380}
-                />
+                <>
+                  {(data?.series || []).length > 1 && (
+                    <div className="mb-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setNormalize((v) => !v)}
+                        title="Scale each series to its own range so a small-magnitude tag isn't flattened by a large one"
+                        className={clsx(
+                          'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition',
+                          normalize
+                            ? 'border-accent-500/50 bg-accent-500/15 text-accent-200'
+                            : 'border-white/10 text-slate-400 hover:border-white/20 hover:text-slate-200'
+                        )}
+                      >
+                        <TrendingUp size={13} /> Normalize
+                      </button>
+                    </div>
+                  )}
+                  <TrendChart
+                    series={data?.series || []}
+                    start={data?.start}
+                    end={data?.end}
+                    loading={loading}
+                    error={error}
+                    height={380}
+                    normalize={normalize}
+                  />
+                </>
               )}
             </Card>
           </>

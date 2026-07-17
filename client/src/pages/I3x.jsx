@@ -7,6 +7,7 @@ import ForceGraph from '@/graph/ForceGraph';
 import ForceGraph3D from '@/graph/ForceGraph3D';
 import { buildI3xGraph } from '@/graph/buildGraph';
 import GraphToolbar from '@/components/GraphToolbar';
+import GraphLegend from '@/components/GraphLegend';
 import GraphSearch from '@/components/GraphSearch';
 import GraphTree from '@/components/GraphTree';
 import JsonView from '@/components/JsonView';
@@ -26,7 +27,14 @@ export default function I3x() {
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph');
   const [treeFilter, setTreeFilter] = useState('');
+  const [panelOpen, setPanelOpen] = useState(false);
   const graphRef = useRef(null);
+
+  // Selecting a node opens its details; the Properties toolbar button reopens it.
+  const selectNode = (n) => {
+    setSelected(n);
+    setPanelOpen(Boolean(n));
+  };
 
   const [status, setStatus] = useState(null);
   const [form, setForm] = useState({ baseUrl: '', token: '' });
@@ -53,6 +61,7 @@ export default function I3x() {
     if (!connected) return { nodes: [], links: [] };
     return buildI3xGraph(server, objects);
   }, [connected, server, objects]);
+  const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
 
   const connect = async () => {
     setBusy(true);
@@ -157,16 +166,17 @@ export default function I3x() {
               nodes={graph.nodes}
               links={graph.links}
               selectedId={selected?.id || null}
-              onSelect={setSelected}
+              onSelect={selectNode}
               filter={treeFilter}
             />
           </div>
         ) : view === '3d' ? (
           <div className="relative flex-1">
-            <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={setSelected} />
+            <ForceGraph3D data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={selectNode} />
             <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
               Drag to rotate · scroll to zoom · click a node for details
             </div>
+            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         ) : (
           <div className="relative flex-1">
@@ -181,6 +191,8 @@ export default function I3x() {
                   onExportJson={() => downloadJson(graphRef.current?.exportGraph(), 'i3x-graph.json')}
                   layoutValue={graphLayout}
                   onLayoutChange={setGraphLayout}
+                  onProperties={() => setPanelOpen(true)}
+                  hasSelection={selected?.kind === 'i3x-object'}
                 />
                 <ForceGraph
                   ref={graphRef}
@@ -188,20 +200,21 @@ export default function I3x() {
                   styleId={graphStyle}
                   layoutId={graphLayout}
                   selectedId={selected?.id || null}
-                  onSelect={setSelected}
+                  onSelect={selectNode}
                   matchIds={matchIds}
                   minimap={showMinimap}
                 />
                 <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
                   Object graph · click a node to read its value and history
                 </div>
+                <GraphLegend styleId={graphStyle} groups={groupsPresent} />
               </>
             )}
           </div>
         )}
 
-        {selected && selected.kind === 'i3x-object' && (
-          <ObjectPanel node={selected} onClose={() => setSelected(null)} />
+        {selected && selected.kind === 'i3x-object' && panelOpen && (
+          <ObjectPanel node={selected} onClose={() => setPanelOpen(false)} />
         )}
       </div>
     </div>
