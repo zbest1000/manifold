@@ -60,6 +60,25 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **Flows "click a device for its metrics" never showed the card (stacked
+  bug).** Found while broad-testing other pages after the property-pane work. The
+  Flows Producers/Consumers device trees use the same `ForceGraph`, but wired
+  selection wrong: `onSelect={setSelected}` stored the node *object*, while the
+  lookup `graph.nodes.find((n) => n.id === selected)` and `selectedId={selected}`
+  both expect an *id string* — so `selectedNode` was always null and the metrics
+  card never rendered. This was masked until now because the d3-drag capture bug
+  meant `onSelect` never fired at all (clicking a device did nothing); fixing
+  d3-drag exposed the object/id mismatch. Fixed both `ProducerFlows.jsx` and
+  `ConsumerFlows.jsx` to `onSelect={(n) => setSelected(n.id)}`. Verified live:
+  dispatching `selected = <edge-node id>` renders the endpoint-detail card with
+  full metrics (Messages 12,570, 3 metrics, last seen); a group id renders the
+  card header. (The combined live *click* couldn't be pinned under the cursor
+  because Flows uses `layoutId="radial"`, whose layout overrides `fx/fy`; the
+  ForceGraph click path itself is verified on Topics/i3X/OPC UA.) Other
+  ForceGraph consumers (Topics, i3X, OPC UA, UNS) already used the object pattern
+  correctly (`selectedId={selected?.id}`), so only Flows was affected.
+
+
 - [x] **Graph overhaul (2D + 3D).** A large batch driven by user reports:
   - Properties click bug (first attempt, incomplete): moved the selection
     pointerup/pointermove to `window`. This addressed d3-*zoom* but NOT d3-*drag*,
