@@ -97,6 +97,24 @@ function positionLabel(sprite, n) {
   sprite.position.set(n.x, n.y + nodeRadius(n) + 10, n.z);
 }
 
+// Node marker geometry — a visual mode beyond the default sphere. All are unit-
+// ish scaled so the per-instance radius still controls size.
+function makeNodeGeometry(shape) {
+  switch (shape) {
+    case 'cube':
+      return new THREE.BoxGeometry(1.55, 1.55, 1.55);
+    case 'diamond':
+      return new THREE.OctahedronGeometry(1.45);
+    case 'tetra':
+      return new THREE.TetrahedronGeometry(1.6);
+    case 'icosa':
+      return new THREE.IcosahedronGeometry(1.2);
+    case 'sphere':
+    default:
+      return new THREE.SphereGeometry(1, 14, 10);
+  }
+}
+
 function disposeObject(obj) {
   if (obj.geometry) obj.geometry.dispose();
   const mats = Array.isArray(obj.material) ? obj.material : obj.material ? [obj.material] : [];
@@ -119,7 +137,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     beautify = false, // depth-graded colours + glow + auto-rotate
     labelDensity = 0.4, // 0–1  fraction of LABEL_MAX nodes to name
     showValues = false, // draw each labelled node's latest value
-    nodeValues = null // { [nodeId]: value } for the value line
+    nodeValues = null, // { [nodeId]: value } for the value line
+    nodeShape = 'sphere' // sphere | cube | diamond | tetra | icosa
   },
   ref
 ) {
@@ -334,7 +353,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const group = new THREE.Group();
 
     // Nodes: one instanced low-poly sphere with per-instance color + scale.
-    const nodeGeo = new THREE.SphereGeometry(1, 12, 8);
+    const nodeGeo = makeNodeGeometry(nodeShape);
     const nodeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
     const nodeMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, Math.max(1, nodes.length));
     nodeMesh.count = nodes.length;
@@ -412,7 +431,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       selSpriteRef.current = null;
       objsRef.current = null;
     };
-  }, [data, style, colorFor]);
+  }, [data, style, colorFor, nodeShape]);
 
   // Labels: name (and, with Values on, the latest value) for the top-degree
   // nodes, up to a density-scaled cap. Rebuilds on density / value changes only,

@@ -19,9 +19,18 @@ export default function Graph3DControls({
   labelDensity,
   onLabelDensity,
   showValues,
-  onShowValues
+  onShowValues,
+  nodeShape,
+  onNodeShape
 }) {
   const [open, setOpen] = useState(false);
+  const shapes = [
+    { id: 'sphere', label: '●' },
+    { id: 'cube', label: '■' },
+    { id: 'diamond', label: '◆' },
+    { id: 'tetra', label: '▲' },
+    { id: 'icosa', label: '⬡' }
+  ];
   return (
     <div className="absolute left-4 top-4 z-10 w-52 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-slate-300 backdrop-blur">
       <div className="flex items-stretch">
@@ -68,6 +77,26 @@ export default function Graph3DControls({
               </button>
             )}
           </div>
+          {onNodeShape && (
+            <div>
+              <span className="mb-1 block text-[11px] text-slate-400">Node shape</span>
+              <div className="flex gap-1">
+                {shapes.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => onNodeShape(s.id)}
+                    title={s.id}
+                    className={clsx(
+                      'flex-1 rounded-md border py-1 text-sm transition',
+                      nodeShape === s.id ? 'border-accent-500/50 bg-accent-500/15 text-accent-200' : 'border-white/10 text-slate-400 hover:text-slate-200'
+                    )}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {onLabelDensity && (
             <label className="block">
               <span className="mb-1 flex justify-between text-[11px] text-slate-400">
