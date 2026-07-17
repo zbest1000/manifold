@@ -23,9 +23,8 @@ PR that closed them is noted inline.
 
 - [ ] **Demo-config gaps found in a full-UI sweep (not UI bugs; pages render
   fine).** Discovery, CESMII, System/Health, and Settings were all real-click /
-  interaction tested and work. Observations worth a demo pass: (a) Discovery finds
-  the MQTT brokers + i3X mock but not the demo **OPC UA** server (the page claims
-  to probe for OPC UA — verify the 4840 probe reaches the `opcua` container).
+  interaction tested and work. Observations worth a demo pass: (a) [fixed — see
+  the Discovery OPC UA port item under Done]
   (b) **CESMII isn't auto-connected** to its bundled mock (`cesmii-mock:4000`)
   the way i3X is, so the page opens on an empty connect form; there's a real design
   tension (JWT creds are intentionally not stored on disk), but the demo could at
@@ -64,6 +63,13 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **Discovery couldn't find OPC UA servers on port 50000 (opc-plc).**
+  `DEFAULT_OPCUA_PORTS` was `[4840]` only, so network discovery silently missed
+  any OPC UA server on the well-known opc-plc port 50000 — including the demo's own
+  (`opc.tcp://opcua:50000`), so a scan surfaced the MQTT brokers and i3X mock but
+  no OPC UA. Added 50000 to the default OPC UA scan ports. Verified live: a scan
+  now returns the OPC UA endpoints on :50000 (labeled "OPCUA · open port", since
+  full OPC UA verification happens on connect). (`server/services/discovery.js`.)
 - [x] **UNS over-zoom: OPC-UA / i3X mounts defaulted fully-expanded.** With the
   demo OPC-PLC mount grafted in, the topology's initial seed expanded every root's
   level-1 children — for a mount that meant Objects/Types/Views → ~30 grandchildren
