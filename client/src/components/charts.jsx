@@ -26,18 +26,39 @@ export function fmtNum(n) {
 export function Sparkline({ values, height = 28, warn = false, area = true }) {
   const id = useId().replace(/:/g, '');
   const color = warn ? '#f59e0b' : ACCENT;
-  const data = (values || []).map((v, i) => ({ i, v }));
-  if (data.length < 2) return <div style={{ height, width: '100%' }} />;
+  const nums = (values || []).filter((v) => Number.isFinite(v));
+  if (nums.length < 2) return <div style={{ height, width: '100%' }} />;
+  const data = nums.map((v, i) => ({ i, v }));
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  // A constant series (including all-zero — "0 errors", steady counts) has
+  // nothing to trend: draw a faint flat baseline, never a filled block.
+  const flat = max === min;
+  // Pad the vertical domain so the trace has breathing room instead of jamming
+  // edge-to-edge. Recharts auto-scales to the exact [min,max], which stretches a
+  // near-constant metric's jitter across the full height and — with the fill —
+  // reads as a jagged solid block. Padding keeps it a delicate sparkline.
+  const pad = flat ? 1 : (max - min) * 0.35;
   return (
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 3, right: 1, bottom: 3, left: 1 }}>
         <defs>
           <linearGradient id={`spark-${id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={area ? 0.3 : 0} />
+            <stop offset="0%" stopColor={color} stopOpacity={area && !flat ? 0.18 : 0} />
             <stop offset="100%" stopColor={color} stopOpacity={0} />
           </linearGradient>
         </defs>
-        <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5} fill={`url(#spark-${id})`} isAnimationActive={false} dot={false} />
+        <YAxis hide domain={[min - pad, max + pad]} />
+        <Area
+          type="monotone"
+          dataKey="v"
+          stroke={color}
+          strokeWidth={1.5}
+          strokeOpacity={flat ? 0.45 : 1}
+          fill={`url(#spark-${id})`}
+          isAnimationActive={false}
+          dot={false}
+        />
       </AreaChart>
     </ResponsiveContainer>
   );
