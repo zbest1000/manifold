@@ -46,6 +46,11 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] Discovery "Connect" was fire-and-forget — a "Connecting…" toast with no
+  outcome. The button now reports state inline: Connecting… → Connected (MQTT
+  verified against the live broker status) or Failed + Retry with the error.
+  Still open: pre-fill a connect form when a source needs credentials, instead
+  of an anonymous attempt. (`pages/Discovery.jsx`.)
 - [x] CESMII time-series start/end were free-text fields in exact SMIP format, so
   any typo gave an empty chart. Replaced with datetime-local pickers plus Last
   1h/24h/7d/30d presets and a max-samples field; the local values convert to the
