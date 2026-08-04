@@ -8,6 +8,21 @@ PR that closed them is noted inline.
 
 ### Medium
 
+- [ ] **Topics graph frame rate at public-firehose scale.** Measured live
+  against broker.emqx.io at root (`+/+/#`, ~24k topics, ~1.5k msg/s): the
+  capped default (2,500 nodes, `GRAPH_MAX_NODES` in `pages/TopicGraph.jsx`)
+  holds ~15–16fps and stays fully interactive (click/pan/detail panel all
+  fine); "Show all" (~35k nodes incl. branch hierarchy) survives without
+  crashing but runs at 1–4fps in 2D and ~5fps in 3D (Cinematic, bloom on,
+  after the anneal settles). Flow/Activity animation toggles are NOT the
+  bottleneck at that scale — raw per-frame node+edge draw is. Candidate
+  fixes, in value order: viewport culling in `graph/ForceGraph.jsx` (skip
+  nodes/edges outside the transform's visible rect — the UNS canvas got the
+  label version of this and it was the dominant cost there); edge draw
+  decimation below a zoom threshold; then instanced rendering for the 3D
+  show-all path. The cap affordance itself is honest ("Show all N topics as
+  nodes" / "Showing all N nodes") — this is purely a frame-budget item.
+
 
 - [~] **Modal portal consistency.** A shared portaled `Modal` primitive now
   exists (`components/ui.jsx`) — it renders through `document.body` (escaping any
