@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Radio, Plus, Trash2, Server, ChevronRight, Pencil } from 'lucide-react';
+import { Radio, Plus, Trash2, Server, ChevronRight, Pencil, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
@@ -370,6 +370,7 @@ export default function Brokers() {
                   </div>
                   <Badge status={b.status} />
                 </div>
+                <Posture brokerId={b.id} status={b.status} />
                 <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                   <Metric label="Messages" value={b.metrics?.messagesReceived ?? 0} />
                   <Metric label="Topics" value={b.metrics?.topicCount ?? 0} />
@@ -397,6 +398,79 @@ export default function Brokers() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Security posture chip: grade A–D fetched lazily per broker (cheap, pure
+// server-side assessment) with a click-to-expand findings list. Grade A stays
+// visually quiet — muted colors, no score — so healthy links don't add noise.
+const GRADE_STYLES = {
+  A: 'bg-emerald-500/10 text-emerald-300/70 ring-emerald-500/15',
+  B: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
+  C: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+  D: 'bg-rose-500/15 text-rose-300 ring-rose-500/30'
+};
+
+const SEVERITY_STYLES = {
+  high: 'text-rose-300',
+  medium: 'text-amber-300',
+  info: 'text-slate-400'
+};
+
+function Posture({ brokerId, status }) {
+  const [posture, setPosture] = useState(null);
+  const [open, setOpen] = useState(false);
+
+  // Re-fetch when the connection state changes — the TLS peer certificate only
+  // becomes readable once the socket is actually up.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .brokerPosture(brokerId)
+      .then((p) => {
+        if (!cancelled) setPosture(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPosture(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [brokerId, status]);
+
+  if (!posture) return null;
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Security posture — click for findings"
+        className={clsx(
+          'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset transition hover:brightness-125',
+          GRADE_STYLES[posture.grade] || GRADE_STYLES.D
+        )}
+      >
+        <ShieldCheck size={11} />
+        {posture.grade}
+        {posture.grade !== 'A' && <span className="font-normal opacity-70">{posture.score}</span>}
+      </button>
+      {open && (
+        <ul className="mt-2 space-y-2 rounded-lg border border-white/5 bg-surface-950/40 p-2.5">
+          {posture.findings.length === 0 ? (
+            <li className="text-[11px] text-slate-500">No findings — transport and auth look clean.</li>
+          ) : (
+            posture.findings.map((f) => (
+              <li key={f.id} className="text-[11px] leading-snug">
+                <span className={clsx('font-semibold', SEVERITY_STYLES[f.severity] || 'text-slate-400')}>{f.title}</span>
+                <span className="text-slate-500"> — {f.detail}</span>
+                <p className="mt-0.5 text-slate-400">Fix: {f.fix}</p>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
     </div>
   );
 }
