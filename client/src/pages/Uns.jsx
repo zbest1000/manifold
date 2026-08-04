@@ -229,7 +229,7 @@ export default function Uns() {
               </ul>
               <p>Getting around:</p>
               <ul className="list-disc space-y-1 pl-5">
-                <li>Click a node to open its detail. Double-click, or click the <b>+ / -</b> badge, to expand or collapse.</li>
+                <li>Click a node to open its detail. Double-click, or click the <b>+ / -</b> badge, to expand or collapse. <b>Expand all</b> / <b>Collapse all</b> (bottom right) open or close every branch at once.</li>
                 <li>Drag a node to move it; it stays where you drop it. Ctrl or Cmd-click several nodes, or shift-drag a box, to move a group together. <b>Auto arrange</b> resets the layout, <b>Fit</b> re-frames it.</li>
               </ul>
               <p className="text-slate-400">

@@ -71,6 +71,9 @@ const PULSE_MS = 700; // node ring flash right after a message
 const ROW_H = 96;
 const COL_W = 224;
 const R = 21; // node radius
+// Camera floor shared by fit + wheel zoom (they must agree or the first
+// scroll after a fit snaps). Low enough to survey a fully-expanded forest.
+const MIN_ZOOM = 0.05;
 
 // Shared activity map (`${brokerId}:${path}` -> last-message ts). Written by the
 // renderer's activity subscription, readable by the page's detail panel.
@@ -228,7 +231,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       minY = Math.min(minY, p.y - R - 10);
       maxY = Math.max(maxY, p.y + R + 50); // label block below the badge
     }
-    const k = Math.max(0.2, Math.min(1.4, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 60) / Math.max(maxY - minY, 1))));
+    const k = Math.max(MIN_ZOOM, Math.min(1.4, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 60) / Math.max(maxY - minY, 1))));
     // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
     const t = transformRef.current;
     t.k = k;
@@ -241,6 +244,30 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     manualRef.current.clear();
     fitAll();
   }, [fitAll]);
+
+  // Open every branch across the whole forest, then start reading from the
+  // top: the camera anchors at the forest's top-left at readable zoom rather
+  // than attempting a fit (height is linear in leaf count, so a full fit
+  // would shrink badges to sub-pixel dots).
+  const expandAll = useCallback(() => {
+    const next = new Set();
+    const walk = (n) => {
+      if (n.children.size === 0) return;
+      next.add(`${n.brokerId}:${n.path}`);
+      for (const c of n.children.values()) walk(c);
+    };
+    for (const r of roots) walk(r);
+    setExpanded(next);
+    expandTopRef.current = true;
+    userMovedRef.current = true; // deliberate camera placement — no auto-fit fights
+  }, [roots]);
+
+  // Back to the overview: each namespace root open one level, everything
+  // beneath closed.
+  const collapseAll = useCallback(() => {
+    setExpanded(new Set(roots.map((r) => `${r.brokerId}:`)));
+    userMovedRef.current = false;
+  }, [roots]);
 
   // Center the viewport on one laid node at a readable zoom — the target of a
   // "jump to this node" from the lint / events panels.
@@ -258,6 +285,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   );
   // A pending "focus this node" request, applied once the node is laid out.
   const focusPendingRef = useRef(null);
+  // Set by "Expand all": once the huge layout lands, anchor the camera at the
+  // top of the forest at readable zoom (fitting it all is geometrically
+  // hopeless — height is linear in leaf count).
+  const expandTopRef = useRef(false);
 
   // Expanded paths per broker. Default: namespace + first level open. Seeding is
   // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
@@ -406,6 +437,13 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // fighting manual navigation.
     if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
       fitAll();
+    }
+    if (expandTopRef.current && layout.nodes.length > 0) {
+      expandTopRef.current = false;
+      const t = transformRef.current;
+      t.k = Math.max(0.5, Math.min(1, t.k));
+      t.x = 90;
+      t.y = 40;
     }
     // Apply a queued focus once its node has a position (it may take an extra
     // layout pass for the just-expanded ancestors to lay the node out).
@@ -578,7 +616,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         ctx.stroke();
       }
 
-      // labels
+      // labels — culled progressively as the camera pulls back: secondary
+      // lines first, then names (sub-pixel smear, and the halo strokeText
+      // calls are the main draw cost of a fully-expanded forest).
+      if (t.k < 0.16) continue;
       // Labels get a background-colored halo so crossing edges never block the text.
       ctx.textAlign = 'center';
       ctx.lineJoin = 'round';
@@ -588,6 +629,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 22);
       ctx.fillStyle = T.label;
       ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 22);
+      if (t.k < 0.35) continue;
       ctx.font = '600 8.5px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       ctx.fillStyle = T.caption;
@@ -838,7 +880,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      const nk = Math.max(0.2, Math.min(3, t.k * factor));
+      const nk = Math.max(MIN_ZOOM, Math.min(3, t.k * factor));
       t.x = px - ((px - t.x) * nk) / t.k;
       t.y = py - ((py - t.y) * nk) / t.k;
       t.k = nk;
@@ -890,6 +932,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     });
   };
 
+  const ctlBtn =
+    theme === 'dark'
+      ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
+      : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900';
+
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="h-full w-full" />
@@ -910,26 +957,16 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
             {selCount} selected · drag to move · Esc ✕
           </button>
         )}
-        <button
-          onClick={autoArrange}
-          title="Reset manual node positions to the tidy layout and fit to view"
-          className={
-            theme === 'dark'
-              ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
-              : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900'
-          }
-        >
+        <button onClick={expandAll} title="Open every branch in every namespace" className={ctlBtn}>
+          Expand all
+        </button>
+        <button onClick={collapseAll} title="Close everything back to the namespace roots" className={ctlBtn}>
+          Collapse all
+        </button>
+        <button onClick={autoArrange} title="Reset manual node positions to the tidy layout and fit to view" className={ctlBtn}>
           Auto arrange
         </button>
-        <button
-          onClick={fitAll}
-          title="Fit the current arrangement to the viewport (keeps manual moves)"
-          className={
-            theme === 'dark'
-              ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
-              : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900'
-          }
-        >
+        <button onClick={fitAll} title="Fit the current arrangement to the viewport (keeps manual moves)" className={ctlBtn}>
           Fit
         </button>
       </div>
