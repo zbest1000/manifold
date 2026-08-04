@@ -516,6 +516,46 @@ test('outbox store-and-forward: failed writes spill to disk and drain on recover
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('outbox drain does not lose points appended to the spill file during the write await', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-ob-'));
+  const point = (n) => ({ tag: 'a/t', ts: n, value: n });
+  const profiles = fakeProfiles({ historians: { h1: { id: 'h1', type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'bk' } } });
+
+  let failing = true;
+  const writes = [];
+  let appended = false;
+  const ref = {};
+  const fetchImpl = async (url, opts) => {
+    if (failing) return { ok: false, status: 503, text: async () => 'down' };
+    // Simulate a message arriving mid-drain: append a new point straight to the
+    // same spill file during the write await, exactly once. Before the fix,
+    // commit()'s stale snapshot overwrote the file and silently dropped it.
+    if (!appended) {
+      appended = true;
+      ref.outbox._spill('h1', [point(3000)]);
+    }
+    writes.push(opts.body);
+    return { ok: true, status: 204, text: async () => '' };
+  };
+  const outbox = new HistorianOutbox({ profiles, dir, fetchImpl });
+  ref.outbox = outbox;
+
+  outbox.enqueue('h1', [point(1000), point(2000)]);
+  await outbox.flush(); // down → spill both
+  assert.strictEqual(outbox.getStats().h1.spilled, 2);
+
+  failing = false;
+  await outbox.flush(); // drain; point(3000) appended during the first write
+  await outbox.flush(); // pick up anything left
+
+  assert.strictEqual(outbox.getStats().h1.spillBytes, 0, 'spill fully drained');
+  const bodies = writes.join('\n');
+  assert.match(bodies, /value=1000 1000/);
+  assert.match(bodies, /value=2000 2000/);
+  assert.match(bodies, /value=3000 3000/, 'point appended during the drain await must not be lost');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('outbox spill cap honors dropPolicy: oldest rewrites the file head, newest drops incoming', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-ob-'));
   const fetchImpl = async () => ({ ok: false, status: 503, text: async () => 'down' });
