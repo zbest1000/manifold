@@ -48,6 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   form prefilled; OPC UA connects report the real session outcome; badge
   tooltips; truthful empty state; scan timestamp.
 - **Trends CSV export** (wide format, union of timestamps).
+- **Payload codec registry.** Upload Protobuf/Avro schemas mapped to topic
+  filters — binary telemetry decodes to structured JSON on ingest (Sparkplug
+  keeps its dedicated decoder; a bad schema can never break ingest).
+  Pipelines → Codecs.
+- **Namespace model validation.** Declare your ISA-95-style hierarchy and
+  grade the live namespace: conformance score, per-level failures, violations
+  that jump to the topology. UNS → Model.
+- **Broker security posture scorecard.** Each connection graded A–D from
+  transport/auth/cert findings with fixes; internal hosts soften to info.
+- **Broker round-trip canary.** A 30s probe measures real publish→deliver
+  latency per broker (missed probes tracked); System → Broker round-trip.
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker
