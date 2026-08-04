@@ -82,7 +82,9 @@ class ClientLifecycle {
       if (c.status !== 'connected') continue;
       for (const f of SUB_FILTERS) {
         try {
-          this.manager.subscribe(c.id, f, 0);
+          // quiet: a refusal IS the capability answer on brokers that don't
+          // support (or don't permit) the topic — not an error to toast.
+          this.manager.subscribe(c.id, f, 0, { quiet: true });
         } catch {
           // connection raced away — next round
         }

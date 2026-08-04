@@ -458,7 +458,10 @@ class MqttManager extends EventEmitter {
     for (const brokerId of this.stores.keys()) this.flushBroker(brokerId);
   }
 
-  subscribe(brokerId, topic, qos = 0) {
+  // opts.quiet: capability probes (canary, lifecycle $SYS/$events feelers)
+  // EXPECT refusals on brokers that don't support or don't permit the topic —
+  // a refused probe is the detection mechanism, not an error worth toasting.
+  subscribe(brokerId, topic, qos = 0, opts = {}) {
     const client = this.requireClient(brokerId);
     client.subscribe(topic, { qos }, (error, granted) => {
       // A broker can accept the packet but refuse the grant (SUBACK 0x80).
@@ -480,17 +483,17 @@ class MqttManager extends EventEmitter {
             reason: 'broker refused the grant at this QoS (SUBACK 0x80) — retrying at QoS 0'
           });
           this.subscribe(brokerId, topic, 0);
-        } else {
+        } else if (!opts.quiet) {
           this.io.emit('subscription-error', { brokerId, topic, error: 'subscription refused by broker (SUBACK 0x80)' });
         }
         return;
       }
       if (error) {
-        this.io.emit('subscription-error', { brokerId, topic, error: error.message });
+        if (!opts.quiet) this.io.emit('subscription-error', { brokerId, topic, error: error.message });
         return;
       }
       this.subscriptions.get(brokerId)?.add(topic);
-      this.io.emit('subscription-success', { brokerId, topic, qos, granted });
+      if (!opts.quiet) this.io.emit('subscription-success', { brokerId, topic, qos, granted });
     });
   }
 

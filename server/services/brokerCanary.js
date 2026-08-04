@@ -82,7 +82,9 @@ class BrokerCanary {
       // reconnects that drop our subscription (brokers with scoped
       // subscribeFilter would otherwise never deliver the canary back).
       try {
-        this.manager.subscribe(c.id, this.topic, 0);
+        // quiet: re-asserted every tick, and a broker that refuses shows up
+        // honestly as missed probes — no need to toast each round.
+        this.manager.subscribe(c.id, this.topic, 0, { quiet: true });
       } catch {
         continue; // connection raced away — next tick
       }
