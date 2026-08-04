@@ -255,18 +255,21 @@ class MqttManager extends EventEmitter {
     info.metrics.messagesReceived++;
     info.metrics.bytesReceived += message.length;
 
-    store.ingest(topic, message, packet.qos, packet.retain);
+    const stored = store.ingest(topic, message, packet.qos, packet.retain);
     info.metrics.topicCount = store.topicCount();
-    // MQTT 5 per-message properties ride in a side map keyed by topic — one
-    // falsy branch per message keeps the v4 hot path allocation-free. A later
-    // publish without the surfaced keys clears the topic's stale entry.
-    if (packet.properties) {
-      const props = pickPacketProperties(packet.properties);
-      const map = this.msgProps.get(brokerId);
-      if (map) {
-        if (props) map.set(topic, props);
-        else map.delete(topic);
-      }
+    // A NEW topic dropped at the MAX_TOPICS cap (ingest returned false) must not
+    // grow the side maps past the bound TopicStore exists to enforce.
+    if (!stored) return;
+    // MQTT 5 per-message properties ride in a side map keyed by topic. Only touch
+    // it when this message carries properties OR the broker has surfaced some
+    // before (map non-empty) — this keeps the v4 / no-property hot path lookup-
+    // free. The clear also fires when a message has NO properties block at all
+    // (packet.properties undefined), so a stale entry can't outlive it.
+    const map = this.msgProps.get(brokerId);
+    if (map && (packet.properties || map.size > 0)) {
+      const props = packet.properties ? pickPacketProperties(packet.properties) : null;
+      if (props) map.set(topic, props);
+      else map.delete(topic);
     }
     // One char-code check per message; $SYS traffic is low-rate and tracking the
     // set here keeps the /sys endpoint O(|$SYS|) instead of scanning every topic.
