@@ -254,7 +254,20 @@ class AlertEngine {
     let s = byTopic.get(topic);
     if (!s) {
       if (byTopic.size >= VALUE_STATE_MAX_TOPICS) {
-        byTopic.delete(byTopic.keys().next().value); // evict oldest-inserted
+        const victimTopic = byTopic.keys().next().value; // oldest-inserted
+        const victim = byTopic.get(victimTopic);
+        // Evicting a still-FIRING state silently would strand a phantom alarm:
+        // no 'resolved' reaches clients, getActive() stops seeing it (it iterates
+        // valueState), and its ack leaks. Resolve it honestly and clear the ack
+        // before dropping it.
+        if (victim?.firing) {
+          this._clearAck(rule.id, victimTopic);
+          this._emit(rule, 'resolved', {
+            topic: victimTopic,
+            detail: `stopped tracking ${victimTopic} — rule exceeded ${VALUE_STATE_MAX_TOPICS} concurrent topics`
+          });
+        }
+        byTopic.delete(victimTopic);
       }
       s = { firing: false, since: 0, breachedSince: 0, lastValue: null };
       byTopic.set(topic, s);

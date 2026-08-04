@@ -156,6 +156,31 @@ test('value-threshold fires on breach via the manager tap and resolves on clear'
   assert.strictEqual(manager.listenerCount('message'), 0, 'stop() must detach the tap');
 });
 
+test('value-threshold: a firing topic evicted at the tracking cap is resolved, not stranded', () => {
+  const rules = [{ id: 'vc', type: 'value-threshold', brokerId: 'b1', topic: 'plant/+/temp', op: '>', value: 80 }];
+  const { manager, io, eng } = valueEngine(rules);
+
+  // Fire on the first topic — inserted first, so it's the oldest and the first
+  // to be evicted once the per-rule tracking cap (VALUE_STATE_MAX_TOPICS=5000)
+  // is exceeded.
+  manager.emit('message', msg('b1', 'plant/pumpFIRST/temp', 99));
+  assert.strictEqual(io.emitted[0].data.status, 'firing');
+  assert.strictEqual(io.emitted[0].data.topic, 'plant/pumpFIRST/temp');
+
+  // Flood 5000 more distinct below-limit topics to push the firing one out.
+  for (let i = 0; i < 5000; i++) manager.emit('message', msg('b1', `plant/pump${i}/temp`, 10));
+
+  // The evicted firing topic must be resolved, not left as a phantom alarm.
+  const resolved = io.emitted.find((e) => e.data.status === 'resolved' && e.data.topic === 'plant/pumpFIRST/temp');
+  assert.ok(resolved, 'evicting a firing topic must emit a resolved event');
+  assert.ok(
+    !eng.getActive().some((a) => a.topic === 'plant/pumpFIRST/temp'),
+    'evicted alarm must not linger in the active set'
+  );
+
+  eng.stop();
+});
+
 test('value-threshold sustainMs holds firing until the breach persists continuously', () => {
   const rules = [{ id: 'v2', type: 'value-threshold', brokerId: 'b1', topic: 't', op: '>=', value: 100, sustainMs: 40 }];
   const { io, eng } = valueEngine(rules);
