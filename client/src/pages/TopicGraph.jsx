@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, PanelRight, ChevronDown, Check, Radio } from 'lucide-react';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
@@ -75,7 +75,11 @@ export default function TopicGraph() {
   const showMinimap = useStore((s) => s.showMinimap);
   const setTopics = useStore((s) => s.setTopics);
 
-  const [selectedBrokers, setSelectedBrokers] = useState([]); // broker ids to graph
+  // Other pages deep-link here with a broker preselected (Brokers page metric
+  // tiles pass { state: { brokerId } }). Seeded once at mount; the validity
+  // effect below swaps to the first connected broker if it never connects.
+  const linkBrokerId = useLocation().state?.brokerId;
+  const [selectedBrokers, setSelectedBrokers] = useState(() => (linkBrokerId ? [linkBrokerId] : [])); // broker ids to graph
   const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
   const [selected, setSelected] = useState(null);
   const [panelOpen, setPanelOpen] = useState(false);

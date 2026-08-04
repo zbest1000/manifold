@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Radio, Plus, Trash2, Server, ChevronRight, Pencil, ShieldCheck, Users, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
@@ -50,6 +50,7 @@ export default function Brokers() {
   // Discovery hands off auth-required endpoints here with host/port prefilled
   // (location state), landing the user in the form with only credentials to add.
   const prefill = useLocation().state?.prefill;
+  const navigate = useNavigate();
   const [form, setForm] = useState(prefill ? { ...BLANK, ...prefill } : BLANK);
   const [showForm, setShowForm] = useState(Boolean(prefill));
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -374,11 +375,22 @@ export default function Brokers() {
                 </div>
                 <Posture brokerId={b.id} status={b.status} />
                 <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                  <Metric label="Messages" value={b.metrics?.messagesReceived ?? 0} />
-                  <Metric label="Topics" value={b.metrics?.topicCount ?? 0} />
+                  <Metric
+                    label="Messages"
+                    value={b.metrics?.messagesReceived ?? 0}
+                    title="Open this broker's live topic graph"
+                    onClick={() => navigate('/topics', { state: { brokerId: b.id } })}
+                  />
+                  <Metric
+                    label="Topics"
+                    value={b.metrics?.topicCount ?? 0}
+                    title="Open this broker's live topic graph"
+                    onClick={() => navigate('/topics', { state: { brokerId: b.id } })}
+                  />
                   <Metric
                     label="Errors"
                     value={b.metrics?.errors ?? 0}
+                    title="Open the event log filtered to this broker"
                     onClick={() => openLog(b.id)}
                     valueClassName={(b.metrics?.errors ?? 0) > 0 ? 'text-rose-300' : undefined}
                   />
@@ -487,13 +499,13 @@ function Posture({ brokerId, status }) {
   );
 }
 
-function Metric({ label, value, onClick, valueClassName }) {
+function Metric({ label, value, onClick, valueClassName, title }) {
   const clickable = typeof onClick === 'function';
   const Comp = clickable ? 'button' : 'div';
   return (
     <Comp
       onClick={onClick}
-      title={clickable ? 'View in log' : undefined}
+      title={clickable ? title : undefined}
       className={clsx(
         'w-full rounded-lg bg-white/[0.03] py-2',
         clickable && 'cursor-pointer transition hover:bg-white/[0.08]'
