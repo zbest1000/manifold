@@ -53,7 +53,197 @@ services:
       mqtt:
         condition: service_healthy
 
-  # Mock CESMII i3X server. Connect from the app at http://i3x:8080 (i3X page or
+  # Two more broker instances with DISTINCT data (site-prefixed namespaces) so
+  # the Topics multi-broker view has genuinely different trees to merge.
+  mqtt2:
+    image: eclipse-mosquitto:2
+    container_name: manifold-mqtt2
+    hostname: mqtt2
+    restart: unless-stopped
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1884:1883"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t healthcheck -m ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  mqtt3:
+    image: eclipse-mosquitto:2
+    container_name: manifold-mqtt3
+    hostname: mqtt3
+    restart: unless-stopped
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1885:1883"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t healthcheck -m ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  simulator2:
+    build:
+      context: ./docker/simulator
+    container_name: manifold-simulator2
+    restart: unless-stopped
+    environment:
+      MQTT_URL: mqtt://mqtt2:1883
+      TICK_MS: "2000"
+      SIM_SCALE: "2"
+      SITE: north
+    depends_on:
+      mqtt2:
+        condition: service_healthy
+
+  simulator3:
+    build:
+      context: ./docker/simulator
+    container_name: manifold-simulator3
+    restart: unless-stopped
+    environment:
+      MQTT_URL: mqtt://mqtt3:1883
+      TICK_MS: "2500"
+      SIM_SCALE: "1"
+      SITE: south
+    depends_on:
+      mqtt3:
+        condition: service_healthy
+
+  # A real EMQX broker so vendor-specific capabilities are exercised for real:
+  # the client-lifecycle timeline reads its $SYS/brokers/+/clients/+/… system
+  # topics, and broker-admin features can point at its REST API (:18083).
+  # The mounted acl.conf is demo-permissive (default EMQX denies $SYS/# and
+  # literal-# subscriptions to remote clients, which would blind Manifold).
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: manifold-emqx
+    hostname: emqx
+    restart: unless-stopped
+    environment:
+      EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_CONNECTED: "true"
+      EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_DISCONNECTED: "true"
+      # Fixed demo API key so the Flows → Consumers tab (per-client
+      # subscriptions via the admin REST API) works on a fresh stack; the
+      # seeded broker profile references the same key.
+      EMQX_API_KEY__BOOTSTRAP_FILE: /opt/emqx/etc/api-keys.txt
+    volumes:
+      - ./docker/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+      - ./docker/emqx/api-keys.txt:/opt/emqx/etc/api-keys.txt:ro
+    ports:
+      - "127.0.0.1:1886:1883" # MQTT (host access; in-cluster it's emqx:1883)
+      - "127.0.0.1:18083:18083" # EMQX dashboard (admin/public by default)
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  simulator4:
+    build:
+      context: ./docker/simulator
+    container_name: manifold-simulator4
+    restart: unless-stopped
+    environment:
+      MQTT_URL: mqtt://emqx:1883
+      TICK_MS: "2000"
+      SIM_SCALE: "1"
+      SITE: east
+    depends_on:
+      emqx:
+        condition: service_healthy
+
+  # TimescaleDB historian — the 'to timescale' pipeline route writes energy/#
+  # values here through the outbox, and the Trends page reads them back.
+  # Credentials match the seeded 'Demo Timescale' historian config.
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    container_name: manifold-timescale
+    hostname: manifold-timescale
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: manifold
+      POSTGRES_USER: manifold
+      POSTGRES_PASSWORD: demo-pass
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U manifold -d manifold"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # Timebase historian (Flow Software) — TVQ writes over its public REST API
+  # (:4511). The 'energy to Timebase' route feeds it; Trends reads it back
+  # (no tag-listing API, so on Trends you type the exact topic path).
+  timebase:
+    image: timebase/historian:1.3.4
+    container_name: manifold-timebase
+    hostname: manifold-timebase
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4511:4511"
+
+  # Real observability pair: Prometheus scrapes Manifold's /metrics every 5s
+  # and the provisioned Grafana dashboard ("Manifold Overview") charts it —
+  # ingest rates, canary round-trips, event-loop health, outbox depth.
+  # Grafana: http://localhost:3001 (anonymous admin, demo only).
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: manifold-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # Per-container CPU / memory / network for the whole stack (brokers,
+  # simulators, the app itself) — Telegraf's Docker input reads the Docker API
+  # via the socket, which works on every Docker flavor including Docker
+  # Desktop (whose VM cgroup layout blinds cAdvisor). Scraped by Prometheus,
+  # charted in Grafana's Containers row.
+  telegraf:
+    image: telegraf:1.30
+    container_name: manifold-telegraf
+    hostname: telegraf
+    restart: unless-stopped
+    user: "0" # needs to read the docker socket…
+    # …and the image's entrypoint would drop privileges again, so exec
+    # telegraf directly (demo stack; socket is mounted read-only).
+    entrypoint: ["telegraf"]
+    volumes:
+      - ./docker/telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:9273:9273"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: manifold-grafana
+    hostname: grafana
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+
+  # Mock i3X server. Connect from the app at http://i3x:8080 (i3X page or
   # Discovery, which probes port 8080). Serves a small ISA-95 object hierarchy.
   i3x:
     build:
@@ -67,21 +257,6 @@ services:
       # Host loopback so you can `curl http://localhost:18080/info` directly. The
       # app reaches it in-cluster as http://i3x:8080 regardless of this mapping.
       - "127.0.0.1:18080:8080"
-
-  # Mock CESMII SMIP GraphQL server. Connect from the CESMII SMIP page with
-  # endpoint http://cesmii-mock:4000/graphql (any credentials are accepted).
-  cesmii-mock:
-    build:
-      context: ./docker/cesmii-mock
-    container_name: manifold-cesmii-mock
-    hostname: cesmii-mock
-    restart: unless-stopped
-    environment:
-      PORT: "4000"
-    ports:
-      # Host loopback so you can `curl http://localhost:14000/graphql` directly.
-      # The app reaches it in-cluster as http://cesmii-mock:4000 regardless.
-      - "127.0.0.1:14000:4000"
 
   app:
     build:

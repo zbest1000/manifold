@@ -60,6 +60,7 @@ export default function Tags() {
       <PageHeader
         title="Tags"
         subtitle="browse device tags, bind them into the UNS"
+        helpTopic="tour-build"
         actions={
           <div className="flex items-center gap-2">
             <HelpButton title="What are Tags, and where do they come from?">
@@ -272,7 +273,7 @@ function HostStatePanel({ brokers, hosts, onStatus }) {
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Primary host STATE</h3>
       <p className="mb-2 text-[11px] leading-snug text-slate-500">
         Publish retained <span className="font-mono">spBv1.0/STATE/&lt;host&gt;</span> so edge nodes see Manifold as a
-        Sparkplug host application (will announces offline).
+        Sparkplug host application (with a Last Will that announces offline).
       </p>
       <div className="space-y-1.5">
         <select

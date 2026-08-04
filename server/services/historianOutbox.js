@@ -41,6 +41,11 @@ class HistorianOutbox {
     this.stats = new Map(); // historianId -> { written, spilled, drained, dropped, lastError, lastWrite }
     this.timer = null;
     this.flushing = false;
+    // Ids whose spill file is mid-drain. While draining, _spill must not rewrite
+    // the file HEAD (the dropPolicy:'oldest' cap eviction) — that would shift the
+    // byte offset commit() slices at and corrupt the file. Appends to the tail
+    // are fine; commit() re-reads to preserve them.
+    this.draining = new Set();
   }
 
   start() {
@@ -98,7 +103,10 @@ class HistorianOutbox {
         // most valuable) rewrites the file head; default keeps the outage's
         // beginning and drops incoming. Either way the count is reported.
         const conn = this.profiles.getIn('historians', id);
-        if (conn?.dropPolicy === 'oldest') {
+        // Skip the head-rewrite while this file is draining — it would shift the
+        // offset a live commit() slices at. Drop-newest instead (counted); the
+        // drain is shrinking the file, so cap pressure eases momentarily anyway.
+        if (conn?.dropPolicy === 'oldest' && !this.draining.has(id)) {
           const raw = fs.readFileSync(file, 'utf8');
           const needed = size + lines.length - this.spillMaxBytes;
           let cut = 0;
@@ -170,8 +178,15 @@ class HistorianOutbox {
     return {
       points,
       commit: () => {
-        const rest = raw.slice(cut);
+        // Re-read the CURRENT file rather than trusting the snapshot: points can
+        // be appended to the tail during the await before this runs, and the
+        // stale `raw.slice(cut)` would silently discard them. The drained head
+        // [0, cut) is never rewritten mid-drain (see the draining guard), so
+        // slicing the live file at `cut` drops exactly the drained points and
+        // keeps anything appended since.
         try {
+          const current = fs.readFileSync(file, 'utf8');
+          const rest = current.slice(cut);
           if (rest.length) fs.writeFileSync(file, rest, { mode: 0o600 });
           else fs.unlinkSync(file);
         } catch {
@@ -219,20 +234,27 @@ class HistorianOutbox {
     }
 
     // Oldest first: drain spill before the live queue so order roughly holds.
-    for (;;) {
-      const spill = this._peekSpill(id, BATCH);
-      if (!spill) break;
-      try {
-        await historians.writePoints(conn, spill.points, this.fetchImpl);
-        spill.commit();
-        s.drained += spill.points.length;
-        s.written += spill.points.length;
-        s.lastWrite = Date.now();
-        s.lastError = null;
-      } catch (error) {
-        s.lastError = error.message;
-        break; // historian still down — stop, spill stays for next round
+    // Mark draining so a concurrent _spill (message arriving during the write
+    // await) doesn't rewrite the file head under the in-flight commit().
+    this.draining.add(id);
+    try {
+      for (;;) {
+        const spill = this._peekSpill(id, BATCH);
+        if (!spill) break;
+        try {
+          await historians.writePoints(conn, spill.points, this.fetchImpl);
+          spill.commit();
+          s.drained += spill.points.length;
+          s.written += spill.points.length;
+          s.lastWrite = Date.now();
+          s.lastError = null;
+        } catch (error) {
+          s.lastError = error.message;
+          break; // historian still down — stop, spill stays for next round
+        }
       }
+    } finally {
+      this.draining.delete(id);
     }
 
     while (q.length) {

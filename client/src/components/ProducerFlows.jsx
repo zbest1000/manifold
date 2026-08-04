@@ -3,6 +3,7 @@ import { Cpu, Radio, Activity, Users, Info, CircleDot, CircleOff } from 'lucide-
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import { buildSparkplugGraph } from '@/graph/buildGraph';
+import { DEFAULT_STYLE } from '@/graph/graphStyles';
 import { topicMatches } from '@/lib/mqtt';
 import ForceGraph from '@/graph/ForceGraph';
 import { Card, Badge, EmptyState } from '@/components/ui';
@@ -19,8 +20,11 @@ import { formatDistanceToNow } from 'date-fns';
  *   shows WHO CONSUMES its data: the client subscriptions reverse-matched
  *   against the endpoint's actual Sparkplug topics.
  */
-export default function ProducerFlows({ broker }) {
+export default function ProducerFlows({ broker, theme = 'dark' }) {
   const graphStyle = useStore((s) => s.graphStyle);
+  // Light mode maps to the "Slate" paper preset; dark keeps the user's chosen
+  // graph style (falling back to the default if that choice is itself light).
+  const styleId = theme === 'light' ? 'slate' : graphStyle === 'slate' ? DEFAULT_STYLE : graphStyle;
   const [topology, setTopology] = useState(null);
   const [sys, setSys] = useState(null);
   const [pubsub, setPubsub] = useState(null); // for reverse "consumed by" lookups
@@ -80,15 +84,15 @@ export default function ProducerFlows({ broker }) {
 
   return (
     <div className="flex h-full w-full">
-      <div className="relative flex-1">
+      <div className="relative min-w-0 flex-1">
         {hasSparkplug ? (
           <ForceGraph
             ref={graphRef}
             data={graph}
-            styleId={graphStyle}
+            styleId={styleId}
             layoutId="radial"
             selectedId={selected}
-            onSelect={setSelected}
+            onSelect={(n) => setSelected(n.id)}
           />
         ) : (
           <div className="grid h-full place-items-center p-8">
@@ -100,12 +104,16 @@ export default function ProducerFlows({ broker }) {
           </div>
         )}
         {hasSparkplug && (
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+          <div
+            className={`pointer-events-none absolute bottom-4 left-4 rounded-xl border px-3 py-2 text-[11px] backdrop-blur ${
+              theme === 'dark' ? 'border-white/10 bg-surface-900/70 text-slate-400' : 'border-slate-300/60 bg-white/85 text-slate-600'
+            }`}
+          >
             <span className="inline-flex items-center gap-1.5">
-              <CircleDot size={12} className="text-emerald-400" /> online
+              <CircleDot size={12} className={theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'} /> online
             </span>
             <span className="ml-3 inline-flex items-center gap-1.5">
-              <CircleOff size={12} className="text-rose-400" /> offline (DEATH)
+              <CircleOff size={12} className={theme === 'dark' ? 'text-rose-400' : 'text-rose-600'} /> offline (DEATH)
             </span>
             <span className="ml-3">click a device for its metrics</span>
           </div>

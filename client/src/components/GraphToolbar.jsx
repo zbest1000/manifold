@@ -11,7 +11,10 @@ import {
   Download,
   Maximize2,
   Sparkles,
-  PanelRight
+  PanelRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Type
 } from 'lucide-react';
 import clsx from 'clsx';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
@@ -33,8 +36,10 @@ export default function GraphToolbar({
   layoutValue,
   onLayoutChange,
   onBeautify,
+  beautifyActive,
   onProperties,
-  hasSelection = false
+  hasSelection = false,
+  onExpandLevel
 }) {
   const {
     graphStyle,
@@ -47,6 +52,8 @@ export default function GraphToolbar({
     setActivitySize,
     showValues,
     setShowValues,
+    labelMode,
+    setLabelMode,
     showMinimap,
     setShowMinimap
   } = useStore();
@@ -60,7 +67,10 @@ export default function GraphToolbar({
   const active = STYLE_LIST.find((s) => s.id === graphStyle) || STYLE_LIST[0];
 
   return (
-    <div className="pointer-events-auto absolute right-4 top-4 z-10 flex flex-col items-end gap-2">
+    <div className="pointer-events-auto absolute right-4 top-4 z-10 flex max-w-[calc(100%-310px)] flex-col items-end gap-2">
+      {/* max-width keeps the wrapping row clear of the search box overlay at
+          the top-left — without it the toolbar runs straight over the input
+          on narrower windows. */}
       <div className="flex flex-wrap items-center justify-end gap-2">
         {showFlow && (
           <Toggle active={flowEnabled} onClick={() => setFlowEnabled(!flowEnabled)} icon={Activity} label="Flow" pulse />
@@ -68,7 +78,52 @@ export default function GraphToolbar({
         {showFlow && (
           <Toggle active={activitySize} onClick={() => setActivitySize(!activitySize)} icon={Circle} label="Activity" />
         )}
+        {onExpandLevel && (
+          // Collapse to the top level, expand to a chosen depth, or expand all.
+          // The tree/graph nests deep, so this is the fast way to steer it.
+          <div className="flex overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 backdrop-blur" title="Collapse / expand the tree">
+            <button onClick={() => onExpandLevel(1)} title="Collapse to the top level" className="px-2 py-2 text-slate-300 hover:bg-white/10">
+              <ChevronsDownUp size={15} />
+            </button>
+            {[2, 3, 4].map((l) => (
+              <button
+                key={l}
+                onClick={() => onExpandLevel(l)}
+                title={`Expand to level ${l}`}
+                className="border-l border-white/10 px-2 py-2 text-[11px] font-medium text-slate-400 hover:bg-white/10 hover:text-slate-200"
+              >
+                {l}
+              </button>
+            ))}
+            <button onClick={() => onExpandLevel(Infinity)} title="Expand all" className="border-l border-white/10 px-2 py-2 text-slate-300 hover:bg-white/10">
+              <ChevronsUpDown size={15} />
+            </button>
+          </div>
+        )}
         <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
+        {/* Node-name labels, cycling auto -> on -> off. Auto only draws names
+            when few enough nodes are in view to actually read them. */}
+        <button
+          onClick={() => setLabelMode(labelMode === 'auto' ? 'on' : labelMode === 'on' ? 'off' : 'auto')}
+          title={
+            labelMode === 'auto'
+              ? 'Node names: auto — shown when few enough are in view to read. Click for always-on.'
+              : labelMode === 'on'
+                ? 'Node names: always shown when zoomed in. Click to hide them.'
+                : 'Node names: hidden. Click for auto.'
+          }
+          className={clsx(
+            'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+            labelMode === 'on'
+              ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
+              : labelMode === 'off'
+                ? 'border-white/10 bg-surface-900/80 text-slate-600'
+                : 'border-white/10 bg-surface-900/80 text-slate-400 hover:border-white/20'
+          )}
+        >
+          <Type size={15} />
+          <span className="hidden font-medium sm:inline">{labelMode === 'auto' ? 'Names' : labelMode === 'on' ? 'Names on' : 'Names off'}</span>
+        </button>
         <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
         {onProperties && (
           // Open the selected node's details panel. A reliable, discoverable
@@ -89,10 +144,16 @@ export default function GraphToolbar({
           </button>
         )}
         {onBeautify && (
-          // Beautify applies the radial arrangement. It's a toggle, so it lights
-          // up only WHILE that layout is active (previously it was styled accent
-          // permanently and looked stuck on).
-          <Toggle active={currentLayout === 'radial'} onClick={onBeautify} icon={Sparkles} label="Beautify" />
+          // "Arrange" says what this actually does — switch to the ordered
+          // radial layout (plus glow accents on Topics) — instead of the vague
+          // old "Beautify". It's a toggle: lit only WHILE that layout is active.
+          <Toggle
+            active={beautifyActive ?? currentLayout === 'radial'}
+            onClick={onBeautify}
+            icon={Sparkles}
+            label="Arrange"
+            title="Arrange the graph into ordered rings (radial layout)"
+          />
         )}
         {onFit && <IconButton onClick={() => onFit()} icon={Maximize2} title="Fit graph to view" />}
         {(onExportPng || onExportJson) && (
@@ -175,11 +236,11 @@ function LayoutButton({ layout, active, onClick, icon: Icon }) {
   );
 }
 
-function Toggle({ active, onClick, icon: Icon, label, pulse }) {
+function Toggle({ active, onClick, icon: Icon, label, pulse, title }) {
   return (
     <button
       onClick={onClick}
-      title={`${label}: ${active ? 'on' : 'off'}`}
+      title={title ? `${title} (${active ? 'on' : 'off'})` : `${label}: ${active ? 'on' : 'off'}`}
       className={clsx(
         'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
         active

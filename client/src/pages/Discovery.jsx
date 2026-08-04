@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radar, Play, Square, Radio, Cpu, Plug, Boxes } from 'lucide-react';
+import { Radar, Play, Square, Radio, Cpu, Plug, Boxes, Loader2, Check, AlertTriangle, KeyRound } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
-import { Card, Button, Badge, Input, Field } from '@/components/ui';
+import { Card, Button, Badge, Input, Field, Tooltip } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 
 export default function Discovery() {
@@ -12,6 +12,22 @@ export default function Discovery() {
   const navigate = useNavigate();
   const [range, setRange] = useState('');
   const [busy, setBusy] = useState(false);
+  // Per-result connect status so the button reports the real outcome instead of
+  // a fire-and-forget "Connecting…" toast: key -> { state, msg }.
+  const [connState, setConnState] = useState({});
+  const resultKey = (r) => `${r.host}:${r.port}`;
+
+  // Watch the live broker list (socket-updated) for the just-connected host so
+  // we can show connected vs error, rather than assuming the request succeeded.
+  const waitForBroker = async (host, port) => {
+    for (let i = 0; i < 16; i++) {
+      const b = (useStore.getState().brokers || []).find((x) => x.host === host && Number(x.port) === Number(port));
+      if (b?.status === 'connected') return { ok: true };
+      if (b?.status === 'error') return { ok: false, msg: b.lastError || 'Connection failed' };
+      await new Promise((done) => setTimeout(done, 500));
+    }
+    return { ok: false, msg: 'Timed out waiting for the connection' };
+  };
 
   const start = async () => {
     setBusy(true);
@@ -34,19 +50,55 @@ export default function Discovery() {
   };
 
   const connectResult = async (r) => {
+    const key = resultKey(r);
+    const mark = (state, msg) => setConnState((s) => ({ ...s, [key]: { state, msg } }));
+    mark('connecting');
     try {
       if (r.kind === 'mqtt') {
         await api.connectBroker({ host: r.host, port: r.port, protocol: r.port === 8883 ? 'mqtts' : 'mqtt' });
-        toast.success(`Connecting to ${r.host}:${r.port}`);
+        const res = await waitForBroker(r.host, r.port);
+        if (res.ok) {
+          mark('connected');
+          toast.success(`Connected to ${r.host}:${r.port}`);
+        } else {
+          mark('error', res.msg);
+          toast.error(res.msg);
+        }
       } else if (r.kind === 'opcua') {
-        await api.connectOpcua({ endpointUrl: r.endpointUrl || `opc.tcp://${r.host}:${r.port}` });
-        toast.success(`Connecting to ${r.host}:${r.port}`);
+        // connectOpcua returns once the attempt STARTS — poll the connection
+        // list for the real outcome instead of assuming success (the old
+        // behavior showed green for endpoints that then failed the handshake).
+        const endpointUrl = r.endpointUrl || `opc.tcp://${r.host}:${r.port}`;
+        await api.connectOpcua({ endpointUrl });
+        let outcome = { ok: false, msg: 'Timed out waiting for the OPC UA session' };
+        for (let i = 0; i < 20; i++) {
+          const conns = (await api.listOpcua().catch(() => null))?.connections || [];
+          const c = conns.find((x) => x.endpointUrl === endpointUrl);
+          if (c?.status === 'connected') {
+            outcome = { ok: true };
+            break;
+          }
+          if (c?.status === 'error') {
+            outcome = { ok: false, msg: c.lastError || 'OPC UA connection failed' };
+            break;
+          }
+          await new Promise((done) => setTimeout(done, 500));
+        }
+        if (outcome.ok) {
+          mark('connected');
+          toast.success(`Connected to ${r.host}:${r.port}`);
+        } else {
+          mark('error', outcome.msg);
+          toast.error(outcome.msg);
+        }
       } else if (r.kind === 'i3x') {
         await api.i3xConnect({ baseUrl: r.baseUrl });
+        mark('connected');
         toast.success(`Connected to i3X at ${r.baseUrl}`);
         navigate('/i3x');
       }
     } catch (e) {
+      mark('error', e.message);
       toast.error(e.message);
     }
   };
@@ -65,6 +117,7 @@ export default function Discovery() {
       <PageHeader
         title="Network Discovery"
         subtitle="Probe your network for MQTT brokers, OPC UA servers, and i3X endpoints"
+        helpTopic="guide-discovery"
         actions={
           scanning ? (
             <Button variant="danger" onClick={stop}>
@@ -107,8 +160,13 @@ export default function Discovery() {
         </Card>
 
         <div>
-          <p className="mb-3 text-sm font-semibold text-slate-300">
+          <p className="mb-3 flex items-baseline gap-2 text-sm font-semibold text-slate-300">
             Results {results.length > 0 && <span className="text-slate-500">({results.length})</span>}
+            {!scanning && discovery.completedAt && (
+              <span className="text-xs font-normal text-slate-600">
+                scan finished {new Date(discovery.completedAt).toLocaleTimeString()}
+              </span>
+            )}
           </p>
           {results.length === 0 ? (
             <Card className="p-10 text-center">
@@ -116,6 +174,13 @@ export default function Discovery() {
               <p className="mt-3 text-sm text-slate-500">
                 {scanning ? 'Probing hosts…' : 'No results yet. Start a scan to find endpoints on your network.'}
               </p>
+              {!scanning && (
+                <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-slate-600">
+                  Probes MQTT (1883/8883), OPC UA (4840/50000) and i3X HTTP ports, then verifies each hit with a real
+                  protocol handshake. If a private subnet returns nothing, the server may be blocking RFC1918 targets —
+                  it needs <span className="mono">MANIFOLD_ALLOW_PRIVATE_TARGETS=1</span> (safe only on a trusted network).
+                </p>
+              )}
             </Card>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -139,9 +204,13 @@ export default function Discovery() {
                       </div>
                     </div>
                     {r.verified ? (
-                      <Badge status="connected">verified</Badge>
+                      <Tooltip label="Confirmed with a real protocol handshake, not just an open port" side="left">
+                        <Badge status="connected">verified</Badge>
+                      </Tooltip>
                     ) : (
-                      <Badge>open port</Badge>
+                      <Tooltip label="Port answered but the protocol wasn't confirmed — verification happens on connect" side="left">
+                        <Badge>open port</Badge>
+                      </Tooltip>
                     )}
                   </div>
                   {r.kind === 'mqtt' && r.verified && (
@@ -154,10 +223,59 @@ export default function Discovery() {
                       {r.serverName ? `${r.serverName} · ` : ''}{r.baseUrl}
                     </p>
                   )}
-                  <div className="mt-3 flex justify-end">
-                    <Button size="sm" variant="subtle" onClick={() => connectResult(r)}>
-                      <Plug size={13} /> Connect
-                    </Button>
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    {(() => {
+                      const cs = connState[resultKey(r)];
+                      if (cs?.state === 'connecting') {
+                        return (
+                          <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                            <Loader2 size={13} className="animate-spin" /> Connecting…
+                          </span>
+                        );
+                      }
+                      if (cs?.state === 'connected') {
+                        return (
+                          <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+                            <Check size={13} /> Connected
+                          </span>
+                        );
+                      }
+                      if (cs?.state === 'error') {
+                        return (
+                          <>
+                            <span className="flex items-center gap-1 truncate text-xs text-rose-400" title={cs.msg}>
+                              <AlertTriangle size={12} /> Failed
+                            </span>
+                            <Button size="sm" variant="subtle" onClick={() => connectResult(r)}>
+                              <Plug size={13} /> Retry
+                            </Button>
+                          </>
+                        );
+                      }
+                      // A broker that demands auth will never connect from here —
+                      // hand off to the Brokers form with host/port prefilled so
+                      // the user only has to add credentials.
+                      if (r.kind === 'mqtt' && r.verified && r.anonymousAccess === false) {
+                        return (
+                          <Button
+                            size="sm"
+                            variant="subtle"
+                            onClick={() =>
+                              navigate('/brokers', {
+                                state: { prefill: { host: r.host, port: r.port, protocol: r.port === 8883 ? 'mqtts' : 'mqtt' } }
+                              })
+                            }
+                          >
+                            <KeyRound size={13} /> Add with credentials…
+                          </Button>
+                        );
+                      }
+                      return (
+                        <Button size="sm" variant="subtle" onClick={() => connectResult(r)}>
+                          <Plug size={13} /> Connect
+                        </Button>
+                      );
+                    })()}
                   </div>
                 </Card>
                 );

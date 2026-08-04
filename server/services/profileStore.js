@@ -5,13 +5,13 @@ const path = require('path');
 
 // DataOps collections stored alongside connection profiles. Generic CRUD keeps
 // the store from growing three near-identical method triples per module.
-const COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'icons'];
+const COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'icons', 'nsmodels', 'codecs'];
 function emptyCollections() {
   return Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));
 }
 
 /**
- * Connection-profile persistence: saved brokers, OPC UA endpoints, CESMII / i3X
+ * Connection-profile persistence: saved brokers, OPC UA endpoints, i3X
  * configs, and per-broker admin API configs survive a server restart.
  *
  * Storage is a single JSON file (default `<server>/data/profiles.json`,
@@ -23,14 +23,14 @@ function emptyCollections() {
  *
  * Shape:
  *   { mqtt: { [id]: { config, admin? } }, opcua: { [id]: config },
- *     cesmii: config|null, i3x: config|null,
+ *     i3x: config|null,
  *     mounts: { [id]: mount }, alertRules: { [id]: rule } }
  */
 class ProfileStore {
   constructor(dir = process.env.MANIFOLD_DATA_DIR || path.join(__dirname, '..', 'data')) {
     this.dir = dir;
     this.file = path.join(dir, 'profiles.json');
-    this.data = { mqtt: {}, opcua: {}, cesmii: null, i3x: null, mounts: {}, alertRules: {}, ...emptyCollections() };
+    this.data = { mqtt: {}, opcua: {}, i3x: null, mounts: {}, alertRules: {}, ...emptyCollections() };
     // Monotonic revision, bumped on every save. Hot-path consumers (pipeline/
     // recorder/contract/model engines) compile the collections into matcher
     // tables and only rebuild when this changes — so the per-message cost is a
@@ -51,7 +51,6 @@ class ProfileStore {
       this.data = {
         mqtt: parsed.mqtt || {},
         opcua: parsed.opcua || {},
-        cesmii: parsed.cesmii || null,
         i3x: parsed.i3x || null,
         mounts: parsed.mounts || {},
         alertRules: parsed.alertRules || {},
@@ -129,16 +128,6 @@ class ProfileStore {
   }
 
   // ---- singleton configs ----
-  setCesmii(config) {
-    this.data.cesmii = config;
-    this._save();
-  }
-
-  clearCesmii() {
-    this.data.cesmii = null;
-    this._save();
-  }
-
   setI3x(config) {
     this.data.i3x = config;
     this._save();

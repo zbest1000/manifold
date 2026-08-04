@@ -7,7 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **CESMII SMIP integration.** The SMIP GraphQL client, its page, REST routes
+  (`/api/cesmii/*`), MCP tools (`cesmii_*`), and the bundled `cesmii-mock`
+  container are gone. i3X support is unaffected. Persisted `cesmii` profile
+  entries are ignored on load.
+
 ### Added
+
+- **Alerts page (alarm center).** Active-alarm board (live, per-topic for
+  wildcard rules), rule management with pause/resume and per-type explainers,
+  live event feed, sidebar badge, toasts, and `GET /api/alerts/active` so a
+  fresh tab seeds alarms that fired before it opened.
+- **In-app Help Center.** Searchable panel (`?` anywhere, or the sidebar's
+  "Help & guides") with a getting-started tour, task guides, an industrial
+  glossary, and the keyboard shortcut list. Every page header has a "Page
+  guide" button deep-linking to its topic.
+- **Alarm acknowledgement + durable history.** `POST /api/alerts/ack` marks a
+  firing alarm as owned by the caller's token identity; every
+  firing/resolve/ack appends to `data/alerts.jsonl` and survives restarts.
+  Webhook delivery failures surface as a banner on the rules card.
+- **Graph comprehension pack (2D).** Stale-data dots (amber >60s, rose >5min),
+  message-rate-weighted edges, canvas hover cards, selection path-to-root
+  highlighting, click/drag-navigable minimap, and legend swatches that filter
+  groups (persisted).
+- **3D Beautify is a real cinematic mode.** UnrealBloom post-processing plus
+  links that blend between their endpoint nodes' depth-graded colours —
+  previously Beautify only remapped colours.
+- **Public test broker presets.** One-click EMQX (TCP + TLS) and HiveMQ in the
+  Brokers form, with a scoped topic filter and a data-privacy note. The full
+  public matrix is verified: TCP, TLS, WebSocket, and authenticated connects.
+- **TVQ model envelopes reachable.** `POST /api/models` persists
+  `envelope`/`staleMs` (the engine always honored them); the Models form gains
+  the fields — merged objects publish `{v,t,q}` per attribute.
+- **Contract-violation and QoS-downgrade toasts.** Both events streamed on the
+  socket with no listener; schema drift and silent QoS 1→0 downgrades now
+  toast + log app-wide.
+- **Discovery follow-through.** Auth-required brokers hand off to the Brokers
+  form prefilled; OPC UA connects report the real session outcome; badge
+  tooltips; truthful empty state; scan timestamp.
+- **Trends CSV export** (wide format, union of timestamps).
+- **Payload codec registry.** Upload Protobuf/Avro schemas mapped to topic
+  filters — binary telemetry decodes to structured JSON on ingest (Sparkplug
+  keeps its dedicated decoder; a bad schema can never break ingest).
+  Pipelines → Codecs.
+- **Namespace model validation.** Declare your ISA-95-style hierarchy and
+  grade the live namespace: conformance score, per-level failures, violations
+  that jump to the topology. UNS → Model.
+- **Broker security posture scorecard.** Each connection graded A–D from
+  transport/auth/cert findings with fixes; internal hosts soften to info.
+- **Broker round-trip canary.** A 30s probe measures real publish→deliver
+  latency per broker (missed probes tracked); System → Broker round-trip.
+- **Client lifecycle timeline.** Per-broker connect/disconnect history with
+  flap detection, adapted to broker capability: EMQX `$events/#`, Mosquitto
+  `$SYS/broker/log` notices, Sparkplug BIRTH/DEATH everywhere. Brokers →
+  Client activity.
+- **Parquet export** of charted Trends series (wide format for
+  DuckDB/Athena/pandas), next to CSV.
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker

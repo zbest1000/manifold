@@ -11,6 +11,48 @@
         "reconnect": true,
         "reconnectPeriod": 5000
       }
+    },
+    "demo-mqtt2": {
+      "config": {
+        "id": "demo-mqtt2",
+        "name": "North Plant (mqtt2)",
+        "host": "mqtt2",
+        "port": 1883,
+        "protocol": "mqtt",
+        "autoSubscribe": true,
+        "reconnect": true,
+        "reconnectPeriod": 5000
+      }
+    },
+    "demo-mqtt3": {
+      "config": {
+        "id": "demo-mqtt3",
+        "name": "South Plant (mqtt3)",
+        "host": "mqtt3",
+        "port": 1883,
+        "protocol": "mqtt",
+        "autoSubscribe": true,
+        "reconnect": true,
+        "reconnectPeriod": 5000
+      }
+    },
+    "demo-emqx": {
+      "config": {
+        "id": "demo-emqx",
+        "name": "East Plant (EMQX)",
+        "host": "emqx",
+        "port": 1883,
+        "protocol": "mqtt",
+        "autoSubscribe": true,
+        "reconnect": true,
+        "reconnectPeriod": 5000
+      },
+      "admin": {
+        "type": "emqx",
+        "url": "http://emqx:18083/api/v5",
+        "apiKey": "manifold-demo",
+        "apiSecret": "demo-flows-secret"
+      }
     }
   },
   "opcua": {
@@ -22,8 +64,48 @@
       "securityPolicy": "None"
     }
   },
-  "cesmii": null,
   "i3x": null,
+  "historians": {
+    "demo-timebase": {
+      "id": "demo-timebase",
+      "name": "Demo Timebase",
+      "type": "timebase",
+      "url": "http://manifold-timebase:4511",
+      "dataset": "demo",
+      "sslInsecure": true,
+      "dropPolicy": "newest"
+    },
+    "demo-timescale": {
+      "id": "demo-timescale",
+      "name": "Demo Timescale",
+      "type": "timescaledb",
+      "host": "manifold-timescale",
+      "port": 5432,
+      "database": "manifold",
+      "user": "manifold",
+      "password": "demo-pass",
+      "ssl": false,
+      "dropPolicy": "newest"
+    }
+  },
+  "pipelines": {
+    "demo-tb-route": {
+      "id": "demo-tb-route",
+      "name": "energy to Timebase",
+      "enabled": true,
+      "source": { "brokerId": "demo-mqtt", "filter": "energy/#" },
+      "transforms": [{ "type": "numeric", "field": "value" }],
+      "target": { "type": "historian", "historianId": "demo-timebase" }
+    },
+    "demo-ts-route": {
+      "id": "demo-ts-route",
+      "name": "energy to Timescale",
+      "enabled": true,
+      "source": { "brokerId": "demo-mqtt", "filter": "energy/#" },
+      "transforms": [{ "type": "numeric", "field": "value" }],
+      "target": { "type": "historian", "historianId": "demo-timescale" }
+    }
+  },
   "recordings": {
     "demo-historian": {
       "id": "demo-historian",

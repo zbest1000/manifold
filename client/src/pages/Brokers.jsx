@@ -1,11 +1,25 @@
-import { useState } from 'react';
-import { Radio, Plus, Trash2, Server, ChevronRight, Pencil } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Radio, Plus, Trash2, Server, ChevronRight, Pencil, ShieldCheck, Users, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
-import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
+import { Card, Button, Badge, Input, Field, EmptyState, Modal } from '@/components/ui';
+import { formatDistanceToNow } from 'date-fns';
 import PageHeader from '@/components/PageHeader';
+
+// Well-known free public test brokers (see EMQX's "popular online public MQTT
+// brokers" roundup). One click pre-fills the form — deliberately NOT
+// auto-connect: the user should see (and can adjust) the topic filter first,
+// because subscribing `#` on a public broker is a firehose of strangers' data.
+// test.mosquitto.org is deliberately absent: it is best-effort and drops
+// connections so often that it makes a terrible first experience.
+const PUBLIC_BROKERS = [
+  { label: 'EMQX public', name: 'EMQX public', host: 'broker.emqx.io', port: 1883, protocol: 'mqtt', subscribeFilter: '#' },
+  { label: 'EMQX public (TLS)', name: 'EMQX public TLS', host: 'broker.emqx.io', port: 8883, protocol: 'mqtts', subscribeFilter: '#' },
+  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: '#' }
+];
 
 const BLANK = {
   name: '',
@@ -33,11 +47,16 @@ const BLANK = {
 export default function Brokers() {
   const brokers = useStore((s) => s.brokers);
   const openLog = useStore((s) => s.openLog);
-  const [form, setForm] = useState(BLANK);
-  const [showForm, setShowForm] = useState(false);
+  // Discovery hands off auth-required endpoints here with host/port prefilled
+  // (location state), landing the user in the form with only credentials to add.
+  const prefill = useLocation().state?.prefill;
+  const navigate = useNavigate();
+  const [form, setForm] = useState(prefill ? { ...BLANK, ...prefill } : BLANK);
+  const [showForm, setShowForm] = useState(Boolean(prefill));
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [lifecycleFor, setLifecycleFor] = useState(null); // broker whose client timeline is open
 
   const isWs = form.protocol === 'ws' || form.protocol === 'wss';
 
@@ -134,6 +153,7 @@ export default function Brokers() {
       <PageHeader
         title="MQTT Brokers"
         subtitle="Connect to brokers and stream their topic namespaces"
+        helpTopic="guide-first-broker"
         actions={
           <Button onClick={() => (showForm ? closeForm() : setShowForm(true))}>
             <Plus size={15} /> Add broker
@@ -144,6 +164,32 @@ export default function Brokers() {
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
         {showForm && (
           <Card className="p-5">
+            {!editingId && (
+              <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Public test brokers</span>
+                {PUBLIC_BROKERS.map((p) => (
+                  <button
+                    key={p.host}
+                    type="button"
+                    onClick={() =>
+                      setForm({ ...BLANK, name: p.name, host: p.host, port: p.port, protocol: p.protocol, subscribeFilter: p.subscribeFilter })
+                    }
+                    className={clsx(
+                      'rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition',
+                      form.host === p.host
+                        ? 'bg-accent-500/15 text-accent-300 ring-accent-500/30'
+                        : 'bg-white/[0.03] text-slate-300 ring-white/10 hover:bg-white/5 hover:text-slate-100'
+                    )}
+                  >
+                    {p.label} <span className="mono ml-1 text-slate-500">{p.host}</span>
+                  </button>
+                ))}
+                <span className="basis-full text-2xs text-slate-600">
+                  Free community brokers — no auth, shared with the whole internet. Great for a first connection; never
+                  publish anything sensitive to them.
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Name">
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Production broker" />
@@ -327,44 +373,139 @@ export default function Brokers() {
                   </div>
                   <Badge status={b.status} />
                 </div>
+                <Posture brokerId={b.id} status={b.status} />
                 <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                  <Metric label="Messages" value={b.metrics?.messagesReceived ?? 0} />
-                  <Metric label="Topics" value={b.metrics?.topicCount ?? 0} />
+                  <Metric
+                    label="Messages"
+                    value={b.metrics?.messagesReceived ?? 0}
+                    title="Open this broker's live topic graph"
+                    onClick={() => navigate('/topics', { state: { brokerId: b.id } })}
+                  />
+                  <Metric
+                    label="Topics"
+                    value={b.metrics?.topicCount ?? 0}
+                    title="Open this broker's live topic graph"
+                    onClick={() => navigate('/topics', { state: { brokerId: b.id } })}
+                  />
                   <Metric
                     label="Errors"
                     value={b.metrics?.errors ?? 0}
+                    title="Open the event log filtered to this broker"
                     onClick={() => openLog(b.id)}
                     valueClassName={(b.metrics?.errors ?? 0) > 0 ? 'text-rose-300' : undefined}
                   />
                 </div>
-                <div className="mt-4 flex items-center justify-end gap-1.5">
+                <div className="mt-4 flex items-center justify-between gap-1.5">
                   <button
-                    aria-label="Edit broker"
-                    onClick={() => edit(b)}
-                    className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-accent-400"
+                    onClick={() => setLifecycleFor(b)}
+                    className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
                   >
-                    <Pencil size={13} />
+                    <Users size={13} /> Client activity
                   </button>
-                  <Button variant="danger" size="sm" onClick={() => disconnect(b)}>
-                    <Trash2 size={13} /> Disconnect
-                  </Button>
+                  <span className="flex items-center gap-1.5">
+                    <button
+                      aria-label="Edit broker"
+                      onClick={() => edit(b)}
+                      className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-accent-400"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <Button variant="danger" size="sm" onClick={() => disconnect(b)}>
+                      <Trash2 size={13} /> Disconnect
+                    </Button>
+                  </span>
                 </div>
               </Card>
             ))}
           </div>
         )}
       </div>
+
+      {lifecycleFor && <LifecycleModal broker={lifecycleFor} onClose={() => setLifecycleFor(null)} />}
     </div>
   );
 }
 
-function Metric({ label, value, onClick, valueClassName }) {
+// Security posture chip: grade A–D fetched lazily per broker (cheap, pure
+// server-side assessment) with a click-to-expand findings list. Grade A stays
+// visually quiet — muted colors, no score — so healthy links don't add noise.
+const GRADE_STYLES = {
+  A: 'bg-emerald-500/10 text-emerald-300/70 ring-emerald-500/15',
+  B: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
+  C: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+  D: 'bg-rose-500/15 text-rose-300 ring-rose-500/30'
+};
+
+const SEVERITY_STYLES = {
+  high: 'text-rose-300',
+  medium: 'text-amber-300',
+  info: 'text-slate-400'
+};
+
+function Posture({ brokerId, status }) {
+  const [posture, setPosture] = useState(null);
+  const [open, setOpen] = useState(false);
+
+  // Re-fetch when the connection state changes — the TLS peer certificate only
+  // becomes readable once the socket is actually up.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .brokerPosture(brokerId)
+      .then((p) => {
+        if (!cancelled) setPosture(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPosture(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [brokerId, status]);
+
+  if (!posture) return null;
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title="Security posture — click for findings"
+        className={clsx(
+          'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset transition hover:brightness-125',
+          GRADE_STYLES[posture.grade] || GRADE_STYLES.D
+        )}
+      >
+        <ShieldCheck size={11} />
+        {posture.grade}
+        {posture.grade !== 'A' && <span className="font-normal opacity-70">{posture.score}</span>}
+      </button>
+      {open && (
+        <ul className="mt-2 space-y-2 rounded-lg border border-white/5 bg-surface-950/40 p-2.5">
+          {posture.findings.length === 0 ? (
+            <li className="text-[11px] text-slate-500">No findings — transport and auth look clean.</li>
+          ) : (
+            posture.findings.map((f) => (
+              <li key={f.id} className="text-[11px] leading-snug">
+                <span className={clsx('font-semibold', SEVERITY_STYLES[f.severity] || 'text-slate-400')}>{f.title}</span>
+                <span className="text-slate-500"> — {f.detail}</span>
+                <p className="mt-0.5 text-slate-400">Fix: {f.fix}</p>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function Metric({ label, value, onClick, valueClassName, title }) {
   const clickable = typeof onClick === 'function';
   const Comp = clickable ? 'button' : 'div';
   return (
     <Comp
       onClick={onClick}
-      title={clickable ? 'View in log' : undefined}
+      title={clickable ? title : undefined}
       className={clsx(
         'w-full rounded-lg bg-white/[0.03] py-2',
         clickable && 'cursor-pointer transition hover:bg-white/[0.08]'
@@ -387,5 +528,102 @@ function Check({ label, checked, onChange }) {
       />
       {label}
     </label>
+  );
+}
+
+// Client lifecycle timeline — what the broker can tell us about ITS clients,
+// adapted per capability: EMQX $events JSON, Mosquitto $SYS/broker/log
+// notices, and Sparkplug BIRTH/DEATH as the universal passive layer. The
+// header names which source is live so the data's provenance is never a
+// mystery.
+function LifecycleModal({ broker, onClose }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () => api.brokerLifecycle(broker.id).then((r) => !stop && setData(r)).catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 10_000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [broker.id]);
+
+  const cap = data?.capability || {};
+  const sources = [
+    cap.emqxEvents && 'EMQX $events',
+    cap.brokerLog && 'broker log',
+    cap.sparkplug && 'Sparkplug'
+  ].filter(Boolean);
+
+  const typeStyle = {
+    connected: 'text-emerald-400',
+    birth: 'text-emerald-400',
+    disconnected: 'text-rose-400',
+    death: 'text-rose-400'
+  };
+
+  return (
+    <Modal title={`Client activity — ${broker.name}`} onClose={onClose} className="max-w-2xl p-6">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-base font-semibold text-slate-100">
+          <Users size={17} className="text-accent-400" /> Client activity — {broker.name}
+        </h3>
+        <span className="text-xs text-slate-500">
+          {sources.length ? `source: ${sources.join(' + ')}` : 'listening for events…'}
+        </span>
+      </div>
+
+      {!data ? (
+        <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
+          <RefreshCw size={14} className="animate-spin" /> Loading…
+        </p>
+      ) : data.events.length === 0 ? (
+        <p className="py-6 text-sm leading-relaxed text-slate-500">
+          No lifecycle events observed yet. Events appear when clients connect or disconnect. EMQX brokers report them
+          on <span className="mono">$events/#</span>; Mosquitto needs <span className="mono">log_dest topic</span> in its
+          config; Sparkplug BIRTH/DEATH works on any broker. Otherwise this stays quiet — Manifold won't invent data it
+          can't observe.
+        </p>
+      ) : (
+        <>
+          {data.clients.length > 0 && (
+            <div className="mb-4">
+              <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Clients</h4>
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {data.clients.slice(0, 30).map((c) => (
+                  <div key={c.clientId} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-1.5 text-xs">
+                    <span className="mono min-w-0 truncate text-slate-200">{c.clientId}</span>
+                    <span className="flex shrink-0 items-center gap-2 text-slate-500">
+                      {c.flapping && (
+                        <span className="rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-300 ring-1 ring-inset ring-rose-500/30">
+                          flapping
+                        </span>
+                      )}
+                      <span>{c.connects}↑ {c.disconnects}↓</span>
+                      <span className={typeStyle[c.lastType] || 'text-slate-400'}>{c.lastType}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Timeline</h4>
+          <div className="max-h-64 space-y-0.5 overflow-y-auto">
+            {data.events.map((e, i) => (
+              <div key={i} className="flex items-baseline justify-between gap-2 rounded bg-black/20 px-2.5 py-1 text-xs">
+                <span className="min-w-0 truncate">
+                  <span className={clsx('mr-2 font-semibold', typeStyle[e.type] || 'text-slate-300')}>{e.type}</span>
+                  <span className="mono text-slate-300">{e.clientId}</span>
+                  {e.ip && <span className="mono ml-2 text-slate-600">{e.ip}</span>}
+                  {e.reason && <span className="ml-2 text-slate-500">{e.reason}</span>}
+                </span>
+                <span className="shrink-0 text-[10px] text-slate-500">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }

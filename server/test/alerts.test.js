@@ -5,6 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 
+// Hermetic data dir: the engine persists alarm history to
+// $MANIFOLD_DATA_DIR/alerts.jsonl — point it at a throwaway tmp dir so tests
+// neither read a developer's real history nor litter the repo's data dir.
+process.env.MANIFOLD_DATA_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'manifold-alerts-'));
+
 const MqttManager = require('../services/mqttManager');
 const TopicStore = require('../services/topicStore');
 const { AlertEngine, RULE_TYPES } = require('../services/alertEngine');
@@ -151,6 +156,31 @@ test('value-threshold fires on breach via the manager tap and resolves on clear'
   assert.strictEqual(manager.listenerCount('message'), 0, 'stop() must detach the tap');
 });
 
+test('value-threshold: a firing topic evicted at the tracking cap is resolved, not stranded', () => {
+  const rules = [{ id: 'vc', type: 'value-threshold', brokerId: 'b1', topic: 'plant/+/temp', op: '>', value: 80 }];
+  const { manager, io, eng } = valueEngine(rules);
+
+  // Fire on the first topic — inserted first, so it's the oldest and the first
+  // to be evicted once the per-rule tracking cap (VALUE_STATE_MAX_TOPICS=5000)
+  // is exceeded.
+  manager.emit('message', msg('b1', 'plant/pumpFIRST/temp', 99));
+  assert.strictEqual(io.emitted[0].data.status, 'firing');
+  assert.strictEqual(io.emitted[0].data.topic, 'plant/pumpFIRST/temp');
+
+  // Flood 5000 more distinct below-limit topics to push the firing one out.
+  for (let i = 0; i < 5000; i++) manager.emit('message', msg('b1', `plant/pump${i}/temp`, 10));
+
+  // The evicted firing topic must be resolved, not left as a phantom alarm.
+  const resolved = io.emitted.find((e) => e.data.status === 'resolved' && e.data.topic === 'plant/pumpFIRST/temp');
+  assert.ok(resolved, 'evicting a firing topic must emit a resolved event');
+  assert.ok(
+    !eng.getActive().some((a) => a.topic === 'plant/pumpFIRST/temp'),
+    'evicted alarm must not linger in the active set'
+  );
+
+  eng.stop();
+});
+
 test('value-threshold sustainMs holds firing until the breach persists continuously', () => {
   const rules = [{ id: 'v2', type: 'value-threshold', brokerId: 'b1', topic: 't', op: '>=', value: 100, sustainMs: 40 }];
   const { io, eng } = valueEngine(rules);
@@ -278,6 +308,84 @@ test('value-threshold clearValue hysteresis holds firing through the deadband', 
   assert.strictEqual(io.emitted.length, 3);
   assert.strictEqual(io.emitted[2].data.status, 'firing');
   eng.stop();
+});
+
+test('getActive reports firing silence + per-topic value alarms and clears on resolve', () => {
+  const m = managerWith('b6', ['plant/line1/temp']);
+  const io = fakeIo();
+  const rules = [
+    { id: 's1', name: 'Line silent', type: 'branch-silent', brokerId: 'b6', path: 'plant', thresholdMs: 60_000 },
+    { id: 'vA', name: 'Overheat', type: 'value-threshold', brokerId: 'b6', topic: 'plant/+/temp', op: '>', value: 80 }
+  ];
+  const eng = new AlertEngine({ io, profiles: { alertRules: () => rules }, mqttManager: m, fetchImpl: null });
+
+  assert.deepStrictEqual(eng.getActive(), [], 'nothing firing yet');
+
+  // Two pumps breach independently; the silence rule fires too.
+  eng.onMessage(msg('b6', 'plant/A/temp', 95));
+  eng.onMessage(msg('b6', 'plant/B/temp', 91));
+  eng.evaluate(Date.now() + 120_000);
+
+  const active = eng.getActive();
+  assert.strictEqual(active.length, 3);
+  const topics = active.filter((a) => a.ruleId === 'vA').map((a) => a.topic).sort();
+  assert.deepStrictEqual(topics, ['plant/A/temp', 'plant/B/temp']);
+  const silent = active.find((a) => a.ruleId === 's1');
+  assert.ok(silent && !silent.topic, 'silence alarm has no topic dimension');
+  assert.match(active.find((a) => a.topic === 'plant/A/temp').detail, /value = 95 \(> 80\)/);
+
+  // Pump A resolves → only its alarm clears.
+  eng.onMessage(msg('b6', 'plant/A/temp', 40));
+  const after = eng.getActive();
+  assert.strictEqual(after.length, 2);
+  assert.ok(!after.some((a) => a.topic === 'plant/A/temp'));
+  m.shutdown();
+});
+
+test('acknowledge marks a firing alarm, clears on resolve, rejects non-firing', () => {
+  const io = fakeIo();
+  const manager = new EventEmitter();
+  const rules = [{ id: 'ak1', name: 'Hot', type: 'value-threshold', brokerId: 'b1', topic: 'plant/+/temp', op: '>', value: 80 }];
+  const eng = new AlertEngine({ io, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir: null });
+
+  assert.strictEqual(eng.acknowledge('ak1', 'plant/A/temp', 'alice'), null, 'nothing firing yet');
+  assert.strictEqual(eng.acknowledge('nope', '', 'alice'), null, 'unknown rule');
+
+  eng.onMessage(msg('b1', 'plant/A/temp', 95));
+  const ack = eng.acknowledge('ak1', 'plant/A/temp', 'alice');
+  assert.strictEqual(ack.by, 'alice');
+  const active = eng.getActive();
+  assert.strictEqual(active[0].ackBy, 'alice');
+  assert.ok(active[0].ackAt > 0);
+  // the ack itself is an event: socket + history
+  const ackEvt = io.emitted.find((e) => e.data.status === 'acknowledged');
+  assert.strictEqual(ackEvt.data.ackBy, 'alice');
+  assert.strictEqual(ackEvt.data.topic, 'plant/A/temp');
+
+  // resolve clears the ack — a re-fire starts unacknowledged
+  eng.onMessage(msg('b1', 'plant/A/temp', 40));
+  eng.onMessage(msg('b1', 'plant/A/temp', 95));
+  const refired = eng.getActive();
+  assert.strictEqual(refired.length, 1);
+  assert.strictEqual(refired[0].ackBy, undefined);
+});
+
+test('alarm history survives a restart via alerts.jsonl', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-alerts-hist-'));
+  const manager = new EventEmitter();
+  const rules = [{ id: 'h1', name: 'Hot', type: 'value-threshold', brokerId: 'b1', topic: 't', op: '>', value: 10 }];
+  const a = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir });
+  a.onMessage(msg('b1', 't', 50)); // firing
+  a.onMessage(msg('b1', 't', 5)); // resolved
+  assert.strictEqual(a.getEvents().length, 2);
+
+  // "restart": a fresh engine over the same data dir seeds its ring from disk
+  const b = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir });
+  const events = b.getEvents();
+  assert.strictEqual(events.length, 2);
+  assert.strictEqual(events[0].status, 'resolved');
+  assert.strictEqual(events[1].status, 'firing');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('historyStore snapshots recent rings and restores them into empty rings', () => {

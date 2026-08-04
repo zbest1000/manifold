@@ -1,9 +1,13 @@
 const express = require('express');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const parquet = require('@dsnp/parquetjs');
 const router = express.Router();
 
 // GET /api/system/status
 router.get('/status', (req, res) => {
-  const { mqttManager, opcuaManager, discovery, cesmii, i3x } = req.app.locals.services;
+  const { mqttManager, opcuaManager, discovery, i3x } = req.app.locals.services;
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -18,9 +22,14 @@ router.get('/status', (req, res) => {
     discovery: {
       scanning: discovery.isScanning()
     },
-    cesmii: cesmii.status(),
     i3x: i3x.status()
   });
+});
+
+// GET /api/system/canary — per-broker publish→deliver round-trip stats
+router.get('/canary', (req, res) => {
+  const { canary } = req.app.locals.services;
+  res.json(canary ? canary.getStats() : { brokers: {} });
 });
 
 // POST /api/system/discovery/start { range, mqttPorts, opcuaPorts }
@@ -46,6 +55,62 @@ router.get('/discovery/results', (req, res) => {
   res.json({ scanning: discovery.isScanning(), results: discovery.getLastResults() });
 });
 
+// POST /api/system/export/parquet { series: [{ tag, points: [[tsMs, value]] }] }
+// → a wide-format Parquet file (timestamp + one DOUBLE column per tag, rows on
+// the union of timestamps). Wide + Parquet is what DuckDB/Athena/pandas ingest
+// directly — the lakehouse handoff CSV can't provide. The client sends the
+// series it already charted, so this works for live, historian, and recording
+// sources alike.
+router.post('/export/parquet', async (req, res) => {
+  const series = req.body?.series;
+  if (!Array.isArray(series) || series.length === 0 || !series.every((s) => s && typeof s.tag === 'string' && Array.isArray(s.points))) {
+    return res.status(400).json({ error: 'series must be a non-empty array of { tag, points }' });
+  }
+
+  // Parquet column names: keep them recognizable but safe, and unique.
+  const seen = new Set(['timestamp']);
+  const cols = series.map((s) => {
+    let name = s.tag.replace(/[^\w./-]/g, '_') || 'series';
+    while (seen.has(name)) name += '_';
+    seen.add(name);
+    return name;
+  });
+
+  const fields = { timestamp: { type: 'TIMESTAMP_MILLIS' } };
+  for (const c of cols) fields[c] = { type: 'DOUBLE', optional: true };
+
+  const byTs = new Map();
+  series.forEach((s, i) => {
+    for (const [ts, v] of s.points) {
+      if (!Number.isFinite(ts) || !Number.isFinite(Number(v))) continue;
+      let row = byTs.get(ts);
+      if (!row) {
+        row = { timestamp: new Date(ts) };
+        byTs.set(ts, row);
+      }
+      row[cols[i]] = Number(v);
+    }
+  });
+  if (byTs.size === 0) return res.status(400).json({ error: 'no numeric points to export' });
+
+  const tmp = path.join(os.tmpdir(), `manifold-parquet-${process.pid}-${Date.now()}.parquet`);
+  try {
+    const writer = await parquet.ParquetWriter.openFile(new parquet.ParquetSchema(fields), tmp);
+    for (const ts of [...byTs.keys()].sort((a, b) => a - b)) {
+      await writer.appendRow(byTs.get(ts));
+    }
+    await writer.close();
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', 'attachment; filename="manifold-series.parquet"');
+    fs.createReadStream(tmp)
+      .on('close', () => fs.unlink(tmp, () => {}))
+      .pipe(res);
+  } catch (error) {
+    fs.unlink(tmp, () => {});
+    res.status(500).json({ error: `parquet export failed: ${error.message}` });
+  }
+});
+
 // ---- config as code -----------------------------------------------------------
 // Export/import the DataOps configuration (routes, models, historians,
 // recordings, contracts, bindings, mounts, alert rules) as one JSON document —
@@ -53,7 +118,7 @@ router.get('/discovery/results', (req, res) => {
 // export (a config file in a repo must never carry credentials); re-enter them
 // after import.
 
-const EXPORT_COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings'];
+const EXPORT_COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'codecs'];
 const SECRET_FIELDS = ['token', 'apiKey', 'apiSecret', 'password', 'secret'];
 
 // GET /api/system/config/export

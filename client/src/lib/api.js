@@ -61,6 +61,7 @@ async function metricsText() {
 
 export const api = {
   systemStatus: () => request('/api/system/status'),
+  canaryStats: () => request('/api/system/canary'),
   whoami: () => request('/api/whoami'),
   metricsText,
 
@@ -73,6 +74,8 @@ export const api = {
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/messages?topic=${encodeURIComponent(topic)}&limit=${limit}`),
   brokerSparkplug: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sparkplug`),
   brokerSys: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sys`),
+  brokerPosture: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/posture`),
+  brokerLifecycle: (id, limit = 200) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/lifecycle?limit=${limit}`),
   getBrokerAdmin: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`),
   setBrokerAdmin: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`, { method: 'POST', body: JSON.stringify(config) }),
@@ -102,6 +105,13 @@ export const api = {
   listUnsIcons: () => request('/api/uns/icons'),
   saveUnsIcon: (icon) => request('/api/uns/icons', { method: 'POST', body: JSON.stringify(icon) }),
   deleteUnsIcon: (id) => request(`/api/uns/icons/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Namespace models (declared hierarchy the live namespace is graded against)
+  listNsModels: () => request('/api/uns/models'),
+  saveNsModel: (m) => request('/api/uns/models', { method: 'POST', body: JSON.stringify(m) }),
+  deleteNsModel: (id) => request(`/api/uns/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  unsModelReport: (brokerId, modelId) =>
+    request(`/api/uns/brokers/${encodeURIComponent(brokerId)}/model-report?modelId=${encodeURIComponent(modelId)}`),
 
   // Historians (InfluxDB / Timebase)
   listHistorians: () => request('/api/historians'),
@@ -149,6 +159,11 @@ export const api = {
   deleteContract: (id) => request(`/api/contracts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   contractViolations: (limit = 200) => request(`/api/contracts/violations?limit=${limit}`),
 
+  // Payload codecs (Protobuf/Avro schemas decoded on ingest)
+  listCodecs: () => request('/api/codecs'),
+  saveCodec: (c) => request('/api/codecs', { method: 'POST', body: JSON.stringify(c) }),
+  deleteCodec: (id) => request(`/api/codecs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   // Models
   listModels: () => request('/api/models'),
   saveModel: (m) => request('/api/models', { method: 'POST', body: JSON.stringify(m) }),
@@ -172,6 +187,8 @@ export const api = {
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
+  alertsActive: () => request('/api/alerts/active'),
+  ackAlert: (ruleId, topic) => request('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ruleId, topic }) }),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
@@ -204,14 +221,6 @@ export const api = {
   startDiscovery: (options) => request('/api/system/discovery/start', { method: 'POST', body: JSON.stringify(options) }),
   stopDiscovery: () => request('/api/system/discovery/stop', { method: 'POST' }),
   discoveryResults: () => request('/api/system/discovery/results'),
-
-  // CESMII SMIP
-  cesmiiStatus: () => request('/api/cesmii/status'),
-  cesmiiConfig: (config) => request('/api/cesmii/config', { method: 'POST', body: JSON.stringify(config) }),
-  cesmiiReset: () => request('/api/cesmii/config', { method: 'DELETE' }),
-  cesmiiEquipment: () => request('/api/cesmii/equipment'),
-  cesmiiAttributes: () => request('/api/cesmii/attributes'),
-  cesmiiHistory: (body) => request('/api/cesmii/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // i3X
   i3xStatus: () => request('/api/i3x/status'),

@@ -6,7 +6,7 @@ const { fetchWithTimeout } = require('./httpTimeout');
 
 /**
  * Egress guard — one chokepoint every outbound connection the *caller* cannot
- * make directly (network scan probes, i3X / CESMII / broker-admin HTTP fetches)
+ * make directly (network scan probes, i3X / broker-admin HTTP fetches)
  * must pass through, so Manifold cannot be turned into an SSRF pivot or an
  * internal port scanner.
  *
@@ -21,7 +21,7 @@ const { fetchWithTimeout } = require('./httpTimeout');
  *  - Blocked BY DEFAULT (fail-closed), allowed with MANIFOLD_ALLOW_PRIVATE_TARGETS=1
  *    — RFC1918 and IPv6 ULA. This is the SSRF-sensitive tier: an internet-exposed
  *    instance must not become a pivot into a LAN. On-prem/LAN deployments, where
- *    Discovery scanning the plant subnet and reaching on-prem i3X/CESMII is the
+ *    Discovery scanning the plant subnet and reaching on-prem i3X servers is the
  *    point, opt in explicitly (the Docker demo sets it, since it is a local-only
  *    demo). The server logs a loud startup warning whenever this opt-in is on.
  *

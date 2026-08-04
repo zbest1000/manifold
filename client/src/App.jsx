@@ -8,12 +8,12 @@ import Uns from './pages/Uns';
 // Route-level code splitting: only the core explore surfaces (Overview,
 // Topics, UNS) ship in the main bundle; everything else loads on first visit.
 const Flows = lazy(() => import('./pages/Flows'));
+const Alerts = lazy(() => import('./pages/Alerts'));
 const Trends = lazy(() => import('./pages/Trends'));
 const Pipelines = lazy(() => import('./pages/Pipelines'));
 const Tags = lazy(() => import('./pages/Tags'));
 const Brokers = lazy(() => import('./pages/Brokers'));
 const OpcUa = lazy(() => import('./pages/OpcUa'));
-const Cesmii = lazy(() => import('./pages/Cesmii'));
 const I3x = lazy(() => import('./pages/I3x'));
 const Discovery2 = lazy(() => import('./pages/Discovery'));
 const System = lazy(() => import('./pages/System'));
@@ -34,11 +34,11 @@ export default function App() {
         <Route path="uns" element={<Uns />} />
         <Route path="flows" element={<S><Flows /></S>} />
         <Route path="trends" element={<S><Trends /></S>} />
+        <Route path="alerts" element={<S><Alerts /></S>} />
         <Route path="pipelines" element={<S><Pipelines /></S>} />
         <Route path="tags" element={<S><Tags /></S>} />
         <Route path="brokers" element={<S><Brokers /></S>} />
         <Route path="opcua" element={<S><OpcUa /></S>} />
-        <Route path="cesmii" element={<S><Cesmii /></S>} />
         <Route path="i3x" element={<S><I3x /></S>} />
         <Route path="discovery" element={<S><Discovery2 /></S>} />
         <Route path="system" element={<S><System /></S>} />

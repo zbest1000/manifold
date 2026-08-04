@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, X, Plus, Database, TrendingUp } from 'lucide-react';
+import { RefreshCw, X, Plus, Database, TrendingUp, FileDown } from 'lucide-react';
+import { downloadCsv, seriesToCsvRows, downloadParquet } from '@/lib/exportCsv';
+import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
@@ -174,7 +176,13 @@ export default function Trends() {
 
   const sourceId = usingLive ? brokerId : usingRecording ? recId : histId;
 
+  const loadSeq = useRef(0);
   const load = useCallback(() => {
+    // Sequence guard: a slow query (e.g. a 7d historian range) can resolve
+    // AFTER a newer one fired by switching range/tags/source, overwriting the
+    // chart with stale data under the current label. Bump first so even the
+    // empty-source early-return invalidates anything in flight.
+    const seq = ++loadSeq.current;
     if (!sourceId || tags.length === 0) {
       setData(null);
       setError('');
@@ -195,11 +203,22 @@ export default function Trends() {
           });
     query
       .then((r) => {
-        setData({ series: r.series || [], start, end });
+        if (seq !== loadSeq.current) return; // superseded by a newer load
+        // When a source returns no series at all for the requested tags (e.g. an
+        // empty/stopped recording), synthesize empty-point series so the chart
+        // shows "No samples in this range" rather than the misleading "pick a
+        // source and add tags" (which reads as if nothing was selected).
+        const series = r.series?.length ? r.series : tags.map((tag) => ({ tag, points: [] }));
+        setData({ series, start, end });
         setError('');
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (seq !== loadSeq.current) return;
+        setError(e.message);
+      })
+      .finally(() => {
+        if (seq === loadSeq.current) setLoading(false);
+      });
   }, [usingLive, usingRecording, sourceId, tags, rangeMs]);
 
   useEffect(() => {
@@ -222,8 +241,33 @@ export default function Trends() {
       <PageHeader
         title="Trends"
         subtitle="chart live from the message stream, a historian, or a local recording"
+        helpTopic="guide-record-replay"
         actions={
           <div className="flex items-center gap-2">
+            {data?.series?.some((s) => s.points?.length) && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    downloadCsv(seriesToCsvRows(data.series), `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`)
+                  }
+                >
+                  <FileDown size={14} /> CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    downloadParquet(data.series, `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.parquet`).catch((e) =>
+                      toast.error(e.message)
+                    )
+                  }
+                >
+                  <FileDown size={14} /> Parquet
+                </Button>
+              </>
+            )}
             <HelpButton title="How Trends works" label="How Trends works">
               <p>Trends charts numeric values over time. Pick a source, add up to ten tags, and choose a range.</p>
               <p>Three sources:</p>

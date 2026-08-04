@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { assess } = require('../services/brokerPosture');
 
 const BROKER_PROTOCOLS = ['mqtt', 'mqtts', 'ws', 'wss'];
 
@@ -183,6 +184,36 @@ router.get('/brokers/:brokerId/sys', (req, res) => {
         'Core MQTT and $SYS expose aggregate counts only. Per-client subscriptions require a broker admin API (e.g. EMQX/HiveMQ REST or mosquitto_ctrl).'
     }
   });
+});
+
+// GET /api/mqtt/brokers/:brokerId/posture — security posture scorecard: the
+// connection's transport/auth hygiene graded A–D with findings + fixes. The
+// assessment itself is pure (services/brokerPosture.js); this route only
+// gathers the live inputs — connection info, TLS options + peer certificate
+// off the running client, and the broker admin API config.
+router.get('/brokers/:brokerId/posture', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const connection = mqttManager.getConnection(req.params.brokerId);
+  if (!connection) return res.status(404).json({ error: 'Broker not found' });
+  const transport = mqttManager.getTransportSecurity(req.params.brokerId);
+  const posture = assess(
+    { ...connection, rejectUnauthorized: transport ? transport.rejectUnauthorized : undefined },
+    {
+      peerCert: transport?.peerCert || null,
+      adminConfig: mqttManager.getBrokerAdmin(req.params.brokerId)
+    }
+  );
+  res.json({ brokerId: req.params.brokerId, ...posture });
+});
+
+// GET /api/mqtt/brokers/:brokerId/lifecycle — client connect/disconnect
+// timeline + per-client flap rollup, from whatever the broker can provide
+// (EMQX $events, Mosquitto $SYS/broker/log, Sparkplug BIRTH/DEATH).
+router.get('/brokers/:brokerId/lifecycle', (req, res) => {
+  const { mqttManager, lifecycle } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) return res.status(404).json({ error: 'Broker not found' });
+  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  res.json({ brokerId: req.params.brokerId, ...(lifecycle ? lifecycle.report(req.params.brokerId, { limit }) : { capability: {}, events: [], clients: [] }) });
 });
 
 // GET/POST/DELETE /api/mqtt/brokers/:brokerId/admin — broker admin API config

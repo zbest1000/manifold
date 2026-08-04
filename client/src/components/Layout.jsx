@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock, Gauge, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock, Gauge, PanelLeftClose, PanelLeftOpen, LifeBuoy, BellRing } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot, Tooltip, IconButton } from './ui';
 import ErrorLog from './ErrorLog';
+import HelpCenter from './HelpCenter';
 
 // The nav outgrew a flat list — group by the job the user is doing:
 // OBSERVE the estate, BUILD on the stream, CONNECT sources, run the SYSTEM.
@@ -19,7 +20,8 @@ const NAV_GROUPS = [
       { to: '/topics', label: 'Topics', icon: Share2 },
       { to: '/uns', label: 'UNS', icon: Network },
       { to: '/flows', label: 'Flows', icon: Waypoints },
-      { to: '/trends', label: 'Trends', icon: LineChart }
+      { to: '/trends', label: 'Trends', icon: LineChart },
+      { to: '/alerts', label: 'Alerts', icon: BellRing, badge: 'alerts' }
     ]
   },
   {
@@ -34,7 +36,6 @@ const NAV_GROUPS = [
     items: [
       { to: '/brokers', label: 'MQTT Brokers', icon: Radio },
       { to: '/opcua', label: 'OPC UA', icon: Cpu },
-      { to: '/cesmii', label: 'CESMII SMIP', icon: Factory },
       { to: '/i3x', label: 'i3X', icon: Boxes },
       { to: '/discovery', label: 'Discovery', icon: Radar }
     ]
@@ -55,14 +56,27 @@ export default function Layout() {
   const viewerReadOnly = useStore((s) => s.authRole === 'viewer');
   const collapsed = useStore((s) => s.navCollapsed);
   const toggleNav = useStore((s) => s.toggleNav);
+  const openHelp = useStore((s) => s.openHelp);
+  const helpSeen = useStore((s) => s.helpSeen);
+  const alertUnseen = useStore((s) => s.alertUnseen);
+  const alarmCount = useStore((s) => Object.keys(s.activeAlarms).length);
 
-  // Keyboard shortcut: `[` toggles the sidebar (ignored while typing).
+  // Keyboard shortcuts: `[` toggles the sidebar, `?` opens help (both ignored
+  // while typing in a field).
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      toggleNav();
+      if (e.key === '[') toggleNav();
+      else if (e.key === '?') {
+        // preventDefault: the panel autofocuses its search box, and without
+        // this the same keystroke would type "?" into it.
+        e.preventDefault();
+        const s = useStore.getState();
+        if (s.helpOpen) s.closeHelp();
+        else s.openHelp();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -87,6 +101,9 @@ export default function Layout() {
               <p className="mono truncate text-2xs text-slate-500">UNS · MQTT · OPC UA</p>
             </div>
           )}
+          {/* Collapse lives in the footer too, but a control up here is the
+              discoverable one — the footer button routinely goes unnoticed. */}
+          {!collapsed && <IconButton icon={PanelLeftClose} label="Collapse sidebar  [" side="right" onClick={toggleNav} />}
         </div>
 
         {viewerReadOnly &&
@@ -109,7 +126,7 @@ export default function Layout() {
                 (collapsed ? (
                   gi > 0 && <div className="mx-auto mb-2 h-px w-6 bg-white/10" />
                 ) : (
-                  <p className="px-3 pb-1.5 text-2xs font-semibold uppercase tracking-widest text-slate-600">{group.label}</p>
+                  <p className="px-3 pb-1.5 text-2xs font-semibold uppercase tracking-widest text-slate-400">{group.label}</p>
                 ))}
               <div className="space-y-1">
                 {group.items.map((item) => (
@@ -127,8 +144,25 @@ export default function Layout() {
                         )
                       }
                     >
-                      <item.icon size={18} className="shrink-0" />
+                      <span className="relative shrink-0">
+                        <item.icon size={18} />
+                        {/* Alarm state on the nav item itself: a firing dot in
+                            collapsed mode, so alarms are visible from any page. */}
+                        {item.badge === 'alerts' && collapsed && alarmCount > 0 && (
+                          <span className="absolute -right-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-rose-500 ring-2 ring-surface-900" />
+                        )}
+                      </span>
                       {!collapsed && item.label}
+                      {item.badge === 'alerts' && !collapsed && (alarmCount > 0 || alertUnseen > 0) && (
+                        <span
+                          className={clsx(
+                            'mono ml-auto rounded-full px-1.5 py-0.5 text-2xs font-semibold',
+                            alarmCount > 0 ? 'bg-rose-500 text-white' : 'bg-white/10 text-slate-400'
+                          )}
+                        >
+                          {alarmCount > 0 ? alarmCount : alertUnseen}
+                        </span>
+                      )}
                     </NavLink>
                   </Tooltip>
                 ))}
@@ -137,7 +171,7 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* Footer: live status, logs, collapse toggle */}
+        {/* Footer: live status, help, logs, collapse toggle */}
         {collapsed ? (
           <div className="flex flex-col items-center gap-2 border-t border-white/5 py-3">
             <Tooltip label={connected ? 'Live — socket connected' : 'Offline — reconnecting'} side="right">
@@ -145,6 +179,10 @@ export default function Layout() {
                 <StatusDot status={connected ? 'connected' : 'disconnected'} />
               </span>
             </Tooltip>
+            <span className="relative">
+              <IconButton icon={LifeBuoy} label="Help & guides  ?" side="right" onClick={() => openHelp()} />
+              {!helpSeen && <span className="pointer-events-none absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-accent-400 ring-2 ring-surface-900" />}
+            </span>
             <ErrorLog collapsed />
             <IconButton icon={PanelLeftOpen} label="Expand sidebar  [" side="right" onClick={toggleNav} />
           </div>
@@ -161,6 +199,14 @@ export default function Layout() {
             </div>
             <ErrorLog />
             <button
+              onClick={() => openHelp()}
+              className="relative flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-2xs font-medium text-slate-500 transition hover:bg-white/5 hover:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
+            >
+              <LifeBuoy size={14} className={clsx(!helpSeen && 'text-accent-400')} /> Help & guides
+              {!helpSeen && <span className="rounded-full bg-accent-500/15 px-1.5 text-[10px] font-semibold text-accent-300">new here?</span>}
+              <kbd className="mono ml-auto rounded border border-white/10 px-1 text-[10px] text-slate-600">?</kbd>
+            </button>
+            <button
               onClick={toggleNav}
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-2xs font-medium text-slate-500 transition hover:bg-white/5 hover:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
             >
@@ -170,6 +216,8 @@ export default function Layout() {
           </div>
         )}
       </aside>
+
+      <HelpCenter />
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {!connected && (

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
 
-Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, CESMII SMIP, and i3X, with a live Unified Namespace view.
+Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, and i3X, with a live Unified Namespace view.
 
 **[Website](https://zbest1000.github.io/manifold/)** · **[Docs / Wiki](../../wiki)** · **[Architecture](ARCHITECTURE.md)** · **[Changelog](CHANGELOG.md)**
 
@@ -97,7 +97,7 @@ Connection profiles persist in `server/data/profiles.json` (mode 0600; directory
 | `MANIFOLD_VIEWER_TOKEN` | _(none)_ | Optional read-only token (GETs succeed, mutations 403) |
 | `MANIFOLD_TOKENS` | _(none)_ | Named revocable tokens: `alice:secret:admin,grafana:tok:viewer` |
 | `MANIFOLD_HOST` | `127.0.0.1` (open) / `0.0.0.0` (auth on) | Bind address; set to `0.0.0.0` to expose an open instance (not advised) |
-| `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `0` | Set to `1` to let the scanner / outbound clients reach RFC1918/LAN targets (needed for Discovery and on-prem i3X/CESMII — safe only on a trusted network). Fail-closed by default; loopback and cloud-metadata link-local are **always** blocked. The server warns at startup when this is on |
+| `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `0` | Set to `1` to let the scanner / outbound clients reach RFC1918/LAN targets (needed for Discovery and on-prem i3X — safe only on a trusted network). Fail-closed by default; loopback and cloud-metadata link-local are **always** blocked. The server warns at startup when this is on |
 | `MANIFOLD_MAX_PAYLOAD_BYTES` | `262144` (256 KB) | Per-topic retained payload cap; larger payloads are truncated for storage/preview |
 | `MANIFOLD_RATE_MAX` / `MANIFOLD_RATE_WINDOW_MS` | `600` / `60000` | General `/api` request rate limit |
 | `MANIFOLD_HISTORIAN_TIMEOUT_MS` | `15000` | Deadline on historian HTTP calls |
@@ -121,7 +121,7 @@ Point any MCP client at `mcp/index.js` with the backend running:
 }
 ```
 
-75 tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, CESMII, and i3X. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
+The MCP tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, and i3X. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
 
 ## Testing
 

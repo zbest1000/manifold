@@ -24,13 +24,61 @@ import { resolveIconName, getIconImage, loadIcons } from './unsIcons';
 export const DEFAULT_LEVELS = ['Unified Namespace', 'Business Unit', 'Site', 'Area', 'Line', 'Cell', 'Node'];
 const LEVEL_COLORS = ['#2563eb', '#3b82f6', '#16a34a', '#22c55e', '#0d9488', '#64748b', '#94a3b8'];
 
+// Canvas themes. Light is the original "paper schematic" look; dark matches
+// the rest of the app (surface-950 background, slate ink). Node ring/icon
+// colors stay the shared LEVEL_COLORS in both.
+const THEMES = {
+  light: {
+    background: '#f6f7f9',
+    gridDot: '#dce1e8',
+    edgeLive: 'rgba(34,197,94,0.75)',
+    edgeIdle: 'rgba(148,163,184,0.45)',
+    badge: '#ffffff',
+    badgeShadow: 'rgba(15,23,42,0.10)',
+    expandStroke: '#94a3b8',
+    expandGlyph: '#475569',
+    label: '#1e293b',
+    caption: '#94a3b8',
+    valActive: '#16a34a',
+    valIdle: '#b0b8c4',
+    valOk: '#0f766e',
+    staleDead: '#ef4444',
+    staleOverdue: '#b45309'
+  },
+  dark: {
+    background: '#0d1323',
+    gridDot: '#1c2740',
+    edgeLive: 'rgba(74,222,128,0.8)',
+    edgeIdle: 'rgba(148,163,184,0.25)',
+    badge: '#1b2438',
+    badgeShadow: 'rgba(0,0,0,0.45)',
+    expandStroke: '#475569',
+    expandGlyph: '#94a3b8',
+    label: '#e2e8f0',
+    caption: '#8093ab',
+    valActive: '#4ade80',
+    valIdle: '#64748b',
+    valOk: '#2dd4bf',
+    staleDead: '#f87171',
+    staleOverdue: '#fbbf24'
+  }
+};
+
 const LIVE_WINDOW_MS = 10_000; // branch counts as "publishing" this long after a message
 const PULSE_MS = 700; // node ring flash right after a message
 // Row height covers the badge PLUS its three-line label block so neighboring
 // labels can never collide vertically.
 const ROW_H = 96;
 const COL_W = 224;
+// Transposed ("horizontal") orientation: namespaces tile left-to-right across
+// the screen and each tree grows downward. Leaf pitch is wider than ROW_H
+// because labels spread horizontally; level pitch covers badge + label block.
+const COLS_LEAF_W = 150;
+const COLS_LEVEL_H = 140;
 const R = 21; // node radius
+// Camera floor shared by fit + wheel zoom (they must agree or the first
+// scroll after a fit snaps). Low enough to survey a fully-expanded forest.
+const MIN_ZOOM = 0.05;
 
 // Shared activity map (`${brokerId}:${path}` -> last-message ts). Written by the
 // renderer's activity subscription, readable by the page's detail panel.
@@ -137,7 +185,8 @@ export function buildUnsTree(broker, topics) {
   return root;
 }
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark', orientation = 'rows', labelMode = 'auto' }) {
+  const T = THEMES[theme] || THEMES.dark;
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const sizeRef = useRef({ w: 0, h: 0 });
@@ -187,7 +236,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       minY = Math.min(minY, p.y - R - 10);
       maxY = Math.max(maxY, p.y + R + 50); // label block below the badge
     }
-    const k = Math.max(0.2, Math.min(1.4, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 60) / Math.max(maxY - minY, 1))));
+    const k = Math.max(MIN_ZOOM, Math.min(1.4, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 60) / Math.max(maxY - minY, 1))));
     // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
     const t = transformRef.current;
     t.k = k;
@@ -195,11 +244,67 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     t.y = h / 2 - (k * (minY + maxY)) / 2;
   }, [posOf]);
 
-  // Auto arrange: drop every manual offset and re-frame the tidy layout.
+  // Auto arrange: drop every manual offset and shelf-pack the namespace
+  // blocks to the viewport's aspect ratio, so the whole screen carries the
+  // forest instead of one long strip. Natural namespace order is kept —
+  // blocks flow left-to-right, wrapping into new shelves.
   const autoArrange = useCallback(() => {
     manualRef.current.clear();
+    const blocks = layoutRef.current?.blocks || [];
+    if (blocks.length > 1) {
+      const { w, h } = sizeRef.current;
+      const aspect = w > 0 && h > 0 ? w / h : 16 / 9;
+      const GAP = ROW_H;
+      const area = blocks.reduce((a, b) => a + (b.w + GAP) * (b.h + GAP), 0);
+      const targetW = Math.max(...blocks.map((b) => b.w), Math.sqrt(area * aspect));
+      const offsets = new Map();
+      let x = 0;
+      let shelfY = 0;
+      let shelfH = 0;
+      for (const b of blocks) {
+        if (x > 0 && x + b.w > targetW) {
+          shelfY += shelfH + GAP;
+          shelfH = 0;
+          x = 0;
+        }
+        offsets.set(b.key, { dx: x, dy: shelfY });
+        x += b.w + GAP;
+        if (b.h > shelfH) shelfH = b.h;
+      }
+      packRef.current = offsets;
+      setPackVersion((v) => v + 1);
+    }
+    userMovedRef.current = false; // auto-fit frames the packed forest
     fitAll();
   }, [fitAll]);
+
+  // Open every branch across the whole forest, then start reading from the
+  // top: the camera anchors at the forest's top-left at readable zoom rather
+  // than attempting a fit (height is linear in leaf count, so a full fit
+  // would shrink badges to sub-pixel dots).
+  const expandAll = useCallback(() => {
+    const next = new Set();
+    const walk = (n) => {
+      if (n.children.size === 0) return;
+      next.add(`${n.brokerId}:${n.path}`);
+      for (const c of n.children.values()) walk(c);
+    };
+    for (const r of roots) walk(r);
+    for (const r of roots) userTouchedRef.current.add(r.brokerId);
+    packRef.current = null; // block sizes change completely — repack via Auto arrange
+    setExpanded(next);
+    expandTopRef.current = true;
+    userMovedRef.current = true; // deliberate camera placement — no auto-fit fights
+  }, [roots]);
+
+  // Back to the overview: each namespace root open one level, everything
+  // beneath closed.
+  const collapseAll = useCallback(() => {
+    for (const r of roots) userTouchedRef.current.add(r.brokerId);
+    packRef.current = null;
+    setExpanded(new Set(roots.map((r) => `${r.brokerId}:`)));
+    userMovedRef.current = false;
+  }, [roots]);
 
   // Center the viewport on one laid node at a readable zoom — the target of a
   // "jump to this node" from the lint / events panels.
@@ -217,22 +322,63 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   );
   // A pending "focus this node" request, applied once the node is laid out.
   const focusPendingRef = useRef(null);
+  // Set by "Expand all": once the huge layout lands, anchor the camera at the
+  // top of the forest at readable zoom (fitting it all is geometrically
+  // hopeless — height is linear in leaf count).
+  const expandTopRef = useRef(false);
 
   // Expanded paths per broker. Default: namespace + first level open. Seeding is
   // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
   // still gets auto-expanded, instead of loading collapsed while its siblings
   // are open. User collapses of already-seeded brokers are preserved.
   const [expanded, setExpanded] = useState(() => new Set());
+  // Shelf-packing offsets from Auto arrange (rootKey -> {dx, dy}); null means
+  // the default sequential arrangement. packVersion triggers the relayout.
+  const packRef = useRef(null);
+  const layoutRef = useRef(null);
+  const [packVersion, setPackVersion] = useState(0);
   const seededRef = useRef(new Set());
+  // Brokers whose expansion the USER has changed (toggle / expand-all /
+  // collapse-all) — the auto-seeder and its demotion pass keep hands off these.
+  const userTouchedRef = useRef(new Set());
+  const demotedRef = useRef(new Set());
   useEffect(() => {
     const fresh = roots.filter((r) => !seededRef.current.has(r.brokerId));
-    if (!fresh.length) return;
+    // Demote firehose roots: topics hydrate progressively, so a public broker
+    // can seed open while it still looks small and then explode into thousands
+    // of level-1 namespaces (an unreadable hairline forest). Once an untouched
+    // root crosses the threshold, close it back down — its badge's topic count
+    // says what's inside. One-shot per broker, and never against a root the
+    // user has deliberately expanded.
+    const HUGE_ROOT = 400;
+    const demote = roots.filter(
+      (r) =>
+        r.children.size > HUGE_ROOT &&
+        seededRef.current.has(r.brokerId) &&
+        !userTouchedRef.current.has(r.brokerId) &&
+        !demotedRef.current.has(r.brokerId)
+    );
+    if (!fresh.length && !demote.length) return;
     setExpanded((prev) => {
       const next = new Set(prev);
       for (const r of fresh) {
         seededRef.current.add(r.brokerId);
+        // Mounts (OPC UA / i3X address spaces) can be hundreds of nodes deep, so
+        // seeding their level-1 children fully expanded dominates the forest and
+        // shrinks the broker trees — the thing you usually want — to an unreadable
+        // sliver. Open a mount only to its root; the user expands what they need.
+        // Broker namespaces still open to level 1.
+        // Firehose roots (public brokers) seed fully closed — see demotion above.
+        if (r.children.size > HUGE_ROOT) continue;
         next.add(`${r.brokerId}:`);
+        if (String(r.brokerId).startsWith('mount:')) continue;
         for (const child of r.children.values()) next.add(`${child.brokerId}:${child.path}`);
+      }
+      for (const r of demote) {
+        demotedRef.current.add(r.brokerId);
+        for (const k of [...next]) {
+          if (k.startsWith(`${r.brokerId}:`)) next.delete(k);
+        }
       }
       return next;
     });
@@ -308,21 +454,44 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
   }, []);
 
+  // Orientation switch: manual pins are absolute coordinates of the old
+  // world, so they scatter if kept — drop them and reframe the new layout.
+  const prevOrientRef = useRef(orientation);
+  useEffect(() => {
+    if (prevOrientRef.current !== orientation) {
+      prevOrientRef.current = orientation;
+      manualRef.current.clear();
+      packRef.current = null;
+      userMovedRef.current = false;
+      // The layout memo already recomputed with the OLD pack offsets when
+      // `orientation` changed (it's a memo dep); clearing packRef here is a
+      // ref mutation that triggers no re-render, so without this bump the
+      // previous orientation's shelf offsets stay applied to the transposed
+      // blocks. Force the memo to re-run now that packRef is null.
+      setPackVersion((v) => v + 1);
+    }
+  }, [orientation]);
+
   // ---- Tidy tree layout over the EXPANDED portion of the forest ----
+  // 'rows' (default): namespaces stack vertically, trees grow rightward.
+  // 'columns': namespaces tile horizontally, trees grow downward — the
+  // whole screen width carries the forest instead of a single tall strip.
   const layout = useMemo(() => {
     const nodes = [];
     const edges = [];
-    let cursorY = 0;
+    const columns = orientation === 'columns';
 
     const isOpen = (n) => expanded.has(`${n.brokerId}:${n.path}`);
 
-    // Number of leaf rows a node occupies given current expansion.
+    // Number of leaf slots a node occupies given current expansion.
     const rows = (n) => {
       if (!isOpen(n) || n.children.size === 0) return 1;
       let sum = 0;
       for (const c of n.children.values()) sum += rows(c);
       return Math.max(sum, 1);
     };
+
+    const kidsOf = (n) => [...n.children.values()].sort((a, b) => b.topicCount - a.topicCount || a.name.localeCompare(b.name));
 
     const place = (n, x, top) => {
       const span = rows(n) * ROW_H;
@@ -332,8 +501,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (isOpen(n)) {
         let childTop = top;
         // Stable, meaningful order: subtree size desc, then name.
-        const kids = [...n.children.values()].sort((a, b) => b.topicCount - a.topicCount || a.name.localeCompare(b.name));
-        for (const c of kids) {
+        for (const c of kidsOf(n)) {
           const cLaid = place(c, x + COL_W, childTop);
           edges.push({ from: laid, to: cLaid });
           childTop += rows(c) * ROW_H;
@@ -342,14 +510,63 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       return laid;
     };
 
+    const placeColumns = (n, y, left) => {
+      const span = rows(n) * COLS_LEAF_W;
+      const x = left + span / 2;
+      const laid = { node: n, x, y, open: isOpen(n), hasKids: n.children.size > 0 };
+      nodes.push(laid);
+      if (isOpen(n)) {
+        let childLeft = left;
+        for (const c of kidsOf(n)) {
+          const cLaid = placeColumns(c, y + COLS_LEVEL_H, childLeft);
+          edges.push({ from: laid, to: cLaid });
+          childLeft += rows(c) * COLS_LEAF_W;
+        }
+      }
+      return laid;
+    };
+
+    // Each namespace is laid out as a BLOCK at its own local origin; blocks are
+    // then positioned either sequentially (default: stacked in rows mode,
+    // side-by-side in columns mode) or by the shelf-packing offsets Auto
+    // arrange computes to fill the viewport.
+    const blocks = [];
     for (const r of roots) {
-      place(r, 0, cursorY);
-      cursorY += rows(r) * ROW_H + ROW_H; // gap between namespaces
+      const start = nodes.length;
+      if (columns) placeColumns(r, 0, 0);
+      else place(r, 0, 0);
+      let maxX = 0;
+      let maxY = 0;
+      for (let i = start; i < nodes.length; i++) {
+        if (nodes[i].x > maxX) maxX = nodes[i].x;
+        if (nodes[i].y > maxY) maxY = nodes[i].y;
+      }
+      blocks.push({
+        key: `${r.brokerId}:`,
+        start,
+        end: nodes.length,
+        w: columns ? rows(r) * COLS_LEAF_W : maxX + COL_W,
+        h: columns ? maxY + COLS_LEVEL_H : rows(r) * ROW_H
+      });
     }
-    return { nodes, edges, height: cursorY };
-  }, [roots, expanded]);
+    let cursor = 0;
+    const gap = columns ? COLS_LEAF_W : ROW_H;
+    for (const b of blocks) {
+      const off = packRef.current?.get(b.key);
+      const dx = off ? off.dx : columns ? cursor : 0;
+      const dy = off ? off.dy : columns ? 0 : cursor;
+      for (let i = b.start; i < b.end; i++) {
+        nodes[i].x += dx;
+        nodes[i].y += dy;
+      }
+      cursor += (columns ? b.w : b.h) + gap;
+    }
+    return { nodes, edges, blocks };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, expanded, orientation, packVersion]);
 
   useEffect(() => {
+    layoutRef.current = layout;
     visibleRef.current = layout.nodes;
     // Auto-frame the whole forest on load AND as it grows — brokers connect,
     // topics stream in, async mount roots arrive — until the user takes control
@@ -359,6 +576,13 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // fighting manual navigation.
     if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
       fitAll();
+    }
+    if (expandTopRef.current && layout.nodes.length > 0) {
+      expandTopRef.current = false;
+      const t = transformRef.current;
+      t.k = Math.max(0.5, Math.min(1, t.k));
+      t.x = 90;
+      t.y = 40;
     }
     // Apply a queued focus once its node has a position (it may take an extra
     // layout pass for the just-expanded ancestors to lay the node out).
@@ -398,13 +622,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Light "paper" canvas with a dot grid — the UNS look, distinct from the
-    // dark force-graph surfaces.
-    ctx.fillStyle = '#f6f7f9';
+    // Themed canvas with a dot grid — light "paper schematic" or app-dark.
+    ctx.fillStyle = T.background;
     ctx.fillRect(0, 0, w, h);
     const grid = 24 * t.k;
     if (grid > 7) {
-      ctx.fillStyle = '#dce1e8';
+      ctx.fillStyle = T.gridDot;
       const ox = t.x % grid;
       const oy = t.y % grid;
       for (let gx = ox; gx < w; gx += grid) {
@@ -421,23 +644,34 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const dashOffset = -((now / 40) % 24);
 
     // Edges first: animated dashed green while the child branch is publishing.
+    const columnsDraw = orientation === 'columns';
     for (const e of layout.edges) {
       const live = now - liveAt(e.to.node) < LIVE_WINDOW_MS;
       const a = posOf(e.from);
       const b = posOf(e.to);
-      const x1 = a.x + R + 3;
-      const x2 = b.x - R - 3;
-      const mx = (x1 + x2) / 2;
       ctx.beginPath();
-      ctx.moveTo(x1, a.y);
-      ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
+      if (columnsDraw) {
+        // Top-down: leave the parent badge below its label block, arrive at
+        // the child badge's top. Label halos keep text readable over edges.
+        const y1 = a.y + R + 3;
+        const y2 = b.y - R - 3;
+        const my = (y1 + y2) / 2;
+        ctx.moveTo(a.x, y1);
+        ctx.bezierCurveTo(a.x, my, b.x, my, b.x, y2);
+      } else {
+        const x1 = a.x + R + 3;
+        const x2 = b.x - R - 3;
+        const mx = (x1 + x2) / 2;
+        ctx.moveTo(x1, a.y);
+        ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
+      }
       if (live) {
-        ctx.strokeStyle = 'rgba(34,197,94,0.75)';
+        ctx.strokeStyle = T.edgeLive;
         ctx.lineWidth = 1.6;
         ctx.setLineDash([7, 6]);
         ctx.lineDashOffset = dashOffset;
       } else {
-        ctx.strokeStyle = 'rgba(148,163,184,0.45)';
+        ctx.strokeStyle = T.edgeIdle;
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
       }
@@ -476,8 +710,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
       ctx.beginPath();
       ctx.arc(P.x, P.y, R, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = 'rgba(15,23,42,0.10)';
+      ctx.fillStyle = T.badge;
+      ctx.shadowColor = T.badgeShadow;
       ctx.shadowBlur = 6;
       ctx.shadowOffsetY = 1;
       ctx.fill();
@@ -506,7 +740,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         ctx.arc(P.x + R * 0.72, P.y - R * 0.72, 3.4, 0, Math.PI * 2);
         ctx.fillStyle = dotColor;
         ctx.fill();
-        ctx.strokeStyle = '#ffffff';
+        ctx.strokeStyle = T.badge;
         ctx.lineWidth = 1.4;
         ctx.stroke();
       }
@@ -515,12 +749,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (l.hasKids) {
         ctx.beginPath();
         ctx.arc(P.x, P.y + R + 1, 6.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = T.badge;
         ctx.fill();
-        ctx.strokeStyle = '#94a3b8';
+        ctx.strokeStyle = T.expandStroke;
         ctx.lineWidth = 1.2;
         ctx.stroke();
-        ctx.strokeStyle = '#475569';
+        ctx.strokeStyle = T.expandGlyph;
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(P.x - 3, P.y + R + 1);
@@ -532,19 +766,25 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         ctx.stroke();
       }
 
-      // labels
-      // Labels get a paper-colored halo so crossing edges never block the text.
+      // labels — culled progressively as the camera pulls back: secondary
+      // lines first, then names (sub-pixel smear, and the halo strokeText
+      // calls are the main draw cost of a fully-expanded forest). 'on'
+      // overrides the zoom culling, 'off' hides all text — user's choice.
+      if (labelMode === 'off') continue;
+      if (labelMode !== 'on' && t.k < 0.16) continue;
+      // Labels get a background-colored halo so crossing edges never block the text.
       ctx.textAlign = 'center';
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#f6f7f9';
+      ctx.strokeStyle = T.background;
       ctx.lineWidth = 4;
       ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 22);
-      ctx.fillStyle = '#1e293b';
+      ctx.fillStyle = T.label;
       ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 22);
+      if (labelMode !== 'on' && t.k < 0.35) continue;
       ctx.font = '600 8.5px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
-      ctx.fillStyle = '#94a3b8';
+      ctx.fillStyle = T.caption;
       ctx.fillText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       if (n.children.size > 0) {
         // Branch third line: subtree size, plus live throughput when flowing.
@@ -553,7 +793,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           const line = rate > 0 ? `${n.topicCount.toLocaleString()} topics · ${rate.toLocaleString()}/s` : `${n.topicCount.toLocaleString()} topics`;
           ctx.font = '500 8.5px ui-sans-serif, system-ui, sans-serif';
           ctx.strokeText(line, P.x, P.y + R + 43);
-          ctx.fillStyle = rate > 0 ? '#16a34a' : '#b0b8c4';
+          ctx.fillStyle = rate > 0 ? T.valActive : T.valIdle;
           ctx.fillText(line, P.x, P.y + R + 43);
         }
       } else {
@@ -564,7 +804,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           const text = truncate(v.value, 24);
           ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
           ctx.strokeText(text, P.x, P.y + R + 44);
-          ctx.fillStyle = stale === 'dead' ? '#ef4444' : stale === 'overdue' ? '#b45309' : '#0f766e';
+          ctx.fillStyle = stale === 'dead' ? T.staleDead : stale === 'overdue' ? T.staleOverdue : T.valOk;
           ctx.fillText(text, P.x, P.y + R + 44);
         }
       }
@@ -587,7 +827,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
 
     ctx.restore();
-  }, [layout, levels, posOf]);
+  }, [layout, levels, posOf, T, orientation, labelMode]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
   // Idle throttle: pulses/dashes only animate around live traffic and
@@ -769,9 +1009,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         toggle(hit.node);
         return;
       }
-      // Plain click on a node makes it the sole selection and opens its detail.
-      selRef.current = new Set([keyOf(hit)]);
-      setSelCount(1);
+      // Plain click opens the node's detail and deliberately leaves the
+      // multi-selection alone: building a group with ctrl-click / shift-box
+      // and then losing it to a stray inspect-click made group moves feel
+      // broken. Clicking empty canvas is the way to clear the group.
       // Defer selection briefly so a double-click (expand) doesn't also select —
       // opening the detail panel mid-gesture would move the canvas under the
       // second click.
@@ -792,7 +1033,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
       const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      const nk = Math.max(0.2, Math.min(3, t.k * factor));
+      const nk = Math.max(MIN_ZOOM, Math.min(3, t.k * factor));
       t.x = px - ((px - t.x) * nk) / t.k;
       t.y = py - ((py - t.y) * nk) / t.k;
       t.k = nk;
@@ -827,6 +1068,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   const toggle = (node) => {
     userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
+    userTouchedRef.current.add(node.brokerId);
     const key = `${node.brokerId}:${node.path}`;
     // Collapsing also collapses everything beneath, so re-expanding is tidy.
     const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;
@@ -844,6 +1086,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     });
   };
 
+  const ctlBtn =
+    theme === 'dark'
+      ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
+      : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900';
+
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
       <canvas ref={canvasRef} className="h-full w-full" />
@@ -855,23 +1102,25 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
               setSelCount(0);
             }}
             title="Clear the multi-selection (Esc)"
-            className="flex items-center gap-1.5 rounded-lg border border-sky-400/50 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur transition hover:bg-sky-500/25"
+            className={
+              theme === 'dark'
+                ? 'flex items-center gap-1.5 rounded-lg border border-sky-400/40 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-300 shadow-sm backdrop-blur transition hover:bg-sky-500/25'
+                : 'flex items-center gap-1.5 rounded-lg border border-sky-400/50 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur transition hover:bg-sky-500/25'
+            }
           >
             {selCount} selected · drag to move · Esc ✕
           </button>
         )}
-        <button
-          onClick={autoArrange}
-          title="Reset manual node positions to the tidy layout and fit to view"
-          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
-        >
+        <button onClick={expandAll} title="Open every branch in every namespace" className={ctlBtn}>
+          Expand all
+        </button>
+        <button onClick={collapseAll} title="Close everything back to the namespace roots" className={ctlBtn}>
+          Collapse all
+        </button>
+        <button onClick={autoArrange} title="Reset manual node positions to the tidy layout and fit to view" className={ctlBtn}>
           Auto arrange
         </button>
-        <button
-          onClick={fitAll}
-          title="Fit the current arrangement to the viewport (keeps manual moves)"
-          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
-        >
+        <button onClick={fitAll} title="Fit the current arrangement to the viewport (keeps manual moves)" className={ctlBtn}>
           Fit
         </button>
       </div>

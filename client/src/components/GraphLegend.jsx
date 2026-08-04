@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import clsx from 'clsx';
 import { groupColor, GROUP_ORDER } from '@/graph/buildGraph';
 import { GRAPH_STYLES, DEFAULT_STYLE } from '@/graph/graphStyles';
 
@@ -20,8 +21,12 @@ export const GROUP_LABELS = {
 /**
  * Collapsible legend that decodes node color -> group for the active style. Only
  * lists groups actually present in the current graph. Shared by all graph views.
+ *
+ * When `onToggleGroup` is provided, the swatches double as filters: clicking one
+ * toggles that group's visibility, and groups in `hiddenGroups` render dimmed
+ * and struck through (still listed, so they can be re-enabled).
  */
-export default function GraphLegend({ styleId, groups }) {
+export default function GraphLegend({ styleId, groups, hiddenGroups = null, onToggleGroup = null }) {
   const [open, setOpen] = useState(true);
   const palette = (GRAPH_STYLES[styleId] || GRAPH_STYLES[DEFAULT_STYLE])?.palette || [];
   const present = GROUP_ORDER.filter((g) => groups.has(g));
@@ -36,12 +41,38 @@ export default function GraphLegend({ styleId, groups }) {
       </button>
       {open && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-white/5 px-3 py-2">
-          {present.map((g) => (
-            <span key={g} className="flex items-center gap-1.5 text-[11px]">
-              <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: groupColor(g, palette) }} />
-              {GROUP_LABELS[g] || g}
-            </span>
-          ))}
+          {present.map((g) => {
+            const hidden = Boolean(hiddenGroups?.has(g));
+            const name = GROUP_LABELS[g] || g;
+            const swatch = (
+              <span
+                className={clsx('h-2.5 w-2.5 shrink-0 rounded-sm', hidden && 'opacity-40')}
+                style={{ background: groupColor(g, palette) }}
+              />
+            );
+            if (!onToggleGroup) {
+              return (
+                <span key={g} className="flex items-center gap-1.5 text-[11px]">
+                  {swatch}
+                  {name}
+                </span>
+              );
+            }
+            return (
+              <button
+                key={g}
+                onClick={() => onToggleGroup(g)}
+                title={hidden ? `Show ${name} nodes` : `Hide ${name} nodes`}
+                className={clsx(
+                  'flex items-center gap-1.5 text-left text-[11px] transition',
+                  hidden ? 'text-slate-500 line-through opacity-60' : 'hover:text-slate-100'
+                )}
+              >
+                {swatch}
+                {name}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

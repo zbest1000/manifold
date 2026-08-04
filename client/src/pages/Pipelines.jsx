@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Workflow, Boxes, Database, CircleDot, FileCheck2, Trash2, Plus, Play, Square,
+  Workflow, Boxes, Database, CircleDot, FileCheck2, Binary, Upload, Trash2, Plus, Play, Square,
   Eye, RefreshCw, AlertTriangle, CheckCircle2, Power, Pencil
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -14,12 +14,13 @@ import { Card, Button, Input, Field, Badge, EmptyState, HelpButton } from '@/com
 import { formatDistanceToNow } from 'date-fns';
 
 /**
- * Pipelines — Manifold's DataOps surface. Five tabs over the same live stream:
+ * Pipelines — Manifold's DataOps surface. Six tabs over the same live stream:
  *   Routes    source → transforms → target, with trie-backed dry-run
  *   Models    multi-source attributes merged into one object at a UNS path
  *   Historians  InfluxDB / Timebase connections pipelines+recorder write into
  *   Recorder  time-series capture to disk or a historian, plus replay
  *   Contracts locked payload schemas with drift violations
+ *   Codecs    Protobuf/Avro schemas decoding binary payloads on ingest
  */
 export default function Pipelines() {
   const [tab, setTab] = useState('routes');
@@ -30,6 +31,7 @@ export default function Pipelines() {
       <PageHeader
         title="Pipelines"
         subtitle="route, reshape, contextualize, and record the live stream"
+        helpTopic="tour-build"
         actions={
           <div className="flex items-center gap-2">
             <div className="flex overflow-hidden rounded-xl border border-white/10">
@@ -38,13 +40,14 @@ export default function Pipelines() {
               <ViewTab active={tab === 'historians'} onClick={() => setTab('historians')} icon={Database} label="Historians" />
               <ViewTab active={tab === 'recorder'} onClick={() => setTab('recorder')} icon={CircleDot} label="Recorder" />
               <ViewTab active={tab === 'contracts'} onClick={() => setTab('contracts')} icon={FileCheck2} label="Contracts" />
+              <ViewTab active={tab === 'codecs'} onClick={() => setTab('codecs')} icon={Binary} label="Codecs" />
             </div>
             <HelpButton title="How Pipelines work">
               <p>
                 A <b>pipeline</b> reshapes your live message stream and sends the result somewhere else. It runs on the
                 server as messages arrive. Nothing is stored unless you route it to a historian or the recorder.
               </p>
-              <p>The five tabs each do one job.</p>
+              <p>The six tabs each do one job.</p>
 
               <div className="space-y-2.5">
                 <div>
@@ -91,6 +94,14 @@ export default function Pipelines() {
                     Manifold flags drift when a message stops matching, so you catch a firmware change that renamed a field.
                   </p>
                 </div>
+                <div>
+                  <p className="font-semibold text-slate-100">Codecs</p>
+                  <p>
+                    Register a Protobuf or Avro schema against a topic filter and matching binary payloads decode to
+                    structured JSON on ingest — the explorer, pipelines, and contracts all see fields instead of a
+                    base64 blob. Sparkplug B (<code>spBv1.0/…</code>) is decoded automatically and needs no codec.
+                  </p>
+                </div>
               </div>
 
               <p className="text-slate-400">
@@ -112,6 +123,7 @@ export default function Pipelines() {
         {tab === 'historians' && <HistoriansTab />}
         {tab === 'recorder' && <RecorderTab brokers={brokers} />}
         {tab === 'contracts' && <ContractsTab brokers={brokers} />}
+        {tab === 'codecs' && <CodecsTab brokers={brokers} />}
       </div>
     </div>
   );
@@ -162,7 +174,7 @@ function RoutesTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listPipelines().then(setData).catch(() => {});
-    api.listHistorians().then((r) => setHistorians(r.historians)).catch(() => {});
+    api.listHistorians().then((r) => setHistorians(r?.historians ?? [])).catch(() => {});
   }, []);
   usePoll(load, 15000, [load]); // config only — numbers stream in below
   useEngineMetrics(
@@ -392,6 +404,59 @@ function RoutesTab({ brokers }) {
   );
 }
 
+// A field whose model value is a structured object/array (JSON, a rename map, a
+// field list) but whose editing surface is text. It buffers the raw text so a
+// half-typed value ({"site": ) isn't parsed, rejected, and reverted on every
+// keystroke — which jumped the cursor and made these fields nearly unusable.
+// Commits live when the text parses; on blur it reformats, or reverts if the
+// text is invalid. The buffer never resyncs from props while the field is
+// focused, so your keystrokes are never overwritten mid-edit.
+function StructuredInput({ value, format, parse, onCommit, ...props }) {
+  const [text, setText] = useState(() => format(value));
+  const [invalid, setInvalid] = useState(false);
+  const editingRef = useRef(false);
+  useEffect(() => {
+    if (!editingRef.current) setText(format(value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <input
+      {...props}
+      value={text}
+      onFocus={() => {
+        editingRef.current = true;
+      }}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setText(raw);
+        const res = parse(raw);
+        if (res.ok) {
+          setInvalid(false);
+          onCommit(res.value);
+        } else {
+          setInvalid(true);
+        }
+      }}
+      onBlur={() => {
+        editingRef.current = false;
+        const res = parse(text);
+        if (res.ok) {
+          setInvalid(false);
+          onCommit(res.value);
+          setText(format(res.value));
+        } else {
+          setInvalid(false);
+          setText(format(value)); // discard the unparseable draft, restore last good
+        }
+      }}
+      className={clsx(
+        'rounded-lg border bg-surface-950/60 px-2 py-1 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none',
+        invalid ? 'border-rose-500/60' : 'border-white/10'
+      )}
+    />
+  );
+}
+
 function TransformRow({ t, onChange, onRemove }) {
   const input = (props) => (
     <input
@@ -403,9 +468,42 @@ function TransformRow({ t, onChange, onRemove }) {
     <div className="flex flex-wrap items-center gap-2 rounded-lg bg-black/20 px-2 py-1.5 text-xs">
       <span className="rounded bg-accent-500/15 px-1.5 py-0.5 font-mono text-[10px] text-accent-300">{t.type}</span>
       {t.type === 'repath' && input({ value: t.to, style: { width: 260 }, placeholder: 'uns/{1}/{3-}  ({n}=segment, {n-}=tail, {topic})', onChange: (e) => onChange({ ...t, to: e.target.value }) })}
-      {t.type === 'pick' && input({ value: (t.fields || []).join(','), style: { width: 220 }, placeholder: 'field1,field2', onChange: (e) => onChange({ ...t, fields: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }) })}
-      {t.type === 'rename' && input({ value: Object.entries(t.map || {}).map(([a, b]) => `${a}:${b}`).join(','), style: { width: 220 }, placeholder: 'old:new,old2:new2', onChange: (e) => onChange({ ...t, map: Object.fromEntries(e.target.value.split(',').map((p) => p.split(':').map((s) => s.trim())).filter((p) => p.length === 2 && p[0])) }) })}
-      {t.type === 'set' && input({ value: JSON.stringify(t.values || {}), style: { width: 220 }, placeholder: '{"site":"emmeloord"}', onChange: (e) => { try { onChange({ ...t, values: JSON.parse(e.target.value || '{}') }); } catch { /* keep typing */ } } })}
+      {t.type === 'pick' && (
+        <StructuredInput
+          value={t.fields || []}
+          format={(a) => (a || []).join(',')}
+          parse={(s) => ({ ok: true, value: s.split(',').map((x) => x.trim()).filter(Boolean) })}
+          onCommit={(fields) => onChange({ ...t, fields })}
+          style={{ width: 220 }}
+          placeholder="field1,field2"
+        />
+      )}
+      {t.type === 'rename' && (
+        <StructuredInput
+          value={t.map || {}}
+          format={(m) => Object.entries(m || {}).map(([a, b]) => `${a}:${b}`).join(',')}
+          parse={(s) => ({ ok: true, value: Object.fromEntries(s.split(',').map((p) => p.split(':').map((x) => x.trim())).filter((p) => p.length === 2 && p[0])) })}
+          onCommit={(map) => onChange({ ...t, map })}
+          style={{ width: 220 }}
+          placeholder="old:new,old2:new2"
+        />
+      )}
+      {t.type === 'set' && (
+        <StructuredInput
+          value={t.values || {}}
+          format={(v) => JSON.stringify(v || {})}
+          parse={(s) => {
+            try {
+              return { ok: true, value: JSON.parse(s.trim() || '{}') };
+            } catch {
+              return { ok: false };
+            }
+          }}
+          onCommit={(values) => onChange({ ...t, values })}
+          style={{ width: 220 }}
+          placeholder='{"site":"emmeloord"}'
+        />
+      )}
       {t.type === 'scale' && (
         <>
           {input({ value: t.field || '', style: { width: 90 }, placeholder: 'field (opt)', onChange: (e) => onChange({ ...t, field: e.target.value }) })}
@@ -449,6 +547,8 @@ function ModelsTab({ brokers }) {
     enabled: true,
     publishMode: 'on-change',
     intervalMs: 5000,
+    envelope: false,
+    staleMs: 60_000,
     target: { brokerId: brokers[0]?.id || '', topic: '', retain: true },
     attributes: [{ name: '', source: { brokerId: brokers[0]?.id || '', topic: '', field: '' } }]
   });
@@ -547,6 +647,30 @@ function ModelsTab({ brokers }) {
               <Field label="Interval (ms)">
                 <Input type="number" value={draft.intervalMs} onChange={(e) => setDraft({ ...draft, intervalMs: e.target.value })} />
               </Field>
+            )}
+          </div>
+          {/* TVQ quality envelope — the engine publishes {v,t,q} per attribute
+              so consumers can tell fresh (192) from stale (64) from never-seen
+              (0) instead of guessing from a bare null. */}
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.envelope)}
+                onChange={(e) => setDraft({ ...draft, envelope: e.target.checked })}
+                className="h-4 w-4 rounded border-white/20 bg-surface-950 accent-accent-500"
+              />
+              TVQ envelope
+            </label>
+            {draft.envelope && (
+              <Field label="Stale after (ms)" className="w-40">
+                <Input type="number" min="1000" value={draft.staleMs} onChange={(e) => setDraft({ ...draft, staleMs: e.target.value })} />
+              </Field>
+            )}
+            {draft.envelope && (
+              <p className="text-xs text-slate-500">
+                Publishes <span className="mono">{'{v,t,q}'}</span> per attribute; q drops to 64 when the source goes quiet past the stale window.
+              </p>
             )}
           </div>
           <h4 className="mb-1.5 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">Attributes</h4>
@@ -852,7 +976,7 @@ function RecorderTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listRecordings().then(setData).catch(() => {});
-    api.listHistorians().then((r) => setHistorians(r.historians)).catch(() => {});
+    api.listHistorians().then((r) => setHistorians(r?.historians ?? [])).catch(() => {});
   }, []);
   usePoll(load, 4000, [load]);
 
@@ -1014,7 +1138,7 @@ function ContractsTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listContracts().then(setData).catch(() => {});
-    api.contractViolations(100).then((r) => setViolations(r.violations)).catch(() => {});
+    api.contractViolations(100).then((r) => setViolations(r?.violations ?? [])).catch(() => {});
   }, []);
   usePoll(load, 5000, [load]);
 
@@ -1118,6 +1242,174 @@ function ContractsTab({ brokers }) {
           ))}
         </div>
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Codecs tab
+
+const BLANK_CODEC = { name: '', type: 'protobuf', brokerId: '', filter: '', messageType: '', schemaText: '' };
+
+const CODEC_SCHEMA_PLACEHOLDER = {
+  protobuf: 'syntax = "proto3";\npackage plant;\nmessage Telemetry {\n  double temperature = 1;\n  int32 rpm = 2;\n}',
+  avro: '{\n  "type": "record",\n  "name": "Reading",\n  "fields": [\n    { "name": "value", "type": "double" },\n    { "name": "unit", "type": "string" }\n  ]\n}'
+};
+
+function CodecsTab({ brokers }) {
+  const [data, setData] = useState({ codecs: [], counters: {} });
+  const [form, setForm] = useState(BLANK_CODEC);
+  const fileRef = useRef(null);
+  const load = useCallback(() => api.listCodecs().then(setData).catch(() => {}), []);
+  usePoll(load, 5000, [load]);
+
+  const save = async () => {
+    try {
+      await api.saveCodec({
+        name: form.name || null,
+        type: form.type,
+        brokerId: form.brokerId || null,
+        filter: form.filter,
+        messageType: form.type === 'protobuf' ? form.messageType : null,
+        schemaText: form.schemaText
+      });
+      setForm(BLANK_CODEC);
+      load();
+      toast.success('Codec saved');
+    } catch (e) {
+      toast.error(e.message); // carries the schema compiler's error on a 400
+    }
+  };
+
+  const onSchemaFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file after an edit
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((f) => ({ ...f, schemaText: String(reader.result || '') }));
+    reader.readAsText(file);
+  };
+
+  return (
+    <>
+      <p className="rounded-xl border border-white/5 bg-surface-950/40 px-3 py-2 text-xs text-slate-400">
+        Codecs decode binary payloads — Protobuf or Avro — on matching topics into structured JSON at ingest, so
+        telemetry shows as fields instead of a base64 blob. Sparkplug B (<code>spBv1.0/…</code>) is decoded
+        automatically and never needs a codec; a failed decode falls back to the raw payload.
+      </p>
+
+      {data.codecs.length === 0 && (
+        <EmptyState
+          icon={Binary}
+          title="No payload codecs yet"
+          hint="Register a Protobuf or Avro schema against a topic filter — matching binary messages decode to structured JSON before the explorer, pipelines, and contracts see them."
+        />
+      )}
+
+      {data.codecs.map((c) => {
+        const k = data.counters[c.id] || {};
+        return (
+          <Card key={c.id} className="p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-100">{c.name || c.filter}</span>
+                  <Badge>{c.type}</Badge>
+                  {c.type === 'protobuf' && c.messageType && (
+                    <span className="truncate font-mono text-[10px] text-slate-500">{c.messageType}</span>
+                  )}
+                </div>
+                <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                  {c.brokerId ? brokerName(brokers, c.brokerId) : 'any broker'} · {c.filter}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-3 text-[11px] text-slate-400">
+                <span title="decoded / decode errors" className="font-mono">
+                  {(k.decoded || 0).toLocaleString()} decoded ·{' '}
+                  <span className={k.errors ? 'text-rose-300' : ''}>{k.errors || 0} err</span>
+                </span>
+                <button
+                  onClick={() =>
+                    window.confirm(`Delete codec "${c.name || c.filter}"? Matching topics fall back to raw text/base64.`) &&
+                    api.deleteCodec(c.id).then(load)
+                  }
+                  title="Delete codec"
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-rose-300"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+            {k.lastError && <p className="mt-1 truncate text-[11px] text-rose-300">{k.lastError}</p>}
+          </Card>
+        );
+      })}
+
+      <Card className="p-4">
+        <h3 className="mb-3 text-sm font-semibold text-slate-200">New codec</h3>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Field label="Name">
+            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="line1 telemetry" />
+          </Field>
+          <Field label="Type">
+            <select
+              value={form.type}
+              onChange={(e) => setForm({ ...form, type: e.target.value })}
+              className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="protobuf">Protobuf (.proto)</option>
+              <option value="avro">Avro (.avsc)</option>
+            </select>
+          </Field>
+          <Field label="Broker">
+            <select
+              value={form.brokerId}
+              onChange={(e) => setForm({ ...form, brokerId: e.target.value })}
+              className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="">any broker</option>
+              {brokers.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Topic filter">
+            <Input value={form.filter} onChange={(e) => setForm({ ...form, filter: e.target.value })} placeholder="plant/+/telemetry" />
+          </Field>
+          {form.type === 'protobuf' && (
+            <Field label="Message type (fully qualified)" className="col-span-2">
+              <Input
+                value={form.messageType}
+                onChange={(e) => setForm({ ...form, messageType: e.target.value })}
+                placeholder="plant.Telemetry"
+              />
+            </Field>
+          )}
+        </div>
+        <Field label={form.type === 'protobuf' ? 'Schema (.proto)' : 'Schema (.avsc JSON)'} className="mt-3">
+          <textarea
+            value={form.schemaText}
+            onChange={(e) => setForm({ ...form, schemaText: e.target.value })}
+            rows={8}
+            spellCheck={false}
+            placeholder={CODEC_SCHEMA_PLACEHOLDER[form.type]}
+            className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-3 py-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
+          />
+        </Field>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button onClick={save} disabled={!form.filter || !form.schemaText || (form.type === 'protobuf' && !form.messageType)}>
+            <Plus size={14} className="mr-1" /> Add codec
+          </Button>
+          <Button variant="outline" onClick={() => fileRef.current?.click()}>
+            <Upload size={14} className="mr-1" /> Load schema file…
+          </Button>
+          <input ref={fileRef} type="file" accept=".proto,.avsc,.json" className="hidden" onChange={onSchemaFile} />
+          <span className="text-[11px] text-slate-500">
+            The schema is compiled on save — a bad schema is rejected with the compiler&apos;s error.
+          </span>
+        </div>
+      </Card>
     </>
   );
 }

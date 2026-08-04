@@ -1,6 +1,6 @@
 # 🏭 Manifold
 
-**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, explored, unified, and shaped into a Unified Namespace.
+**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · i3X, explored, unified, and shaped into a Unified Namespace.
 
 [![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
 
@@ -26,7 +26,7 @@
 
 ```mermaid
 flowchart LR
-    SRC[Brokers, OPC UA,<br/>CESMII, i3X] --> M[Manifold server]
+    SRC[Brokers, OPC UA,<br/>i3X] --> M[Manifold server]
     M --> UI[Web UI<br/>graphs, UNS, Flows]
     M --> MCP[MCP server<br/>AI agents]
     M --> H[(Historians)]

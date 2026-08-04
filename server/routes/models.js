@@ -11,10 +11,11 @@ router.get('/', (req, res) => {
   res.json({ models: profiles.listIn('models'), status: models.getStatus() });
 });
 
-// POST /api/models { id?, name, enabled, target, publishMode, intervalMs?, attributes }
+// POST /api/models { id?, name, enabled, target, publishMode, intervalMs?, attributes,
+//                    envelope?, staleMs? } — envelope publishes {v,t,q} TVQ per attribute
 router.post('/', (req, res) => {
   const { profiles, models } = req.app.locals.services;
-  const { id, name, enabled, target, publishMode, intervalMs, attributes } = req.body || {};
+  const { id, name, enabled, target, publishMode, intervalMs, attributes, envelope, staleMs } = req.body || {};
   if (!target?.brokerId || !target?.topic) return res.status(400).json({ error: 'target.brokerId and target.topic are required' });
   if (!Array.isArray(attributes) || attributes.length === 0) {
     return res.status(400).json({ error: 'attributes[] is required' });
@@ -33,6 +34,10 @@ router.post('/', (req, res) => {
     target: { brokerId: target.brokerId, topic: target.topic, retain: Boolean(target.retain) },
     publishMode: publishMode === 'interval' ? 'interval' : 'on-change',
     intervalMs: Number(intervalMs) > 0 ? Number(intervalMs) : 5000,
+    // TVQ quality envelope — the engine already honors both; without
+    // persisting them here the feature was unreachable from the API.
+    envelope: Boolean(envelope),
+    staleMs: Number(staleMs) > 0 ? Number(staleMs) : 60_000,
     attributes
   });
   models.syncTimers();

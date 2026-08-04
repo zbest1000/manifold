@@ -12,7 +12,6 @@ require('dotenv').config();
 const MqttManager = require('./services/mqttManager');
 const OpcuaManager = require('./services/opcuaManager');
 const DiscoveryService = require('./services/discovery');
-const CesmiiClient = require('./services/cesmiiClient');
 const I3xClient = require('./services/i3xClient');
 const ProfileStore = require('./services/profileStore');
 const HistoryStore = require('./services/historyStore');
@@ -27,11 +26,12 @@ const { AuditLog, redact } = require('./services/auditLog');
 const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
+const { BrokerCanary } = require('./services/brokerCanary');
+const { ClientLifecycle } = require('./services/clientLifecycle');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
 const systemRoutes = require('./routes/system');
-const cesmiiRoutes = require('./routes/cesmii');
 const i3xRoutes = require('./routes/i3x');
 const unsRoutes = require('./routes/uns');
 const alertRoutes = require('./routes/alerts');
@@ -39,6 +39,7 @@ const historianRoutes = require('./routes/historians');
 const pipelineRoutes = require('./routes/pipelines');
 const recorderRoutes = require('./routes/recorder');
 const contractRoutes = require('./routes/contracts');
+const codecRoutes = require('./routes/codecs');
 const modelRoutes = require('./routes/models');
 const tagRoutes = require('./routes/tags');
 
@@ -184,7 +185,6 @@ const mqttManager = new MqttManager(io);
 const opcuaManager = new OpcuaManager(io);
 const i3x = new I3xClient();
 const discovery = new DiscoveryService(io, { i3x });
-const cesmii = new CesmiiClient();
 const profiles = new ProfileStore();
 const history = new HistoryStore(mqttManager);
 const alerts = new AlertEngine({ io, profiles, mqttManager });
@@ -197,11 +197,13 @@ const models = new ModelEngine({ mqttManager, profiles });
 const audit = new AuditLog();
 const sparkplugPublisher = new SparkplugPublisher({ profiles });
 const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher });
+const canary = new BrokerCanary({ mqttManager });
+const lifecycle = new ClientLifecycle({ mqttManager });
 
 app.locals.services = {
-  mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
+  mqttManager, opcuaManager, discovery, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings
+  outbox, audit, sparkplugPublisher, bindings, canary, lifecycle
 };
 
 // Every mutating API call lands in the audit trail (role, ip, route, outcome).
@@ -224,13 +226,6 @@ function restoreProfiles() {
       console.warn(`restore: opcua ${config.endpointUrl}: ${error.message}`);
     });
   }
-  if (profiles.data.cesmii) {
-    try {
-      cesmii.configure(profiles.data.cesmii);
-    } catch (error) {
-      console.warn(`restore: cesmii: ${error.message}`);
-    }
-  }
   if (profiles.data.i3x) {
     i3x.connect(profiles.data.i3x).catch((error) => {
       console.warn(`restore: i3x ${profiles.data.i3x?.baseUrl}: ${error.message}`);
@@ -252,6 +247,8 @@ recorder.start();
 contracts.start();
 models.start();
 bindings.start();
+canary.start();
+lifecycle.start();
 
 // Engine metrics stream over the socket the client already holds — the UI
 // shouldn't have to poll REST for numbers we can push.
@@ -270,7 +267,6 @@ engineMetricsTimer.unref?.();
 app.use('/api/mqtt', mqttRoutes);
 app.use('/api/opcua', opcuaRoutes);
 app.use('/api/system', systemRoutes);
-app.use('/api/cesmii', cesmiiRoutes);
 app.use('/api/i3x', i3xRoutes);
 app.use('/api/uns', unsRoutes);
 app.use('/api/alerts', alertRoutes);
@@ -278,6 +274,7 @@ app.use('/api/historians', historianRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/recorder', recorderRoutes);
 app.use('/api/contracts', contractRoutes);
+app.use('/api/codecs', codecRoutes.init(app.locals.services));
 app.use('/api/models', modelRoutes);
 app.use('/api/tags', tagRoutes);
 

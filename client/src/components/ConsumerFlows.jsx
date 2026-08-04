@@ -3,6 +3,7 @@ import { KeyRound, Users, Radio, RefreshCw, Trash2, ShieldCheck, AlertTriangle, 
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import { buildLineageGraph, coverageToMatchIds } from '@/graph/buildGraph';
+import { DEFAULT_STYLE } from '@/graph/graphStyles';
 import { topicMatches } from '@/lib/mqtt';
 import ForceGraph from '@/graph/ForceGraph';
 import { Card, Badge, Button, Input, Field, EmptyState } from '@/components/ui';
@@ -18,8 +19,11 @@ import { Card, Badge, Button, Input, Field, EmptyState } from '@/components/ui';
  * Broker → Client → Filter (n matches) → matched subtrees → (drill-down) leaves.
  * Dormant filters (matching nothing) are flagged — dead wiring is a finding.
  */
-export default function ConsumerFlows({ broker }) {
+export default function ConsumerFlows({ broker, theme = 'dark' }) {
   const graphStyle = useStore((s) => s.graphStyle);
+  // Light mode maps to the "Slate" paper preset; dark keeps the user's chosen
+  // graph style (falling back to the default if that choice is itself light).
+  const styleId = theme === 'light' ? 'slate' : graphStyle === 'slate' ? DEFAULT_STYLE : graphStyle;
   const setCoverage = useStore((s) => s.setCoverage);
   const [admin, setAdmin] = useState(null);
   const [form, setForm] = useState({ type: 'emqx', url: '', apiKey: '', apiSecret: '' });
@@ -28,10 +32,12 @@ export default function ConsumerFlows({ broker }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [expandBusy, setExpandBusy] = useState(false);
   const graphRef = useRef(null);
   // Per-client traffic rates, derived by diffing the admin API's cumulative
   // counters between two refreshes (EMQX exposes them; HiveMQ doesn't).
   const countersRef = useRef(new Map()); // clientId -> { msgsIn, msgsOut, ts }
+  const loadSeq = useRef(0); // guards against out-of-order resolve responses
   const [clientRates, setClientRates] = useState(new Map());
 
   const refreshConfig = useCallback(async () => {
@@ -53,10 +59,14 @@ export default function ConsumerFlows({ broker }) {
 
   const load = useCallback(async () => {
     if (!broker?.id) return;
+    // Sequence guard: switching brokers while a resolve is in flight mustn't let
+    // the previous broker's response land under the new broker's label.
+    const seq = ++loadSeq.current;
     setBusy(true);
     setError(null);
     try {
       const res = await api.brokerAdminPubSub(broker.id, { resolve: true, sampleLimit: 50 });
+      if (seq !== loadSeq.current) return;
       setData(res);
       setExpanded(new Map());
       // Roll cumulative counters into per-client msg/s across refreshes.
@@ -77,9 +87,10 @@ export default function ConsumerFlows({ broker }) {
       }
       setClientRates(rates);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError(e.message || 'Failed to reach broker admin API');
     } finally {
-      setBusy(false);
+      if (seq === loadSeq.current) setBusy(false);
     }
   }, [broker?.id]);
 
@@ -136,6 +147,50 @@ export default function ConsumerFlows({ broker }) {
     },
     [broker?.id, expanded]
   );
+
+  // Expand all: breadth-first drill of every aggregate until only concrete
+  // leaves remain — each level is one batched round of /topictree fetches.
+  // The fetch guard is a runaway backstop for pathological namespaces, far
+  // beyond anything the resolution cap lets through.
+  const expandAllAggregates = useCallback(async () => {
+    if (!broker?.id || expandBusy) return;
+    setExpandBusy(true);
+    try {
+      const MAX_FETCHES = 400;
+      const next = new Map(expanded);
+      let frontier = graph.nodes
+        .filter((n) => n.kind === 'topic-agg' && n.meta?.path && !next.has(n.meta.path))
+        .map((n) => n.meta.path);
+      let fetches = 0;
+      while (frontier.length && fetches < MAX_FETCHES) {
+        const batch = frontier.splice(0, 25);
+        const results = await Promise.all(batch.map((p) => api.topicTree(broker.id, p, 300).catch(() => null)));
+        fetches += batch.length;
+        batch.forEach((p, i) => {
+          const children = results[i]?.children;
+          if (!children) return;
+          next.set(p, children);
+          for (const c of children) {
+            const isLeaf = c.isTopic && c.subtreeCount === 1;
+            if (!isLeaf && !next.has(c.path)) frontier.push(c.path);
+          }
+        });
+      }
+      // Functional merge, not an absolute set: a manual double-click expand
+      // can land while the batched fetches are in flight, and an absolute
+      // setExpanded(next) — built from the call-time snapshot — would silently
+      // collapse it back. Overlay the drilled paths onto the latest state.
+      setExpanded((prev) => {
+        const merged = new Map(prev);
+        for (const [k, v] of next) merged.set(k, v);
+        return merged;
+      });
+    } finally {
+      setExpandBusy(false);
+    }
+  }, [broker?.id, expandBusy, expanded, graph]);
+
+  const collapseAllAggregates = useCallback(() => setExpanded(new Map()), []);
 
   // Clients receiving a concrete topic = filters that match it, reverse-mapped.
   const subscribersOfTopic = useCallback(
@@ -215,15 +270,15 @@ export default function ConsumerFlows({ broker }) {
 
   return (
     <div className="flex h-full w-full">
-      <div className="relative flex-1">
+      <div className="relative min-w-0 flex-1">
         {graph.nodes.length > 1 ? (
           <ForceGraph
             ref={graphRef}
             data={graph}
-            styleId={graphStyle}
+            styleId={styleId}
             layoutId="organic"
             selectedId={selected}
-            onSelect={setSelected}
+            onSelect={(n) => setSelected(n.id)}
             onExpand={expand}
           />
         ) : (
@@ -236,12 +291,48 @@ export default function ConsumerFlows({ broker }) {
           </div>
         )}
         {graph.nodes.length > 1 && (
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+          <div
+            className={`pointer-events-none absolute bottom-4 left-4 rounded-xl border px-3 py-2 text-[11px] backdrop-blur ${
+              theme === 'dark' ? 'border-white/10 bg-surface-900/70 text-slate-400' : 'border-slate-300/60 bg-white/85 text-slate-600'
+            }`}
+          >
             filters show exact match counts · double-click an aggregate to drill into real topics · red = dormant filter
           </div>
         )}
+        {graph.nodes.length > 1 && graph.nodes.some((n) => n.kind === 'topic-agg' || n.kind === 'topic-leaf') && (
+          <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+            <button
+              onClick={expandAllAggregates}
+              disabled={expandBusy}
+              title="Drill every matched namespace down to its concrete topics"
+              className={`rounded-lg border px-3 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur transition disabled:opacity-50 ${
+                theme === 'dark'
+                  ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/25 hover:text-slate-100'
+                  : 'border-slate-300/70 bg-white/90 text-slate-700 hover:border-slate-400 hover:text-slate-900'
+              }`}
+            >
+              {expandBusy ? 'Expanding…' : 'Expand all'}
+            </button>
+            <button
+              onClick={collapseAllAggregates}
+              disabled={expandBusy}
+              title="Fold every drilled namespace back to its aggregate"
+              className={`rounded-lg border px-3 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur transition disabled:opacity-50 ${
+                theme === 'dark'
+                  ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/25 hover:text-slate-100'
+                  : 'border-slate-300/70 bg-white/90 text-slate-700 hover:border-slate-400 hover:text-slate-900'
+              }`}
+            >
+              Collapse all
+            </button>
+          </div>
+        )}
         {data?.resolution && (
-          <div className="pointer-events-none absolute right-4 top-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+          <div
+            className={`pointer-events-none absolute right-4 top-4 rounded-xl border px-3 py-2 text-[11px] backdrop-blur ${
+              theme === 'dark' ? 'border-white/10 bg-surface-900/70 text-slate-500' : 'border-slate-300/60 bg-white/85 text-slate-600'
+            }`}
+          >
             resolved against {data.resolution.topicTotal.toLocaleString()} observed topics
             {data.resolution.dropped > 0 && ` · ${data.resolution.dropped.toLocaleString()} dropped at cap`}
           </div>

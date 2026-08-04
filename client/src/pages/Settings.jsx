@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Palette, Terminal, Info, Check, BellRing, Trash2, Plus, Pencil, FileDown, FileUp, ScrollText } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Palette, Terminal, Info, Check, BellRing, FileDown, FileUp, ScrollText, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
-import { Card, Badge, Button, Input, Field } from '@/components/ui';
+import { Card, Badge, Button } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
-import { formatDistanceToNow } from 'date-fns';
 
 const MCP_SNIPPET = `{
   "mcpServers": {
@@ -23,7 +23,7 @@ export default function Settings() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Settings" subtitle="Graph appearance and integrations" />
+      <PageHeader title="Settings" subtitle="Graph appearance and integrations" helpTopic="guide-settings" />
 
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <Card className="p-5">
@@ -79,7 +79,23 @@ export default function Settings() {
           </div>
         </Card>
 
-        <AlertRulesCard />
+        {/* Alert rules grew into their own page — keep a signpost here since
+            Settings is where users found them for several releases. */}
+        <Card className="p-5">
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <BellRing size={16} className="text-accent-400" /> Alert rules
+          </h2>
+          <p className="mb-3 text-sm text-slate-400">
+            Alerting moved to its own page: active alarms, rule management, and the firing history now live under{' '}
+            <b>Observe → Alerts</b>.
+          </p>
+          <Link
+            to="/alerts"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 px-3.5 py-2 text-sm font-medium text-slate-200 transition hover:border-white/20 hover:bg-white/5"
+          >
+            Open Alerts <ArrowRight size={14} />
+          </Link>
+        </Card>
 
         <ConfigCard />
 
@@ -234,292 +250,3 @@ function AuditCard() {
   );
 }
 
-const RULE_LABEL = {
-  'branch-silent': 'Branch silent',
-  'topic-silent': 'Topic silent',
-  'new-topic': 'New topic appears',
-  'value-threshold': 'Value threshold'
-};
-
-const VALUE_OPS = ['>', '>=', '<', '<=', '==', '!='];
-
-const EMPTY_RULE_FORM = {
-  id: null,
-  type: 'branch-silent',
-  brokerId: '',
-  path: '',
-  topic: '',
-  prefix: '',
-  thresholdSec: 60,
-  field: '',
-  op: '>',
-  value: '',
-  sustainSec: '',
-  clearValue: '',
-  webhookUrl: '',
-  name: ''
-};
-
-// Compact one-line definition of a value rule for the rule list,
-// e.g. "plant/+/temp · v > 80 for 30s, clear at 75".
-function valueRuleSummary(r) {
-  let s = ` · ${r.topic} · ${r.field || 'value'} ${r.op} ${r.value}`;
-  if (r.sustainMs > 0) s += ` for ${Math.round(r.sustainMs / 1000)}s`;
-  if (r.clearValue !== null && r.clearValue !== undefined) s += `, clear at ${r.clearValue}`;
-  return s;
-}
-
-// Alert rules: watch the namespace actively — a branch going quiet, a specific
-// topic dying, or unexpected topics appearing. Rules are evaluated server-side
-// every 15s; firings hit the socket, the events feed here, and (optionally) a
-// webhook.
-function AlertRulesCard() {
-  const brokers = useStore((s) => s.brokers);
-  const [rules, setRules] = useState([]);
-  const [events, setEvents] = useState([]);
-  const [form, setForm] = useState(EMPTY_RULE_FORM);
-  const [busy, setBusy] = useState(false);
-  const connected = brokers.filter((b) => b.status === 'connected');
-
-  const load = () => {
-    api.listAlertRules().then((r) => setRules(r.rules)).catch(() => {});
-    api.alertEvents(50).then((r) => setEvents(r.events)).catch(() => {});
-  };
-  useEffect(() => {
-    load();
-    const t = setInterval(() => api.alertEvents(50).then((r) => setEvents(r.events)).catch(() => {}), 10_000);
-    return () => clearInterval(t);
-  }, []);
-
-  const save = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const body = {
-        id: form.id || undefined, // keeping the id makes POST an upsert (edit)
-        name: form.name || null,
-        type: form.type,
-        brokerId: form.brokerId || connected[0]?.id,
-        path: form.path,
-        topic: form.topic || null,
-        prefix: form.prefix,
-        thresholdMs: Number(form.thresholdSec) * 1000,
-        webhookUrl: form.webhookUrl || null
-      };
-      if (form.type === 'value-threshold') {
-        body.field = form.field || null;
-        body.op = form.op;
-        body.value = Number(form.value);
-        body.sustainMs = form.sustainSec === '' ? 0 : Number(form.sustainSec) * 1000;
-        body.clearValue = form.clearValue === '' ? null : Number(form.clearValue);
-      }
-      await api.saveAlertRule(body);
-      setForm((f) => ({ ...EMPTY_RULE_FORM, type: f.type, brokerId: f.brokerId, thresholdSec: f.thresholdSec }));
-      load();
-    } catch {
-      // pushLog captured it
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // Load any existing rule (all types) back into the form for editing.
-  const edit = (r) => {
-    setForm({
-      id: r.id,
-      type: r.type,
-      brokerId: r.brokerId || '',
-      path: r.path || '',
-      topic: r.topic || '',
-      prefix: r.prefix || '',
-      thresholdSec: Math.round((r.thresholdMs || 60_000) / 1000),
-      field: r.field || '',
-      op: r.op || '>',
-      value: r.value ?? '',
-      sustainSec: r.sustainMs > 0 ? Math.round(r.sustainMs / 1000) : '',
-      clearValue: r.clearValue ?? '',
-      webhookUrl: r.webhookUrl || '',
-      name: r.name || ''
-    });
-  };
-
-  const remove = async (id) => {
-    try {
-      await api.deleteAlertRule(id);
-      if (form.id === id) setForm(EMPTY_RULE_FORM);
-      load();
-    } catch {
-      // pushLog captured it
-    }
-  };
-
-  const brokerName = (id) => brokers.find((b) => b.id === id)?.name || id?.slice(0, 8) || '—';
-
-  return (
-    <Card className="p-5">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
-        <BellRing size={16} className="text-accent-400" /> Alert rules
-      </h2>
-      <p className="mb-3 text-sm text-slate-400">
-        Watch the namespace actively: get notified when a branch goes silent, a topic stops publishing, or new topics
-        appear where they shouldn&apos;t. Evaluated server-side; optional webhook per rule.
-      </p>
-
-      {rules.length > 0 && (
-        <div className="mb-4 space-y-1.5">
-          {rules.map((r) => (
-            <div
-              key={r.id}
-              className={clsx(
-                'flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-2 text-xs',
-                form.id === r.id && 'ring-1 ring-accent-500/50'
-              )}
-            >
-              <span className="min-w-0">
-                <span className="font-medium text-slate-200">{r.name || RULE_LABEL[r.type]}</span>
-                <span className="ml-2 text-slate-500">
-                  {RULE_LABEL[r.type]} · {brokerName(r.brokerId)}
-                  {r.type === 'branch-silent' && ` · ${r.path || '(whole namespace)'} > ${Math.round(r.thresholdMs / 1000)}s`}
-                  {r.type === 'topic-silent' && ` · ${r.topic} > ${Math.round(r.thresholdMs / 1000)}s`}
-                  {r.type === 'new-topic' && (r.prefix ? ` · under ${r.prefix}` : ' · anywhere')}
-                  {r.type === 'value-threshold' && valueRuleSummary(r)}
-                  {r.webhookUrl && ' · webhook'}
-                </span>
-              </span>
-              <span className="flex shrink-0 items-center">
-                <button aria-label="Edit rule" onClick={() => edit(r)} className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-accent-400">
-                  <Pencil size={13} />
-                </button>
-                <button aria-label="Delete rule" onClick={() => remove(r.id)} className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-red-400">
-                  <Trash2 size={13} />
-                </button>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <form onSubmit={save} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Field label="Type">
-          <select
-            value={form.type}
-            onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
-            className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
-          >
-            <option value="branch-silent">Branch silent</option>
-            <option value="topic-silent">Topic silent</option>
-            <option value="new-topic">New topic appears</option>
-            <option value="value-threshold">Value threshold</option>
-          </select>
-        </Field>
-        <Field label="Broker">
-          <select
-            value={form.brokerId || connected[0]?.id || ''}
-            onChange={(e) => setForm((f) => ({ ...f, brokerId: e.target.value }))}
-            className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
-          >
-            {connected.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-            {connected.length === 0 && <option value="">no connected brokers</option>}
-          </select>
-        </Field>
-        {form.type === 'branch-silent' && (
-          <Field label="Branch path">
-            <Input placeholder="plant/line1 (empty = whole namespace)" value={form.path} onChange={(e) => setForm((f) => ({ ...f, path: e.target.value }))} />
-          </Field>
-        )}
-        {form.type === 'topic-silent' && (
-          <Field label="Topic">
-            <Input placeholder="plant/line1/temp" value={form.topic} onChange={(e) => setForm((f) => ({ ...f, topic: e.target.value }))} required />
-          </Field>
-        )}
-        {form.type === 'new-topic' && (
-          <Field label="Prefix (optional)">
-            <Input placeholder="plant/" value={form.prefix} onChange={(e) => setForm((f) => ({ ...f, prefix: e.target.value }))} />
-          </Field>
-        )}
-        {(form.type === 'branch-silent' || form.type === 'topic-silent') && (
-          <Field label="Threshold (s)">
-            <Input type="number" min="5" value={form.thresholdSec} onChange={(e) => setForm((f) => ({ ...f, thresholdSec: e.target.value }))} />
-          </Field>
-        )}
-        {form.type === 'value-threshold' && (
-          <>
-            <Field label="Topic (exact or +/# filter)">
-              <Input placeholder="plant/+/temp" value={form.topic} onChange={(e) => setForm((f) => ({ ...f, topic: e.target.value }))} required />
-            </Field>
-            <Field label="Field (optional dot-path)">
-              <Input placeholder="v or data.temp (empty = payload)" value={form.field} onChange={(e) => setForm((f) => ({ ...f, field: e.target.value }))} />
-            </Field>
-            <Field label="Operator">
-              <select
-                value={form.op}
-                onChange={(e) => setForm((f) => ({ ...f, op: e.target.value }))}
-                className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
-              >
-                {VALUE_OPS.map((op) => (
-                  <option key={op} value={op}>
-                    {op}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Value">
-              <Input type="number" step="any" placeholder="80" value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))} required />
-            </Field>
-            <Field label="Sustain (s, optional)">
-              <Input type="number" min="0" step="any" placeholder="0 = immediate" value={form.sustainSec} onChange={(e) => setForm((f) => ({ ...f, sustainSec: e.target.value }))} />
-            </Field>
-            <Field label="Clear value (optional)">
-              <Input type="number" step="any" placeholder="hysteresis clear level" value={form.clearValue} onChange={(e) => setForm((f) => ({ ...f, clearValue: e.target.value }))} />
-            </Field>
-          </>
-        )}
-        <Field label="Webhook URL (optional)" className="col-span-2">
-          <Input placeholder="https://hooks.example.com/…" value={form.webhookUrl} onChange={(e) => setForm((f) => ({ ...f, webhookUrl: e.target.value }))} />
-        </Field>
-        <div className="flex items-end gap-2">
-          <Button type="submit" disabled={busy || connected.length === 0}>
-            {form.id ? (
-              <>
-                <Check size={14} className="mr-1" /> Save rule
-              </>
-            ) : (
-              <>
-                <Plus size={14} className="mr-1" /> Add rule
-              </>
-            )}
-          </Button>
-          {form.id && (
-            <Button type="button" variant="ghost" onClick={() => setForm(EMPTY_RULE_FORM)}>
-              Cancel
-            </Button>
-          )}
-        </div>
-      </form>
-
-      {events.length > 0 && (
-        <div className="mt-4">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent alerts</h3>
-          <div className="max-h-48 space-y-1 overflow-y-auto">
-            {events.map((e, i) => (
-              <div key={i} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-1.5 text-xs">
-                <span className="min-w-0 truncate">
-                  <span className={clsx('mr-2 font-semibold', e.status === 'firing' ? 'text-red-400' : e.status === 'resolved' ? 'text-emerald-400' : 'text-sky-400')}>
-                    {e.status}
-                  </span>
-                  <span className="text-slate-300">{e.ruleName}</span>
-                  <span className="ml-2 text-slate-500">{e.detail}</span>
-                </span>
-                <span className="shrink-0 text-[10px] text-slate-500">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}

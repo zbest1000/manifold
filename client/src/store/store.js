@@ -111,6 +111,9 @@ export const useStore = create((set, get) => ({
   flowEnabled: localStorage.getItem('tc.flowEnabled') !== 'false',
   activitySize: localStorage.getItem('tc.activitySize') === 'true',
   showValues: localStorage.getItem('tc.showValues') !== 'false',
+  // Node-name labels on the 2D graphs: 'auto' shows them when few enough are
+  // in view to read; 'on' forces them whenever zoomed in; 'off' hides them.
+  labelMode: localStorage.getItem('tc.labelMode') || 'auto',
   showMinimap: localStorage.getItem('tc.showMinimap') === 'true',
 
   // Sidebar collapse (icon-only rail), persisted.
@@ -142,6 +145,10 @@ export const useStore = create((set, get) => ({
   setActivitySize: (v) => {
     localStorage.setItem('tc.activitySize', String(v));
     set({ activitySize: v });
+  },
+  setLabelMode: (v) => {
+    localStorage.setItem('tc.labelMode', v);
+    set({ labelMode: v });
   },
   setShowValues: (v) => {
     localStorage.setItem('tc.showValues', String(v));
@@ -269,6 +276,56 @@ export const useStore = create((set, get) => ({
       };
     }),
   clearLogs: () => set({ logs: [], unseen: 0 }),
+
+  // --- Alarms: live feed from the server alert engine (socket 'alert').
+  // `alerts` is the recent event feed (newest first, capped). `activeAlarms`
+  // tracks what is firing RIGHT NOW, keyed `ruleId|topic` — wildcard
+  // value-threshold rules fire per concrete topic, so one pump recovering must
+  // not clear another pump's alarm (mirrors the engine's per-topic state).
+  alerts: [],
+  alertUnseen: 0,
+  activeAlarms: {}, // `${ruleId}|${topic||''}` -> firing event
+  ingestAlert: (evt) =>
+    set((s) => {
+      const key = `${evt.ruleId}|${evt.topic || ''}`;
+      const activeAlarms = { ...s.activeAlarms };
+      if (evt.status === 'firing') activeAlarms[key] = evt;
+      else if (evt.status === 'resolved') delete activeAlarms[key];
+      else if (evt.status === 'acknowledged' && activeAlarms[key]) {
+        // The alarm stays active (condition still true) — it's just owned now.
+        activeAlarms[key] = { ...activeAlarms[key], ackBy: evt.ackBy, ackAt: evt.ts };
+      }
+      return {
+        alerts: [evt, ...s.alerts].slice(0, 200),
+        activeAlarms,
+        // Only NEW problems demand attention: resolved is good news and an
+        // acknowledgement means someone is already on it.
+        alertUnseen: evt.status === 'resolved' || evt.status === 'acknowledged' ? s.alertUnseen : s.alertUnseen + 1
+      };
+    }),
+  // Seed current firing state after a page load (from GET /api/alerts/active)
+  // so alarms that fired before this tab opened still show as active.
+  seedActiveAlarms: (events) =>
+    set(() => {
+      const activeAlarms = {};
+      for (const evt of events || []) activeAlarms[`${evt.ruleId}|${evt.topic || ''}`] = evt;
+      return { activeAlarms };
+    }),
+  markAlertsSeen: () => set({ alertUnseen: 0 }),
+
+  // --- Help center. `helpTopic` deep-links to a specific entry (pages call
+  // openHelp('guide-alarm') from their headers). First open remembers itself so
+  // the sidebar's "new here" pulse only shows until help has been seen once.
+  helpOpen: false,
+  helpTopic: null,
+  helpSeen: localStorage.getItem('tc.helpSeen') === 'true',
+  openHelp: (topic = null) =>
+    set(() => {
+      localStorage.setItem('tc.helpSeen', 'true');
+      return { helpOpen: true, helpTopic: topic, helpSeen: true };
+    }),
+  closeHelp: () => set({ helpOpen: false, helpTopic: null }),
+
   logOpen: false,
   logBrokerFilter: null, // when set, the panel shows only this broker's entries
   openLog: (brokerId = null) => set({ logOpen: true, logBrokerFilter: brokerId ?? null, unseen: 0 }),
@@ -288,7 +345,12 @@ export function initRealtime() {
   wired = true;
   const s = useStore.getState();
 
-  socket.on('connect', () => useStore.getState().setConnected(true));
+  socket.on('connect', () => {
+    useStore.getState().setConnected(true);
+    // Sync alarm state on every (re)connect: alarms that fired before this tab
+    // opened — or while the socket was down — still show as active.
+    api.alertsActive().then((r) => useStore.getState().seedActiveAlarms(r.active)).catch(() => {});
+  });
   socket.on('disconnect', () => useStore.getState().setConnected(false));
 
   // Throttle connect_error: socket.io retries every second while the server is
@@ -338,10 +400,59 @@ export function initRealtime() {
   socket.on('opcua-disconnected', () => refreshOpcua());
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
 
+  // Alert engine firings/resolutions land here at message latency. Firings get
+  // a toast (throttled per rule — a flapping sensor must not bury the UI) and a
+  // warning log entry; resolutions clear the active alarm quietly.
+  const lastAlertToast = new Map();
+  socket.on('alert', (evt) => {
+    s.ingestAlert(evt);
+    if (evt.status === 'firing' || evt.status === 'event') {
+      const level = evt.status === 'firing' ? 'warning' : 'info';
+      s.pushLog(level, 'alert', `${evt.ruleName}: ${evt.detail || evt.status}`, { brokerId: evt.brokerId, topic: evt.topic });
+      const now = Date.now();
+      if (evt.status === 'firing' && now - (lastAlertToast.get(evt.ruleId) || 0) > 30_000) {
+        lastAlertToast.set(evt.ruleId, now);
+        toast(`⚠ ${evt.ruleName}${evt.detail ? ` — ${evt.detail}` : ''}`, { duration: 6000 });
+      }
+    } else if (evt.status === 'resolved') {
+      s.pushLog('info', 'alert', `${evt.ruleName}: ${evt.detail || 'resolved'}`, { brokerId: evt.brokerId, topic: evt.topic });
+    }
+  });
+
+  // Schema drift is invisible unless you happen to be on the Contracts tab —
+  // surface violations app-wide. Toast throttled per contract (a bad publisher
+  // can violate on every message); every one still lands in the log.
+  const lastViolationToast = new Map();
+  socket.on('contract-violation', (evt) => {
+    const first = evt.problems?.[0];
+    const summary = `Contract "${evt.contractName}" violated on ${evt.topic}${first ? ` — ${first.field ? `${first.field}: ` : ''}${first.message || first.problem || ''}` : ''}`;
+    s.pushLog('warning', 'contract', summary, { brokerId: evt.brokerId, topic: evt.topic });
+    const now = Date.now();
+    if (now - (lastViolationToast.get(evt.contractId) || 0) > 60_000) {
+      lastViolationToast.set(evt.contractId, now);
+      toast(`⚠ ${summary}`, { duration: 6000 });
+    }
+  });
+
+  // A silent QoS downgrade is a silent data-loss risk — say it out loud.
+  socket.on('subscription-downgraded', ({ brokerId, topic, from, to, reason }) => {
+    const msg = `Subscription "${topic}" downgraded QoS ${from} → ${to} on ${brokerName(brokerId)}`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    toast(`⚠ ${msg}`, { duration: 8000 });
+  });
+
+  // Public/managed brokers often refuse bare '#' by ACL; the server walks to
+  // the nearest allowed root-equivalent. Say so — the user asked for '#'.
+  socket.on('subscription-fallback', ({ brokerId, topic, fallback, reason }) => {
+    const msg = `Broker refused "${topic}" on ${brokerName(brokerId)} — subscribed "${fallback}" instead`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    toast(`⚠ ${msg}`, { duration: 8000 });
+  });
+
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
   socket.on('discovery-result', (r) => s.addDiscoveryResult(r));
-  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [] }));
+  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [], completedAt: Date.now() }));
   socket.on('discovery-error', ({ error } = {}) => {
     s.setDiscovery({ scanning: false });
     if (error) reportError(s, 'discovery', error);

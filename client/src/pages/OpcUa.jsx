@@ -74,13 +74,23 @@ export default function OpcUa() {
 
   // Load root children whenever the active connection changes
   useEffect(() => {
-    if (!connectionId) return;
+    if (!connectionId) return undefined;
+    // alive guard: switching connections A→B mustn't let A's browse resolve
+    // last and overwrite B's tree.
+    let alive = true;
     setExpanded(new Map());
     setSelected(null);
     api
       .opcuaBrowse(connectionId, ROOT)
-      .then((res) => setExpanded(new Map([[ROOT, res.references]])))
-      .catch((e) => toast.error(e.message));
+      .then((res) => {
+        if (alive) setExpanded(new Map([[ROOT, res?.references ?? []]]));
+      })
+      .catch((e) => {
+        if (alive) toast.error(e.message);
+      });
+    return () => {
+      alive = false;
+    };
   }, [connectionId]);
 
   const connection = opcua.find((c) => c.id === connectionId);
@@ -194,6 +204,7 @@ export default function OpcUa() {
         <PageHeader
           title="OPC UA"
           subtitle="Browse an OPC UA address space as a node graph and watch live values"
+          helpTopic="guide-opcua"
           actions={
             <Button onClick={() => setShowForm(true)}>
               <Plus size={15} /> Connect server
@@ -215,6 +226,7 @@ export default function OpcUa() {
       <PageHeader
         title="OPC UA"
         subtitle={connection ? `${graph.nodes.length} nodes · double-click to expand` : 'Connect an endpoint'}
+        helpTopic="guide-opcua"
         actions={
           <div className="flex items-center gap-2">
             {connection && (
@@ -436,6 +448,10 @@ export default function OpcUa() {
 
         {selected && (
           <NodePanel
+            // Remount per node: without a key React reuses the instance and the
+            // `monitoring` flag leaks across selections — a fresh node shows a
+            // false "Monitoring live" and the cleanup unmonitors the WRONG node.
+            key={selected.id}
             node={selected}
             connectionId={connectionId}
             values={opcuaValues[connectionId] || {}}

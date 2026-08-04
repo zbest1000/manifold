@@ -63,6 +63,7 @@ export default function Overview() {
       <PageHeader
         title="Overview"
         subtitle="Live snapshot of your MQTT and OPC UA connections"
+        helpTopic="what-is-manifold"
         actions={
           <Link to="/discovery">
             <Button variant="outline">
@@ -131,7 +132,7 @@ export default function Overview() {
               warn={sum(engine?.bindings, 'errors') > 0}
             />
             <HealthCard
-              to="/settings"
+              to="/alerts"
               icon={BellRing}
               label="Alerts"
               value={alerts?.recent ?? 0}

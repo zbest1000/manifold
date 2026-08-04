@@ -17,6 +17,12 @@ const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 // history per topic. Socket forwarding is batched so the initial retained
 // burst of a huge broker doesn't emit millions of individual events.
 const MAX_TOPICS = 2_000_000; // per-broker topic cap (guards server memory)
+// Managed/public brokers commonly deny bare '#' (and often '+/#') by ACL —
+// broker.emqx.io does exactly this — while granting deeper wildcards. When a
+// root subscription is refused outright, walk to the nearest root-equivalent
+// instead of sitting connected and ingesting nothing. '+/+/#' misses only
+// single-level topics, which hierarchical namespaces don't use.
+const WILDCARD_FALLBACKS = { '#': '+/#', '+/#': '+/+/#' };
 const GLOBAL_RECENT = 5000; // recent messages kept across all topics, per broker
 const FLUSH_MS = 100; // coalesce + forward on this cadence
 const FORWARD_CAP = 5000; // max topics forwarded per flush (sample beyond this)
@@ -57,6 +63,7 @@ class MqttManager extends EventEmitter {
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
+    this.codecs = null; // PayloadCodecs registry (attached at /api/codecs mount) — pre-JSON binary decode
 
     // unref so these background timers never keep the process alive on their own
     // (the HTTP server holds the event loop open in normal operation)
@@ -255,18 +262,21 @@ class MqttManager extends EventEmitter {
     info.metrics.messagesReceived++;
     info.metrics.bytesReceived += message.length;
 
-    store.ingest(topic, message, packet.qos, packet.retain);
+    const stored = store.ingest(topic, message, packet.qos, packet.retain);
     info.metrics.topicCount = store.topicCount();
-    // MQTT 5 per-message properties ride in a side map keyed by topic — one
-    // falsy branch per message keeps the v4 hot path allocation-free. A later
-    // publish without the surfaced keys clears the topic's stale entry.
-    if (packet.properties) {
-      const props = pickPacketProperties(packet.properties);
-      const map = this.msgProps.get(brokerId);
-      if (map) {
-        if (props) map.set(topic, props);
-        else map.delete(topic);
-      }
+    // A NEW topic dropped at the MAX_TOPICS cap (ingest returned false) must not
+    // grow the side maps past the bound TopicStore exists to enforce.
+    if (!stored) return;
+    // MQTT 5 per-message properties ride in a side map keyed by topic. Only touch
+    // it when this message carries properties OR the broker has surfaced some
+    // before (map non-empty) — this keeps the v4 / no-property hot path lookup-
+    // free. The clear also fires when a message has NO properties block at all
+    // (packet.properties undefined), so a stale entry can't outlive it.
+    const map = this.msgProps.get(brokerId);
+    if (map && (packet.properties || map.size > 0)) {
+      const props = packet.properties ? pickPacketProperties(packet.properties) : null;
+      if (props) map.set(topic, props);
+      else map.delete(topic);
     }
     // One char-code check per message; $SYS traffic is low-rate and tracking the
     // set here keeps the /sys endpoint O(|$SYS|) instead of scanning every topic.
@@ -282,21 +292,36 @@ class MqttManager extends EventEmitter {
     const message = row.buffer;
     let payload;
     let payloadFormat = 'text';
+    let decoded = null;
     if (row.truncated) {
       // Oversized payload: only the first maxPayloadBytes were retained. Do not
       // JSON.parse a partial buffer — surface it as a bounded preview instead.
       payloadFormat = 'large';
       payload = `[payload truncated: ${row.fullSize} bytes]`;
     } else {
-      const text = message.toString('utf8');
-      try {
-        payload = JSON.parse(text);
+      // Payload codecs: user-registered Protobuf/Avro schemas mapped to topic
+      // filters decode matching binary payloads into structured JSON BEFORE the
+      // generic JSON/text detection. Sparkplug topics are never offered to
+      // codecs — spBv1.0 keeps its dedicated decoder below. A failed decode
+      // returns null (error counted per codec) and the message falls through
+      // to the normal path unchanged, so a bad schema can never break ingest.
+      if (this.codecs && !this.isSparkplugTopic(row.topic)) {
+        decoded = this.codecs.decode(brokerId, row.topic, message);
+      }
+      if (decoded) {
+        payload = decoded.value;
         payloadFormat = 'json';
-      } catch {
-        payload = text;
-        if (text.includes('�')) {
-          payloadFormat = 'binary';
-          payload = message.toString('base64');
+      } else {
+        const text = message.toString('utf8');
+        try {
+          payload = JSON.parse(text);
+          payloadFormat = 'json';
+        } catch {
+          payload = text;
+          if (text.includes('�')) {
+            payloadFormat = 'binary';
+            payload = message.toString('base64');
+          }
         }
       }
     }
@@ -331,6 +356,9 @@ class MqttManager extends EventEmitter {
     // MQTT 5 properties observed on the topic's latest publish (v5 sessions only).
     const props = this.msgProps.get(brokerId)?.get(row.topic);
     if (props) messageObj.properties = props;
+
+    // Which codec produced the structured payload (absent for plain JSON/text).
+    if (decoded) messageObj.codec = decoded.codecName;
 
     if (meta.spark) {
       // STATE messages are plain JSON/text host-status certificates, not
@@ -439,7 +467,10 @@ class MqttManager extends EventEmitter {
     for (const brokerId of this.stores.keys()) this.flushBroker(brokerId);
   }
 
-  subscribe(brokerId, topic, qos = 0) {
+  // opts.quiet: capability probes (canary, lifecycle $SYS/$events feelers)
+  // EXPECT refusals on brokers that don't support or don't permit the topic —
+  // a refused probe is the detection mechanism, not an error worth toasting.
+  subscribe(brokerId, topic, qos = 0, opts = {}) {
     const client = this.requireClient(brokerId);
     client.subscribe(topic, { qos }, (error, granted) => {
       // A broker can accept the packet but refuse the grant (SUBACK 0x80).
@@ -460,18 +491,33 @@ class MqttManager extends EventEmitter {
             to: 0,
             reason: 'broker refused the grant at this QoS (SUBACK 0x80) — retrying at QoS 0'
           });
-          this.subscribe(brokerId, topic, 0);
-        } else {
+          // Forward opts (e.g. quiet) like the wildcard branch below —
+          // unreachable for today's quiet probes (all QoS 0, non-wildcard) but
+          // keeps the two refusal-retry paths consistent and future-proof.
+          this.subscribe(brokerId, topic, 0, opts);
+        } else if (WILDCARD_FALLBACKS[topic]) {
+          const next = WILDCARD_FALLBACKS[topic];
+          // Each rung restarts at the configured intake QoS so a broker that
+          // grants the broader filter durably isn't stuck at QoS 0.
+          const retryQos = this.connections.get(brokerId)?.subscribeQos ?? 0;
+          this.io.emit('subscription-fallback', {
+            brokerId,
+            topic,
+            fallback: next,
+            reason: `broker ACL refuses '${topic}' — subscribing root-equivalent '${next}' instead`
+          });
+          this.subscribe(brokerId, next, retryQos, opts);
+        } else if (!opts.quiet) {
           this.io.emit('subscription-error', { brokerId, topic, error: 'subscription refused by broker (SUBACK 0x80)' });
         }
         return;
       }
       if (error) {
-        this.io.emit('subscription-error', { brokerId, topic, error: error.message });
+        if (!opts.quiet) this.io.emit('subscription-error', { brokerId, topic, error: error.message });
         return;
       }
       this.subscriptions.get(brokerId)?.add(topic);
-      this.io.emit('subscription-success', { brokerId, topic, qos, granted });
+      if (!opts.quiet) this.io.emit('subscription-success', { brokerId, topic, qos, granted });
     });
   }
 
@@ -735,6 +781,41 @@ class MqttManager extends EventEmitter {
   clearBrokerAdmin(brokerId) {
     this.admin.delete(brokerId);
     return { configured: false };
+  }
+
+  // Read-only transport-security snapshot for the posture scorecard: the TLS
+  // options as applied to the live client plus the peer certificate when the
+  // underlying socket exposes one. For mqtts, client.stream IS the TLSSocket;
+  // for wss the WebSocket duplex may wrap it (probed via .socket/._socket).
+  // Never touches connect/ingest state — pure read of the existing client.
+  getTransportSecurity(brokerId) {
+    const client = this.clients.get(brokerId);
+    if (!client) return null;
+    const out = {
+      rejectUnauthorized: client.options?.rejectUnauthorized !== false,
+      authorized: null,
+      peerCert: null
+    };
+    const candidates = [client.stream, client.stream?.socket, client.stream?._socket];
+    for (const socket of candidates) {
+      if (socket && typeof socket.getPeerCertificate === 'function') {
+        out.authorized = socket.authorized ?? null;
+        const cert = socket.getPeerCertificate();
+        if (cert && Object.keys(cert).length > 0) {
+          // Project only the fields the scorecard needs (the raw cert object
+          // carries large buffers like `raw`/`pubkey`).
+          out.peerCert = {
+            subject: cert.subject,
+            issuer: cert.issuer,
+            valid_from: cert.valid_from,
+            valid_to: cert.valid_to,
+            fingerprint256: cert.fingerprint256
+          };
+        }
+        break;
+      }
+    }
+    return out;
   }
 
   async fetchAdminPubSub(brokerId) {
