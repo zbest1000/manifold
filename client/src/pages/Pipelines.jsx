@@ -536,6 +536,8 @@ function ModelsTab({ brokers }) {
     enabled: true,
     publishMode: 'on-change',
     intervalMs: 5000,
+    envelope: false,
+    staleMs: 60_000,
     target: { brokerId: brokers[0]?.id || '', topic: '', retain: true },
     attributes: [{ name: '', source: { brokerId: brokers[0]?.id || '', topic: '', field: '' } }]
   });
@@ -634,6 +636,30 @@ function ModelsTab({ brokers }) {
               <Field label="Interval (ms)">
                 <Input type="number" value={draft.intervalMs} onChange={(e) => setDraft({ ...draft, intervalMs: e.target.value })} />
               </Field>
+            )}
+          </div>
+          {/* TVQ quality envelope — the engine publishes {v,t,q} per attribute
+              so consumers can tell fresh (192) from stale (64) from never-seen
+              (0) instead of guessing from a bare null. */}
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={Boolean(draft.envelope)}
+                onChange={(e) => setDraft({ ...draft, envelope: e.target.checked })}
+                className="h-4 w-4 rounded border-white/20 bg-surface-950 accent-accent-500"
+              />
+              TVQ envelope
+            </label>
+            {draft.envelope && (
+              <Field label="Stale after (ms)" className="w-40">
+                <Input type="number" min="1000" value={draft.staleMs} onChange={(e) => setDraft({ ...draft, staleMs: e.target.value })} />
+              </Field>
+            )}
+            {draft.envelope && (
+              <p className="text-xs text-slate-500">
+                Publishes <span className="mono">{'{v,t,q}'}</span> per attribute; q drops to 64 when the source goes quiet past the stale window.
+              </p>
             )}
           </div>
           <h4 className="mb-1.5 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">Attributes</h4>

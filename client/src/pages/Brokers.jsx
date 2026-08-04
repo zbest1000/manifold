@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Radio, Plus, Trash2, Server, ChevronRight, Pencil } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
@@ -33,8 +34,11 @@ const BLANK = {
 export default function Brokers() {
   const brokers = useStore((s) => s.brokers);
   const openLog = useStore((s) => s.openLog);
-  const [form, setForm] = useState(BLANK);
-  const [showForm, setShowForm] = useState(false);
+  // Discovery hands off auth-required endpoints here with host/port prefilled
+  // (location state), landing the user in the form with only credentials to add.
+  const prefill = useLocation().state?.prefill;
+  const [form, setForm] = useState(prefill ? { ...BLANK, ...prefill } : BLANK);
+  const [showForm, setShowForm] = useState(Boolean(prefill));
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState(false);

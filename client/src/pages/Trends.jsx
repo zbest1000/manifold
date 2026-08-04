@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, X, Plus, Database, TrendingUp } from 'lucide-react';
+import { RefreshCw, X, Plus, Database, TrendingUp, FileDown } from 'lucide-react';
+import { downloadCsv, seriesToCsvRows } from '@/lib/exportCsv';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
@@ -230,6 +231,17 @@ export default function Trends() {
         helpTopic="guide-record-replay"
         actions={
           <div className="flex items-center gap-2">
+            {data?.series?.some((s) => s.points?.length) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  downloadCsv(seriesToCsvRows(data.series), `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`)
+                }
+              >
+                <FileDown size={14} /> CSV
+              </Button>
+            )}
             <HelpButton title="How Trends works" label="How Trends works">
               <p>Trends charts numeric values over time. Pick a source, add up to ten tags, and choose a range.</p>
               <p>Three sources:</p>

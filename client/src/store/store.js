@@ -412,10 +412,32 @@ export function initRealtime() {
     }
   });
 
+  // Schema drift is invisible unless you happen to be on the Contracts tab —
+  // surface violations app-wide. Toast throttled per contract (a bad publisher
+  // can violate on every message); every one still lands in the log.
+  const lastViolationToast = new Map();
+  socket.on('contract-violation', (evt) => {
+    const first = evt.problems?.[0];
+    const summary = `Contract "${evt.contractName}" violated on ${evt.topic}${first ? ` — ${first.field ? `${first.field}: ` : ''}${first.message || first.problem || ''}` : ''}`;
+    s.pushLog('warning', 'contract', summary, { brokerId: evt.brokerId, topic: evt.topic });
+    const now = Date.now();
+    if (now - (lastViolationToast.get(evt.contractId) || 0) > 60_000) {
+      lastViolationToast.set(evt.contractId, now);
+      toast(`⚠ ${summary}`, { duration: 6000 });
+    }
+  });
+
+  // A silent QoS downgrade is a silent data-loss risk — say it out loud.
+  socket.on('subscription-downgraded', ({ brokerId, topic, from, to, reason }) => {
+    const msg = `Subscription "${topic}" downgraded QoS ${from} → ${to} on ${brokerName(brokerId)}`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    toast(`⚠ ${msg}`, { duration: 8000 });
+  });
+
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
   socket.on('discovery-result', (r) => s.addDiscoveryResult(r));
-  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [] }));
+  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [], completedAt: Date.now() }));
   socket.on('discovery-error', ({ error } = {}) => {
     s.setDiscovery({ scanning: false });
     if (error) reportError(s, 'discovery', error);
