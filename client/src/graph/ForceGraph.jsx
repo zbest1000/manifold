@@ -72,6 +72,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   const bigRef = useRef(false);
   const gridRef = useRef(null);
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
+  const structKeyRef = useRef(''); // structure fingerprint — gates the re-anneal
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
@@ -435,6 +436,18 @@ const ForceGraph = forwardRef(function ForceGraph(
     nodesRef.current = nodes;
     linksRef.current = links;
     layoutModeRef.current = layout.mode;
+
+    // Structure fingerprint: node ids + link pairs + layout. Pages that poll
+    // (Flows rebuilds its topology every 3s) hand us a NEW data object whose
+    // structure is usually identical — only metadata (counters, online flags)
+    // changed. Re-annealing at alpha 0.9 for those made the graph drift
+    // forever: nodes never settled and clicks aimed at where a node WAS.
+    // Same structure -> keep positions, no anneal; real change -> full anneal.
+    const structKey =
+      layoutId + '#' + nodes.map((n) => n.id).sort().join('|') + '#' +
+      links.map((l) => `${l.source}>${l.target}`).sort().join('|');
+    const structChanged = structKey !== structKeyRef.current;
+    structKeyRef.current = structKey;
     // Re-resolve the hovered node against the new node set — otherwise a node
     // removed by filtering keeps its hover card (and hover dimming) painted
     // from a stale object until the pointer moves again.
@@ -473,9 +486,15 @@ const ForceGraph = forwardRef(function ForceGraph(
     const sim = forceSimulation(nodes)
       .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
       .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
-      .alpha(0.9)
+      .alpha(structChanged ? 0.9 : 0)
       .alphaDecay(0.028)
       .on('tick', draw);
+    if (!structChanged) {
+      // Metadata-only refresh: positions are already settled — just repaint
+      // once so new labels/colors/counters show.
+      sim.stop();
+      requestAnimationFrame(draw);
+    }
 
     if (layout.mode === 'radial') {
       sim
@@ -735,7 +754,11 @@ const ForceGraph = forwardRef(function ForceGraph(
         drawRef.current();
       });
     zoomRef.current = zoomBehavior;
-    sel.call(zoomBehavior);
+    // NOTE: sel.call(zoomBehavior) happens AFTER sel.call(dragBehavior) below.
+    // Registration order is load-bearing: d3-zoom's mousedown handler calls
+    // stopImmediatePropagation, so if zoom registers first, drag's mousedown
+    // never runs and node clicks/drags are dead. Drag-first is the canonical
+    // pattern — a null drag subject falls through to zoom (pan still works).
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -822,6 +845,7 @@ const ForceGraph = forwardRef(function ForceGraph(
         }
       });
     sel.call(dragBehavior);
+    sel.call(zoomBehavior); // must come after drag — see the order note above
 
     let downPos = null;
     let minimapDrag = false;

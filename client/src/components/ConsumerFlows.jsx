@@ -215,7 +215,7 @@ export default function ConsumerFlows({ broker }) {
 
   return (
     <div className="flex h-full w-full">
-      <div className="relative flex-1">
+      <div className="relative min-w-0 flex-1">
         {graph.nodes.length > 1 ? (
           <ForceGraph
             ref={graphRef}

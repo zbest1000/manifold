@@ -210,7 +210,9 @@ export function buildSparkplugGraph(broker, topology) {
     group: 'broker',
     kind: 'broker',
     degree: 0,
-    meta: { brokerId: broker.id }
+    // meta.kind gates the Flows detail card — without it, clicking the broker
+    // node selected silently and showed nothing.
+    meta: { kind: 'broker', brokerId: broker.id }
   });
 
   const stateGroup = (online) => (online ? 'telemetry' : 'alarm');
@@ -300,7 +302,9 @@ export function buildLineageGraph(broker, { clients = [], subscriptions = [] }, 
     group: 'broker',
     kind: 'broker',
     degree: 0,
-    meta: { brokerId: broker.id }
+    // meta.kind gates the Flows detail card — without it, clicking the broker
+    // node selected silently and showed nothing.
+    meta: { kind: 'broker', brokerId: broker.id }
   });
 
   for (const c of clients) {
@@ -446,7 +450,9 @@ export function buildPubSubGraph(broker, { clients = [], subscriptions = [] }) {
     group: 'broker',
     kind: 'broker',
     degree: 0,
-    meta: { brokerId: broker.id }
+    // meta.kind gates the Flows detail card — without it, clicking the broker
+    // node selected silently and showed nothing.
+    meta: { kind: 'broker', brokerId: broker.id }
   });
 
   for (const c of clients) {
