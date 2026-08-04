@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transport/auth/cert findings with fixes; internal hosts soften to info.
 - **Broker round-trip canary.** A 30s probe measures real publish→deliver
   latency per broker (missed probes tracked); System → Broker round-trip.
+- **Client lifecycle timeline.** Per-broker connect/disconnect history with
+  flap detection, adapted to broker capability: EMQX `$events/#`, Mosquitto
+  `$SYS/broker/log` notices, Sparkplug BIRTH/DEATH everywhere. Brokers →
+  Client activity.
+- **Parquet export** of charted Trends series (wide format for
+  DuckDB/Athena/pandas), next to CSV.
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker
