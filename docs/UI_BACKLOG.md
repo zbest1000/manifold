@@ -76,19 +76,19 @@ PR that closed them is noted inline.
   paint. Now renders a faint 1-px baseline (`withAlpha(color, 0.2)`) instead.
   Verified live on the System page. (`components/charts.jsx`.)
 
-- [ ] **Replay scrubber tick marks.** The scrubber is now a real, self-explanatory
+- [x] **Replay scrubber tick marks.** Moot: the replay scrubber was removed entirely (user decision, 2026-08-04). The scrubber is now a real, self-explanatory
   seek control (title + scope, oldest→now track, relative readout, "Replaying"
   indicator, arrow keys, speed selector, role=slider); remaining polish is
   optional density tick marks on the track.
 
-- [ ] **Replay pulses vs live Flow are visually identical.** Both go through the
+- [x] **Replay pulses vs live Flow are visually identical.** Moot: the replay scrubber was removed entirely (user decision, 2026-08-04). Both go through the
   same `emitPulse` in `ForceGraph.jsx` (replay just passes `force=true`), so a
   replayed burst flashes nodes exactly like live traffic. The new "Replaying"
   indicator in the scrubber attributes it at the widget level, but the graph
   pulses themselves aren't distinguished. Optional: give replay pulses a distinct
   tint (e.g. accent-2) by threading a style flag through `pulseNode`/`emitPulse`.
 
-- [ ] **Replay only covers one broker in multi-broker mode.** `liveMsgs` is
+- [x] **Replay only covers one broker in multi-broker mode.** Moot: the replay scrubber was removed entirely (user decision, 2026-08-04). `liveMsgs` is
   buffered per `brokerId` (the first active broker), so with several brokers
   selected the scrubber replays only the first one's traffic. `replayNodeId` is
   now broker-aware, but the buffer feeding it isn't merged. Low priority (replay

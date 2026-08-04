@@ -101,6 +101,9 @@ export default function Layout() {
               <p className="mono truncate text-2xs text-slate-500">UNS · MQTT · OPC UA</p>
             </div>
           )}
+          {/* Collapse lives in the footer too, but a control up here is the
+              discoverable one — the footer button routinely goes unnoticed. */}
+          {!collapsed && <IconButton icon={PanelLeftClose} label="Collapse sidebar  [" side="right" onClick={toggleNav} />}
         </div>
 
         {viewerReadOnly &&

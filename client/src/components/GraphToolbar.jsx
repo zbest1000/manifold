@@ -67,7 +67,10 @@ export default function GraphToolbar({
   const active = STYLE_LIST.find((s) => s.id === graphStyle) || STYLE_LIST[0];
 
   return (
-    <div className="pointer-events-auto absolute right-4 top-4 z-10 flex flex-col items-end gap-2">
+    <div className="pointer-events-auto absolute right-4 top-4 z-10 flex max-w-[calc(100%-310px)] flex-col items-end gap-2">
+      {/* max-width keeps the wrapping row clear of the search box overlay at
+          the top-left — without it the toolbar runs straight over the input
+          on narrower windows. */}
       <div className="flex flex-wrap items-center justify-end gap-2">
         {showFlow && (
           <Toggle active={flowEnabled} onClick={() => setFlowEnabled(!flowEnabled)} icon={Activity} label="Flow" pulse />

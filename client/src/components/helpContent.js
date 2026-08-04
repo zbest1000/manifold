@@ -84,8 +84,7 @@ export const HELP_TOPICS = [
     keywords: 'topics graph click node inspect payload publish 3d tree',
     body:
       'Click any node to open its detail pane: latest payload, message history, rate sparkline and actions (publish, expand branch, jump to UNS).\n\n' +
-      'The toolbar switches renderers — **tree**, **2D graph**, **3D** — and toggles flow animation, value labels and the minimap. Use the search box to jump to a topic by name.\n\n' +
-      'The **replay scrubber** (bottom bar) seeks back through buffered messages: drag it, or focus it and use ←/→, Home/End, and Space to play.'
+      'The toolbar switches renderers — **tree**, **2D graph**, **3D** — and toggles flow animation, node names, value labels and the minimap. Use the search box to jump to a topic by name.\n\n'
   },
   {
     id: 'guide-uns',

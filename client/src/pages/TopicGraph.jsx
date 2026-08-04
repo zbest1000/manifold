@@ -26,7 +26,6 @@ import GraphToolbar from '@/components/GraphToolbar';
 import GraphLegend from '@/components/GraphLegend';
 import Graph3DControls from '@/components/Graph3DControls';
 import GraphSearch from '@/components/GraphSearch';
-import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
 import JsonView from '@/components/JsonView';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
@@ -443,7 +442,6 @@ export default function TopicGraph() {
     });
   }, []);
 
-  const replayNodeId = useCallback((m) => `topic:${m.brokerId || brokerId}:${m.topic}`, [brokerId]);
 
   // Frame the whole network when Show all is toggled on.
   useEffect(() => {
@@ -747,11 +745,6 @@ export default function TopicGraph() {
               </div>
             )}
             <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
-              {!showAll && (
-                <div className="pointer-events-auto">
-                  <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
-                </div>
-              )}
               <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
                 Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
               </div>
