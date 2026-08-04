@@ -24,6 +24,46 @@ import { resolveIconName, getIconImage, loadIcons } from './unsIcons';
 export const DEFAULT_LEVELS = ['Unified Namespace', 'Business Unit', 'Site', 'Area', 'Line', 'Cell', 'Node'];
 const LEVEL_COLORS = ['#2563eb', '#3b82f6', '#16a34a', '#22c55e', '#0d9488', '#64748b', '#94a3b8'];
 
+// Canvas themes. Light is the original "paper schematic" look; dark matches
+// the rest of the app (surface-950 background, slate ink). Node ring/icon
+// colors stay the shared LEVEL_COLORS in both.
+const THEMES = {
+  light: {
+    background: '#f6f7f9',
+    gridDot: '#dce1e8',
+    edgeLive: 'rgba(34,197,94,0.75)',
+    edgeIdle: 'rgba(148,163,184,0.45)',
+    badge: '#ffffff',
+    badgeShadow: 'rgba(15,23,42,0.10)',
+    expandStroke: '#94a3b8',
+    expandGlyph: '#475569',
+    label: '#1e293b',
+    caption: '#94a3b8',
+    valActive: '#16a34a',
+    valIdle: '#b0b8c4',
+    valOk: '#0f766e',
+    staleDead: '#ef4444',
+    staleOverdue: '#b45309'
+  },
+  dark: {
+    background: '#0d1323',
+    gridDot: '#1c2740',
+    edgeLive: 'rgba(74,222,128,0.8)',
+    edgeIdle: 'rgba(148,163,184,0.25)',
+    badge: '#1b2438',
+    badgeShadow: 'rgba(0,0,0,0.45)',
+    expandStroke: '#475569',
+    expandGlyph: '#94a3b8',
+    label: '#e2e8f0',
+    caption: '#8093ab',
+    valActive: '#4ade80',
+    valIdle: '#64748b',
+    valOk: '#2dd4bf',
+    staleDead: '#f87171',
+    staleOverdue: '#fbbf24'
+  }
+};
+
 const LIVE_WINDOW_MS = 10_000; // branch counts as "publishing" this long after a message
 const PULSE_MS = 700; // node ring flash right after a message
 // Row height covers the badge PLUS its three-line label block so neighboring
@@ -137,7 +177,8 @@ export function buildUnsTree(broker, topics) {
   return root;
 }
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark' }) {
+  const T = THEMES[theme] || THEMES.dark;
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const sizeRef = useRef({ w: 0, h: 0 });
@@ -404,13 +445,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Light "paper" canvas with a dot grid — the UNS look, distinct from the
-    // dark force-graph surfaces.
-    ctx.fillStyle = '#f6f7f9';
+    // Themed canvas with a dot grid — light "paper schematic" or app-dark.
+    ctx.fillStyle = T.background;
     ctx.fillRect(0, 0, w, h);
     const grid = 24 * t.k;
     if (grid > 7) {
-      ctx.fillStyle = '#dce1e8';
+      ctx.fillStyle = T.gridDot;
       const ox = t.x % grid;
       const oy = t.y % grid;
       for (let gx = ox; gx < w; gx += grid) {
@@ -438,12 +478,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.moveTo(x1, a.y);
       ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
       if (live) {
-        ctx.strokeStyle = 'rgba(34,197,94,0.75)';
+        ctx.strokeStyle = T.edgeLive;
         ctx.lineWidth = 1.6;
         ctx.setLineDash([7, 6]);
         ctx.lineDashOffset = dashOffset;
       } else {
-        ctx.strokeStyle = 'rgba(148,163,184,0.45)';
+        ctx.strokeStyle = T.edgeIdle;
         ctx.lineWidth = 1;
         ctx.setLineDash([]);
       }
@@ -482,8 +522,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
       ctx.beginPath();
       ctx.arc(P.x, P.y, R, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = 'rgba(15,23,42,0.10)';
+      ctx.fillStyle = T.badge;
+      ctx.shadowColor = T.badgeShadow;
       ctx.shadowBlur = 6;
       ctx.shadowOffsetY = 1;
       ctx.fill();
@@ -512,7 +552,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         ctx.arc(P.x + R * 0.72, P.y - R * 0.72, 3.4, 0, Math.PI * 2);
         ctx.fillStyle = dotColor;
         ctx.fill();
-        ctx.strokeStyle = '#ffffff';
+        ctx.strokeStyle = T.badge;
         ctx.lineWidth = 1.4;
         ctx.stroke();
       }
@@ -521,12 +561,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (l.hasKids) {
         ctx.beginPath();
         ctx.arc(P.x, P.y + R + 1, 6.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = T.badge;
         ctx.fill();
-        ctx.strokeStyle = '#94a3b8';
+        ctx.strokeStyle = T.expandStroke;
         ctx.lineWidth = 1.2;
         ctx.stroke();
-        ctx.strokeStyle = '#475569';
+        ctx.strokeStyle = T.expandGlyph;
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(P.x - 3, P.y + R + 1);
@@ -539,18 +579,18 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       }
 
       // labels
-      // Labels get a paper-colored halo so crossing edges never block the text.
+      // Labels get a background-colored halo so crossing edges never block the text.
       ctx.textAlign = 'center';
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#f6f7f9';
+      ctx.strokeStyle = T.background;
       ctx.lineWidth = 4;
       ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 22);
-      ctx.fillStyle = '#1e293b';
+      ctx.fillStyle = T.label;
       ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 22);
       ctx.font = '600 8.5px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
-      ctx.fillStyle = '#94a3b8';
+      ctx.fillStyle = T.caption;
       ctx.fillText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       if (n.children.size > 0) {
         // Branch third line: subtree size, plus live throughput when flowing.
@@ -559,7 +599,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           const line = rate > 0 ? `${n.topicCount.toLocaleString()} topics · ${rate.toLocaleString()}/s` : `${n.topicCount.toLocaleString()} topics`;
           ctx.font = '500 8.5px ui-sans-serif, system-ui, sans-serif';
           ctx.strokeText(line, P.x, P.y + R + 43);
-          ctx.fillStyle = rate > 0 ? '#16a34a' : '#b0b8c4';
+          ctx.fillStyle = rate > 0 ? T.valActive : T.valIdle;
           ctx.fillText(line, P.x, P.y + R + 43);
         }
       } else {
@@ -570,7 +610,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           const text = truncate(v.value, 24);
           ctx.font = '600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace';
           ctx.strokeText(text, P.x, P.y + R + 44);
-          ctx.fillStyle = stale === 'dead' ? '#ef4444' : stale === 'overdue' ? '#b45309' : '#0f766e';
+          ctx.fillStyle = stale === 'dead' ? T.staleDead : stale === 'overdue' ? T.staleOverdue : T.valOk;
           ctx.fillText(text, P.x, P.y + R + 44);
         }
       }
@@ -593,7 +633,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
 
     ctx.restore();
-  }, [layout, levels, posOf]);
+  }, [layout, levels, posOf, T]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
   // Idle throttle: pulses/dashes only animate around live traffic and
@@ -861,7 +901,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
               setSelCount(0);
             }}
             title="Clear the multi-selection (Esc)"
-            className="flex items-center gap-1.5 rounded-lg border border-sky-400/50 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur transition hover:bg-sky-500/25"
+            className={
+              theme === 'dark'
+                ? 'flex items-center gap-1.5 rounded-lg border border-sky-400/40 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-300 shadow-sm backdrop-blur transition hover:bg-sky-500/25'
+                : 'flex items-center gap-1.5 rounded-lg border border-sky-400/50 bg-sky-500/15 px-3 py-1.5 text-[11px] font-medium text-sky-700 shadow-sm backdrop-blur transition hover:bg-sky-500/25'
+            }
           >
             {selCount} selected · drag to move · Esc ✕
           </button>
@@ -869,14 +913,22 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         <button
           onClick={autoArrange}
           title="Reset manual node positions to the tidy layout and fit to view"
-          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
+          className={
+            theme === 'dark'
+              ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
+              : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900'
+          }
         >
           Auto arrange
         </button>
         <button
           onClick={fitAll}
           title="Fit the current arrangement to the viewport (keeps manual moves)"
-          className="rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900"
+          className={
+            theme === 'dark'
+              ? 'rounded-lg border border-white/10 bg-surface-900/80 px-3 py-1.5 text-[11px] font-medium text-slate-300 shadow-sm backdrop-blur transition hover:border-white/25 hover:text-slate-100'
+              : 'rounded-lg border border-slate-300/70 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur transition hover:border-slate-400 hover:text-slate-900'
+          }
         >
           Fit
         </button>

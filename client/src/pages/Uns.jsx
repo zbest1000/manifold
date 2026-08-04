@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil,
-  ShieldCheck, History, Layers, Plug, Trash2, Plus, Ruler
+  ShieldCheck, History, Layers, Plug, Trash2, Plus, Ruler, Sun, Moon
 } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
@@ -57,6 +57,14 @@ export default function Uns() {
   const [panel, setPanel] = useState(null);
   // Editable level ladder (persisted).
   const [levels, setLevels] = useState(loadLevels);
+  // Topology canvas theme: dark (matches the app) or the light paper-schematic
+  // look. Persisted; dark is the default.
+  const [canvasTheme, setCanvasTheme] = useState(() => localStorage.getItem('tc.unsTheme') || 'dark');
+  const toggleCanvasTheme = () => {
+    const next = canvasTheme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('tc.unsTheme', next);
+    setCanvasTheme(next);
+  };
   const [levelsOpen, setLevelsOpen] = useState(false);
   // Mounts: external sources grafted into the forest.
   const [mounts, setMounts] = useState([]);
@@ -253,6 +261,12 @@ export default function Uns() {
               active={panel === 'events'}
               onClick={() => setPanel((p) => (p === 'events' ? null : 'events'))}
             />
+            <HeaderButton
+              icon={canvasTheme === 'dark' ? Sun : Moon}
+              label={canvasTheme === 'dark' ? 'Light' : 'Dark'}
+              active={false}
+              onClick={toggleCanvasTheme}
+            />
             <HeaderButton icon={Layers} label="Levels" active={levelsOpen} onClick={() => setLevelsOpen((v) => !v)} />
             <HeaderButton icon={Plug} label="Sources" active={mountsOpen} onClick={() => setMountsOpen((v) => !v)} />
             <select
@@ -330,7 +344,7 @@ export default function Uns() {
             </div>
           ) : (
           <div className="relative min-w-0 flex-1">
-            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} />
+            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} theme={canvasTheme} />
           </div>
           )}
 
@@ -376,10 +390,19 @@ export default function Uns() {
 
         {/* Legend, matching the visual language (topology surface only) */}
         {view === 'topology' && (
-        <div className="pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300/60 bg-white/85 px-3 py-2 text-[11px] text-slate-600 shadow-sm backdrop-blur">
+        <div
+          className={
+            canvasTheme === 'dark'
+              ? 'pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-surface-900/80 px-3 py-2 text-[11px] text-slate-300 shadow-sm backdrop-blur'
+              : 'pointer-events-none absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 rounded-xl border border-slate-300/60 bg-white/85 px-3 py-2 text-[11px] text-slate-600 shadow-sm backdrop-blur'
+          }
+        >
           {levels.slice(0, 4).map((lvl, i) => (
             <span key={lvl} className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-2.5 w-2.5 rounded-full border-2 bg-white" style={{ borderColor: levelColor(i) }} />
+              <span
+                className="inline-block h-2.5 w-2.5 rounded-full border-2"
+                style={{ borderColor: levelColor(i), background: canvasTheme === 'dark' ? '#1b2438' : '#ffffff' }}
+              />
               {lvl}
             </span>
           ))}
