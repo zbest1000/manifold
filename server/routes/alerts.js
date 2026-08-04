@@ -90,4 +90,17 @@ router.get('/active', (req, res) => {
   res.json({ active: alerts ? alerts.getActive() : [] });
 });
 
+// POST /api/alerts/ack { ruleId, topic? } — acknowledge a firing alarm. The
+// operator identity comes from the auth token (viewers are already 403'd by
+// the auth middleware before reaching here).
+router.post('/ack', (req, res) => {
+  const { alerts } = req.app.locals.services;
+  const { ruleId, topic } = req.body || {};
+  if (!ruleId) return res.status(400).json({ error: 'ruleId is required' });
+  const by = req.tokenName && req.tokenName !== 'open' ? req.tokenName : 'operator';
+  const ack = alerts?.acknowledge(ruleId, topic || '', by);
+  if (!ack) return res.status(404).json({ error: 'No firing alarm matches that rule (and topic)' });
+  res.json(ack);
+});
+
 module.exports = router;

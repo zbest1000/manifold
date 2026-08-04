@@ -59,11 +59,19 @@ export default function AlertRules({ onChanged }) {
   const brokers = useStore((s) => s.brokers);
   const activeAlarms = useStore((s) => s.activeAlarms);
   const [rules, setRules] = useState([]);
+  const [webhookHealth, setWebhookHealth] = useState(null); // { failures, lastError }
   const [form, setForm] = useState(EMPTY_RULE_FORM);
   const [busy, setBusy] = useState(false);
   const connected = brokers.filter((b) => b.status === 'connected');
 
-  const load = () => api.listAlertRules().then((r) => setRules(r.rules)).catch(() => {});
+  const load = () =>
+    api
+      .listAlertRules()
+      .then((r) => {
+        setRules(r.rules);
+        setWebhookHealth({ failures: r.webhookFailures || 0, lastError: r.lastWebhookError || null });
+      })
+      .catch(() => {});
   useEffect(() => {
     load();
   }, []);
@@ -154,6 +162,16 @@ export default function AlertRules({ onChanged }) {
       <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
         <BellRing size={16} className="text-accent-400" /> Rules
       </h2>
+
+      {/* A silently failing webhook is an alarm that never reaches anyone —
+          surface delivery health where the rules are managed. */}
+      {webhookHealth?.failures > 0 && (
+        <p className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/90">
+          <b className="font-semibold">Webhook delivery failing</b> — {webhookHealth.failures} failed{' '}
+          {webhookHealth.failures === 1 ? 'delivery' : 'deliveries'} since start
+          {webhookHealth.lastError && <span className="mono block truncate text-amber-300/60">last: {webhookHealth.lastError}</span>}
+        </p>
+      )}
 
       {rules.length > 0 && (
         <div className="mb-4 space-y-1.5">

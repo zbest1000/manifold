@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BellOff, History, CheckCircle2, Radio } from 'lucide-react';
+import { BellOff, History, CheckCircle2, Radio, Check, UserCheck } from 'lucide-react';
 import clsx from 'clsx';
 import { formatDistanceToNow } from 'date-fns';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
-import { Card, HelpButton, EmptyState } from '@/components/ui';
+import { Card, EmptyState } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import AlertRules from '@/components/AlertRules';
 
@@ -21,6 +21,7 @@ export default function Alerts() {
   const brokers = useStore((s) => s.brokers);
   const seedActiveAlarms = useStore((s) => s.seedActiveAlarms);
   const markAlertsSeen = useStore((s) => s.markAlertsSeen);
+  const viewerReadOnly = useStore((s) => s.authRole === 'viewer');
   const [history, setHistory] = useState([]);
   const [, forceTick] = useState(0);
 
@@ -67,25 +68,7 @@ export default function Alerts() {
       <PageHeader
         title="Alerts"
         subtitle="Active alarms, rules watching the namespace, and firing history"
-        actions={
-          <HelpButton title="How alerts work" label="How alerts work">
-            <p>
-              Rules watch your live namespace <b>server-side</b>: silence rules are checked every 15 seconds, value
-              thresholds are evaluated on every matching message — so a breach alerts at message latency.
-            </p>
-            <p>
-              <b>Branch silent</b> / <b>topic silent</b> catch data that stops flowing. <b>New topic</b> catches
-              unexpected publishers. <b>Value threshold</b> catches out-of-range numeric values, with an optional
-              sustain time (breach must hold continuously) and clear-value deadband (no flapping while a signal
-              hovers near the limit).
-            </p>
-            <p>
-              Firings show here, in the sidebar badge, and as toasts. Each rule can also POST every event to a{' '}
-              <b>webhook</b> — point it at Slack, Teams, or PagerDuty. Wildcard value rules (<code>plant/+/temp</code>)
-              track each matched topic independently.
-            </p>
-          </HelpButton>
-        }
+        helpTopic="guide-alarm"
       />
 
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
@@ -128,6 +111,27 @@ export default function Alerts() {
                     <Radio size={10} className="shrink-0" /> {brokerName(a.brokerId)}
                     {a.topic && <span className="truncate"> · {a.topic}</span>}
                   </p>
+                  {/* Ack half-handshake: the alarm stays active until the data
+                      recovers, but it's marked as owned by a named operator. */}
+                  <div className="mt-2">
+                    {a.ackBy ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/25">
+                        <UserCheck size={11} /> acknowledged by {a.ackBy}
+                        {a.ackAt && <span className="text-emerald-400/60">· {formatDistanceToNow(a.ackAt, { addSuffix: true })}</span>}
+                      </span>
+                    ) : (
+                      !viewerReadOnly && (
+                        <button
+                          onClick={() =>
+                            api.ackAlert(a.ruleId, a.topic || '').catch(() => {})
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 px-2.5 py-1 text-[11px] font-medium text-rose-200 transition hover:bg-rose-500/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/60"
+                        >
+                          <Check size={12} /> Acknowledge
+                        </button>
+                      )
+                    )}
+                  </div>
                 </Card>
               ))}
             </div>
@@ -157,7 +161,13 @@ export default function Alerts() {
                     <span
                       className={clsx(
                         'mr-2 font-semibold',
-                        e.status === 'firing' ? 'text-red-400' : e.status === 'resolved' ? 'text-emerald-400' : 'text-sky-400'
+                        e.status === 'firing'
+                          ? 'text-red-400'
+                          : e.status === 'resolved'
+                            ? 'text-emerald-400'
+                            : e.status === 'acknowledged'
+                              ? 'text-amber-300'
+                              : 'text-sky-400'
                       )}
                     >
                       {e.status}

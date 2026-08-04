@@ -173,6 +173,7 @@ export const api = {
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
   alertsActive: () => request('/api/alerts/active'),
+  ackAlert: (ruleId, topic) => request('/api/alerts/ack', { method: 'POST', body: JSON.stringify({ ruleId, topic }) }),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),

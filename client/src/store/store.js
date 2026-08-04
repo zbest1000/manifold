@@ -284,12 +284,16 @@ export const useStore = create((set, get) => ({
       const activeAlarms = { ...s.activeAlarms };
       if (evt.status === 'firing') activeAlarms[key] = evt;
       else if (evt.status === 'resolved') delete activeAlarms[key];
+      else if (evt.status === 'acknowledged' && activeAlarms[key]) {
+        // The alarm stays active (condition still true) — it's just owned now.
+        activeAlarms[key] = { ...activeAlarms[key], ackBy: evt.ackBy, ackAt: evt.ts };
+      }
       return {
         alerts: [evt, ...s.alerts].slice(0, 200),
         activeAlarms,
-        // 'resolved' is good news — it clears the alarm but shouldn't demand
-        // attention the way a new firing (or a new-topic event) does.
-        alertUnseen: evt.status === 'resolved' ? s.alertUnseen : s.alertUnseen + 1
+        // Only NEW problems demand attention: resolved is good news and an
+        // acknowledgement means someone is already on it.
+        alertUnseen: evt.status === 'resolved' || evt.status === 'acknowledged' ? s.alertUnseen : s.alertUnseen + 1
       };
     }),
   // Seed current firing state after a page load (from GET /api/alerts/active)

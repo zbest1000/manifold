@@ -5,6 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 
+// Hermetic data dir: the engine persists alarm history to
+// $MANIFOLD_DATA_DIR/alerts.jsonl — point it at a throwaway tmp dir so tests
+// neither read a developer's real history nor litter the repo's data dir.
+process.env.MANIFOLD_DATA_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'manifold-alerts-'));
+
 const MqttManager = require('../services/mqttManager');
 const TopicStore = require('../services/topicStore');
 const { AlertEngine, RULE_TYPES } = require('../services/alertEngine');
@@ -310,6 +315,52 @@ test('getActive reports firing silence + per-topic value alarms and clears on re
   assert.strictEqual(after.length, 2);
   assert.ok(!after.some((a) => a.topic === 'plant/A/temp'));
   m.shutdown();
+});
+
+test('acknowledge marks a firing alarm, clears on resolve, rejects non-firing', () => {
+  const io = fakeIo();
+  const manager = new EventEmitter();
+  const rules = [{ id: 'ak1', name: 'Hot', type: 'value-threshold', brokerId: 'b1', topic: 'plant/+/temp', op: '>', value: 80 }];
+  const eng = new AlertEngine({ io, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir: null });
+
+  assert.strictEqual(eng.acknowledge('ak1', 'plant/A/temp', 'alice'), null, 'nothing firing yet');
+  assert.strictEqual(eng.acknowledge('nope', '', 'alice'), null, 'unknown rule');
+
+  eng.onMessage(msg('b1', 'plant/A/temp', 95));
+  const ack = eng.acknowledge('ak1', 'plant/A/temp', 'alice');
+  assert.strictEqual(ack.by, 'alice');
+  const active = eng.getActive();
+  assert.strictEqual(active[0].ackBy, 'alice');
+  assert.ok(active[0].ackAt > 0);
+  // the ack itself is an event: socket + history
+  const ackEvt = io.emitted.find((e) => e.data.status === 'acknowledged');
+  assert.strictEqual(ackEvt.data.ackBy, 'alice');
+  assert.strictEqual(ackEvt.data.topic, 'plant/A/temp');
+
+  // resolve clears the ack — a re-fire starts unacknowledged
+  eng.onMessage(msg('b1', 'plant/A/temp', 40));
+  eng.onMessage(msg('b1', 'plant/A/temp', 95));
+  const refired = eng.getActive();
+  assert.strictEqual(refired.length, 1);
+  assert.strictEqual(refired[0].ackBy, undefined);
+});
+
+test('alarm history survives a restart via alerts.jsonl', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-alerts-hist-'));
+  const manager = new EventEmitter();
+  const rules = [{ id: 'h1', name: 'Hot', type: 'value-threshold', brokerId: 'b1', topic: 't', op: '>', value: 10 }];
+  const a = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir });
+  a.onMessage(msg('b1', 't', 50)); // firing
+  a.onMessage(msg('b1', 't', 5)); // resolved
+  assert.strictEqual(a.getEvents().length, 2);
+
+  // "restart": a fresh engine over the same data dir seeds its ring from disk
+  const b = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: manager, fetchImpl: null, dir });
+  const events = b.getEvents();
+  assert.strictEqual(events.length, 2);
+  assert.strictEqual(events[0].status, 'resolved');
+  assert.strictEqual(events[1].status, 'firing');
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('historyStore snapshots recent rings and restores them into empty rings', () => {

@@ -27,10 +27,17 @@
  * must never break evaluation).
  */
 
+const fs = require('fs');
+const path = require('path');
 const { matchParts, compiledView } = require('./mqttMatch');
 
 const EVAL_MS = 15_000;
 const HISTORY_MAX = 500;
+// Durable history: alarms are an accountability record, so every event also
+// appends to data/alerts.jsonl (same resilience pattern as auditLog). On boot
+// the ring is seeded from the file tail; past this size the file is compacted
+// down to the tail on load so it can't grow without bound across restarts.
+const HISTORY_COMPACT_BYTES = 5 * 1024 * 1024;
 const WEBHOOK_TIMEOUT_MS = 5_000;
 // A wildcard value-threshold rule keeps one state machine PER concrete topic it
 // matches; bound that fan-out so a rule over a huge namespace can't grow state
@@ -71,7 +78,7 @@ function extractValue(payload, fieldParts) {
 }
 
 class AlertEngine {
-  constructor({ io, profiles, mqttManager, fetchImpl = globalThis.fetch, intervalMs = EVAL_MS }) {
+  constructor({ io, profiles, mqttManager, fetchImpl = globalThis.fetch, intervalMs = EVAL_MS, dir = process.env.MANIFOLD_DATA_DIR || path.join(__dirname, '..', 'data') }) {
     this.io = io;
     this.profiles = profiles;
     this.manager = mqttManager;
@@ -79,7 +86,12 @@ class AlertEngine {
     this.intervalMs = intervalMs;
     this.state = new Map(); // ruleId -> { firing, since, watermark } (silence/new-topic rules)
     this.valueState = new Map(); // ruleId -> Map(topic -> { firing, since, breachedSince, lastValue })
+    this.ackMap = new Map(); // `${ruleId}|${topic||''}` -> { by, at } — cleared on resolve
     this.history = []; // bounded ring, newest last
+    this.dir = dir || null; // null = in-memory only (tests)
+    this.historyFile = dir ? path.join(dir, 'alerts.jsonl') : null;
+    this.historyDirReady = false;
+    if (this.historyFile) this._loadHistory();
     this.timer = null;
     this.webhookFailures = 0;
     this.lastWebhookError = null;
@@ -100,6 +112,80 @@ class AlertEngine {
             }))
         )
       : () => [];
+  }
+
+  /** Seed the in-memory ring from the durable file's tail (newest last). */
+  _loadHistory() {
+    let raw;
+    try {
+      raw = fs.readFileSync(this.historyFile, 'utf8');
+    } catch {
+      return; // no file yet
+    }
+    const lines = raw.split('\n').filter(Boolean).slice(-HISTORY_MAX);
+    for (const line of lines) {
+      try {
+        this.history.push(JSON.parse(line));
+      } catch {
+        // a torn tail line (crash mid-write) is expected once; skip it
+      }
+    }
+    // Compact an oversized file down to the tail we kept, so a long-lived or
+    // flappy instance can't grow the record without bound.
+    try {
+      if (raw.length > HISTORY_COMPACT_BYTES) {
+        fs.writeFileSync(this.historyFile, this.history.map((e) => JSON.stringify(e)).join('\n') + '\n', { mode: 0o600 });
+      }
+    } catch {
+      // compaction is best-effort
+    }
+  }
+
+  // Synchronous append, deliberately: alarm events are low-frequency and this
+  // is an accountability record — an event must be on disk the moment it is
+  // emitted, not sitting in a stream buffer when the process dies.
+  _appendHistory(evt) {
+    if (!this.historyFile) return;
+    try {
+      if (!this.historyDirReady) {
+        fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        this.historyDirReady = true;
+      }
+      fs.appendFileSync(this.historyFile, JSON.stringify(evt) + '\n', { mode: 0o600 });
+    } catch {
+      // the ring still has it; a broken disk must not break alerting
+    }
+  }
+
+  /**
+   * Acknowledge a currently-firing alarm — the ISA-18.2 half-handshake: the
+   * alarm stays active (the condition is still true) but is marked as seen by
+   * a named operator. Ack state clears when the alarm resolves, so a re-fire
+   * starts unacknowledged. Returns the ack event, or null if nothing with
+   * that (ruleId, topic) is firing.
+   */
+  acknowledge(ruleId, topic, by) {
+    const rules = this.profiles?.alertRules() || [];
+    const rule = rules.find((r) => r.id === ruleId);
+    if (!rule) return null;
+    const firing =
+      rule.type === 'value-threshold'
+        ? this.valueState.get(ruleId)?.get(topic)?.firing
+        : this.state.get(ruleId)?.firing;
+    if (!firing) return null;
+    const key = `${ruleId}|${topic || ''}`;
+    const ack = { by: by || 'operator', at: Date.now() };
+    this.ackMap.set(key, ack);
+    this._emit(rule, 'acknowledged', {
+      ...(topic ? { topic } : {}),
+      ackBy: ack.by,
+      detail: `Acknowledged by ${ack.by}`
+    });
+    return { ruleId, topic: topic || null, ...ack };
+  }
+
+  _clearAck(ruleId, topic) {
+    this.ackMap.delete(`${ruleId}|${topic || ''}`);
   }
 
   start() {
@@ -128,6 +214,7 @@ class AlertEngine {
     const liveIds = new Set(rules.map((r) => r.id));
     for (const id of this.state.keys()) if (!liveIds.has(id)) this.state.delete(id);
     for (const id of this.valueState.keys()) if (!liveIds.has(id)) this.valueState.delete(id);
+    for (const key of this.ackMap.keys()) if (!liveIds.has(key.split('|')[0])) this.ackMap.delete(key);
 
     for (const rule of rules) {
       try {
@@ -201,6 +288,7 @@ class AlertEngine {
       });
     } else if (!shouldFire && s.firing) {
       s.firing = false;
+      this._clearAck(rule.id, '');
       this._emit(rule, 'resolved', { lastActivity: last, detail: 'Data is flowing again' });
     }
   }
@@ -294,6 +382,7 @@ class AlertEngine {
       s.breachedSince = 0; // sustain clock only counts continuous breach
       if (s.firing && this._isCleared(rule, v)) {
         s.firing = false;
+        this._clearAck(rule.id, msg.topic);
         this._emit(rule, 'resolved', {
           topic: msg.topic,
           value: v,
@@ -325,6 +414,7 @@ class AlertEngine {
     };
     this.history.push(evt);
     if (this.history.length > HISTORY_MAX) this.history.splice(0, this.history.length - HISTORY_MAX);
+    this._appendHistory(evt);
     this.io?.emit('alert', evt);
     if (rule.webhookUrl && typeof this.fetchImpl === 'function') {
       const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) : undefined;
@@ -360,6 +450,7 @@ class AlertEngine {
       const rule = rules.get(ruleId);
       if (!rule) continue;
       const threshold = Number(rule.thresholdMs) || 60_000;
+      const ack = this.ackMap.get(`${ruleId}|`);
       out.push({
         ruleId,
         ruleName: rule.name || rule.type,
@@ -367,7 +458,8 @@ class AlertEngine {
         brokerId: rule.brokerId,
         status: 'firing',
         ts: s.since,
-        detail: `Silent past the ${Math.round(threshold / 1000)}s threshold`
+        detail: `Silent past the ${Math.round(threshold / 1000)}s threshold`,
+        ...(ack ? { ackBy: ack.by, ackAt: ack.at } : {})
       });
     }
     for (const [ruleId, byTopic] of this.valueState) {
@@ -375,6 +467,7 @@ class AlertEngine {
       if (!rule) continue;
       for (const [topic, s] of byTopic) {
         if (!s.firing) continue;
+        const ack = this.ackMap.get(`${ruleId}|${topic}`);
         out.push({
           ruleId,
           ruleName: rule.name || rule.type,
@@ -384,7 +477,8 @@ class AlertEngine {
           ts: s.since,
           topic,
           value: s.lastValue,
-          detail: `${rule.field || 'value'} = ${s.lastValue} (${rule.op} ${rule.value}) on ${topic}`
+          detail: `${rule.field || 'value'} = ${s.lastValue} (${rule.op} ${rule.value}) on ${topic}`,
+          ...(ack ? { ackBy: ack.by, ackAt: ack.at } : {})
         });
       }
     }
