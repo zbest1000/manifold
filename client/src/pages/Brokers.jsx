@@ -16,9 +16,9 @@ import PageHeader from '@/components/PageHeader';
 // test.mosquitto.org is deliberately absent: it is best-effort and drops
 // connections so often that it makes a terrible first experience.
 const PUBLIC_BROKERS = [
-  { label: 'EMQX public', name: 'EMQX public', host: 'broker.emqx.io', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' },
-  { label: 'EMQX public (TLS)', name: 'EMQX public TLS', host: 'broker.emqx.io', port: 8883, protocol: 'mqtts', subscribeFilter: 'testtopic/#' },
-  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' }
+  { label: 'EMQX public', name: 'EMQX public', host: 'broker.emqx.io', port: 1883, protocol: 'mqtt', subscribeFilter: '#' },
+  { label: 'EMQX public (TLS)', name: 'EMQX public TLS', host: 'broker.emqx.io', port: 8883, protocol: 'mqtts', subscribeFilter: '#' },
+  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: '#' }
 ];
 
 const BLANK = {

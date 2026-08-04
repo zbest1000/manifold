@@ -434,6 +434,14 @@ export function initRealtime() {
     toast(`⚠ ${msg}`, { duration: 8000 });
   });
 
+  // Public/managed brokers often refuse bare '#' by ACL; the server walks to
+  // the nearest allowed root-equivalent. Say so — the user asked for '#'.
+  socket.on('subscription-fallback', ({ brokerId, topic, fallback, reason }) => {
+    const msg = `Broker refused "${topic}" on ${brokerName(brokerId)} — subscribed "${fallback}" instead`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    toast(`⚠ ${msg}`, { duration: 8000 });
+  });
+
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
   socket.on('discovery-result', (r) => s.addDiscoveryResult(r));

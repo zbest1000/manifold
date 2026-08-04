@@ -257,6 +257,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       for (const c of n.children.values()) walk(c);
     };
     for (const r of roots) walk(r);
+    for (const r of roots) userTouchedRef.current.add(r.brokerId);
     setExpanded(next);
     expandTopRef.current = true;
     userMovedRef.current = true; // deliberate camera placement — no auto-fit fights
@@ -265,6 +266,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // Back to the overview: each namespace root open one level, everything
   // beneath closed.
   const collapseAll = useCallback(() => {
+    for (const r of roots) userTouchedRef.current.add(r.brokerId);
     setExpanded(new Set(roots.map((r) => `${r.brokerId}:`)));
     userMovedRef.current = false;
   }, [roots]);
@@ -296,21 +298,47 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // are open. User collapses of already-seeded brokers are preserved.
   const [expanded, setExpanded] = useState(() => new Set());
   const seededRef = useRef(new Set());
+  // Brokers whose expansion the USER has changed (toggle / expand-all /
+  // collapse-all) — the auto-seeder and its demotion pass keep hands off these.
+  const userTouchedRef = useRef(new Set());
+  const demotedRef = useRef(new Set());
   useEffect(() => {
     const fresh = roots.filter((r) => !seededRef.current.has(r.brokerId));
-    if (!fresh.length) return;
+    // Demote firehose roots: topics hydrate progressively, so a public broker
+    // can seed open while it still looks small and then explode into thousands
+    // of level-1 namespaces (an unreadable hairline forest). Once an untouched
+    // root crosses the threshold, close it back down — its badge's topic count
+    // says what's inside. One-shot per broker, and never against a root the
+    // user has deliberately expanded.
+    const HUGE_ROOT = 400;
+    const demote = roots.filter(
+      (r) =>
+        r.children.size > HUGE_ROOT &&
+        seededRef.current.has(r.brokerId) &&
+        !userTouchedRef.current.has(r.brokerId) &&
+        !demotedRef.current.has(r.brokerId)
+    );
+    if (!fresh.length && !demote.length) return;
     setExpanded((prev) => {
       const next = new Set(prev);
       for (const r of fresh) {
         seededRef.current.add(r.brokerId);
-        next.add(`${r.brokerId}:`);
         // Mounts (OPC UA / i3X address spaces) can be hundreds of nodes deep, so
         // seeding their level-1 children fully expanded dominates the forest and
         // shrinks the broker trees — the thing you usually want — to an unreadable
         // sliver. Open a mount only to its root; the user expands what they need.
         // Broker namespaces still open to level 1.
+        // Firehose roots (public brokers) seed fully closed — see demotion above.
+        if (r.children.size > HUGE_ROOT) continue;
+        next.add(`${r.brokerId}:`);
         if (String(r.brokerId).startsWith('mount:')) continue;
         for (const child of r.children.values()) next.add(`${child.brokerId}:${child.path}`);
+      }
+      for (const r of demote) {
+        demotedRef.current.add(r.brokerId);
+        for (const k of [...next]) {
+          if (k.startsWith(`${r.brokerId}:`)) next.delete(k);
+        }
       }
       return next;
     });
@@ -915,6 +943,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   const toggle = (node) => {
     userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
+    userTouchedRef.current.add(node.brokerId);
     const key = `${node.brokerId}:${node.path}`;
     // Collapsing also collapses everything beneath, so re-expanding is tidy.
     const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;

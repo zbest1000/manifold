@@ -17,6 +17,12 @@ const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 // history per topic. Socket forwarding is batched so the initial retained
 // burst of a huge broker doesn't emit millions of individual events.
 const MAX_TOPICS = 2_000_000; // per-broker topic cap (guards server memory)
+// Managed/public brokers commonly deny bare '#' (and often '+/#') by ACL —
+// broker.emqx.io does exactly this — while granting deeper wildcards. When a
+// root subscription is refused outright, walk to the nearest root-equivalent
+// instead of sitting connected and ingesting nothing. '+/+/#' misses only
+// single-level topics, which hierarchical namespaces don't use.
+const WILDCARD_FALLBACKS = { '#': '+/#', '+/#': '+/+/#' };
 const GLOBAL_RECENT = 5000; // recent messages kept across all topics, per broker
 const FLUSH_MS = 100; // coalesce + forward on this cadence
 const FORWARD_CAP = 5000; // max topics forwarded per flush (sample beyond this)
@@ -483,6 +489,18 @@ class MqttManager extends EventEmitter {
             reason: 'broker refused the grant at this QoS (SUBACK 0x80) — retrying at QoS 0'
           });
           this.subscribe(brokerId, topic, 0);
+        } else if (WILDCARD_FALLBACKS[topic]) {
+          const next = WILDCARD_FALLBACKS[topic];
+          // Each rung restarts at the configured intake QoS so a broker that
+          // grants the broader filter durably isn't stuck at QoS 0.
+          const retryQos = this.connections.get(brokerId)?.subscribeQos ?? 0;
+          this.io.emit('subscription-fallback', {
+            brokerId,
+            topic,
+            fallback: next,
+            reason: `broker ACL refuses '${topic}' — subscribing root-equivalent '${next}' instead`
+          });
+          this.subscribe(brokerId, next, retryQos, opts);
         } else if (!opts.quiet) {
           this.io.emit('subscription-error', { brokerId, topic, error: 'subscription refused by broker (SUBACK 0x80)' });
         }
