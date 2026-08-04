@@ -60,6 +60,7 @@ export default function Tags() {
       <PageHeader
         title="Tags"
         subtitle="browse device tags, bind them into the UNS"
+        helpTopic="tour-build"
         actions={
           <div className="flex items-center gap-2">
             <HelpButton title="What are Tags, and where do they come from?">

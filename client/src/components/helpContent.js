@@ -152,6 +152,59 @@ export const HELP_TOPICS = [
       'Sparkplug traffic is decoded automatically — **Flows** shows the group → edge node → device hierarchy with live metric values, birth/death state and message rates.\n\n' +
       'On **Tags**, Manifold can act as the **primary host application**: it publishes `STATE` online/offline (with a Last Will) so edge nodes know when the host is watching.'
   },
+  {
+    id: 'guide-opcua',
+    section: 'guides',
+    title: 'Connect & browse OPC UA',
+    keywords: 'opcua endpoint security policy certificate trust pki browse monitor',
+    body:
+      'On **Connect → OPC UA**, enter an endpoint (`opc.tcp://host:4840`) and press **Discover** to list the server’s endpoints — click one to adopt its security mode and policy. Add a username/password if the server requires them.\n\n' +
+      'The address space renders as a graph, 3D view or tree: double-click a node to browse its children, click one to inspect its attributes, and press **Monitor value** on any Variable to stream live updates.\n\n' +
+      'Secure connections need mutual trust. If the **server rejects Manifold’s certificate**, open **Certificates** in the connect form and hand the application certificate’s details to the server admin to trust. If Manifold rejects the server’s, it appears under **Rejected server certificates** — press **Trust**, or tick **Trust server certificate on first connect**.'
+  },
+  {
+    id: 'guide-i3x',
+    section: 'guides',
+    title: 'Connect & explore i3X',
+    keywords: 'i3x connect base url namespaces objects value history mount uns',
+    body:
+      'On **Connect → i3X**, enter the server’s base URL (plus a bearer token if it needs one) — Manifold verifies it via the `/info` endpoint before loading objects. The demo stack ships a mock server at `http://i3x:8080`.\n\n' +
+      'Namespaces and objects render as a graph, 3D view or tree. Click an object to read its **current value** (with timestamp and quality) and load its **7-day history**; the toolbar searches, collapses levels, and exports the graph.\n\n' +
+      'To make i3X data part of your namespace, mount it on the **UNS** page (**Mounts** in the toolbar) — objects appear under a prefix you choose, beside your MQTT data. Discovery scans can also find i3X servers on your network.'
+  },
+  {
+    id: 'guide-system-metrics',
+    section: 'guides',
+    title: 'Read the Health page',
+    keywords: 'health metrics event loop delay p99 ingest outbox spilled queued recorder prometheus',
+    body:
+      '**Event-loop delay p99** — how long the server’s single thread was blocked. Sustained readings over ~100 ms mean Manifold itself is saturated and everything lags.\n\n' +
+      '**Broker ingest** — topics and messages/s per broker; a flat line on a busy broker usually means the connection dropped.\n\n' +
+      '**Historian outbox** — **written** made it to the historian; **queued** is waiting in memory; **spilled** means the historian is down or slow and data is spooling to disk (it drains automatically once the historian recovers — fix it on **Pipelines → Historians**). **Dropped** is data lost; always investigate.\n\n' +
+      '**Recorder** counts points captured per recording. Pipeline errors and contract violations point back to **Pipelines**; alert events to **Alerts**. Click any tile for its full chart.'
+  },
+  {
+    id: 'guide-flows',
+    section: 'guides',
+    title: 'Trace producers & consumers',
+    keywords: 'flows sparkplug producers consumers subscriptions sessions admin api emqx hivemq coverage',
+    body:
+      '**Flows** maps who publishes and who receives on one broker.\n\n' +
+      '**Producers** — built from observed traffic alone: the Sparkplug **group → edge node → device** topology with live metrics and birth/death state, plus broker `$SYS` health where the broker publishes it.\n\n' +
+      '**Consumers** — per-client subscriptions, which MQTT itself never reveals; they need a broker **admin API**. Connect an **EMQX v5** or **HiveMQ Enterprise** REST endpoint on the Consumers tab, and Manifold lists every client session and resolves each wildcard filter against the topics actually observed — `spBv1.0/#` shows the concrete topics it covers.\n\n' +
+      'Select a client and press **Show coverage on topic map** to paint its resolved subscriptions across the Topics graph.'
+  },
+  {
+    id: 'guide-settings',
+    section: 'guides',
+    title: 'Settings, config & audit',
+    keywords: 'settings graph style layout export import config as code audit trail mcp',
+    body:
+      '**Default graph style / layout** — the theme and layout every graph view starts with; individual views can override them locally.\n\n' +
+      '**Configuration as code** — export pipelines, models, historians, recordings, contracts, tag bindings, mounts and alert rules as one JSON file: reviewable in git, promotable between environments. **Secrets are never exported**; on import, entries merge by id (matching ids are overwritten) and stored credentials survive.\n\n' +
+      '**Audit trail** — every mutating API call with time, role and outcome, persisted to `data/audit.jsonl` with secrets redacted.\n\n' +
+      '**MCP integration** — Manifold ships an MCP server so AI assistants can browse brokers, topics, payloads and OPC UA address spaces; copy the snippet into your MCP client config.'
+  },
 
   // ── Glossary ──────────────────────────────────────────────────────────────
   {

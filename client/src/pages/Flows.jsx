@@ -27,7 +27,7 @@ export default function Flows() {
   if (!connected.length) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="Flows" subtitle="Who publishes and who receives what, on a live broker" />
+        <PageHeader title="Flows" subtitle="Who publishes and who receives what, on a live broker" helpTopic="guide-flows" />
         <EmptyState
           icon={Waypoints}
           title="No connected brokers"
@@ -47,6 +47,7 @@ export default function Flows() {
       <PageHeader
         title="Flows"
         subtitle="Producer → topic → consumer lineage, from observed traffic + the broker admin API"
+        helpTopic="guide-flows"
         actions={
           <select
             value={brokerId || ''}

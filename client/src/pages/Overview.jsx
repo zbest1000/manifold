@@ -63,6 +63,7 @@ export default function Overview() {
       <PageHeader
         title="Overview"
         subtitle="Live snapshot of your MQTT and OPC UA connections"
+        helpTopic="what-is-manifold"
         actions={
           <Link to="/discovery">
             <Button variant="outline">

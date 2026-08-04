@@ -227,6 +227,7 @@ export default function Trends() {
       <PageHeader
         title="Trends"
         subtitle="chart live from the message stream, a historian, or a local recording"
+        helpTopic="guide-record-replay"
         actions={
           <div className="flex items-center gap-2">
             <HelpButton title="How Trends works" label="How Trends works">

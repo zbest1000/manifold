@@ -134,6 +134,7 @@ export default function Brokers() {
       <PageHeader
         title="MQTT Brokers"
         subtitle="Connect to brokers and stream their topic namespaces"
+        helpTopic="guide-first-broker"
         actions={
           <Button onClick={() => (showForm ? closeForm() : setShowForm(true))}>
             <Plus size={15} /> Add broker

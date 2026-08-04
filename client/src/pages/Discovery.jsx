@@ -94,6 +94,7 @@ export default function Discovery() {
       <PageHeader
         title="Network Discovery"
         subtitle="Probe your network for MQTT brokers, OPC UA servers, and i3X endpoints"
+        helpTopic="guide-discovery"
         actions={
           scanning ? (
             <Button variant="danger" onClick={stop}>

@@ -293,7 +293,7 @@ export default function System() {
   if (!metrics) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="System" subtitle="Manifold's own health and Prometheus readings" />
+        <PageHeader title="System" subtitle="Manifold's own health and Prometheus readings" helpTopic="guide-system-metrics" />
         <div className="flex-1 p-6">
           {error ? (
             <EmptyState icon={AlertTriangle} title="Couldn't read /metrics" hint={error} />
@@ -317,6 +317,7 @@ export default function System() {
       <PageHeader
         title="System"
         subtitle="Manifold's own health and Prometheus readings — /metrics, live"
+        helpTopic="guide-system-metrics"
         actions={
           <div className="flex items-center gap-3">
             {updatedAt && <span className="text-[11px] text-slate-500">updated {new Date(updatedAt).toLocaleTimeString()}</span>}

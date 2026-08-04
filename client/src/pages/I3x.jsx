@@ -154,6 +154,7 @@ export default function I3x() {
         <PageHeader
           title="i3X"
           subtitle="Discover and visualize a Common Contextual Manufacturing Information (i3X) server"
+          helpTopic="guide-i3x"
           actions={<Badge>not connected</Badge>}
         />
         <div className="flex-1 overflow-y-auto p-6">
@@ -196,6 +197,7 @@ export default function I3x() {
       <PageHeader
         title="i3X"
         subtitle={`${server.info?.serverName || server.baseUrl} · ${objects.length} objects · ${namespaces.length} namespaces`}
+        helpTopic="guide-i3x"
         actions={
           <div className="flex items-center gap-2">
             <div className="flex overflow-hidden rounded-xl border border-white/10">

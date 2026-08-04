@@ -23,7 +23,7 @@ export default function Settings() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Settings" subtitle="Graph appearance and integrations" />
+      <PageHeader title="Settings" subtitle="Graph appearance and integrations" helpTopic="guide-settings" />
 
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <Card className="p-5">

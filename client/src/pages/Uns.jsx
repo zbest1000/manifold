@@ -179,7 +179,7 @@ export default function Uns() {
   if (!connected.length && !mountRoots.length) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="Unified Namespace" subtitle="Live topology of the whole namespace, by ISA-95 level" />
+        <PageHeader title="Unified Namespace" subtitle="Live topology of the whole namespace, by ISA-95 level" helpTopic="guide-uns" />
         <EmptyState
           icon={Network}
           title="No connected brokers"
@@ -199,6 +199,7 @@ export default function Uns() {
       <PageHeader
         title="Unified Namespace"
         subtitle="live topology"
+        helpTopic="guide-uns"
         actions={
           <div className="flex items-center gap-2">
             <HelpButton title="How the Unified Namespace view works" label="How this view works">

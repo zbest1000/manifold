@@ -194,6 +194,7 @@ export default function OpcUa() {
         <PageHeader
           title="OPC UA"
           subtitle="Browse an OPC UA address space as a node graph and watch live values"
+          helpTopic="guide-opcua"
           actions={
             <Button onClick={() => setShowForm(true)}>
               <Plus size={15} /> Connect server
@@ -215,6 +216,7 @@ export default function OpcUa() {
       <PageHeader
         title="OPC UA"
         subtitle={connection ? `${graph.nodes.length} nodes · double-click to expand` : 'Connect an endpoint'}
+        helpTopic="guide-opcua"
         actions={
           <div className="flex items-center gap-2">
             {connection && (

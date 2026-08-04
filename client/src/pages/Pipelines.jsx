@@ -30,6 +30,7 @@ export default function Pipelines() {
       <PageHeader
         title="Pipelines"
         subtitle="route, reshape, contextualize, and record the live stream"
+        helpTopic="tour-build"
         actions={
           <div className="flex items-center gap-2">
             <div className="flex overflow-hidden rounded-xl border border-white/10">
