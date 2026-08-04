@@ -24,7 +24,7 @@ function line(name, labels, value) {
 }
 
 function render(services) {
-  const { mqttManager, pipelines, outbox, recorder, contracts, alerts, bindings, profiles } = services;
+  const { mqttManager, pipelines, outbox, recorder, contracts, alerts, bindings, profiles, canary } = services;
   let out = '';
   const gauge = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} gauge\n`);
   const counter = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} counter\n`);
@@ -44,6 +44,21 @@ function render(services) {
   for (const info of mqttManager?.getConnections() || []) {
     out += line('manifold_broker_messages_received_total', { broker: info.name || info.id }, info.metrics.messagesReceived);
     out += line('manifold_broker_topics', { broker: info.name || info.id }, info.metrics.topicCount);
+  }
+
+  // Canary round-trips: the honest per-broker latency series — this is what a
+  // Grafana panel should chart, not connection status.
+  if (canary) {
+    const names = new Map((mqttManager?.getConnections() || []).map((c) => [c.id, c.name || c.id]));
+    gauge('manifold_canary_rtt_ms', 'Broker publish-to-deliver round-trip, last probe');
+    gauge('manifold_canary_rtt_ema_ms', 'Broker round-trip, exponential moving average');
+    counter('manifold_canary_missed_total', 'Canary probes never delivered back');
+    for (const [brokerId, s] of Object.entries(canary.getStats().brokers || {})) {
+      const broker = names.get(brokerId) || brokerId;
+      if (s.lastRttMs !== null) out += line('manifold_canary_rtt_ms', { broker }, s.lastRttMs);
+      if (s.emaMs !== null) out += line('manifold_canary_rtt_ema_ms', { broker }, s.emaMs);
+      out += line('manifold_canary_missed_total', { broker }, s.missed);
+    }
   }
 
   counter('manifold_pipeline_messages_total', 'Pipeline route counters');

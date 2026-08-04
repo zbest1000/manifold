@@ -1,0 +1,363 @@
+{
+ "uid": "manifold-overview",
+ "title": "Manifold Overview",
+ "description": "Manifold's own health, scraped from its /metrics exposition \u2014 broker ingest, canary round-trips, event-loop saturation, historian outbox, and alarm activity.",
+ "tags": [
+  "manifold",
+  "mqtt",
+  "uns"
+ ],
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "10s",
+ "time": {
+  "from": "now-30m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "Broker ingest rate (msgs/s)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "mps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "rate(manifold_broker_messages_received_total[1m])",
+     "legendFormat": "{{broker}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Messages per second Manifold receives from each connected broker."
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "Broker round-trip canary (ms)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_canary_rtt_ms",
+     "legendFormat": "{{broker}} last",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "manifold_canary_rtt_ema_ms",
+     "legendFormat": "{{broker}} avg",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Publish\u2192deliver latency of Manifold's 30s canary probe through each broker \u2014 the honest broker-health number."
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "Event loop delay (ms)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_event_loop_delay_ms{quantile=\"0.5\"}",
+     "legendFormat": "p50",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "manifold_event_loop_delay_ms{quantile=\"0.99\"}",
+     "legendFormat": "p99",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Server saturation: sustained p99 above ~100ms means the ingest path is starving."
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "Process memory",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 8,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_process_memory_bytes",
+     "legendFormat": "{{kind}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "RSS and heap of the Manifold server process."
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "Historian outbox",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_outbox_queued_points",
+     "legendFormat": "queued points",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "manifold_outbox_spill_bytes",
+     "legendFormat": "spilled bytes",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Store-and-forward health: spill growth means a historian is down or slow and data is buffering to disk."
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "Canary probes missed",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 16,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "increase(manifold_canary_missed_total[10m])",
+     "legendFormat": "{{broker}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Probes a 'connected' broker never delivered back in the last 10 minutes \u2014 the silent failure mode."
+  }
+ ]
+}

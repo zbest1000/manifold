@@ -35,6 +35,18 @@
         "reconnect": true,
         "reconnectPeriod": 5000
       }
+    },
+    "demo-emqx": {
+      "config": {
+        "id": "demo-emqx",
+        "name": "East Plant (EMQX)",
+        "host": "emqx",
+        "port": 1883,
+        "protocol": "mqtt",
+        "autoSubscribe": true,
+        "reconnect": true,
+        "reconnectPeriod": 5000
+      }
     }
   },
   "opcua": {

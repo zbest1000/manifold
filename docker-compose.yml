@@ -115,6 +115,77 @@ services:
       mqtt3:
         condition: service_healthy
 
+  # A real EMQX broker so vendor-specific capabilities are exercised for real:
+  # the client-lifecycle timeline reads its $SYS/brokers/+/clients/+/… system
+  # topics, and broker-admin features can point at its REST API (:18083).
+  # The mounted acl.conf is demo-permissive (default EMQX denies $SYS/# and
+  # literal-# subscriptions to remote clients, which would blind Manifold).
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: manifold-emqx
+    hostname: emqx
+    restart: unless-stopped
+    environment:
+      EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_CONNECTED: "true"
+      EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_DISCONNECTED: "true"
+    volumes:
+      - ./docker/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+    ports:
+      - "127.0.0.1:1886:1883" # MQTT (host access; in-cluster it's emqx:1883)
+      - "127.0.0.1:18083:18083" # EMQX dashboard (admin/public by default)
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  simulator4:
+    build:
+      context: ./docker/simulator
+    container_name: manifold-simulator4
+    restart: unless-stopped
+    environment:
+      MQTT_URL: mqtt://emqx:1883
+      TICK_MS: "2000"
+      SIM_SCALE: "1"
+      SITE: east
+    depends_on:
+      emqx:
+        condition: service_healthy
+
+  # Real observability pair: Prometheus scrapes Manifold's /metrics every 5s
+  # and the provisioned Grafana dashboard ("Manifold Overview") charts it —
+  # ingest rates, canary round-trips, event-loop health, outbox depth.
+  # Grafana: http://localhost:3001 (anonymous admin, demo only).
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: manifold-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: manifold-grafana
+    hostname: grafana
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+
   # Mock i3X server. Connect from the app at http://i3x:8080 (i3X page or
   # Discovery, which probes port 8080). Serves a small ISA-95 object hierarchy.
   i3x:

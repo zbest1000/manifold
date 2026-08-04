@@ -1,0 +1,16 @@
+# Demo Prometheus — scrapes Manifold's own /metrics exposition so Grafana has
+# a real time-series backend to chart it from (ingest rates, canary
+# round-trips, event-loop health, outbox depth, alert counters).
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: manifold
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['app:5000']
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

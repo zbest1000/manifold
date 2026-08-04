@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X, ChevronDown, ChevronUp, Search, Gauge } from 'lucide-react';
+import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X, ChevronDown, ChevronUp, Search, Gauge, BarChart3 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
@@ -357,6 +357,17 @@ export default function System() {
         actions={
           <div className="flex items-center gap-3">
             {updatedAt && <span className="text-[11px] text-slate-500">updated {new Date(updatedAt).toLocaleTimeString()}</span>}
+            {/* The demo stack ships Prometheus + a provisioned Grafana dashboard
+                over this same /metrics exposition — real graphs, real backend. */}
+            <a
+              href="http://localhost:3001/d/manifold-overview"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:border-white/20 hover:bg-white/5"
+              title="Open the demo stack's Grafana dashboard (Prometheus-backed charts of these same metrics)"
+            >
+              <BarChart3 size={14} /> Grafana
+            </a>
             <Button variant="outline" size="sm" onClick={poll}>
               <RefreshCw size={14} /> Refresh
             </Button>

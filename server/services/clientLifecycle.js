@@ -5,9 +5,12 @@
  * whatever the broker can actually tell us. Brokers differ, so this adapts
  * per capability instead of assuming one vendor:
  *
- *  - EMQX publishes structured JSON on `$events/client_connected` /
- *    `$events/client_disconnected` (subscription is free to attempt anywhere:
- *    non-EMQX brokers simply never deliver on those topics).
+ *  - EMQX publishes structured JSON on
+ *    `$SYS/brokers/<node>/clients/<id>/connected|disconnected` (its
+ *    subscribable system topics; the similarly-named `$events/#` tree is
+ *    rule-engine-only and also probed in case a rule republishes there).
+ *    Subscription is free to attempt anywhere: non-EMQX brokers simply never
+ *    deliver on those topics.
  *  - Mosquitto (with `log_dest topic`) publishes human-readable notices on
  *    `$SYS/broker/log/#` — "New client connected from … as <id> …",
  *    "Client <id> disconnected", "Socket error on client <id>". Parsed here.
@@ -21,9 +24,18 @@
 const RING_MAX = 500;
 const SUBSCRIBE_EVERY_MS = 60_000;
 
-// EMQX event topics + the Mosquitto log tree. Subscribing to a topic a broker
-// never publishes is harmless — that IS the capability probe.
-const SUB_FILTERS = ['$events/client_connected', '$events/client_disconnected', '$SYS/broker/log/#'];
+// EMQX event + system topics plus the Mosquitto log tree. Subscribing to a
+// topic a broker never publishes is harmless — that IS the capability probe.
+const SUB_FILTERS = [
+  '$events/client_connected',
+  '$events/client_disconnected',
+  '$SYS/brokers/+/clients/+/connected',
+  '$SYS/brokers/+/clients/+/disconnected',
+  '$SYS/broker/log/#'
+];
+
+// $SYS/brokers/<node>/clients/<clientid>/connected|disconnected (EMQX).
+const EMQX_SYS_CLIENT = /^\$SYS\/brokers\/[^/]+\/clients\/(.+)\/(connected|disconnected)$/;
 
 // Mosquitto notice lines (after the "<epoch>: " prefix).
 const MOSQ_CONNECTED = /^New client connected from ([\d.:a-fA-F[\]]+) as (.+?) \(/;
@@ -112,6 +124,22 @@ class ClientLifecycle {
         ip: p.ipaddress || null,
         reason: p.reason || null,
         source: 'emqx-events'
+      });
+      return;
+    }
+
+    const emqxSys = EMQX_SYS_CLIENT.exec(topic);
+    if (emqxSys) {
+      const p = typeof msg.payload === 'object' && msg.payload !== null ? msg.payload : {};
+      this._cap(brokerId).emqxEvents = true;
+      this._push(brokerId, {
+        ts: now,
+        type: emqxSys[2],
+        clientId: String(p.clientid || emqxSys[1]),
+        username: p.username || null,
+        ip: p.ipaddress || null,
+        reason: p.reason || null,
+        source: 'emqx-sys'
       });
       return;
     }

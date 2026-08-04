@@ -45,6 +45,34 @@ test('parses EMQX $events JSON into typed events', () => {
   assert.strictEqual(r.events[1].ip, '10.0.0.9');
 });
 
+test('parses EMQX $SYS client system topics (the subscribable EMQX source)', () => {
+  const m = fakeManager();
+  const lc = new ClientLifecycle({ mqttManager: m });
+  lc.onMessage(
+    {
+      brokerId: 'b1',
+      topic: '$SYS/brokers/emqx@node1.local/clients/sensor-9/connected',
+      payload: { clientid: 'sensor-9', username: 'ops', ipaddress: '10.1.2.3', proto_ver: 5 }
+    },
+    1000
+  );
+  lc.onMessage(
+    {
+      brokerId: 'b1',
+      topic: '$SYS/brokers/emqx@node1.local/clients/sensor-9/disconnected',
+      payload: { clientid: 'sensor-9', reason: 'keepalive_timeout' }
+    },
+    2000
+  );
+  const r = lc.report('b1');
+  assert.strictEqual(r.capability.emqxEvents, true);
+  assert.strictEqual(r.events[1].type, 'connected');
+  assert.strictEqual(r.events[1].ip, '10.1.2.3');
+  assert.strictEqual(r.events[0].type, 'disconnected');
+  assert.strictEqual(r.events[0].reason, 'keepalive_timeout');
+  assert.strictEqual(r.events[0].source, 'emqx-sys');
+});
+
 test('parses Mosquitto broker-log notices (connect, disconnect, socket error)', () => {
   const m = fakeManager();
   const lc = new ClientLifecycle({ mqttManager: m });
