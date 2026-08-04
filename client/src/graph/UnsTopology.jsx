@@ -463,6 +463,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       manualRef.current.clear();
       packRef.current = null;
       userMovedRef.current = false;
+      // The layout memo already recomputed with the OLD pack offsets when
+      // `orientation` changed (it's a memo dep); clearing packRef here is a
+      // ref mutation that triggers no re-render, so without this bump the
+      // previous orientation's shelf offsets stay applied to the transposed
+      // blocks. Force the memo to re-run now that packRef is null.
+      setPackVersion((v) => v + 1);
     }
   }, [orientation]);
 

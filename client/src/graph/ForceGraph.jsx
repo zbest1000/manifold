@@ -565,6 +565,15 @@ const ForceGraph = forwardRef(function ForceGraph(
     bigRef.current = big;
     if (big) {
       radialTreeLayout(nodes, links, depth);
+      // radialTreeLayout reads link endpoints as id strings but doesn't resolve
+      // them; the normal path's forceLink().id() would. Without this, draw()'s
+      // viewport cull sees l.source.x === undefined and skips every edge, so a
+      // big-mode graph (>4000 nodes, e.g. a capped public-broker view) renders
+      // nodes with no connecting links when zoomed in.
+      for (const l of links) {
+        l.source = nodeById.get(l.source);
+        l.target = nodeById.get(l.target);
+      }
       buildGrid(nodes, gridRef);
       simRef.current = null;
       requestAnimationFrame(() => {
