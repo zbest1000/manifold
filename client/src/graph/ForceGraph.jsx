@@ -534,6 +534,10 @@ const ForceGraph = forwardRef(function ForceGraph(
     // from a stale object until the pointer moves again.
     if (hoverRef.current) hoverRef.current = nodeById.get(hoverRef.current.id) || null;
 
+    // If the outgoing sim was still annealing, remember how far it got: a
+    // metadata-only rebuild must RESUME that anneal, not freeze the graph
+    // half-laid-out (structChanged=false stops the new sim otherwise).
+    const prevAlpha = simRef.current ? simRef.current.alpha() : 0;
     if (simRef.current) simRef.current.stop();
 
     const depth = computeDepths(nodes, links);
@@ -567,12 +571,13 @@ const ForceGraph = forwardRef(function ForceGraph(
     const sim = forceSimulation(nodes)
       .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
       .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
-      .alpha(structChanged ? (gentleReheat ? 0.22 : 0.9) : 0)
+      .alpha(structChanged ? (gentleReheat ? 0.22 : 0.9) : prevAlpha > 0.02 ? prevAlpha : 0)
       .alphaDecay(gentleReheat ? 0.05 : 0.028)
       .on('tick', draw);
-    if (!structChanged) {
-      // Metadata-only refresh: positions are already settled — just repaint
-      // once so new labels/colors/counters show.
+    if (!structChanged && prevAlpha <= 0.02) {
+      // Metadata-only refresh on a settled layout: just repaint once so new
+      // labels/colors/counters show. (Mid-anneal refreshes fall through and
+      // keep annealing from prevAlpha instead.)
       sim.stop();
       requestAnimationFrame(draw);
     }
