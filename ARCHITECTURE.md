@@ -11,7 +11,6 @@ flowchart LR
     subgraph sources [Data sources]
         B[MQTT brokers]
         O[OPC UA servers]
-        C[CESMII SMIP]
         I[i3X servers]
     end
 
@@ -474,7 +473,6 @@ Observed behavior that shapes the implementation:
 | `POST` | `/api/opcua/discover` | Endpoint discovery (security modes/policies) |
 | `GET` | `/api/opcua/certificate` | Manifold's application certificate (PEM) |
 | `GET/POST` | `/api/opcua/trust` | List trusted/rejected certs; trust by thumbprint |
-| `POST` | `/api/cesmii/config` · `/history` | CESMII configure; time-series |
 | `POST` | `/api/i3x/connect` · `/probe` · `/value` · `/history` | i3X connect/probe; reads |
 | `GET` | `/api/i3x/objects` · `/graph` · `/namespaces` | i3X inventory |
 
@@ -484,7 +482,7 @@ while a client is connected.
 
 ## MCP tools
 
-75 tools, covering reads and mutations across the whole backend. Mutating
+The MCP tools cover reads and mutations across the whole backend. Mutating
 tools say so in their descriptions, and every call goes through the same
 authenticated REST API (and therefore the same audit log) as the UI.
 
@@ -501,7 +499,6 @@ authenticated REST API (and therefore the same audit log) as the UI.
 | Recorder & replay | `recorder_list` · `recorder_save` · `recorder_delete` · `recorder_data` · `replay_start` · `replay_stop` |
 | Alerts & audit | `alert_rule_save` · `alert_rule_delete` · `alert_events` · `audit_recent` |
 | OPC UA | `opcua_list_connections` · `opcua_connect` · `opcua_disconnect` · `opcua_browse` · `opcua_read` · `opcua_monitor` |
-| CESMII SMIP | `cesmii_status` · `cesmii_configure` · `cesmii_list_equipment` · `cesmii_list_attributes` · `cesmii_history` · `cesmii_query` |
 | i3X | `i3x_status` · `i3x_connect` · `i3x_probe` · `i3x_namespaces` · `i3x_object_types` · `i3x_graph` · `i3x_related` · `i3x_value` · `i3x_history` |
 
 ## Testing

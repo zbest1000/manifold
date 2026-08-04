@@ -36,10 +36,8 @@ PR that closed them is noted inline.
   fine).** Discovery, CESMII, System/Health, and Settings were all real-click /
   interaction tested and work. Observations worth a demo pass: (a) [fixed — see
   the Discovery OPC UA port item under Done]
-  (b) **CESMII isn't auto-connected** to its bundled mock (`cesmii-mock:4000`)
-  the way i3X is, so the page opens on an empty connect form; there's a real design
-  tension (JWT creds are intentionally not stored on disk), but the demo could at
-  least pre-fill the mock GraphQL endpoint. (c) **Historian outbox is spilling**
+  (b) ~~CESMII isn't auto-connected~~ — moot: the CESMII SMIP integration was
+  removed entirely (user decision, 2026-08-04). (c) **Historian outbox is spilling**
   (System shows Written 0 / Spilled ~18 MB and climbing) — but this is NOT a
   demo-seed bug: the seed only defines the file-based `demo-historian`, no
   Timescale route. The spilling "Demo Timescale" route is stale *runtime* state in

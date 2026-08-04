@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **CESMII SMIP integration.** The SMIP GraphQL client, its page, REST routes
+  (`/api/cesmii/*`), MCP tools (`cesmii_*`), and the bundled `cesmii-mock`
+  container are gone. i3X support is unaffected. Persisted `cesmii` profile
+  entries are ignored on load.
+
 ### Added
+
+- **Alerts page (alarm center).** Active-alarm board (live, per-topic for
+  wildcard rules), rule management with pause/resume and per-type explainers,
+  live event feed, sidebar badge, toasts, and `GET /api/alerts/active` so a
+  fresh tab seeds alarms that fired before it opened.
+- **In-app Help Center.** Searchable panel (`?` anywhere, or the sidebar's
+  "Help & guides") with a getting-started tour, task guides, an industrial
+  glossary, and the keyboard shortcut list.
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker

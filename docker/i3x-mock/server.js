@@ -1,5 +1,5 @@
 'use strict';
-// Minimal mock CESMII i3X server for local Manifold testing. Zero dependencies —
+// Minimal mock i3X server for local Manifold testing. Zero dependencies —
 // Node's built-in http only. Answers exactly the endpoints Manifold's i3X client
 // (server/services/i3xClient.js) calls, with the shapes it expects: GET /info,
 // /namespaces, /objecttypes, /relationshiptypes, /objects, and POST

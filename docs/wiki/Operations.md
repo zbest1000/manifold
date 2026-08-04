@@ -80,7 +80,7 @@ security headers on every response.
 ### Network safety (egress guard)
 
 The two features that reach out to other machines — the CIDR network scanner and
-the outbound HTTP clients (i3X, CESMII, broker admin APIs) — pass every target
+the outbound HTTP clients (i3X, broker admin APIs) — pass every target
 through one egress guard. Loopback, link-local (including the cloud-metadata
 address `169.254.169.254`), multicast, and reserved ranges are **always**
 blocked, so Manifold can't be turned into an SSRF pivot or an internal port

@@ -2,7 +2,7 @@ const { EventEmitter } = require('events');
 const { guardedFetch } = require('./egressGuard');
 
 /**
- * Client for a CESMII i3X server — the "Common Contextual Manufacturing
+ * Client for an i3X server — the "Common Contextual Manufacturing
  * Information API": a vendor-neutral REST interface over contextualized
  * manufacturing data (namespaces, object types, objects, relationships,
  * current values and history).

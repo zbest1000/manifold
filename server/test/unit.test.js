@@ -3,7 +3,6 @@ const assert = require('node:assert');
 
 const MqttManager = require('../services/mqttManager');
 const DiscoveryService = require('../services/discovery');
-const CesmiiClient = require('../services/cesmiiClient');
 const I3xClient = require('../services/i3xClient');
 
 const fakeIo = { emit() {} };
@@ -255,34 +254,6 @@ test('mqttManager.publish rejects (never throws) for a disconnected broker', asy
   });
   assert.match(caught.message, /not connected/);
   m.shutdown();
-});
-
-test('cesmiiClient requires full configuration', () => {
-  const c = new CesmiiClient();
-  assert.strictEqual(c.isConfigured(), false);
-  assert.throws(() => c.configure({ endpoint: 'https://x/graphql' }), /authenticator is required/);
-  const status = c.configure({
-    endpoint: 'https://demo.cesmii.net/graphql',
-    authenticator: 'auth',
-    role: 'role',
-    userName: 'user',
-    secret: 'secret'
-  });
-  assert.strictEqual(status.configured, true);
-  assert.strictEqual(status.authenticated, false);
-});
-
-test('cesmiiClient.getHistory validates arguments before hitting the network', async () => {
-  const c = new CesmiiClient();
-  c.configure({
-    endpoint: 'https://demo.cesmii.net/graphql',
-    authenticator: 'a',
-    role: 'r',
-    userName: 'u',
-    secret: 's'
-  });
-  await assert.rejects(() => c.getHistory([], '2024-01-01', '2024-01-02'), /non-empty array/);
-  await assert.rejects(() => c.getHistory(['1'], null, null), /startTime and endTime are required/);
 });
 
 test('i3xClient requires a base URL and normalizes trailing slash', () => {

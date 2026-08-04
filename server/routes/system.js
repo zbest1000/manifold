@@ -3,7 +3,7 @@ const router = express.Router();
 
 // GET /api/system/status
 router.get('/status', (req, res) => {
-  const { mqttManager, opcuaManager, discovery, cesmii, i3x } = req.app.locals.services;
+  const { mqttManager, opcuaManager, discovery, i3x } = req.app.locals.services;
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -18,7 +18,6 @@ router.get('/status', (req, res) => {
     discovery: {
       scanning: discovery.isScanning()
     },
-    cesmii: cesmii.status(),
     i3x: i3x.status()
   });
 });

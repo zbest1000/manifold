@@ -74,8 +74,6 @@ test('GET /api/system/status includes all subsystems', async () => {
   assert.ok(body.mqtt);
   assert.ok(body.opcua);
   assert.ok(body.discovery);
-  assert.ok(body.cesmii);
-  assert.strictEqual(body.cesmii.configured, false);
   assert.ok(body.i3x);
   assert.strictEqual(body.i3x.configured, false);
 });
@@ -102,12 +100,6 @@ test('POST /api/mqtt/brokers validates required fields', async () => {
   const { status, body } = await post('/api/mqtt/brokers', {});
   assert.strictEqual(status, 400);
   assert.match(body.error, /host is required/);
-});
-
-test('POST /api/cesmii/config validates required fields', async () => {
-  const { status, body } = await post('/api/cesmii/config', { endpoint: 'https://x/graphql' });
-  assert.strictEqual(status, 400);
-  assert.match(body.error, /required/);
 });
 
 test('unknown OPC UA connection returns 404 on delete', async () => {
