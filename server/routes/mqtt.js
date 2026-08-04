@@ -206,6 +206,16 @@ router.get('/brokers/:brokerId/posture', (req, res) => {
   res.json({ brokerId: req.params.brokerId, ...posture });
 });
 
+// GET /api/mqtt/brokers/:brokerId/lifecycle — client connect/disconnect
+// timeline + per-client flap rollup, from whatever the broker can provide
+// (EMQX $events, Mosquitto $SYS/broker/log, Sparkplug BIRTH/DEATH).
+router.get('/brokers/:brokerId/lifecycle', (req, res) => {
+  const { mqttManager, lifecycle } = req.app.locals.services;
+  if (!mqttManager.getConnection(req.params.brokerId)) return res.status(404).json({ error: 'Broker not found' });
+  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  res.json({ brokerId: req.params.brokerId, ...(lifecycle ? lifecycle.report(req.params.brokerId, { limit }) : { capability: {}, events: [], clients: [] }) });
+});
+
 // GET/POST/DELETE /api/mqtt/brokers/:brokerId/admin — broker admin API config
 // (the ONLY honest source of per-client subscriptions). Secret is never echoed.
 router.get('/brokers/:brokerId/admin', (req, res) => {

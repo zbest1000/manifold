@@ -27,6 +27,7 @@ const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
 const { BrokerCanary } = require('./services/brokerCanary');
+const { ClientLifecycle } = require('./services/clientLifecycle');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -197,11 +198,12 @@ const audit = new AuditLog();
 const sparkplugPublisher = new SparkplugPublisher({ profiles });
 const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher });
 const canary = new BrokerCanary({ mqttManager });
+const lifecycle = new ClientLifecycle({ mqttManager });
 
 app.locals.services = {
   mqttManager, opcuaManager, discovery, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings, canary
+  outbox, audit, sparkplugPublisher, bindings, canary, lifecycle
 };
 
 // Every mutating API call lands in the audit trail (role, ip, route, outcome).
@@ -246,6 +248,7 @@ contracts.start();
 models.start();
 bindings.start();
 canary.start();
+lifecycle.start();
 
 // Engine metrics stream over the socket the client already holds — the UI
 // shouldn't have to poll REST for numbers we can push.

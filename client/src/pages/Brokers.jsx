@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Radio, Plus, Trash2, Server, ChevronRight, Pencil, ShieldCheck } from 'lucide-react';
+import { Radio, Plus, Trash2, Server, ChevronRight, Pencil, ShieldCheck, Users, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
-import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
+import { Card, Button, Badge, Input, Field, EmptyState, Modal } from '@/components/ui';
+import { formatDistanceToNow } from 'date-fns';
 import PageHeader from '@/components/PageHeader';
 
 // Well-known free public test brokers (see EMQX's "popular online public MQTT
@@ -54,6 +55,7 @@ export default function Brokers() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [lifecycleFor, setLifecycleFor] = useState(null); // broker whose client timeline is open
 
   const isWs = form.protocol === 'ws' || form.protocol === 'wss';
 
@@ -381,23 +383,33 @@ export default function Brokers() {
                     valueClassName={(b.metrics?.errors ?? 0) > 0 ? 'text-rose-300' : undefined}
                   />
                 </div>
-                <div className="mt-4 flex items-center justify-end gap-1.5">
+                <div className="mt-4 flex items-center justify-between gap-1.5">
                   <button
-                    aria-label="Edit broker"
-                    onClick={() => edit(b)}
-                    className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-accent-400"
+                    onClick={() => setLifecycleFor(b)}
+                    className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
                   >
-                    <Pencil size={13} />
+                    <Users size={13} /> Client activity
                   </button>
-                  <Button variant="danger" size="sm" onClick={() => disconnect(b)}>
-                    <Trash2 size={13} /> Disconnect
-                  </Button>
+                  <span className="flex items-center gap-1.5">
+                    <button
+                      aria-label="Edit broker"
+                      onClick={() => edit(b)}
+                      className="rounded p-1 text-slate-500 hover:bg-white/10 hover:text-accent-400"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <Button variant="danger" size="sm" onClick={() => disconnect(b)}>
+                      <Trash2 size={13} /> Disconnect
+                    </Button>
+                  </span>
                 </div>
               </Card>
             ))}
           </div>
         )}
       </div>
+
+      {lifecycleFor && <LifecycleModal broker={lifecycleFor} onClose={() => setLifecycleFor(null)} />}
     </div>
   );
 }
@@ -504,5 +516,102 @@ function Check({ label, checked, onChange }) {
       />
       {label}
     </label>
+  );
+}
+
+// Client lifecycle timeline — what the broker can tell us about ITS clients,
+// adapted per capability: EMQX $events JSON, Mosquitto $SYS/broker/log
+// notices, and Sparkplug BIRTH/DEATH as the universal passive layer. The
+// header names which source is live so the data's provenance is never a
+// mystery.
+function LifecycleModal({ broker, onClose }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () => api.brokerLifecycle(broker.id).then((r) => !stop && setData(r)).catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 10_000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [broker.id]);
+
+  const cap = data?.capability || {};
+  const sources = [
+    cap.emqxEvents && 'EMQX $events',
+    cap.brokerLog && 'broker log',
+    cap.sparkplug && 'Sparkplug'
+  ].filter(Boolean);
+
+  const typeStyle = {
+    connected: 'text-emerald-400',
+    birth: 'text-emerald-400',
+    disconnected: 'text-rose-400',
+    death: 'text-rose-400'
+  };
+
+  return (
+    <Modal title={`Client activity — ${broker.name}`} onClose={onClose} className="max-w-2xl p-6">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-base font-semibold text-slate-100">
+          <Users size={17} className="text-accent-400" /> Client activity — {broker.name}
+        </h3>
+        <span className="text-xs text-slate-500">
+          {sources.length ? `source: ${sources.join(' + ')}` : 'listening for events…'}
+        </span>
+      </div>
+
+      {!data ? (
+        <p className="flex items-center gap-2 py-8 text-sm text-slate-500">
+          <RefreshCw size={14} className="animate-spin" /> Loading…
+        </p>
+      ) : data.events.length === 0 ? (
+        <p className="py-6 text-sm leading-relaxed text-slate-500">
+          No lifecycle events observed yet. Events appear when clients connect or disconnect. EMQX brokers report them
+          on <span className="mono">$events/#</span>; Mosquitto needs <span className="mono">log_dest topic</span> in its
+          config; Sparkplug BIRTH/DEATH works on any broker. Otherwise this stays quiet — Manifold won't invent data it
+          can't observe.
+        </p>
+      ) : (
+        <>
+          {data.clients.length > 0 && (
+            <div className="mb-4">
+              <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Clients</h4>
+              <div className="max-h-44 space-y-1 overflow-y-auto">
+                {data.clients.slice(0, 30).map((c) => (
+                  <div key={c.clientId} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-3 py-1.5 text-xs">
+                    <span className="mono min-w-0 truncate text-slate-200">{c.clientId}</span>
+                    <span className="flex shrink-0 items-center gap-2 text-slate-500">
+                      {c.flapping && (
+                        <span className="rounded-full bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-300 ring-1 ring-inset ring-rose-500/30">
+                          flapping
+                        </span>
+                      )}
+                      <span>{c.connects}↑ {c.disconnects}↓</span>
+                      <span className={typeStyle[c.lastType] || 'text-slate-400'}>{c.lastType}</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Timeline</h4>
+          <div className="max-h-64 space-y-0.5 overflow-y-auto">
+            {data.events.map((e, i) => (
+              <div key={i} className="flex items-baseline justify-between gap-2 rounded bg-black/20 px-2.5 py-1 text-xs">
+                <span className="min-w-0 truncate">
+                  <span className={clsx('mr-2 font-semibold', typeStyle[e.type] || 'text-slate-300')}>{e.type}</span>
+                  <span className="mono text-slate-300">{e.clientId}</span>
+                  {e.ip && <span className="mono ml-2 text-slate-600">{e.ip}</span>}
+                  {e.reason && <span className="ml-2 text-slate-500">{e.reason}</span>}
+                </span>
+                <span className="shrink-0 text-[10px] text-slate-500">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
