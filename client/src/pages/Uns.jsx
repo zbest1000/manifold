@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil,
+  Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil, ArrowLeftRight, ArrowUpDown,
   ShieldCheck, History, Layers, Plug, Trash2, Plus, Ruler, Sun, Moon
 } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -60,10 +60,16 @@ export default function Uns() {
   // Topology canvas theme: dark (matches the app) or the light paper-schematic
   // look. Persisted; dark is the default.
   const [canvasTheme, setCanvasTheme] = useState(() => localStorage.getItem('tc.unsTheme') || 'dark');
+  const [unsOrient, setUnsOrient] = useState(() => localStorage.getItem('tc.unsOrient') || 'rows');
   const toggleCanvasTheme = () => {
     const next = canvasTheme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('tc.unsTheme', next);
     setCanvasTheme(next);
+  };
+  const toggleOrientation = () => {
+    const next = unsOrient === 'rows' ? 'columns' : 'rows';
+    localStorage.setItem('tc.unsOrient', next);
+    setUnsOrient(next);
   };
   const [levelsOpen, setLevelsOpen] = useState(false);
   // Mounts: external sources grafted into the forest.
@@ -262,6 +268,11 @@ export default function Uns() {
               onClick={() => setPanel((p) => (p === 'events' ? null : 'events'))}
             />
             <HeaderButton
+              icon={unsOrient === 'rows' ? ArrowLeftRight : ArrowUpDown}
+              label={unsOrient === 'rows' ? 'Horizontal' : 'Vertical'}
+              onClick={toggleOrientation}
+            />
+            <HeaderButton
               icon={canvasTheme === 'dark' ? Sun : Moon}
               label={canvasTheme === 'dark' ? 'Light' : 'Dark'}
               active={false}
@@ -344,7 +355,7 @@ export default function Uns() {
             </div>
           ) : (
           <div className="relative min-w-0 flex-1">
-            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} theme={canvasTheme} />
+            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} theme={canvasTheme} orientation={unsOrient} />
           </div>
           )}
 

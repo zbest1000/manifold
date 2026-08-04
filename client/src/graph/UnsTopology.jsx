@@ -70,6 +70,11 @@ const PULSE_MS = 700; // node ring flash right after a message
 // labels can never collide vertically.
 const ROW_H = 96;
 const COL_W = 224;
+// Transposed ("horizontal") orientation: namespaces tile left-to-right across
+// the screen and each tree grows downward. Leaf pitch is wider than ROW_H
+// because labels spread horizontally; level pitch covers badge + label block.
+const COLS_LEAF_W = 150;
+const COLS_LEVEL_H = 140;
 const R = 21; // node radius
 // Camera floor shared by fit + wheel zoom (they must agree or the first
 // scroll after a fit snaps). Low enough to survey a fully-expanded forest.
@@ -180,7 +185,7 @@ export function buildUnsTree(broker, topics) {
   return root;
 }
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark' }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark', orientation = 'rows' }) {
   const T = THEMES[theme] || THEMES.dark;
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -414,21 +419,37 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
   }, []);
 
+  // Orientation switch: manual pins are absolute coordinates of the old
+  // world, so they scatter if kept — drop them and reframe the new layout.
+  const prevOrientRef = useRef(orientation);
+  useEffect(() => {
+    if (prevOrientRef.current !== orientation) {
+      prevOrientRef.current = orientation;
+      manualRef.current.clear();
+      userMovedRef.current = false;
+    }
+  }, [orientation]);
+
   // ---- Tidy tree layout over the EXPANDED portion of the forest ----
+  // 'rows' (default): namespaces stack vertically, trees grow rightward.
+  // 'columns': namespaces tile horizontally, trees grow downward — the
+  // whole screen width carries the forest instead of a single tall strip.
   const layout = useMemo(() => {
     const nodes = [];
     const edges = [];
-    let cursorY = 0;
+    const columns = orientation === 'columns';
 
     const isOpen = (n) => expanded.has(`${n.brokerId}:${n.path}`);
 
-    // Number of leaf rows a node occupies given current expansion.
+    // Number of leaf slots a node occupies given current expansion.
     const rows = (n) => {
       if (!isOpen(n) || n.children.size === 0) return 1;
       let sum = 0;
       for (const c of n.children.values()) sum += rows(c);
       return Math.max(sum, 1);
     };
+
+    const kidsOf = (n) => [...n.children.values()].sort((a, b) => b.topicCount - a.topicCount || a.name.localeCompare(b.name));
 
     const place = (n, x, top) => {
       const span = rows(n) * ROW_H;
@@ -438,8 +459,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (isOpen(n)) {
         let childTop = top;
         // Stable, meaningful order: subtree size desc, then name.
-        const kids = [...n.children.values()].sort((a, b) => b.topicCount - a.topicCount || a.name.localeCompare(b.name));
-        for (const c of kids) {
+        for (const c of kidsOf(n)) {
           const cLaid = place(c, x + COL_W, childTop);
           edges.push({ from: laid, to: cLaid });
           childTop += rows(c) * ROW_H;
@@ -448,12 +468,37 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       return laid;
     };
 
+    const placeColumns = (n, y, left) => {
+      const span = rows(n) * COLS_LEAF_W;
+      const x = left + span / 2;
+      const laid = { node: n, x, y, open: isOpen(n), hasKids: n.children.size > 0 };
+      nodes.push(laid);
+      if (isOpen(n)) {
+        let childLeft = left;
+        for (const c of kidsOf(n)) {
+          const cLaid = placeColumns(c, y + COLS_LEVEL_H, childLeft);
+          edges.push({ from: laid, to: cLaid });
+          childLeft += rows(c) * COLS_LEAF_W;
+        }
+      }
+      return laid;
+    };
+
+    if (columns) {
+      let cursorX = 0;
+      for (const r of roots) {
+        placeColumns(r, 0, cursorX);
+        cursorX += rows(r) * COLS_LEAF_W + COLS_LEAF_W; // gap between namespaces
+      }
+      return { nodes, edges, width: cursorX };
+    }
+    let cursorY = 0;
     for (const r of roots) {
       place(r, 0, cursorY);
       cursorY += rows(r) * ROW_H + ROW_H; // gap between namespaces
     }
     return { nodes, edges, height: cursorY };
-  }, [roots, expanded]);
+  }, [roots, expanded, orientation]);
 
   useEffect(() => {
     visibleRef.current = layout.nodes;
@@ -533,16 +578,27 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const dashOffset = -((now / 40) % 24);
 
     // Edges first: animated dashed green while the child branch is publishing.
+    const columnsDraw = orientation === 'columns';
     for (const e of layout.edges) {
       const live = now - liveAt(e.to.node) < LIVE_WINDOW_MS;
       const a = posOf(e.from);
       const b = posOf(e.to);
-      const x1 = a.x + R + 3;
-      const x2 = b.x - R - 3;
-      const mx = (x1 + x2) / 2;
       ctx.beginPath();
-      ctx.moveTo(x1, a.y);
-      ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
+      if (columnsDraw) {
+        // Top-down: leave the parent badge below its label block, arrive at
+        // the child badge's top. Label halos keep text readable over edges.
+        const y1 = a.y + R + 3;
+        const y2 = b.y - R - 3;
+        const my = (y1 + y2) / 2;
+        ctx.moveTo(a.x, y1);
+        ctx.bezierCurveTo(a.x, my, b.x, my, b.x, y2);
+      } else {
+        const x1 = a.x + R + 3;
+        const x2 = b.x - R - 3;
+        const mx = (x1 + x2) / 2;
+        ctx.moveTo(x1, a.y);
+        ctx.bezierCurveTo(mx, a.y, mx, b.y, x2, b.y);
+      }
       if (live) {
         ctx.strokeStyle = T.edgeLive;
         ctx.lineWidth = 1.6;
@@ -703,7 +759,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
 
     ctx.restore();
-  }, [layout, levels, posOf, T]);
+  }, [layout, levels, posOf, T, orientation]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
   // Idle throttle: pulses/dashes only animate around live traffic and
