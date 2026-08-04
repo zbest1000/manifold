@@ -892,11 +892,21 @@ function TopicPanel({ node, brokerId, messages, graph, onJump, onClose }) {
   const [expanded, setExpanded] = useState(false); // blow the panel up to a large modal
 
   useEffect(() => {
-    if (!fullTopic) return;
+    if (!fullTopic) return undefined;
+    // alive guard: clicking topic B before A's history resolves mustn't show A's
+    // messages under B. `res?.messages ?? []` guards a malformed reply.
+    let alive = true;
     api
       .topicMessages(brokerId, fullTopic, 30)
-      .then((res) => setHistory(res.messages.slice().reverse()))
-      .catch(() => setHistory([]));
+      .then((res) => {
+        if (alive) setHistory((res?.messages ?? []).slice().reverse());
+      })
+      .catch(() => {
+        if (alive) setHistory([]);
+      });
+    return () => {
+      alive = false;
+    };
   }, [brokerId, fullTopic]);
 
   // Esc restores the expanded panel to its docked size.

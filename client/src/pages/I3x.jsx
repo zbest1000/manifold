@@ -343,10 +343,23 @@ function ObjectPanel({ node, onClose }) {
   const [history, setHistory] = useState(null);
 
   useEffect(() => {
-    if (!elementId) return;
+    if (!elementId) return undefined;
+    // alive guard: selecting node B before A's value resolves mustn't let A's
+    // response land under B.
+    let alive = true;
     setValue(null);
     setHistory(null);
-    api.i3xValue([elementId]).then((r) => setValue(r.results?.[0] ?? null)).catch(() => setValue(null));
+    api
+      .i3xValue([elementId])
+      .then((r) => {
+        if (alive) setValue(r.results?.[0] ?? null);
+      })
+      .catch(() => {
+        if (alive) setValue(null);
+      });
+    return () => {
+      alive = false;
+    };
   }, [elementId]);
 
   const loadHistory = async () => {
