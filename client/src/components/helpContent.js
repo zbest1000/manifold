@@ -73,7 +73,7 @@ export const HELP_TOPICS = [
     title: 'Connect your first broker',
     keywords: 'mqtt connect broker add subscribe',
     body:
-      '1. Go to **Connect → MQTT Brokers** and add your broker’s host and port (default `1883`, TLS `8883`).\n\n' +
+      '1. Go to **Connect → MQTT Brokers** and add your broker’s host and port (default `1883`, TLS `8883`). No broker of your own yet? The form’s **public test brokers** row one-clicks `broker.emqx.io`, `broker.hivemq.com` or `test.mosquitto.org` — free community brokers, fine for a first connection, never for sensitive data.\n\n' +
       '2. Manifold subscribes to `#` by default, so the topic tree fills as messages arrive. Retained messages appear immediately.\n\n' +
       '3. Open **Topics** and pick your broker — the graph builds itself live. If nothing shows, check the broker allows your credentials and that something is publishing.'
   },

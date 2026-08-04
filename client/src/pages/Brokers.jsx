@@ -8,6 +8,16 @@ import { api } from '@/lib/api';
 import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 
+// Well-known free public test brokers (see EMQX's "popular online public MQTT
+// brokers" roundup). One click pre-fills the form — deliberately NOT
+// auto-connect: the user should see (and can adjust) the topic filter first,
+// because subscribing `#` on a public broker is a firehose of strangers' data.
+const PUBLIC_BROKERS = [
+  { label: 'EMQX public', name: 'EMQX public', host: 'broker.emqx.io', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' },
+  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' },
+  { label: 'Mosquitto test', name: 'Mosquitto test', host: 'test.mosquitto.org', port: 1883, protocol: 'mqtt', subscribeFilter: 'test/#' }
+];
+
 const BLANK = {
   name: '',
   host: 'localhost',
@@ -149,6 +159,32 @@ export default function Brokers() {
       <div className="flex-1 space-y-4 overflow-y-auto p-6">
         {showForm && (
           <Card className="p-5">
+            {!editingId && (
+              <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-white/5 pb-4">
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Public test brokers</span>
+                {PUBLIC_BROKERS.map((p) => (
+                  <button
+                    key={p.host}
+                    type="button"
+                    onClick={() =>
+                      setForm({ ...BLANK, name: p.name, host: p.host, port: p.port, protocol: p.protocol, subscribeFilter: p.subscribeFilter })
+                    }
+                    className={clsx(
+                      'rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition',
+                      form.host === p.host
+                        ? 'bg-accent-500/15 text-accent-300 ring-accent-500/30'
+                        : 'bg-white/[0.03] text-slate-300 ring-white/10 hover:bg-white/5 hover:text-slate-100'
+                    )}
+                  >
+                    {p.label} <span className="mono ml-1 text-slate-500">{p.host}</span>
+                  </button>
+                ))}
+                <span className="basis-full text-2xs text-slate-600">
+                  Free community brokers — no auth, shared with the whole internet. Great for a first connection; never
+                  publish anything sensitive to them.
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Name">
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Production broker" />

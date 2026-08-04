@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { LifeBuoy, X, Search, BookOpen } from 'lucide-react';
 import clsx from 'clsx';
@@ -52,9 +52,14 @@ export default function HelpCenter() {
   const [section, setSection] = useState('start');
   const [query, setQuery] = useState('');
 
-  // Deep-link: when opened with a topic id, jump to that topic's section.
+  // Deep-link: when opened with a topic id, jump to that topic's section and
+  // scroll it into view (a page's guide can sit far down the list).
   const active = topicId ? HELP_TOPICS.find((t) => t.id === topicId) : null;
   const shownSection = active ? active.section : section;
+  const activeRef = useRef(null);
+  useEffect(() => {
+    if (open && active) activeRef.current?.scrollIntoView({ block: 'start' });
+  }, [open, active]);
 
   const q = query.trim().toLowerCase();
   const topics = useMemo(() => {
@@ -152,7 +157,7 @@ export default function HelpCenter() {
               ) : (
                 <ul className="divide-y divide-white/5">
                   {topics.map((t) => (
-                    <li key={t.id} className={clsx('px-4 py-3.5', active?.id === t.id && 'bg-accent-500/5')}>
+                    <li key={t.id} ref={active?.id === t.id ? activeRef : undefined} className={clsx('px-4 py-3.5', active?.id === t.id && 'bg-accent-500/5')}>
                       <div className="mb-1.5 flex items-baseline justify-between gap-2">
                         <h3 className="text-sm font-semibold text-slate-100">{t.title}</h3>
                         {q && <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-600">{sectionLabel(t.section)}</span>}
