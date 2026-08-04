@@ -185,7 +185,7 @@ export function buildUnsTree(broker, topics) {
   return root;
 }
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark', orientation = 'rows' }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark', orientation = 'rows', labelMode = 'auto' }) {
   const T = THEMES[theme] || THEMES.dark;
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -702,8 +702,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
       // labels — culled progressively as the camera pulls back: secondary
       // lines first, then names (sub-pixel smear, and the halo strokeText
-      // calls are the main draw cost of a fully-expanded forest).
-      if (t.k < 0.16) continue;
+      // calls are the main draw cost of a fully-expanded forest). 'on'
+      // overrides the zoom culling, 'off' hides all text — user's choice.
+      if (labelMode === 'off') continue;
+      if (labelMode !== 'on' && t.k < 0.16) continue;
       // Labels get a background-colored halo so crossing edges never block the text.
       ctx.textAlign = 'center';
       ctx.lineJoin = 'round';
@@ -713,7 +715,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 22);
       ctx.fillStyle = T.label;
       ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 22);
-      if (t.k < 0.35) continue;
+      if (labelMode !== 'on' && t.k < 0.35) continue;
       ctx.font = '600 8.5px ui-sans-serif, system-ui, sans-serif';
       ctx.strokeText(levelName(n.depth, levels).toUpperCase(), P.x, P.y + R + 33);
       ctx.fillStyle = T.caption;
@@ -759,7 +761,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
 
     ctx.restore();
-  }, [layout, levels, posOf, T, orientation]);
+  }, [layout, levels, posOf, T, orientation, labelMode]);
 
   // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
   // Idle throttle: pulses/dashes only animate around live traffic and

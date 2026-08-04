@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil, ArrowLeftRight, ArrowUpDown,
+  Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil, ArrowLeftRight, ArrowUpDown, Type,
   ShieldCheck, History, Layers, Plug, Trash2, Plus, Ruler, Sun, Moon
 } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
@@ -61,6 +61,7 @@ export default function Uns() {
   // look. Persisted; dark is the default.
   const [canvasTheme, setCanvasTheme] = useState(() => localStorage.getItem('tc.unsTheme') || 'dark');
   const [unsOrient, setUnsOrient] = useState(() => localStorage.getItem('tc.unsOrient') || 'rows');
+  const [unsLabels, setUnsLabels] = useState(() => localStorage.getItem('tc.unsLabels') || 'auto');
   const toggleCanvasTheme = () => {
     const next = canvasTheme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('tc.unsTheme', next);
@@ -70,6 +71,11 @@ export default function Uns() {
     const next = unsOrient === 'rows' ? 'columns' : 'rows';
     localStorage.setItem('tc.unsOrient', next);
     setUnsOrient(next);
+  };
+  const cycleLabels = () => {
+    const next = unsLabels === 'auto' ? 'on' : unsLabels === 'on' ? 'off' : 'auto';
+    localStorage.setItem('tc.unsLabels', next);
+    setUnsLabels(next);
   };
   const [levelsOpen, setLevelsOpen] = useState(false);
   // Mounts: external sources grafted into the forest.
@@ -268,6 +274,12 @@ export default function Uns() {
               onClick={() => setPanel((p) => (p === 'events' ? null : 'events'))}
             />
             <HeaderButton
+              icon={Type}
+              label={unsLabels === 'auto' ? 'Names' : unsLabels === 'on' ? 'Names on' : 'Names off'}
+              active={unsLabels === 'on'}
+              onClick={cycleLabels}
+            />
+            <HeaderButton
               icon={unsOrient === 'rows' ? ArrowLeftRight : ArrowUpDown}
               label={unsOrient === 'rows' ? 'Horizontal' : 'Vertical'}
               onClick={toggleOrientation}
@@ -355,7 +367,7 @@ export default function Uns() {
             </div>
           ) : (
           <div className="relative min-w-0 flex-1">
-            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} theme={canvasTheme} orientation={unsOrient} />
+            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={setSelected} focusTarget={focusTarget} theme={canvasTheme} orientation={unsOrient} labelMode={unsLabels} />
           </div>
           )}
 
