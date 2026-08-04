@@ -488,7 +488,10 @@ class MqttManager extends EventEmitter {
             to: 0,
             reason: 'broker refused the grant at this QoS (SUBACK 0x80) — retrying at QoS 0'
           });
-          this.subscribe(brokerId, topic, 0);
+          // Forward opts (e.g. quiet) like the wildcard branch below —
+          // unreachable for today's quiet probes (all QoS 0, non-wildcard) but
+          // keeps the two refusal-retry paths consistent and future-proof.
+          this.subscribe(brokerId, topic, 0, opts);
         } else if (WILDCARD_FALLBACKS[topic]) {
           const next = WILDCARD_FALLBACKS[topic];
           // Each rung restarts at the configured intake QoS so a broker that

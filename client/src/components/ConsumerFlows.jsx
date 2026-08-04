@@ -170,7 +170,15 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
           }
         });
       }
-      setExpanded(next);
+      // Functional merge, not an absolute set: a manual double-click expand
+      // can land while the batched fetches are in flight, and an absolute
+      // setExpanded(next) — built from the call-time snapshot — would silently
+      // collapse it back. Overlay the drilled paths onto the latest state.
+      setExpanded((prev) => {
+        const merged = new Map(prev);
+        for (const [k, v] of next) merged.set(k, v);
+        return merged;
+      });
     } finally {
       setExpandBusy(false);
     }
