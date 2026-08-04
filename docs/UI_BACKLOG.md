@@ -8,13 +8,14 @@ PR that closed them is noted inline.
 
 ### Medium
 
-- [ ] **Topics 3D show-all frame rate.** The 2D path was fixed (density-gated
-  labels, bucketed point cloud, batched rate-links, pulse cap, gentle
-  incremental reheat — stable ~16fps at 36k nodes, default cap raised to
-  10k). The 3D Cinematic view still settles at ~5fps with all ~35k nodes:
-  it already uses InstancedMesh, so the next suspects are bloom
-  postprocessing resolution and the per-frame line-geometry update for ~35k
-  edges. Superseded detail follows:
+- [x] **Topics 3D show-all frame rate.** Fixed alongside the 2D pass: the
+  default node was a 14×10-segment sphere (~280 tris) — ~10M triangles per
+  frame at 35k instances — so sphere geometry now scales with instance
+  count (>8k: icosahedron detail 1, 80 tris; >25k: detail 0, 20 tris;
+  sub-pixel nodes can't show the detail anyway), and the Cinematic bloom
+  pass renders its mip chain at half resolution (bloom is a blur; ~quarter
+  the postprocessing cost, visually identical). Median frame went ~200ms →
+  63ms at 24k nodes with bloom + auto-rotate live. 2D detail follows:
 - [x] **Topics graph frame rate at public-firehose scale (2D).** Measured live
   against broker.emqx.io at root (`+/+/#`, ~24k topics, ~1.5k msg/s): the
   capped default (2,500 nodes, `GRAPH_MAX_NODES` in `pages/TopicGraph.jsx`)

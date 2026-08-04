@@ -119,7 +119,7 @@ function positionLabel(sprite, n) {
 
 // Node marker geometry — a visual mode beyond the default sphere. All are unit-
 // ish scaled so the per-instance radius still controls size.
-function makeNodeGeometry(shape) {
+function makeNodeGeometry(shape, count = 0) {
   switch (shape) {
     case 'cube':
       return new THREE.BoxGeometry(1.55, 1.55, 1.55);
@@ -131,6 +131,11 @@ function makeNodeGeometry(shape) {
       return new THREE.IcosahedronGeometry(1.2);
     case 'sphere':
     default:
+      // Triangle budget scales with instance count: 35k of the detailed
+      // 14×10 spheres is ~10M triangles per frame — the show-all frame
+      // killer — and nodes that small can't show the detail anyway.
+      if (count > 25000) return new THREE.IcosahedronGeometry(1.05, 0); // 20 tris
+      if (count > 8000) return new THREE.IcosahedronGeometry(1.02, 1); // 80 tris
       return new THREE.SphereGeometry(1, 14, 10);
   }
 }
@@ -218,7 +223,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     // it via bloomOnRef so toggling costs nothing when it's off.
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+    composer.addPass(bloomPass);
 
     // On-demand render loop: run only while interacting (plus a short tail).
     let raf = 0;
@@ -318,6 +324,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       renderer.setSize(width, height);
       composer.setPixelRatio(window.devicePixelRatio || 1);
       composer.setSize(width, height);
+      // Bloom is a blur — its mip chain doesn't need full-resolution render
+      // targets, and halving them roughly quarters the postprocessing cost.
+      bloomPass.setSize(width / 2, height / 2);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       requestRender();
@@ -462,7 +471,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const group = new THREE.Group();
 
     // Nodes: one instanced low-poly sphere with per-instance color + scale.
-    const nodeGeo = makeNodeGeometry(nodeShape);
+    const nodeGeo = makeNodeGeometry(nodeShape, nodes.length);
     const nodeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
     const nodeMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, Math.max(1, nodes.length));
     nodeMesh.count = nodes.length;
