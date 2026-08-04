@@ -73,6 +73,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   const gridRef = useRef(null);
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
   const structKeyRef = useRef(''); // structure fingerprint — gates the re-anneal
+  const prevLayoutIdRef = useRef(null); // layout switches always full-anneal
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
@@ -192,27 +193,45 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = beautify ? 0.85 : 1;
       ctx.beginPath();
       const special = [];
+      // Rate-emphasized links batch by quantized emphasis level: under a
+      // firehose broker thousands of links carry rate at once, and one stroke
+      // per link was the frame killer. Bucketing to half-steps keeps the
+      // busy-pipe read while collapsing thousands of strokes into ~9.
+      const ratedBuckets = new Map(); // quantized rate step -> links
       const rates = rateRef.current;
       const hasRates = rates.size > 0;
       for (const l of links) {
         if (big && !inView(l.source.x, l.source.y) && !inView(l.target.x, l.target.y)) continue;
         const active = hover && (l.source.id === hover.id || l.target.id === hover.id);
         const faded = focusSet && !(focusSet.has(l.source.id) && focusSet.has(l.target.id));
-        // Rate-weighted edges: a link whose target is currently receiving
-        // messages draws thicker and brighter, so busy pipes read at a glance.
+        if (active || faded || l.kind === 'composition') {
+          special.push({ l, active, faded });
+          continue;
+        }
         const rate = hasRates ? rates.get(l.target.id) || 0 : 0;
-        if (active || faded || rate > 0 || l.kind === 'composition') {
-          special.push({ l, active, faded, rate });
+        if (rate > 0) {
+          const step = Math.min(8, Math.max(1, Math.round(Math.min(rate, 4) * 2)));
+          let arr = ratedBuckets.get(step);
+          if (!arr) ratedBuckets.set(step, (arr = []));
+          arr.push(l);
           continue;
         }
         addLinkPath(ctx, l, curve);
       }
       ctx.stroke();
-      for (const { l, active, faded, rate } of special) {
-        const rated = rate > 0 && !faded;
-        ctx.lineWidth = rated ? baseLinkW * (1 + Math.min(rate, 4)) : baseLinkW;
-        ctx.globalAlpha = faded ? 0.15 : rated && !active ? Math.min(0.9, 0.4 + Math.min(rate, 4) * 0.12) : 1;
-        ctx.strokeStyle = active || rated ? style.linkHighlight : style.link.color;
+      for (const [step, arr] of ratedBuckets) {
+        const lvl = step / 2; // back to the 0..4 emphasis scale
+        ctx.lineWidth = baseLinkW * (1 + lvl);
+        ctx.globalAlpha = Math.min(0.9, 0.4 + lvl * 0.12);
+        ctx.strokeStyle = style.linkHighlight;
+        ctx.beginPath();
+        for (const l of arr) addLinkPath(ctx, l, curve);
+        ctx.stroke();
+      }
+      for (const { l, active, faded } of special) {
+        ctx.lineWidth = baseLinkW;
+        ctx.globalAlpha = faded ? 0.15 : 1;
+        ctx.strokeStyle = active ? style.linkHighlight : style.link.color;
         ctx.setLineDash(l.kind === 'composition' ? [5 / t.k, 4 / t.k] : []);
         ctx.beginPath();
         addLinkPath(ctx, l, curve);
@@ -248,27 +267,61 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = 1;
     }
 
-    const showLabels = t.k >= style.showLabelsAtZoom;
-    const showValues = nodeValues && t.k >= valueZoom;
-
+    // Labels gate on zoom AND on-screen density: 2,500 halo'd strokeText
+    // calls per frame were the capped-view frame killer under a firehose
+    // broker, and a wall of overlapping labels is unreadable anyway. Count
+    // what's actually in view (cheap) and only label when it could be read.
+    let inViewCount = 0;
     for (const n of nodes) {
-      if (big && !inView(n.x, n.y)) continue;
+      if (inView(n.x, n.y)) inViewCount++;
+    }
+    const showLabels = t.k >= style.showLabelsAtZoom && inViewCount <= 400;
+    const showValues = nodeValues && t.k >= valueZoom && inViewCount <= 200;
+
+    // Big graphs: most nodes render as sub-pixel points. Bucketing them by
+    // (color, alpha) and flushing per bucket collapses ~3 canvas state
+    // changes PER NODE (the actual cost at 35k nodes — not the fillRects)
+    // into a handful per bucket.
+    let detailed = nodes;
+    if (big) {
+      detailed = [];
+      const buckets = new Map(); // `${color}|${alpha}` -> flat [x, y, ...]
+      // Common case: nothing dims (no focus / search / hover / activity
+      // sizing) — every point is alpha 1 and base radius, so skip the
+      // per-node alpha and rate lookups entirely.
+      const uniform = !focusSet && !matching && !hover && !activitySize;
+      for (const n of nodes) {
+        if (!inView(n.x, n.y)) continue;
+        const baseR = n.__r !== undefined ? n.__r : (n.__r = nodeRadius(n, style));
+        const r = activitySize ? baseR * (1 + Math.min(rateRef.current.get(n.id) || 0, 6) * 0.18) : baseR;
+        if (r * t.k < 1.4) {
+          const key = uniform ? `${colorFor(n)}|1` : `${colorFor(n)}|${nodeAlpha(n)}`;
+          let arr = buckets.get(key);
+          if (!arr) buckets.set(key, (arr = []));
+          arr.push(n.x, n.y);
+        } else {
+          detailed.push(n);
+        }
+      }
+      const s2 = 1.6 / t.k;
+      for (const [key, arr] of buckets) {
+        const sep = key.lastIndexOf('|');
+        ctx.fillStyle = key.slice(0, sep);
+        ctx.globalAlpha = Number(key.slice(sep + 1));
+        for (let i = 0; i < arr.length; i += 2) {
+          ctx.fillRect(arr[i] - s2 / 2, arr[i + 1] - s2 / 2, s2, s2);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    for (const n of detailed) {
+      if (!inView(n.x, n.y)) continue;
       const baseR = nodeRadius(n, style);
       const rate = rateRef.current.get(n.id) || 0;
       const r = activitySize ? baseR * (1 + Math.min(rate, 6) * 0.18) : baseR;
       const color = colorFor(n);
       const alpha = nodeAlpha(n);
-
-      // Fast path for tiny on-screen nodes in big graphs: a cheap point, no
-      // arc / stroke / glow / label.
-      if (big && r * t.k < 1.4) {
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = color;
-        const s = 1.6 / t.k;
-        ctx.fillRect(n.x - s / 2, n.y - s / 2, s, s);
-        ctx.globalAlpha = 1;
-        continue;
-      }
 
       ctx.globalAlpha = alpha;
 
@@ -365,8 +418,10 @@ const ForceGraph = forwardRef(function ForceGraph(
       }
     }
 
-    // Live-flow overlay: expanding pulse rings + travelling dots.
-    if (pulseRef.current.size) {
+    // Live-flow overlay: expanding pulse rings + travelling dots. Ring radii
+    // are world-space, so in big mode zoomed out they are sub-pixel noise —
+    // and a firehose keeps thousands of pulses alive at once. Skip them there.
+    if (pulseRef.current.size && (!big || t.k >= 0.3)) {
       ctx.strokeStyle = style.linkHighlight;
       for (const [id, s] of pulseRef.current) {
         const n = byId.get(id);
@@ -420,8 +475,10 @@ const ForceGraph = forwardRef(function ForceGraph(
     if (!canvas || !data) return;
 
     const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
+    let carried = 0;
     const nodes = data.nodes.map((n) => {
       const old = prev.get(n.id);
+      if (old) carried++;
       return old ? { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...n };
     });
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -431,6 +488,20 @@ const ForceGraph = forwardRef(function ForceGraph(
 
     const parentOf = new Map();
     for (const l of links) parentOf.set(l.target, l.source);
+    // Seed brand-new nodes at their parent (with a little scatter) instead of
+    // d3's origin spiral — they join the layout where they belong, so the
+    // incremental reheat below barely has to move anything.
+    if (carried > 0 && carried < nodes.length) {
+      for (const n of nodes) {
+        if (n.x === undefined) {
+          const par = nodeById.get(parentOf.get(n.id));
+          if (par && par.x !== undefined) {
+            n.x = par.x + (Math.random() - 0.5) * 40;
+            n.y = par.y + (Math.random() - 0.5) * 40;
+          }
+        }
+      }
+    }
     nodeByIdRef.current = nodeById;
     parentOfRef.current = parentOf;
     nodesRef.current = nodes;
@@ -448,6 +519,16 @@ const ForceGraph = forwardRef(function ForceGraph(
       links.map((l) => `${l.source}>${l.target}`).sort().join('|');
     const structChanged = structKey !== structKeyRef.current;
     structKeyRef.current = structKey;
+    // Incremental growth on a busy graph (a firehose broker adds topics every
+    // poll) keeps ≥80% of node positions. A full 0.9 re-anneal for that churns
+    // forever — reheat gently and decay fast so newcomers settle in a couple
+    // of seconds. Layout switches and fresh graphs still get the full anneal.
+    const gentleReheat =
+      structChanged &&
+      nodes.length > 220 &&
+      carried / nodes.length >= 0.8 &&
+      layoutId === prevLayoutIdRef.current;
+    prevLayoutIdRef.current = layoutId;
     // Re-resolve the hovered node against the new node set — otherwise a node
     // removed by filtering keeps its hover card (and hover dimming) painted
     // from a stale object until the pointer moves again.
@@ -486,8 +567,8 @@ const ForceGraph = forwardRef(function ForceGraph(
     const sim = forceSimulation(nodes)
       .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
       .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
-      .alpha(structChanged ? 0.9 : 0)
-      .alphaDecay(0.028)
+      .alpha(structChanged ? (gentleReheat ? 0.22 : 0.9) : 0)
+      .alphaDecay(gentleReheat ? 0.05 : 0.028)
       .on('tick', draw);
     if (!structChanged) {
       // Metadata-only refresh: positions are already settled — just repaint
@@ -599,7 +680,12 @@ const ForceGraph = forwardRef(function ForceGraph(
 
       rateRef.current.set(nodeId, (rateRef.current.get(nodeId) || 0) + 1);
       if (flow || force) {
-        pulseRef.current.set(nodeId, 1);
+        // Cap live pulse rings: a firehose broker keeps thousands alive at
+        // once, each an arc+stroke per frame, and the shimmer reads the same
+        // past a few hundred. Refreshing an existing ring is always allowed.
+        if (pulseRef.current.size < 300 || pulseRef.current.has(nodeId)) {
+          pulseRef.current.set(nodeId, 1);
+        }
         if (path.length >= 2) {
           const dur = 450 + (path.length - 1) * 130;
           particlesRef.current.push({ nodeIds: path, progress: 0, speed: 1 / dur });

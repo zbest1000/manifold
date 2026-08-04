@@ -219,7 +219,11 @@ export default function TopicGraph() {
     [brokerId, topicVersion]
   );
 
-  const GRAPH_MAX_NODES = 2500;
+  // Default node budget. Raised from 2,500 after the big-mode draw path got
+  // bucketed point rendering + density-gated labels — 10k renders at the same
+  // frame time 2,500 used to. Above ~4,000 ForceGraph switches to the
+  // deterministic radial layout (no physics), which is what makes this cheap.
+  const GRAPH_MAX_NODES = 10000;
   const fullGraph = useMemo(() => {
     if (!activeBrokers.length) return { nodes: [], links: [] };
     if (multi) {
