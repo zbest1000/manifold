@@ -253,6 +253,42 @@ export default function TopicGraph() {
   // and can be re-enabled even when they filter down to zero visible nodes.
   const groupsPresent = useMemo(() => new Set(fullGraph.nodes.map((n) => n.group)), [fullGraph]);
 
+  // Jump-to-node (detail-pane chips, breadcrumb): select the target AND center
+  // the camera on it, like the search box does. A target hidden under a
+  // collapsed branch (or a legend-hidden group) is revealed first, then
+  // selected once the graph rebuild lands (pendingJumpRef bridges the render).
+  const pendingJumpRef = useRef(null);
+  useEffect(() => {
+    const id = pendingJumpRef.current;
+    if (!id) return;
+    const n = graph.nodes.find((x) => x.id === id);
+    if (n) {
+      pendingJumpRef.current = null;
+      selectNode(n);
+      graphRef.current?.fitTo?.(new Set([id]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graph]);
+
+  const jumpToNode = (id) => {
+    const n = graph.nodes.find((x) => x.id === id);
+    if (n) {
+      selectNode(n);
+      graphRef.current?.fitTo?.(new Set([id]));
+      return;
+    }
+    const inFull = fullGraph.nodes.find((x) => x.id === id);
+    if (!inFull) return; // different broker / not in this graph — nothing honest to do
+    pendingJumpRef.current = id;
+    if (hiddenGroups.has(inFull.group)) toggleGroup(inFull.group);
+    // Node ids embed the broker and full path (topic:<broker>:<path>), so a
+    // simple prefix test finds every collapsed ancestor to expand.
+    setCollapsed((prev) => {
+      const next = new Set([...prev].filter((cid) => !(id === cid || String(id).startsWith(`${cid}/`))));
+      return next.size === prev.size ? prev : next;
+    });
+  };
+
   // Toolbar collapse/expand: collapse everything below `level` (Infinity = show
   // all). Depth is a BFS from the roots of the full (uncollapsed) graph.
   // Re-frame the graph after collapse/expand changes the visible node set (the
@@ -506,7 +542,7 @@ export default function TopicGraph() {
             />
           </div>
         ) : view === '3d' ? (
-          <div className="relative flex-1">
+          <div className="relative min-w-0 flex-1">
             <Suspense fallback={<RendererLoading />}>
               <ForceGraph3D
                 ref={graph3dRef}
@@ -577,7 +613,7 @@ export default function TopicGraph() {
             <GraphLegend styleId={graphStyle} groups={groupsPresent} hiddenGroups={hiddenGroups} onToggleGroup={toggleGroup} />
           </div>
         ) : (
-          <div className="relative flex-1">
+          <div className="relative min-w-0 flex-1">
             {!showAll && (
               <>
                 <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} onSelect={selectNode} />
@@ -715,10 +751,7 @@ export default function TopicGraph() {
             brokerId={brokerId}
             messages={liveMsgs}
             graph={graph}
-            onJump={(id) => {
-              const n = graph.nodes.find((x) => x.id === id);
-              if (n) setSelected(n);
-            }}
+            onJump={jumpToNode}
             onClose={() => setPanelOpen(false)}
           />
         )}
