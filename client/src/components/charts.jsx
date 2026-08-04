@@ -98,7 +98,12 @@ export function Sparkline({ values, height = 28, warn = false, area = true }) {
   const color = warn ? '#f59e0b' : ACCENT;
   const nums = (values || []).filter((v) => Number.isFinite(v));
   const flat = nums.length >= 2 && Math.min(...nums) === Math.max(...nums);
-  const data = useMemo(() => [nums.map((_, i) => i), nums], [values]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Rebuild every render — NOT memoized on `values`: callers (System's
+  // GaugeTiles) mutate the same array in place (push/shift), so the reference
+  // never changes and a `[values]` memo would freeze the sparkline on its first
+  // sample. `nums` is already fresh each render; setData is cheap and doesn't
+  // flash (only options changes recreate the chart), so this just tracks live.
+  const data = [nums.map((_, i) => i), nums];
   const options = useMemo(
     () => ({
       cursor: { show: false },

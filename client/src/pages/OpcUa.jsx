@@ -438,6 +438,10 @@ export default function OpcUa() {
 
         {selected && (
           <NodePanel
+            // Remount per node: without a key React reuses the instance and the
+            // `monitoring` flag leaks across selections — a fresh node shows a
+            // false "Monitoring live" and the cleanup unmonitors the WRONG node.
+            key={selected.id}
             node={selected}
             connectionId={connectionId}
             values={opcuaValues[connectionId] || {}}

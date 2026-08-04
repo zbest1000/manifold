@@ -176,7 +176,13 @@ export default function Trends() {
 
   const sourceId = usingLive ? brokerId : usingRecording ? recId : histId;
 
+  const loadSeq = useRef(0);
   const load = useCallback(() => {
+    // Sequence guard: a slow query (e.g. a 7d historian range) can resolve
+    // AFTER a newer one fired by switching range/tags/source, overwriting the
+    // chart with stale data under the current label. Bump first so even the
+    // empty-source early-return invalidates anything in flight.
+    const seq = ++loadSeq.current;
     if (!sourceId || tags.length === 0) {
       setData(null);
       setError('');
@@ -197,6 +203,7 @@ export default function Trends() {
           });
     query
       .then((r) => {
+        if (seq !== loadSeq.current) return; // superseded by a newer load
         // When a source returns no series at all for the requested tags (e.g. an
         // empty/stopped recording), synthesize empty-point series so the chart
         // shows "No samples in this range" rather than the misleading "pick a
@@ -205,8 +212,13 @@ export default function Trends() {
         setData({ series, start, end });
         setError('');
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (seq !== loadSeq.current) return;
+        setError(e.message);
+      })
+      .finally(() => {
+        if (seq === loadSeq.current) setLoading(false);
+      });
   }, [usingLive, usingRecording, sourceId, tags, rangeMs]);
 
   useEffect(() => {
