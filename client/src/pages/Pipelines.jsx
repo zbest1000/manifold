@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Workflow, Boxes, Database, CircleDot, FileCheck2, Trash2, Plus, Play, Square,
+  Workflow, Boxes, Database, CircleDot, FileCheck2, Binary, Upload, Trash2, Plus, Play, Square,
   Eye, RefreshCw, AlertTriangle, CheckCircle2, Power, Pencil
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -14,12 +14,13 @@ import { Card, Button, Input, Field, Badge, EmptyState, HelpButton } from '@/com
 import { formatDistanceToNow } from 'date-fns';
 
 /**
- * Pipelines — Manifold's DataOps surface. Five tabs over the same live stream:
+ * Pipelines — Manifold's DataOps surface. Six tabs over the same live stream:
  *   Routes    source → transforms → target, with trie-backed dry-run
  *   Models    multi-source attributes merged into one object at a UNS path
  *   Historians  InfluxDB / Timebase connections pipelines+recorder write into
  *   Recorder  time-series capture to disk or a historian, plus replay
  *   Contracts locked payload schemas with drift violations
+ *   Codecs    Protobuf/Avro schemas decoding binary payloads on ingest
  */
 export default function Pipelines() {
   const [tab, setTab] = useState('routes');
@@ -39,13 +40,14 @@ export default function Pipelines() {
               <ViewTab active={tab === 'historians'} onClick={() => setTab('historians')} icon={Database} label="Historians" />
               <ViewTab active={tab === 'recorder'} onClick={() => setTab('recorder')} icon={CircleDot} label="Recorder" />
               <ViewTab active={tab === 'contracts'} onClick={() => setTab('contracts')} icon={FileCheck2} label="Contracts" />
+              <ViewTab active={tab === 'codecs'} onClick={() => setTab('codecs')} icon={Binary} label="Codecs" />
             </div>
             <HelpButton title="How Pipelines work">
               <p>
                 A <b>pipeline</b> reshapes your live message stream and sends the result somewhere else. It runs on the
                 server as messages arrive. Nothing is stored unless you route it to a historian or the recorder.
               </p>
-              <p>The five tabs each do one job.</p>
+              <p>The six tabs each do one job.</p>
 
               <div className="space-y-2.5">
                 <div>
@@ -92,6 +94,14 @@ export default function Pipelines() {
                     Manifold flags drift when a message stops matching, so you catch a firmware change that renamed a field.
                   </p>
                 </div>
+                <div>
+                  <p className="font-semibold text-slate-100">Codecs</p>
+                  <p>
+                    Register a Protobuf or Avro schema against a topic filter and matching binary payloads decode to
+                    structured JSON on ingest — the explorer, pipelines, and contracts all see fields instead of a
+                    base64 blob. Sparkplug B (<code>spBv1.0/…</code>) is decoded automatically and needs no codec.
+                  </p>
+                </div>
               </div>
 
               <p className="text-slate-400">
@@ -113,6 +123,7 @@ export default function Pipelines() {
         {tab === 'historians' && <HistoriansTab />}
         {tab === 'recorder' && <RecorderTab brokers={brokers} />}
         {tab === 'contracts' && <ContractsTab brokers={brokers} />}
+        {tab === 'codecs' && <CodecsTab brokers={brokers} />}
       </div>
     </div>
   );
@@ -1231,6 +1242,174 @@ function ContractsTab({ brokers }) {
           ))}
         </div>
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Codecs tab
+
+const BLANK_CODEC = { name: '', type: 'protobuf', brokerId: '', filter: '', messageType: '', schemaText: '' };
+
+const CODEC_SCHEMA_PLACEHOLDER = {
+  protobuf: 'syntax = "proto3";\npackage plant;\nmessage Telemetry {\n  double temperature = 1;\n  int32 rpm = 2;\n}',
+  avro: '{\n  "type": "record",\n  "name": "Reading",\n  "fields": [\n    { "name": "value", "type": "double" },\n    { "name": "unit", "type": "string" }\n  ]\n}'
+};
+
+function CodecsTab({ brokers }) {
+  const [data, setData] = useState({ codecs: [], counters: {} });
+  const [form, setForm] = useState(BLANK_CODEC);
+  const fileRef = useRef(null);
+  const load = useCallback(() => api.listCodecs().then(setData).catch(() => {}), []);
+  usePoll(load, 5000, [load]);
+
+  const save = async () => {
+    try {
+      await api.saveCodec({
+        name: form.name || null,
+        type: form.type,
+        brokerId: form.brokerId || null,
+        filter: form.filter,
+        messageType: form.type === 'protobuf' ? form.messageType : null,
+        schemaText: form.schemaText
+      });
+      setForm(BLANK_CODEC);
+      load();
+      toast.success('Codec saved');
+    } catch (e) {
+      toast.error(e.message); // carries the schema compiler's error on a 400
+    }
+  };
+
+  const onSchemaFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file after an edit
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setForm((f) => ({ ...f, schemaText: String(reader.result || '') }));
+    reader.readAsText(file);
+  };
+
+  return (
+    <>
+      <p className="rounded-xl border border-white/5 bg-surface-950/40 px-3 py-2 text-xs text-slate-400">
+        Codecs decode binary payloads — Protobuf or Avro — on matching topics into structured JSON at ingest, so
+        telemetry shows as fields instead of a base64 blob. Sparkplug B (<code>spBv1.0/…</code>) is decoded
+        automatically and never needs a codec; a failed decode falls back to the raw payload.
+      </p>
+
+      {data.codecs.length === 0 && (
+        <EmptyState
+          icon={Binary}
+          title="No payload codecs yet"
+          hint="Register a Protobuf or Avro schema against a topic filter — matching binary messages decode to structured JSON before the explorer, pipelines, and contracts see them."
+        />
+      )}
+
+      {data.codecs.map((c) => {
+        const k = data.counters[c.id] || {};
+        return (
+          <Card key={c.id} className="p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-slate-100">{c.name || c.filter}</span>
+                  <Badge>{c.type}</Badge>
+                  {c.type === 'protobuf' && c.messageType && (
+                    <span className="truncate font-mono text-[10px] text-slate-500">{c.messageType}</span>
+                  )}
+                </div>
+                <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
+                  {c.brokerId ? brokerName(brokers, c.brokerId) : 'any broker'} · {c.filter}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-3 text-[11px] text-slate-400">
+                <span title="decoded / decode errors" className="font-mono">
+                  {(k.decoded || 0).toLocaleString()} decoded ·{' '}
+                  <span className={k.errors ? 'text-rose-300' : ''}>{k.errors || 0} err</span>
+                </span>
+                <button
+                  onClick={() =>
+                    window.confirm(`Delete codec "${c.name || c.filter}"? Matching topics fall back to raw text/base64.`) &&
+                    api.deleteCodec(c.id).then(load)
+                  }
+                  title="Delete codec"
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-rose-300"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+            {k.lastError && <p className="mt-1 truncate text-[11px] text-rose-300">{k.lastError}</p>}
+          </Card>
+        );
+      })}
+
+      <Card className="p-4">
+        <h3 className="mb-3 text-sm font-semibold text-slate-200">New codec</h3>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Field label="Name">
+            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="line1 telemetry" />
+          </Field>
+          <Field label="Type">
+            <select
+              value={form.type}
+              onChange={(e) => setForm({ ...form, type: e.target.value })}
+              className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="protobuf">Protobuf (.proto)</option>
+              <option value="avro">Avro (.avsc)</option>
+            </select>
+          </Field>
+          <Field label="Broker">
+            <select
+              value={form.brokerId}
+              onChange={(e) => setForm({ ...form, brokerId: e.target.value })}
+              className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="">any broker</option>
+              {brokers.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Topic filter">
+            <Input value={form.filter} onChange={(e) => setForm({ ...form, filter: e.target.value })} placeholder="plant/+/telemetry" />
+          </Field>
+          {form.type === 'protobuf' && (
+            <Field label="Message type (fully qualified)" className="col-span-2">
+              <Input
+                value={form.messageType}
+                onChange={(e) => setForm({ ...form, messageType: e.target.value })}
+                placeholder="plant.Telemetry"
+              />
+            </Field>
+          )}
+        </div>
+        <Field label={form.type === 'protobuf' ? 'Schema (.proto)' : 'Schema (.avsc JSON)'} className="mt-3">
+          <textarea
+            value={form.schemaText}
+            onChange={(e) => setForm({ ...form, schemaText: e.target.value })}
+            rows={8}
+            spellCheck={false}
+            placeholder={CODEC_SCHEMA_PLACEHOLDER[form.type]}
+            className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-3 py-2 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
+          />
+        </Field>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button onClick={save} disabled={!form.filter || !form.schemaText || (form.type === 'protobuf' && !form.messageType)}>
+            <Plus size={14} className="mr-1" /> Add codec
+          </Button>
+          <Button variant="outline" onClick={() => fileRef.current?.click()}>
+            <Upload size={14} className="mr-1" /> Load schema file…
+          </Button>
+          <input ref={fileRef} type="file" accept=".proto,.avsc,.json" className="hidden" onChange={onSchemaFile} />
+          <span className="text-[11px] text-slate-500">
+            The schema is compiled on save — a bad schema is rejected with the compiler&apos;s error.
+          </span>
+        </div>
+      </Card>
     </>
   );
 }

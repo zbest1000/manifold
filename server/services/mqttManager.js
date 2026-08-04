@@ -57,6 +57,7 @@ class MqttManager extends EventEmitter {
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
+    this.codecs = null; // PayloadCodecs registry (attached at /api/codecs mount) — pre-JSON binary decode
 
     // unref so these background timers never keep the process alive on their own
     // (the HTTP server holds the event loop open in normal operation)
@@ -282,21 +283,36 @@ class MqttManager extends EventEmitter {
     const message = row.buffer;
     let payload;
     let payloadFormat = 'text';
+    let decoded = null;
     if (row.truncated) {
       // Oversized payload: only the first maxPayloadBytes were retained. Do not
       // JSON.parse a partial buffer — surface it as a bounded preview instead.
       payloadFormat = 'large';
       payload = `[payload truncated: ${row.fullSize} bytes]`;
     } else {
-      const text = message.toString('utf8');
-      try {
-        payload = JSON.parse(text);
+      // Payload codecs: user-registered Protobuf/Avro schemas mapped to topic
+      // filters decode matching binary payloads into structured JSON BEFORE the
+      // generic JSON/text detection. Sparkplug topics are never offered to
+      // codecs — spBv1.0 keeps its dedicated decoder below. A failed decode
+      // returns null (error counted per codec) and the message falls through
+      // to the normal path unchanged, so a bad schema can never break ingest.
+      if (this.codecs && !this.isSparkplugTopic(row.topic)) {
+        decoded = this.codecs.decode(brokerId, row.topic, message);
+      }
+      if (decoded) {
+        payload = decoded.value;
         payloadFormat = 'json';
-      } catch {
-        payload = text;
-        if (text.includes('�')) {
-          payloadFormat = 'binary';
-          payload = message.toString('base64');
+      } else {
+        const text = message.toString('utf8');
+        try {
+          payload = JSON.parse(text);
+          payloadFormat = 'json';
+        } catch {
+          payload = text;
+          if (text.includes('�')) {
+            payloadFormat = 'binary';
+            payload = message.toString('base64');
+          }
         }
       }
     }
@@ -331,6 +347,9 @@ class MqttManager extends EventEmitter {
     // MQTT 5 properties observed on the topic's latest publish (v5 sessions only).
     const props = this.msgProps.get(brokerId)?.get(row.topic);
     if (props) messageObj.properties = props;
+
+    // Which codec produced the structured payload (absent for plain JSON/text).
+    if (decoded) messageObj.codec = decoded.codecName;
 
     if (meta.spark) {
       // STATE messages are plain JSON/text host-status certificates, not
@@ -735,6 +754,41 @@ class MqttManager extends EventEmitter {
   clearBrokerAdmin(brokerId) {
     this.admin.delete(brokerId);
     return { configured: false };
+  }
+
+  // Read-only transport-security snapshot for the posture scorecard: the TLS
+  // options as applied to the live client plus the peer certificate when the
+  // underlying socket exposes one. For mqtts, client.stream IS the TLSSocket;
+  // for wss the WebSocket duplex may wrap it (probed via .socket/._socket).
+  // Never touches connect/ingest state — pure read of the existing client.
+  getTransportSecurity(brokerId) {
+    const client = this.clients.get(brokerId);
+    if (!client) return null;
+    const out = {
+      rejectUnauthorized: client.options?.rejectUnauthorized !== false,
+      authorized: null,
+      peerCert: null
+    };
+    const candidates = [client.stream, client.stream?.socket, client.stream?._socket];
+    for (const socket of candidates) {
+      if (socket && typeof socket.getPeerCertificate === 'function') {
+        out.authorized = socket.authorized ?? null;
+        const cert = socket.getPeerCertificate();
+        if (cert && Object.keys(cert).length > 0) {
+          // Project only the fields the scorecard needs (the raw cert object
+          // carries large buffers like `raw`/`pubkey`).
+          out.peerCert = {
+            subject: cert.subject,
+            issuer: cert.issuer,
+            valid_from: cert.valid_from,
+            valid_to: cert.valid_to,
+            fingerprint256: cert.fingerprint256
+          };
+        }
+        break;
+      }
+    }
+    return out;
   }
 
   async fetchAdminPubSub(brokerId) {

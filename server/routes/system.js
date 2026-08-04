@@ -22,6 +22,12 @@ router.get('/status', (req, res) => {
   });
 });
 
+// GET /api/system/canary — per-broker publish→deliver round-trip stats
+router.get('/canary', (req, res) => {
+  const { canary } = req.app.locals.services;
+  res.json(canary ? canary.getStats() : { brokers: {} });
+});
+
 // POST /api/system/discovery/start { range, mqttPorts, opcuaPorts }
 router.post('/discovery/start', async (req, res) => {
   const { discovery } = req.app.locals.services;
@@ -52,7 +58,7 @@ router.get('/discovery/results', (req, res) => {
 // export (a config file in a repo must never carry credentials); re-enter them
 // after import.
 
-const EXPORT_COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings'];
+const EXPORT_COLLECTIONS = ['historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'codecs'];
 const SECRET_FIELDS = ['token', 'apiKey', 'apiSecret', 'password', 'secret'];
 
 // GET /api/system/config/export

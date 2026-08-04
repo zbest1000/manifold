@@ -61,6 +61,7 @@ async function metricsText() {
 
 export const api = {
   systemStatus: () => request('/api/system/status'),
+  canaryStats: () => request('/api/system/canary'),
   whoami: () => request('/api/whoami'),
   metricsText,
 
@@ -73,6 +74,7 @@ export const api = {
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/messages?topic=${encodeURIComponent(topic)}&limit=${limit}`),
   brokerSparkplug: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sparkplug`),
   brokerSys: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sys`),
+  brokerPosture: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/posture`),
   getBrokerAdmin: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`),
   setBrokerAdmin: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`, { method: 'POST', body: JSON.stringify(config) }),
@@ -102,6 +104,13 @@ export const api = {
   listUnsIcons: () => request('/api/uns/icons'),
   saveUnsIcon: (icon) => request('/api/uns/icons', { method: 'POST', body: JSON.stringify(icon) }),
   deleteUnsIcon: (id) => request(`/api/uns/icons/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  // Namespace models (declared hierarchy the live namespace is graded against)
+  listNsModels: () => request('/api/uns/models'),
+  saveNsModel: (m) => request('/api/uns/models', { method: 'POST', body: JSON.stringify(m) }),
+  deleteNsModel: (id) => request(`/api/uns/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  unsModelReport: (brokerId, modelId) =>
+    request(`/api/uns/brokers/${encodeURIComponent(brokerId)}/model-report?modelId=${encodeURIComponent(modelId)}`),
 
   // Historians (InfluxDB / Timebase)
   listHistorians: () => request('/api/historians'),
@@ -148,6 +157,11 @@ export const api = {
   saveContract: (c) => request('/api/contracts', { method: 'POST', body: JSON.stringify(c) }),
   deleteContract: (id) => request(`/api/contracts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   contractViolations: (limit = 200) => request(`/api/contracts/violations?limit=${limit}`),
+
+  // Payload codecs (Protobuf/Avro schemas decoded on ingest)
+  listCodecs: () => request('/api/codecs'),
+  saveCodec: (c) => request('/api/codecs', { method: 'POST', body: JSON.stringify(c) }),
+  deleteCodec: (id) => request(`/api/codecs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Models
   listModels: () => request('/api/models'),
