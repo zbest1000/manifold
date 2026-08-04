@@ -59,6 +59,30 @@
     }
   },
   "i3x": null,
+  "historians": {
+    "demo-timescale": {
+      "id": "demo-timescale",
+      "name": "Demo Timescale",
+      "type": "timescaledb",
+      "host": "manifold-timescale",
+      "port": 5432,
+      "database": "manifold",
+      "user": "manifold",
+      "password": "demo-pass",
+      "ssl": false,
+      "dropPolicy": "newest"
+    }
+  },
+  "pipelines": {
+    "demo-ts-route": {
+      "id": "demo-ts-route",
+      "name": "energy to Timescale",
+      "enabled": true,
+      "source": { "brokerId": "demo-mqtt", "filter": "energy/#" },
+      "transforms": [{ "type": "numeric", "field": "value" }],
+      "target": { "type": "historian", "historianId": "demo-timescale" }
+    }
+  },
   "recordings": {
     "demo-historian": {
       "id": "demo-historian",

@@ -154,6 +154,27 @@ services:
       emqx:
         condition: service_healthy
 
+  # TimescaleDB historian — the 'to timescale' pipeline route writes energy/#
+  # values here through the outbox, and the Trends page reads them back.
+  # Credentials match the seeded 'Demo Timescale' historian config.
+  timescale:
+    image: timescale/timescaledb:latest-pg16
+    container_name: manifold-timescale
+    hostname: manifold-timescale
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: manifold
+      POSTGRES_USER: manifold
+      POSTGRES_PASSWORD: demo-pass
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U manifold -d manifold"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
   # Real observability pair: Prometheus scrapes Manifold's /metrics every 5s
   # and the provisioned Grafana dashboard ("Manifold Overview") charts it —
   # ingest rates, canary round-trips, event-loop health, outbox depth.
