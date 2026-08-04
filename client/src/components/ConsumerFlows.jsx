@@ -32,6 +32,7 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [expandBusy, setExpandBusy] = useState(false);
   const graphRef = useRef(null);
   // Per-client traffic rates, derived by diffing the admin API's cumulative
   // counters between two refreshes (EMQX exposes them; HiveMQ doesn't).
@@ -141,6 +142,42 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
     [broker?.id, expanded]
   );
 
+  // Expand all: breadth-first drill of every aggregate until only concrete
+  // leaves remain — each level is one batched round of /topictree fetches.
+  // The fetch guard is a runaway backstop for pathological namespaces, far
+  // beyond anything the resolution cap lets through.
+  const expandAllAggregates = useCallback(async () => {
+    if (!broker?.id || expandBusy) return;
+    setExpandBusy(true);
+    try {
+      const MAX_FETCHES = 400;
+      const next = new Map(expanded);
+      let frontier = graph.nodes
+        .filter((n) => n.kind === 'topic-agg' && n.meta?.path && !next.has(n.meta.path))
+        .map((n) => n.meta.path);
+      let fetches = 0;
+      while (frontier.length && fetches < MAX_FETCHES) {
+        const batch = frontier.splice(0, 25);
+        const results = await Promise.all(batch.map((p) => api.topicTree(broker.id, p, 300).catch(() => null)));
+        fetches += batch.length;
+        batch.forEach((p, i) => {
+          const children = results[i]?.children;
+          if (!children) return;
+          next.set(p, children);
+          for (const c of children) {
+            const isLeaf = c.isTopic && c.subtreeCount === 1;
+            if (!isLeaf && !next.has(c.path)) frontier.push(c.path);
+          }
+        });
+      }
+      setExpanded(next);
+    } finally {
+      setExpandBusy(false);
+    }
+  }, [broker?.id, expandBusy, expanded, graph]);
+
+  const collapseAllAggregates = useCallback(() => setExpanded(new Map()), []);
+
   // Clients receiving a concrete topic = filters that match it, reverse-mapped.
   const subscribersOfTopic = useCallback(
     (topicPath) => {
@@ -246,6 +283,34 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
             }`}
           >
             filters show exact match counts · double-click an aggregate to drill into real topics · red = dormant filter
+          </div>
+        )}
+        {graph.nodes.length > 1 && graph.nodes.some((n) => n.kind === 'topic-agg' || n.kind === 'topic-leaf') && (
+          <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2">
+            <button
+              onClick={expandAllAggregates}
+              disabled={expandBusy}
+              title="Drill every matched namespace down to its concrete topics"
+              className={`rounded-lg border px-3 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur transition disabled:opacity-50 ${
+                theme === 'dark'
+                  ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/25 hover:text-slate-100'
+                  : 'border-slate-300/70 bg-white/90 text-slate-700 hover:border-slate-400 hover:text-slate-900'
+              }`}
+            >
+              {expandBusy ? 'Expanding…' : 'Expand all'}
+            </button>
+            <button
+              onClick={collapseAllAggregates}
+              disabled={expandBusy}
+              title="Fold every drilled namespace back to its aggregate"
+              className={`rounded-lg border px-3 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur transition disabled:opacity-50 ${
+                theme === 'dark'
+                  ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/25 hover:text-slate-100'
+                  : 'border-slate-300/70 bg-white/90 text-slate-700 hover:border-slate-400 hover:text-slate-900'
+              }`}
+            >
+              Collapse all
+            </button>
           </div>
         )}
         {data?.resolution && (
