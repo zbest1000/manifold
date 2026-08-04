@@ -36,6 +36,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     activitySource = null,
     activitySize = false,
     nodeValues = null,
+    labelMode = 'auto', // 'auto' (density-gated) | 'on' (zoom-gated only) | 'off'
     valueZoom = 1.1,
     matchIds = null,
     focusId = null,
@@ -275,7 +276,12 @@ const ForceGraph = forwardRef(function ForceGraph(
     for (const n of nodes) {
       if (inView(n.x, n.y)) inViewCount++;
     }
-    const showLabels = t.k >= style.showLabelsAtZoom && inViewCount <= 400;
+    // Auto threshold: 1,500 keeps the classic demo-scale look labeled (a
+    // ~1,100-node broker at fit renders fine) while still protecting
+    // firehose-scale views, where thousands of halo'd texts were the frame
+    // killer. 'on' overrides the density gate entirely — user's choice.
+    const showLabels =
+      labelMode !== 'off' && t.k >= style.showLabelsAtZoom && (labelMode === 'on' || inViewCount <= 1500);
     const showValues = nodeValues && t.k >= valueZoom && inViewCount <= 200;
 
     // Big graphs: most nodes render as sub-pixel points. Bucketing them by
@@ -463,7 +469,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     if (minimap) drawMinimap(ctx, nodes, t, sizeRef.current, style, colorFor);
     if (hover) drawHoverCard(ctx, hover, pointerRef.current, sizeRef.current, style, now);
     ctx.restore();
-  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, beautify]);
+  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, beautify, labelMode]);
 
   useEffect(() => {
     drawRef.current = draw;

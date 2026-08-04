@@ -13,7 +13,8 @@ import {
   Sparkles,
   PanelRight,
   ChevronsDownUp,
-  ChevronsUpDown
+  ChevronsUpDown,
+  Type
 } from 'lucide-react';
 import clsx from 'clsx';
 import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
@@ -51,6 +52,8 @@ export default function GraphToolbar({
     setActivitySize,
     showValues,
     setShowValues,
+    labelMode,
+    setLabelMode,
     showMinimap,
     setShowMinimap
   } = useStore();
@@ -95,6 +98,29 @@ export default function GraphToolbar({
           </div>
         )}
         <Toggle active={showValues} onClick={() => setShowValues(!showValues)} icon={Tag} label="Values" />
+        {/* Node-name labels, cycling auto -> on -> off. Auto only draws names
+            when few enough nodes are in view to actually read them. */}
+        <button
+          onClick={() => setLabelMode(labelMode === 'auto' ? 'on' : labelMode === 'on' ? 'off' : 'auto')}
+          title={
+            labelMode === 'auto'
+              ? 'Node names: auto — shown when few enough are in view to read. Click for always-on.'
+              : labelMode === 'on'
+                ? 'Node names: always shown when zoomed in. Click to hide them.'
+                : 'Node names: hidden. Click for auto.'
+          }
+          className={clsx(
+            'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
+            labelMode === 'on'
+              ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
+              : labelMode === 'off'
+                ? 'border-white/10 bg-surface-900/80 text-slate-600'
+                : 'border-white/10 bg-surface-900/80 text-slate-400 hover:border-white/20'
+          )}
+        >
+          <Type size={15} />
+          <span className="hidden font-medium sm:inline">{labelMode === 'auto' ? 'Names' : labelMode === 'on' ? 'Names on' : 'Names off'}</span>
+        </button>
         <Toggle active={showMinimap} onClick={() => setShowMinimap(!showMinimap)} icon={MapIcon} label="Map" />
         {onProperties && (
           // Open the selected node's details panel. A reliable, discoverable

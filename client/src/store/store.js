@@ -111,6 +111,9 @@ export const useStore = create((set, get) => ({
   flowEnabled: localStorage.getItem('tc.flowEnabled') !== 'false',
   activitySize: localStorage.getItem('tc.activitySize') === 'true',
   showValues: localStorage.getItem('tc.showValues') !== 'false',
+  // Node-name labels on the 2D graphs: 'auto' shows them when few enough are
+  // in view to read; 'on' forces them whenever zoomed in; 'off' hides them.
+  labelMode: localStorage.getItem('tc.labelMode') || 'auto',
   showMinimap: localStorage.getItem('tc.showMinimap') === 'true',
 
   // Sidebar collapse (icon-only rail), persisted.
@@ -142,6 +145,10 @@ export const useStore = create((set, get) => ({
   setActivitySize: (v) => {
     localStorage.setItem('tc.activitySize', String(v));
     set({ activitySize: v });
+  },
+  setLabelMode: (v) => {
+    localStorage.setItem('tc.labelMode', v);
+    set({ labelMode: v });
   },
   setShowValues: (v) => {
     localStorage.setItem('tc.showValues', String(v));

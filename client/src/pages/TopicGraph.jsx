@@ -71,6 +71,7 @@ export default function TopicGraph() {
   const flowEnabled = useStore((s) => s.flowEnabled);
   const activitySize = useStore((s) => s.activitySize);
   const showValues = useStore((s) => s.showValues);
+  const labelMode = useStore((s) => s.labelMode);
   const setShowValues = useStore((s) => s.setShowValues);
   const showMinimap = useStore((s) => s.showMinimap);
   const setTopics = useStore((s) => s.setTopics);
@@ -568,6 +569,7 @@ export default function TopicGraph() {
                 labelDensity={labelDensity3d}
                 showValues={showValues}
                 nodeValues={showValues ? nodeValues : null}
+                labelMode={labelMode}
                 nodeShape={nodeShape3d}
                 flow={flow3d}
                 activitySize={activitySize3d}
@@ -664,6 +666,7 @@ export default function TopicGraph() {
                 activitySource={activitySource}
                 activitySize={activitySize}
                 nodeValues={showValues ? nodeValues : null}
+                labelMode={labelMode}
                 matchIds={coverage?.brokerId === brokerId ? coverage.matchIds : matchIds}
                 minimap={showMinimap}
                 beautify={beautify2d}
