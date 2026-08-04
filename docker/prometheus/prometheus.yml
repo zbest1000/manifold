@@ -14,3 +14,9 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']
+
+  # Per-container CPU/memory/network for the whole compose stack (Telegraf's
+  # Docker-API input — reliable on Docker Desktop where cAdvisor is not).
+  - job_name: containers
+    static_configs:
+      - targets: ['telegraf:9273']

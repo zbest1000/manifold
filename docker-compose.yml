@@ -168,6 +168,26 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
 
+  # Per-container CPU / memory / network for the whole stack (brokers,
+  # simulators, the app itself) — Telegraf's Docker input reads the Docker API
+  # via the socket, which works on every Docker flavor including Docker
+  # Desktop (whose VM cgroup layout blinds cAdvisor). Scraped by Prometheus,
+  # charted in Grafana's Containers row.
+  telegraf:
+    image: telegraf:1.30
+    container_name: manifold-telegraf
+    hostname: telegraf
+    restart: unless-stopped
+    user: "0" # needs to read the docker socket…
+    # …and the image's entrypoint would drop privileges again, so exec
+    # telegraf directly (demo stack; socket is mounted read-only).
+    entrypoint: ["telegraf"]
+    volumes:
+      - ./docker/telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:9273:9273"
+
   grafana:
     image: grafana/grafana:11.4.0
     container_name: manifold-grafana

@@ -1,7 +1,7 @@
 {
  "uid": "manifold-overview",
  "title": "Manifold Overview",
- "description": "Manifold's own health, scraped from its /metrics exposition \u2014 broker ingest, canary round-trips, event-loop saturation, historian outbox, and alarm activity.",
+ "description": "Manifold + demo stack observability: broker ingest, canary round-trips, server CPU/memory/event-loop, per-container resources via cAdvisor, and DataOps throughput.",
  "tags": [
   "manifold",
   "mqtt",
@@ -9,13 +9,26 @@
  ],
  "timezone": "browser",
  "schemaVersion": 39,
- "version": 1,
+ "version": 4,
  "refresh": "10s",
  "time": {
   "from": "now-30m",
   "to": "now"
  },
  "panels": [
+  {
+   "id": 100,
+   "type": "row",
+   "title": "Live traffic",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "panels": []
+  },
   {
    "id": 1,
    "type": "timeseries",
@@ -26,7 +39,7 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 0,
+    "y": 1,
     "w": 12,
     "h": 8
    },
@@ -79,7 +92,7 @@
    },
    "gridPos": {
     "x": 12,
-    "y": 0,
+    "y": 1,
     "w": 12,
     "h": 8
    },
@@ -129,10 +142,78 @@
      }
     }
    ],
-   "description": "Publish\u2192deliver latency of Manifold's 30s canary probe through each broker \u2014 the honest broker-health number."
+   "description": "Publish\u2192deliver latency of the 30s canary probe \u2014 the honest broker-health number."
+  },
+  {
+   "id": 101,
+   "type": "row",
+   "title": "Manifold server health",
+   "gridPos": {
+    "x": 0,
+    "y": 9,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "panels": []
   },
   {
    "id": 3,
+   "type": "timeseries",
+   "title": "Manifold CPU (cores used)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 10,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 18,
+      "showPoints": "never",
+      "spanNulls": true,
+      "stacking": {
+       "mode": "normal"
+      }
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "rate(manifold_process_cpu_seconds_total[1m])",
+     "legendFormat": "{{mode}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Process CPU time rate by mode; 1.0 = one full core busy."
+  },
+  {
+   "id": 4,
    "type": "timeseries",
    "title": "Event loop delay (ms)",
    "datasource": {
@@ -140,9 +221,9 @@
     "uid": "manifold-prom"
    },
    "gridPos": {
-    "x": 0,
-    "y": 8,
-    "w": 12,
+    "x": 8,
+    "y": 10,
+    "w": 8,
     "h": 8
    },
    "fieldConfig": {
@@ -194,7 +275,68 @@
    "description": "Server saturation: sustained p99 above ~100ms means the ingest path is starving."
   },
   {
-   "id": 4,
+   "id": 5,
+   "type": "timeseries",
+   "title": "System load average",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 10,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_host_load_average",
+     "legendFormat": "load {{period}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "manifold_host_cpus",
+     "legendFormat": "cpu count",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Load average vs available CPUs, as seen inside the app container."
+  },
+  {
+   "id": 6,
    "type": "timeseries",
    "title": "Process memory",
    "datasource": {
@@ -202,8 +344,8 @@
     "uid": "manifold-prom"
    },
    "gridPos": {
-    "x": 12,
-    "y": 8,
+    "x": 0,
+    "y": 18,
     "w": 12,
     "h": 8
    },
@@ -243,11 +385,325 @@
       "uid": "manifold-prom"
      }
     }
-   ],
-   "description": "RSS and heap of the Manifold server process."
+   ]
   },
   {
-   "id": 5,
+   "id": 7,
+   "type": "timeseries",
+   "title": "Host memory",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 18,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_host_memory_bytes{kind=\"total\"} - manifold_host_memory_bytes{kind=\"free\"}",
+     "legendFormat": "used",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "manifold_host_memory_bytes{kind=\"total\"}",
+     "legendFormat": "total",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Memory of the machine the app container runs on."
+  },
+  {
+   "id": 102,
+   "type": "row",
+   "title": "Containers (Docker API via Telegraf)",
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "panels": []
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Container CPU %",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 27,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "percent"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "docker_container_cpu_usage_percent{container_name=~\"manifold-.*\"}",
+     "legendFormat": "{{container_name}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Per-container CPU across the whole demo stack, from the Docker API (Telegraf)."
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Container memory",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 27,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "docker_container_mem_usage{container_name=~\"manifold-.*\"}",
+     "legendFormat": "{{container_name}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Container network (bytes/s)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 27,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "rate(docker_container_net_rx_bytes{container_name=~\"manifold-.*\"}[1m])",
+     "legendFormat": "{{container_name}} rx",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "rate(docker_container_net_tx_bytes{container_name=~\"manifold-.*\"}[1m])",
+     "legendFormat": "{{container_name}} tx",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ]
+  },
+  {
+   "id": 103,
+   "type": "row",
+   "title": "DataOps",
+   "gridPos": {
+    "x": 0,
+    "y": 35,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "panels": []
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "Pipeline throughput (msgs/s)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 36,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "mps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (route) (rate(manifold_pipeline_messages_total{result=\"delivered\"}[1m]))",
+     "legendFormat": "{{route}} delivered",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "sum (rate(manifold_pipeline_messages_total{result=\"error\"}[1m]))",
+     "legendFormat": "errors",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ]
+  },
+  {
+   "id": 12,
    "type": "timeseries",
    "title": "Historian outbox",
    "datasource": {
@@ -255,9 +711,9 @@
     "uid": "manifold-prom"
    },
    "gridPos": {
-    "x": 0,
-    "y": 16,
-    "w": 12,
+    "x": 8,
+    "y": 36,
+    "w": 8,
     "h": 8
    },
    "fieldConfig": {
@@ -289,7 +745,7 @@
     {
      "refId": "A",
      "expr": "manifold_outbox_queued_points",
-     "legendFormat": "queued points",
+     "legendFormat": "queued {{historian}}",
      "datasource": {
       "type": "prometheus",
       "uid": "manifold-prom"
@@ -298,27 +754,181 @@
     {
      "refId": "B",
      "expr": "manifold_outbox_spill_bytes",
-     "legendFormat": "spilled bytes",
+     "legendFormat": "spilled bytes {{historian}}",
      "datasource": {
       "type": "prometheus",
       "uid": "manifold-prom"
      }
     }
    ],
-   "description": "Store-and-forward health: spill growth means a historian is down or slow and data is buffering to disk."
+   "description": "Spill growth means a historian is down or slow and data is buffering to disk."
   },
   {
-   "id": 6,
+   "id": 13,
    "type": "timeseries",
-   "title": "Canary probes missed",
+   "title": "Recorder capture rate (points/s)",
    "datasource": {
     "type": "prometheus",
     "uid": "manifold-prom"
    },
    "gridPos": {
-    "x": 12,
-    "y": 16,
-    "w": 12,
+    "x": 16,
+    "y": 36,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (recording) (rate(manifold_recorder_points_total[5m]))",
+     "legendFormat": "{{recording}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ]
+  },
+  {
+   "id": 14,
+   "type": "timeseries",
+   "title": "Contract violations (10m)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 44,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(increase(manifold_contract_violations_total[10m]))",
+     "legendFormat": "violations",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ],
+   "description": "Schema drift caught by locked contracts."
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Alert events in ring",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 44,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": true
+     },
+     "color": {
+      "mode": "palette-classic"
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom",
+     "showLegend": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "manifold_alert_events",
+     "legendFormat": "events",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "manifold-prom"
+     }
+    }
+   ]
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "Canary probes missed (10m)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "manifold-prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 44,
+    "w": 8,
     "h": 8
    },
    "fieldConfig": {
@@ -357,7 +967,7 @@
      }
     }
    ],
-   "description": "Probes a 'connected' broker never delivered back in the last 10 minutes \u2014 the silent failure mode."
+   "description": "Probes a 'connected' broker never delivered back \u2014 the silent failure mode."
   }
  ]
 }

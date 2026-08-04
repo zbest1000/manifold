@@ -1,5 +1,6 @@
 'use strict';
 
+const os = require('os');
 const { monitorEventLoopDelay } = require('perf_hooks');
 
 /**
@@ -38,6 +39,24 @@ function render(services) {
   gauge('manifold_event_loop_delay_ms', 'Event loop delay percentiles');
   out += line('manifold_event_loop_delay_ms', { quantile: '0.5' }, loopDelay.percentile(50) / 1e6);
   out += line('manifold_event_loop_delay_ms', { quantile: '0.99' }, loopDelay.percentile(99) / 1e6);
+
+  // CPU: cumulative process CPU time as a counter — rate() in Prometheus turns
+  // it into utilization (1.0 = one full core). Host load/cpu/memory give the
+  // container's view of the machine it runs on.
+  counter('manifold_process_cpu_seconds_total', 'Process CPU time by mode');
+  const cpu = process.cpuUsage();
+  out += line('manifold_process_cpu_seconds_total', { mode: 'user' }, cpu.user / 1e6);
+  out += line('manifold_process_cpu_seconds_total', { mode: 'system' }, cpu.system / 1e6);
+  gauge('manifold_host_load_average', 'System load average');
+  const [l1, l5, l15] = os.loadavg();
+  out += line('manifold_host_load_average', { period: '1m' }, l1);
+  out += line('manifold_host_load_average', { period: '5m' }, l5);
+  out += line('manifold_host_load_average', { period: '15m' }, l15);
+  gauge('manifold_host_cpus', 'Logical CPU count visible to the process');
+  out += line('manifold_host_cpus', null, os.cpus().length);
+  gauge('manifold_host_memory_bytes', 'Host memory');
+  out += line('manifold_host_memory_bytes', { kind: 'total' }, os.totalmem());
+  out += line('manifold_host_memory_bytes', { kind: 'free' }, os.freemem());
 
   counter('manifold_broker_messages_received_total', 'Messages received per broker');
   gauge('manifold_broker_topics', 'Distinct topics per broker');
