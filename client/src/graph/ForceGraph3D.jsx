@@ -1,5 +1,8 @@
 import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { GRAPH_STYLES } from './graphStyles';
 import { groupColor, PROTOCOL_COLORS } from './buildGraph';
 
@@ -19,6 +22,11 @@ const VALUE_LABEL_MAX = 90; // fewer when live values are on (sprites rebuild pe
 const LINK_OPACITY = 0.35;
 const IDLE_MS = 2000; // keep the rAF loop alive this long after interaction
 const AUTO_ROTATE_SPEED = 0.0022; // rad/frame — a slow, cinematic spin
+// Beautify's bloom pass: threshold keeps the dark background quiet so only the
+// nodes/links glow; tuned against the default constellation style.
+const BLOOM_STRENGTH = 0.9;
+const BLOOM_RADIUS = 0.65;
+const BLOOM_THRESHOLD = 0.25;
 const FLOW_COLOR = new THREE.Color('#ffffff'); // nodes flash toward this on a message
 const FLOW_TMP = new THREE.Color(); // reusable scratch for the pulse lerp
 const FLOW_DECAY = 0.9; // per-frame pulse decay
@@ -146,7 +154,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     nodeScale = 1, // 0.5–2  point-size multiplier
     linkOpacity = LINK_OPACITY, // 0–0.8  link line opacity
     autoRotate = false, // gentle continuous spin
-    beautify = false, // depth-graded colours + glow + auto-rotate
+    beautify = false, // real bloom pass + depth-graded colours + gradient links + auto-rotate
     labelDensity = 0.4, // 0–1  fraction of LABEL_MAX nodes to name
     showValues = false, // draw each labelled node's latest value
     nodeValues = null, // { [nodeId]: value } for the value line
@@ -167,6 +175,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const zoomRef = useRef(1);
   const selSpriteRef = useRef(null);
   const autoRotateRef = useRef(false); // read by the render loop each frame
+  const bloomOnRef = useRef(false); // Beautify's bloom pass, read per frame
   const nodeScaleRef = useRef(nodeScale); // keeps the selection ring hugging scaled nodes
   const flowRef = useRef(false); // keeps the loop alive while message-flow is on
   const activitySizeRef = useRef(false); // keeps the loop alive while activity-sizing is on
@@ -205,6 +214,12 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     scene.add(dirLight);
     const raycaster = new THREE.Raycaster();
 
+    // Beautify's bloom is a post-processing chain; the render loop switches to
+    // it via bloomOnRef so toggling costs nothing when it's off.
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(1, 1), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD));
+
     // On-demand render loop: run only while interacting (plus a short tail).
     let raf = 0;
     let lastActive = 0;
@@ -212,7 +227,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       const rot = rotRef.current;
       rotGroup.rotation.set(rot.pitch, rot.yaw, 0); // Rx(pitch) ∘ Ry(yaw), same as the old projection
       camera.position.z = CAM_DIST / zoomRef.current;
-      renderer.render(scene, camera);
+      if (bloomOnRef.current) composer.render();
+      else renderer.render(scene, camera);
     };
     const loop = () => {
       raf = 0;
@@ -300,6 +316,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       if (!width || !height) return;
       renderer.setPixelRatio(window.devicePixelRatio || 1);
       renderer.setSize(width, height);
+      composer.setPixelRatio(window.devicePixelRatio || 1);
+      composer.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       requestRender();
@@ -412,6 +430,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
 
     return () => {
       if (raf) cancelAnimationFrame(raf);
+      composer.dispose();
       ro.disconnect();
       document.removeEventListener('visibilitychange', onVisibility);
       canvas.removeEventListener('pointerdown', onDown);
@@ -480,8 +499,11 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
     group.add(nodeMesh);
 
-    // Links: a single LineSegments buffer whose opacity/blending the look effects tune.
+    // Links: a single LineSegments buffer whose opacity/blending the look effects
+    // tune. A per-endpoint color attribute rides along so Beautify can blend each
+    // edge between its two nodes' colors (vertexColors stays off otherwise).
     let lineMat = null;
+    let lineGeo = null;
     if (links.length > 0) {
       const linePos = new Float32Array(links.length * 6);
       let j = 0;
@@ -495,8 +517,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
         linePos[j++] = b.y;
         linePos[j++] = b.z;
       }
-      const lineGeo = new THREE.BufferGeometry();
+      lineGeo = new THREE.BufferGeometry();
       lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+      lineGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(links.length * 6), 3));
       lineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(opaqueColor(style.link.color)),
         transparent: true,
@@ -521,7 +544,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     group.add(highlight);
 
     rotGroup.add(group);
-    objsRef.current = { group, labelGroup, highlight, labeled, positions, radii, nodeMesh, nodeMat, lineMat, maxDepth };
+    objsRef.current = { group, labelGroup, highlight, labeled, positions, radii, nodeMesh, nodeMat, lineMat, lineGeo, links, maxDepth };
     requestRender();
 
     return () => {
@@ -606,12 +629,14 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   }, [flow, activitySize, activitySource]);
 
   // Node colours: depth-graded ramp when Beautify is on, else the group palette.
+  // Beautify also blends every link between its endpoints' colors (vertex
+  // colors), so edges read as color flowing through the hierarchy.
   useEffect(() => {
     const three = threeRef.current;
     const objs = objsRef.current;
     if (!three || !objs?.nodeMesh) return;
     const nodes = nodesRef.current;
-    const { nodeMesh, maxDepth } = objs;
+    const { nodeMesh, maxDepth, lineMat, lineGeo, links } = objs;
     const inner = new THREE.Color(style.palette[0]);
     const outer = new THREE.Color(style.palette[style.palette.length - 1]);
     const bases = baseColorRef.current;
@@ -626,18 +651,46 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       nodeMesh.setColorAt(i, c);
     }
     if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+
+    if (lineMat && lineGeo && links) {
+      lineMat.vertexColors = beautify;
+      // With vertexColors on, the material color MULTIPLIES the attribute —
+      // white lets the endpoint colors through untinted.
+      lineMat.color.set(beautify ? '#ffffff' : opaqueColor(style.link.color));
+      if (beautify) {
+        const attr = lineGeo.getAttribute('color');
+        const idx = idxRef.current;
+        let j = 0;
+        for (const l of links) {
+          const a = bases[idx.get(l.source)] || inner;
+          const b = bases[idx.get(l.target)] || inner;
+          attr.array[j++] = a.r;
+          attr.array[j++] = a.g;
+          attr.array[j++] = a.b;
+          attr.array[j++] = b.r;
+          attr.array[j++] = b.g;
+          attr.array[j++] = b.b;
+        }
+        attr.needsUpdate = true;
+      }
+      lineMat.needsUpdate = true;
+    }
     three.requestRender();
   }, [beautify, data, style, colorFor]);
 
-  // Link opacity + optional additive glow when Beautify is on (skip light styles).
+  // Link opacity + additive glow + the bloom pass when Beautify is on. Bloom is
+  // skipped on light styles (a bright background blooms into a washout).
   useEffect(() => {
     const three = threeRef.current;
-    const lineMat = objsRef.current?.lineMat;
-    if (!three || !lineMat) return;
+    if (!three) return;
     const glow = beautify && style.id !== 'slate';
-    lineMat.opacity = beautify ? Math.max(linkOpacity, 0.5) : linkOpacity;
-    lineMat.blending = glow ? THREE.AdditiveBlending : THREE.NormalBlending;
-    lineMat.needsUpdate = true;
+    bloomOnRef.current = glow;
+    const lineMat = objsRef.current?.lineMat;
+    if (lineMat) {
+      lineMat.opacity = beautify ? Math.max(linkOpacity, 0.5) : linkOpacity;
+      lineMat.blending = glow ? THREE.AdditiveBlending : THREE.NormalBlending;
+      lineMat.needsUpdate = true;
+    }
     three.requestRender();
   }, [linkOpacity, beautify, data, style]);
 

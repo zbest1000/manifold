@@ -12,10 +12,12 @@ import PageHeader from '@/components/PageHeader';
 // brokers" roundup). One click pre-fills the form — deliberately NOT
 // auto-connect: the user should see (and can adjust) the topic filter first,
 // because subscribing `#` on a public broker is a firehose of strangers' data.
+// test.mosquitto.org is deliberately absent: it is best-effort and drops
+// connections so often that it makes a terrible first experience.
 const PUBLIC_BROKERS = [
   { label: 'EMQX public', name: 'EMQX public', host: 'broker.emqx.io', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' },
-  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' },
-  { label: 'Mosquitto test', name: 'Mosquitto test', host: 'test.mosquitto.org', port: 1883, protocol: 'mqtt', subscribeFilter: 'test/#' }
+  { label: 'EMQX public (TLS)', name: 'EMQX public TLS', host: 'broker.emqx.io', port: 8883, protocol: 'mqtts', subscribeFilter: 'testtopic/#' },
+  { label: 'HiveMQ public', name: 'HiveMQ public', host: 'broker.hivemq.com', port: 1883, protocol: 'mqtt', subscribeFilter: 'testtopic/#' }
 ];
 
 const BLANK = {
