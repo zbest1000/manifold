@@ -244,9 +244,37 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     t.y = h / 2 - (k * (minY + maxY)) / 2;
   }, [posOf]);
 
-  // Auto arrange: drop every manual offset and re-frame the tidy layout.
+  // Auto arrange: drop every manual offset and shelf-pack the namespace
+  // blocks to the viewport's aspect ratio, so the whole screen carries the
+  // forest instead of one long strip. Natural namespace order is kept —
+  // blocks flow left-to-right, wrapping into new shelves.
   const autoArrange = useCallback(() => {
     manualRef.current.clear();
+    const blocks = layoutRef.current?.blocks || [];
+    if (blocks.length > 1) {
+      const { w, h } = sizeRef.current;
+      const aspect = w > 0 && h > 0 ? w / h : 16 / 9;
+      const GAP = ROW_H;
+      const area = blocks.reduce((a, b) => a + (b.w + GAP) * (b.h + GAP), 0);
+      const targetW = Math.max(...blocks.map((b) => b.w), Math.sqrt(area * aspect));
+      const offsets = new Map();
+      let x = 0;
+      let shelfY = 0;
+      let shelfH = 0;
+      for (const b of blocks) {
+        if (x > 0 && x + b.w > targetW) {
+          shelfY += shelfH + GAP;
+          shelfH = 0;
+          x = 0;
+        }
+        offsets.set(b.key, { dx: x, dy: shelfY });
+        x += b.w + GAP;
+        if (b.h > shelfH) shelfH = b.h;
+      }
+      packRef.current = offsets;
+      setPackVersion((v) => v + 1);
+    }
+    userMovedRef.current = false; // auto-fit frames the packed forest
     fitAll();
   }, [fitAll]);
 
@@ -263,6 +291,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
     for (const r of roots) walk(r);
     for (const r of roots) userTouchedRef.current.add(r.brokerId);
+    packRef.current = null; // block sizes change completely — repack via Auto arrange
     setExpanded(next);
     expandTopRef.current = true;
     userMovedRef.current = true; // deliberate camera placement — no auto-fit fights
@@ -272,6 +301,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // beneath closed.
   const collapseAll = useCallback(() => {
     for (const r of roots) userTouchedRef.current.add(r.brokerId);
+    packRef.current = null;
     setExpanded(new Set(roots.map((r) => `${r.brokerId}:`)));
     userMovedRef.current = false;
   }, [roots]);
@@ -302,6 +332,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // still gets auto-expanded, instead of loading collapsed while its siblings
   // are open. User collapses of already-seeded brokers are preserved.
   const [expanded, setExpanded] = useState(() => new Set());
+  // Shelf-packing offsets from Auto arrange (rootKey -> {dx, dy}); null means
+  // the default sequential arrangement. packVersion triggers the relayout.
+  const packRef = useRef(null);
+  const layoutRef = useRef(null);
+  const [packVersion, setPackVersion] = useState(0);
   const seededRef = useRef(new Set());
   // Brokers whose expansion the USER has changed (toggle / expand-all /
   // collapse-all) — the auto-seeder and its demotion pass keep hands off these.
@@ -426,6 +461,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     if (prevOrientRef.current !== orientation) {
       prevOrientRef.current = orientation;
       manualRef.current.clear();
+      packRef.current = null;
       userMovedRef.current = false;
     }
   }, [orientation]);
@@ -484,23 +520,47 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       return laid;
     };
 
-    if (columns) {
-      let cursorX = 0;
-      for (const r of roots) {
-        placeColumns(r, 0, cursorX);
-        cursorX += rows(r) * COLS_LEAF_W + COLS_LEAF_W; // gap between namespaces
-      }
-      return { nodes, edges, width: cursorX };
-    }
-    let cursorY = 0;
+    // Each namespace is laid out as a BLOCK at its own local origin; blocks are
+    // then positioned either sequentially (default: stacked in rows mode,
+    // side-by-side in columns mode) or by the shelf-packing offsets Auto
+    // arrange computes to fill the viewport.
+    const blocks = [];
     for (const r of roots) {
-      place(r, 0, cursorY);
-      cursorY += rows(r) * ROW_H + ROW_H; // gap between namespaces
+      const start = nodes.length;
+      if (columns) placeColumns(r, 0, 0);
+      else place(r, 0, 0);
+      let maxX = 0;
+      let maxY = 0;
+      for (let i = start; i < nodes.length; i++) {
+        if (nodes[i].x > maxX) maxX = nodes[i].x;
+        if (nodes[i].y > maxY) maxY = nodes[i].y;
+      }
+      blocks.push({
+        key: `${r.brokerId}:`,
+        start,
+        end: nodes.length,
+        w: columns ? rows(r) * COLS_LEAF_W : maxX + COL_W,
+        h: columns ? maxY + COLS_LEVEL_H : rows(r) * ROW_H
+      });
     }
-    return { nodes, edges, height: cursorY };
-  }, [roots, expanded, orientation]);
+    let cursor = 0;
+    const gap = columns ? COLS_LEAF_W : ROW_H;
+    for (const b of blocks) {
+      const off = packRef.current?.get(b.key);
+      const dx = off ? off.dx : columns ? cursor : 0;
+      const dy = off ? off.dy : columns ? 0 : cursor;
+      for (let i = b.start; i < b.end; i++) {
+        nodes[i].x += dx;
+        nodes[i].y += dy;
+      }
+      cursor += (columns ? b.w : b.h) + gap;
+    }
+    return { nodes, edges, blocks };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, expanded, orientation, packVersion]);
 
   useEffect(() => {
+    layoutRef.current = layout;
     visibleRef.current = layout.nodes;
     // Auto-frame the whole forest on load AND as it grows — brokers connect,
     // topics stream in, async mount roots arrive — until the user takes control
@@ -943,9 +1003,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         toggle(hit.node);
         return;
       }
-      // Plain click on a node makes it the sole selection and opens its detail.
-      selRef.current = new Set([keyOf(hit)]);
-      setSelCount(1);
+      // Plain click opens the node's detail and deliberately leaves the
+      // multi-selection alone: building a group with ctrl-click / shift-box
+      // and then losing it to a stray inspect-click made group moves feel
+      // broken. Clicking empty canvas is the way to clear the group.
       // Defer selection briefly so a double-click (expand) doesn't also select —
       // opening the detail panel mid-gesture would move the canvas under the
       // second click.
