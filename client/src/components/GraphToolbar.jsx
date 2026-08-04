@@ -115,10 +115,16 @@ export default function GraphToolbar({
           </button>
         )}
         {onBeautify && (
-          // Beautify applies the radial arrangement. It's a toggle, so it lights
-          // up only WHILE that layout is active (previously it was styled accent
-          // permanently and looked stuck on).
-          <Toggle active={beautifyActive ?? currentLayout === 'radial'} onClick={onBeautify} icon={Sparkles} label="Beautify" />
+          // "Arrange" says what this actually does — switch to the ordered
+          // radial layout (plus glow accents on Topics) — instead of the vague
+          // old "Beautify". It's a toggle: lit only WHILE that layout is active.
+          <Toggle
+            active={beautifyActive ?? currentLayout === 'radial'}
+            onClick={onBeautify}
+            icon={Sparkles}
+            label="Arrange"
+            title="Arrange the graph into ordered rings (radial layout)"
+          />
         )}
         {onFit && <IconButton onClick={() => onFit()} icon={Maximize2} title="Fit graph to view" />}
         {(onExportPng || onExportJson) && (
@@ -201,11 +207,11 @@ function LayoutButton({ layout, active, onClick, icon: Icon }) {
   );
 }
 
-function Toggle({ active, onClick, icon: Icon, label, pulse }) {
+function Toggle({ active, onClick, icon: Icon, label, pulse, title }) {
   return (
     <button
       onClick={onClick}
-      title={`${label}: ${active ? 'on' : 'off'}`}
+      title={title ? `${title} (${active ? 'on' : 'off'})` : `${label}: ${active ? 'on' : 'off'}`}
       className={clsx(
         'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
         active

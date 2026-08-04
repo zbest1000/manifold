@@ -3,7 +3,7 @@ import { Sparkles, RotateCw, ChevronDown, ChevronUp, Tag, Activity, Circle } fro
 import clsx from 'clsx';
 
 /**
- * Look-and-feel controls for the 3D graph view: Beautify (bloom, gradient links,
+ * Look-and-feel controls for the 3D graph view: Cinematic (bloom, gradient links,
  * glowing links, slow spin), auto-rotate, a Values toggle, and node-size /
  * link-opacity / label-density sliders. Shared by every 3D graph.
  */
@@ -40,13 +40,13 @@ export default function Graph3DControls({
       <div className="flex items-stretch">
         <button
           onClick={onBeautify}
-          title="Cinematic mode: real bloom glow, depth-graded colours, links that blend between their nodes, and a slow spin"
+          title="Bloom glow, depth-graded colours, links that blend between their nodes, and a slow spin"
           className={clsx(
             'flex flex-1 items-center gap-1.5 px-3 py-2 text-sm font-medium transition',
             beautify ? 'bg-accent-500/20 text-accent-200' : 'text-slate-300 hover:text-slate-100'
           )}
         >
-          <Sparkles size={15} className={beautify ? 'text-accent-300' : ''} /> Beautify
+          <Sparkles size={15} className={beautify ? 'text-accent-300' : ''} /> Cinematic
         </button>
         <button
           onClick={() => setOpen((v) => !v)}
