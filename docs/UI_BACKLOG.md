@@ -77,6 +77,23 @@ PR that closed them is noted inline.
 
 ## Done (recent)
 
+- [x] **2026-08-04 feature session.** Shipped in one pass (each verified against
+  the live demo): (1) **Alerts page** — first-class alarm center (active board,
+  per-topic wildcard alarms, pause/resume, live feed, nav badge, toasts) over
+  the previously-buried Settings editor, plus **acknowledge with identity**,
+  **restart-proof history** (`data/alerts.jsonl`) and a **webhook delivery
+  health banner**; (2) **Help Center** — searchable `?` panel (tour, guides,
+  glossary, shortcuts) with a **"Page guide" deep-link on every page header**;
+  (3) **CESMII SMIP removed** entirely (user decision — client, server, MCP
+  tools, mock container, docs); (4) **TVQ envelope unlock** (route dropped
+  `envelope`/`staleMs`; Models form gained the fields — merged objects publish
+  `{v,t,q}`); (5) **dark sockets wired** (`contract-violation`,
+  `subscription-downgraded` → toasts + log); (6) **Discovery follow-through**
+  (auth-required → Brokers-form handoff with prefill, honest OPC UA connect
+  outcome, badge tooltips, truthful empty state, scan timestamp); (7) **Trends
+  CSV export**; (8) **public test broker presets** (EMQX/HiveMQ/Mosquitto
+  one-click, verified connecting to both from the demo).
+
 - [x] **Accessibility: Logs button's accessible name didn't match its visible
   text.** Lighthouse `label-content-name-mismatch`: the expanded Logs button
   shows "Logs" but its `aria-label` was "View the event log (…)", so the

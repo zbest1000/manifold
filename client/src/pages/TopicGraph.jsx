@@ -36,6 +36,9 @@ import PageHeader from '@/components/PageHeader';
 import ViewTab from '@/components/ViewTab';
 import { formatDistanceToNow } from 'date-fns';
 
+// localStorage key for the legend's hidden node groups.
+const HIDDEN_GROUPS_KEY = 'tc.hiddenGroups';
+
 function numericFromPayload(payload) {
   if (typeof payload === 'number') return payload;
   if (typeof payload === 'string') {
@@ -82,6 +85,29 @@ export default function TopicGraph() {
     setPanelOpen(Boolean(n));
   };
   const [collapsed, setCollapsed] = useState(() => new Set());
+  // Legend-as-filter: node groups hidden via the legend (persisted). Local
+  // state on purpose — the shared store is being reworked in parallel.
+  const [hiddenGroups, setHiddenGroups] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HIDDEN_GROUPS_KEY) || '[]');
+      return new Set(Array.isArray(raw) ? raw : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggleGroup = useCallback((group) => {
+    setHiddenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      try {
+        localStorage.setItem(HIDDEN_GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        // Storage unavailable — the filter still applies for this session.
+      }
+      return next;
+    });
+  }, []);
   const [matchIds, setMatchIds] = useState(null);
   const [view, setView] = useState('graph'); // 'graph' | 'tree'
   const [treeFilter, setTreeFilter] = useState('');
@@ -200,15 +226,28 @@ export default function TopicGraph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIds, multi, allTopicVersion, brokerTopics, showAll]);
 
-  // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
+  // Apply collapsed subtrees, then the legend's group filter. Keyed on the
+  // collapsed/hidden sets so toggling either re-filters.
   const collapseKey = [...collapsed].sort().join('|');
-  const graph = useMemo(
-    () => collapseGraph(fullGraph, collapsed),
+  const hiddenKey = [...hiddenGroups].sort().join('|');
+  const graph = useMemo(() => {
+    const g = collapseGraph(fullGraph, collapsed);
+    if (!hiddenGroups.size) return g;
+    const hiddenIds = new Set();
+    const nodes = g.nodes.filter((n) => {
+      if (hiddenGroups.has(n.group)) {
+        hiddenIds.add(n.id);
+        return false;
+      }
+      return true;
+    });
+    const links = g.links.filter((l) => !hiddenIds.has(endId(l.source)) && !hiddenIds.has(endId(l.target)));
+    return { ...g, nodes, links };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fullGraph, collapseKey]
-  );
-  // Groups actually present, for the color legend.
-  const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
+  }, [fullGraph, collapseKey, hiddenKey]);
+  // Groups present BEFORE filtering, so hidden groups stay listed in the legend
+  // and can be re-enabled even when they filter down to zero visible nodes.
+  const groupsPresent = useMemo(() => new Set(fullGraph.nodes.map((n) => n.group)), [fullGraph]);
 
   // Toolbar collapse/expand: collapse everything below `level` (Infinity = show
   // all). Depth is a BFS from the roots of the full (uncollapsed) graph.
@@ -365,7 +404,7 @@ export default function TopicGraph() {
   if (connected.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="Topic Graph" subtitle="Interactive node graph of the MQTT topic namespace" />
+        <PageHeader title="Topic Graph" subtitle="Interactive node graph of the MQTT topic namespace" helpTopic="guide-explore-topics" />
         <EmptyState
           icon={Share2}
           title="No connected brokers"
@@ -384,6 +423,7 @@ export default function TopicGraph() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="Topics"
+        helpTopic="guide-explore-topics"
         subtitle={
           multi
             ? `${activeBrokers.length} brokers · ${graph.nodes.length} nodes`
@@ -530,7 +570,7 @@ export default function TopicGraph() {
             <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
               Drag to rotate. Scroll to zoom. Click a node for details. The style dropdown up top restyles this view too.
             </div>
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
+            <GraphLegend styleId={graphStyle} groups={groupsPresent} hiddenGroups={hiddenGroups} onToggleGroup={toggleGroup} />
           </div>
         ) : (
           <div className="relative flex-1">
@@ -578,7 +618,7 @@ export default function TopicGraph() {
                 beautify={beautify2d}
               />
             )}
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
+            <GraphLegend styleId={graphStyle} groups={groupsPresent} hiddenGroups={hiddenGroups} onToggleGroup={toggleGroup} />
             {coverage?.brokerId === brokerId && !showAll && (
               // Coverage paint handed over from the Flows view: the highlighted
               // trail is exactly what the chosen client actually receives.
