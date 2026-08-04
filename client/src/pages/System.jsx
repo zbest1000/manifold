@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X, ChevronDown, ChevronUp, Search } from 'lucide-react';
+import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X, ChevronDown, ChevronUp, Search, Gauge } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
 import { Card, Button, EmptyState } from '@/components/ui';
 import { Sparkline, TimeSeriesChart } from '@/components/charts';
@@ -251,6 +252,41 @@ function CounterTile({ metrics, hist, family, result, label, unit, warnPositive 
   return <StatTile label={label} value={fmtInt(value)} unit={unit} warn={warnPositive && value > 0} history={deltas(aggHistory(hist, family, result))} />;
 }
 
+// Broker round-trip canary: the server publishes a probe through each broker
+// every 30s and measures publish→deliver latency — the honest health number a
+// "connected" status can't give. Missed probes are the loudest signal here.
+function CanarySection() {
+  const brokers = useStore((s) => s.brokers);
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    const load = () => api.canaryStats().then(setStats).catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 15_000);
+    return () => clearInterval(t);
+  }, []);
+  const entries = Object.entries(stats?.brokers || {});
+  if (entries.length === 0) return null;
+  const name = (id) => brokers.find((b) => b.id === id)?.name || id.slice(0, 8);
+  return (
+    <Section icon={Gauge} title="Broker round-trip" warn={entries.some(([, s]) => s.missed > 0 && s.samples.slice(-3).includes(null))}>
+      {entries.map(([id, s]) => {
+        const recentMiss = s.samples.slice(-3).includes(null);
+        return (
+          <StatTile
+            key={id}
+            label={name(id)}
+            value={s.lastRttMs == null ? '—' : fmtInt(s.lastRttMs)}
+            unit="ms round-trip"
+            sub={`avg ${s.emaMs == null ? '—' : fmtInt(s.emaMs)} ms · ${s.missed} missed of ${s.sent}`}
+            history={s.samples.filter((v) => v != null)}
+            warn={recentMiss || (s.lastRttMs != null && s.lastRttMs > 1000)}
+          />
+        );
+      })}
+    </Section>
+  );
+}
+
 export default function System() {
   const [metrics, setMetrics] = useState(null); // Map(key -> sample)
   const [error, setError] = useState('');
@@ -368,6 +404,8 @@ export default function System() {
             }}
           />
         )}
+
+        <CanarySection />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Section icon={Workflow} title="Pipelines" warn={pipelineErrors > 0}>
