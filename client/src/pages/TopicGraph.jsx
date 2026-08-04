@@ -265,16 +265,23 @@ export default function TopicGraph() {
     if (n) {
       pendingJumpRef.current = null;
       selectNode(n);
-      graphRef.current?.fitTo?.(new Set([id]));
+      centerOn(id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
+
+  // Center the active renderer's camera on a node: 2D fits the viewport to it,
+  // 3D rotates the orbit so it faces the camera.
+  const centerOn = (id) => {
+    if (view === '3d') graph3dRef.current?.focusNode?.(id);
+    else graphRef.current?.fitTo?.(new Set([id]));
+  };
 
   const jumpToNode = (id) => {
     const n = graph.nodes.find((x) => x.id === id);
     if (n) {
       selectNode(n);
-      graphRef.current?.fitTo?.(new Set([id]));
+      centerOn(id);
       return;
     }
     const inFull = fullGraph.nodes.find((x) => x.id === id);

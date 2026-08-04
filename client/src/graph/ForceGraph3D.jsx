@@ -754,6 +754,17 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       rotRef.current = { yaw: 0.6, pitch: -0.35 };
       zoomRef.current = 1;
       if (threeRef.current) threeRef.current.requestRender();
+    },
+    // Rotate the orbit so the node faces the camera (the camera only moves on
+    // z, so "centering" a node means yawing/pitching it onto the +z axis).
+    focusNode: (id) => {
+      const n = byIdRef.current.get(id);
+      if (!n) return;
+      const yaw = Math.atan2(-n.x, n.z);
+      const zAfterYaw = Math.hypot(n.x, n.z);
+      const pitch = Math.atan2(n.y, zAfterYaw);
+      rotRef.current = { yaw, pitch };
+      threeRef.current?.requestRender();
     }
   }), []);
 
