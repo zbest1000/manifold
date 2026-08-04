@@ -59,8 +59,10 @@ export default function I3x() {
 
   useEffect(() => {
     if (!connected) return;
-    api.i3xObjects().then((r) => setObjects(r.objects)).catch((e) => toast.error(e.message));
-    api.i3xNamespaces().then((r) => setNamespaces(r.namespaces)).catch(() => {});
+    // Null-safe defaults: a malformed/empty response would otherwise crash the
+    // page (objects.length in the subtitle, buildI3xGraph over objects).
+    api.i3xObjects().then((r) => setObjects(r?.objects ?? [])).catch((e) => toast.error(e.message));
+    api.i3xNamespaces().then((r) => setNamespaces(r?.namespaces ?? [])).catch(() => {});
   }, [connected]);
 
   const server = useMemo(() => ({ baseUrl: status?.baseUrl, info: status?.info }), [status]);
