@@ -54,12 +54,18 @@ function typeName(value) {
 function validate(schema, value, path = '', out = []) {
   const actual = typeName(value);
   if (schema.type === 'object' && actual === 'object') {
-    for (const [k, sub] of Object.entries(schema.props || {})) {
-      if (!(k in value)) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
+    // Own-property checks, not `in`: `in` walks the prototype chain, so a
+    // payload key named like an Object.prototype member (e.g. "toString") would
+    // escape both the missing-field and new-field checks — a false negative for
+    // exactly the drift this contract exists to catch.
+    const props = schema.props || {};
+    const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    for (const [k, sub] of Object.entries(props)) {
+      if (!has(value, k)) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
       else validate(sub, value[k], path ? `${path}.${k}` : k, out);
     }
     for (const k of Object.keys(value)) {
-      if (!(k in (schema.props || {}))) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: typeName(value[k]) });
+      if (!has(props, k)) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: typeName(value[k]) });
     }
     return out;
   }

@@ -42,7 +42,10 @@ function compileCodec(codec = {}) {
     const { root } = protobuf.parse(codec.schemaText, { keepCase: true });
     const Message = root.lookupType(codec.messageType); // throws "no such type" when absent
     return (buffer) =>
-      Message.toObject(Message.decode(buffer), { longs: Number, enums: String, bytes: String, defaults: true });
+      // longs:String, not Number — a 64-bit field above 2^53 (serial numbers,
+      // counters) would silently lose precision as a JS Number. Matches the
+      // Sparkplug decoder's choice; a faithful structured decode over a lossy one.
+      Message.toObject(Message.decode(buffer), { longs: String, enums: String, bytes: String, defaults: true });
   }
   if (codec.type === 'avro') {
     const type = avsc.Type.forSchema(JSON.parse(codec.schemaText));

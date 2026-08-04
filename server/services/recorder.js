@@ -28,7 +28,11 @@ const READ_LIMIT_MAX = 5000;
 function numericOf(payload) {
   if (typeof payload === 'number') return Number.isFinite(payload) ? payload : null;
   if (typeof payload === 'string') {
-    const n = Number(payload);
+    // Guard the empty/whitespace case: Number('') and Number('  ') are 0, so a
+    // retained-clear (empty payload) on a numeric topic would chart a fake 0 dip.
+    const t = payload.trim();
+    if (!t) return null;
+    const n = Number(t);
     return Number.isFinite(n) ? n : null;
   }
   if (payload && typeof payload === 'object') {
