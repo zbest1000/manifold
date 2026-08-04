@@ -175,6 +175,17 @@ services:
       retries: 12
       start_period: 5s
 
+  # Timebase historian (Flow Software) — TVQ writes over its public REST API
+  # (:4511). The 'energy to Timebase' route feeds it; Trends reads it back
+  # (no tag-listing API, so on Trends you type the exact topic path).
+  timebase:
+    image: timebase/historian:1.3.4
+    container_name: manifold-timebase
+    hostname: manifold-timebase
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4511:4511"
+
   # Real observability pair: Prometheus scrapes Manifold's /metrics every 5s
   # and the provisioned Grafana dashboard ("Manifold Overview") charts it —
   # ingest rates, canary round-trips, event-loop health, outbox depth.

@@ -60,6 +60,15 @@
   },
   "i3x": null,
   "historians": {
+    "demo-timebase": {
+      "id": "demo-timebase",
+      "name": "Demo Timebase",
+      "type": "timebase",
+      "url": "http://manifold-timebase:4511",
+      "dataset": "demo",
+      "sslInsecure": true,
+      "dropPolicy": "newest"
+    },
     "demo-timescale": {
       "id": "demo-timescale",
       "name": "Demo Timescale",
@@ -74,6 +83,14 @@
     }
   },
   "pipelines": {
+    "demo-tb-route": {
+      "id": "demo-tb-route",
+      "name": "energy to Timebase",
+      "enabled": true,
+      "source": { "brokerId": "demo-mqtt", "filter": "energy/#" },
+      "transforms": [{ "type": "numeric", "field": "value" }],
+      "target": { "type": "historian", "historianId": "demo-timebase" }
+    },
     "demo-ts-route": {
       "id": "demo-ts-route",
       "name": "energy to Timescale",
