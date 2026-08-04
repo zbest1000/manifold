@@ -74,13 +74,23 @@ export default function OpcUa() {
 
   // Load root children whenever the active connection changes
   useEffect(() => {
-    if (!connectionId) return;
+    if (!connectionId) return undefined;
+    // alive guard: switching connections A→B mustn't let A's browse resolve
+    // last and overwrite B's tree.
+    let alive = true;
     setExpanded(new Map());
     setSelected(null);
     api
       .opcuaBrowse(connectionId, ROOT)
-      .then((res) => setExpanded(new Map([[ROOT, res.references]])))
-      .catch((e) => toast.error(e.message));
+      .then((res) => {
+        if (alive) setExpanded(new Map([[ROOT, res?.references ?? []]]));
+      })
+      .catch((e) => {
+        if (alive) toast.error(e.message);
+      });
+    return () => {
+      alive = false;
+    };
   }, [connectionId]);
 
   const connection = opcua.find((c) => c.id === connectionId);

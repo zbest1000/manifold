@@ -37,6 +37,7 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
   // Per-client traffic rates, derived by diffing the admin API's cumulative
   // counters between two refreshes (EMQX exposes them; HiveMQ doesn't).
   const countersRef = useRef(new Map()); // clientId -> { msgsIn, msgsOut, ts }
+  const loadSeq = useRef(0); // guards against out-of-order resolve responses
   const [clientRates, setClientRates] = useState(new Map());
 
   const refreshConfig = useCallback(async () => {
@@ -58,10 +59,14 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
 
   const load = useCallback(async () => {
     if (!broker?.id) return;
+    // Sequence guard: switching brokers while a resolve is in flight mustn't let
+    // the previous broker's response land under the new broker's label.
+    const seq = ++loadSeq.current;
     setBusy(true);
     setError(null);
     try {
       const res = await api.brokerAdminPubSub(broker.id, { resolve: true, sampleLimit: 50 });
+      if (seq !== loadSeq.current) return;
       setData(res);
       setExpanded(new Map());
       // Roll cumulative counters into per-client msg/s across refreshes.
@@ -82,9 +87,10 @@ export default function ConsumerFlows({ broker, theme = 'dark' }) {
       }
       setClientRates(rates);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError(e.message || 'Failed to reach broker admin API');
     } finally {
-      setBusy(false);
+      if (seq === loadSeq.current) setBusy(false);
     }
   }, [broker?.id]);
 

@@ -174,7 +174,7 @@ function RoutesTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listPipelines().then(setData).catch(() => {});
-    api.listHistorians().then((r) => setHistorians(r.historians)).catch(() => {});
+    api.listHistorians().then((r) => setHistorians(r?.historians ?? [])).catch(() => {});
   }, []);
   usePoll(load, 15000, [load]); // config only — numbers stream in below
   useEngineMetrics(
@@ -976,7 +976,7 @@ function RecorderTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listRecordings().then(setData).catch(() => {});
-    api.listHistorians().then((r) => setHistorians(r.historians)).catch(() => {});
+    api.listHistorians().then((r) => setHistorians(r?.historians ?? [])).catch(() => {});
   }, []);
   usePoll(load, 4000, [load]);
 
@@ -1138,7 +1138,7 @@ function ContractsTab({ brokers }) {
 
   const load = useCallback(() => {
     api.listContracts().then(setData).catch(() => {});
-    api.contractViolations(100).then((r) => setViolations(r.violations)).catch(() => {});
+    api.contractViolations(100).then((r) => setViolations(r?.violations ?? [])).catch(() => {});
   }, []);
   usePoll(load, 5000, [load]);
 
