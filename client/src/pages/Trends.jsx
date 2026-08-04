@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, X, Plus, Database, TrendingUp, FileDown } from 'lucide-react';
-import { downloadCsv, seriesToCsvRows } from '@/lib/exportCsv';
+import { downloadCsv, seriesToCsvRows, downloadParquet } from '@/lib/exportCsv';
+import toast from 'react-hot-toast';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
@@ -232,15 +233,28 @@ export default function Trends() {
         actions={
           <div className="flex items-center gap-2">
             {data?.series?.some((s) => s.points?.length) && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  downloadCsv(seriesToCsvRows(data.series), `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`)
-                }
-              >
-                <FileDown size={14} /> CSV
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    downloadCsv(seriesToCsvRows(data.series), `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`)
+                  }
+                >
+                  <FileDown size={14} /> CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    downloadParquet(data.series, `trends-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.parquet`).catch((e) =>
+                      toast.error(e.message)
+                    )
+                  }
+                >
+                  <FileDown size={14} /> Parquet
+                </Button>
+              </>
             )}
             <HelpButton title="How Trends works" label="How Trends works">
               <p>Trends charts numeric values over time. Pick a source, add up to ten tags, and choose a range.</p>

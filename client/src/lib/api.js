@@ -75,6 +75,7 @@ export const api = {
   brokerSparkplug: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sparkplug`),
   brokerSys: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/sys`),
   brokerPosture: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/posture`),
+  brokerLifecycle: (id, limit = 200) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/lifecycle?limit=${limit}`),
   getBrokerAdmin: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`),
   setBrokerAdmin: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/admin`, { method: 'POST', body: JSON.stringify(config) }),

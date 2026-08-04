@@ -10,6 +10,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@dsnp/parquetjs": "^1.8.9",
     "avsc": "^5.7.9",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",

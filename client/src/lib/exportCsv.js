@@ -1,4 +1,5 @@
 import { downloadDataUrl } from './download';
+import { getAuthToken } from './api';
 
 // RFC-4180-ish escaping: quote when the cell contains a comma, quote or newline.
 function cell(v) {
@@ -11,6 +12,32 @@ function cell(v) {
 export function downloadCsv(rows, filename) {
   const csv = rows.map((r) => r.map(cell).join(',')).join('\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  downloadDataUrl(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Server-side Parquet conversion of the charted series (wide format — what
+ * DuckDB/Athena/pandas ingest directly). Raw-binary response, so this goes
+ * through fetch directly rather than the JSON api client.
+ */
+export async function downloadParquet(series, filename) {
+  const token = getAuthToken();
+  const res = await fetch('/api/system/export/parquet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ series })
+  });
+  if (!res.ok) {
+    let msg = `Parquet export failed (${res.status})`;
+    try {
+      msg = (await res.json()).error || msg;
+    } catch {
+      // keep the status message
+    }
+    throw new Error(msg);
+  }
+  const url = URL.createObjectURL(await res.blob());
   downloadDataUrl(url, filename);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
