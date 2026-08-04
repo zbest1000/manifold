@@ -44,15 +44,17 @@ PR that closed them is noted inline.
 
 ### Low
 
-- [ ] **Accessibility: muted labels fail WCAG AA contrast.** A Lighthouse audit
-  of the app (Accessibility 95, Best Practices 100) flagged 35 elements below the
-  4.5:1 contrast minimum — worst is `text-slate-600` (#475569) at **2.44** on the
-  `#0d1323` background (small uppercase section labels), plus `text-slate-500`
-  (#64748b) at 3.88 (muted mono captions). These are deliberate muted tones, so
-  bumping them app-wide is a design call (slate-600 → slate-400 clears AA but
-  makes the subtle labels noticeably louder). Worth a considered pass on the muted
-  palette rather than a blind global replace. (The `label-content-name-mismatch`
-  finding — the Logs button's aria-label not containing its visible "Logs" text —
+- [~] **Accessibility: muted labels fail WCAG AA contrast.** A Lighthouse audit
+  flagged elements below the 4.5:1 minimum. **Fixed the worst, unambiguous
+  offender:** the sidebar nav section headers (`text-2xs uppercase`, on every
+  page) were `text-slate-600` (#475569) at **2.44:1** — now `text-slate-400`
+  (#94a3b8) at **7.22:1**, verified. **Still open (deliberate design call, not a
+  blind replace):** small muted `text-slate-500` (#64748b) captions at 3.68–4.01
+  — brand subtitle, PageHeader subtitles, metric-tile uppercase labels, muted
+  mono captions. These sit just under threshold and `text-slate-500` is the
+  app-wide muted-text tone, so bumping it shifts the whole muted palette's weight;
+  worth a considered human design pass (define a muted-label token and lift it
+  once) rather than piecemeal edits. (The `label-content-name-mismatch` finding
   was fixed, see Done.)
 
 - [ ] **Demo-config gaps found in a full-UI sweep (not UI bugs; pages render

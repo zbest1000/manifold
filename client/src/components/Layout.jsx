@@ -126,7 +126,7 @@ export default function Layout() {
                 (collapsed ? (
                   gi > 0 && <div className="mx-auto mb-2 h-px w-6 bg-white/10" />
                 ) : (
-                  <p className="px-3 pb-1.5 text-2xs font-semibold uppercase tracking-widest text-slate-600">{group.label}</p>
+                  <p className="px-3 pb-1.5 text-2xs font-semibold uppercase tracking-widest text-slate-400">{group.label}</p>
                 ))}
               <div className="space-y-1">
                 {group.items.map((item) => (
