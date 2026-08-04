@@ -22,7 +22,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fresh tab seeds alarms that fired before it opened.
 - **In-app Help Center.** Searchable panel (`?` anywhere, or the sidebar's
   "Help & guides") with a getting-started tour, task guides, an industrial
-  glossary, and the keyboard shortcut list.
+  glossary, and the keyboard shortcut list. Every page header has a "Page
+  guide" button deep-linking to its topic.
+- **Alarm acknowledgement + durable history.** `POST /api/alerts/ack` marks a
+  firing alarm as owned by the caller's token identity; every
+  firing/resolve/ack appends to `data/alerts.jsonl` and survives restarts.
+  Webhook delivery failures surface as a banner on the rules card.
+- **Graph comprehension pack (2D).** Stale-data dots (amber >60s, rose >5min),
+  message-rate-weighted edges, canvas hover cards, selection path-to-root
+  highlighting, click/drag-navigable minimap, and legend swatches that filter
+  groups (persisted).
+- **3D Beautify is a real cinematic mode.** UnrealBloom post-processing plus
+  links that blend between their endpoint nodes' depth-graded colours —
+  previously Beautify only remapped colours.
+- **Public test broker presets.** One-click EMQX (TCP + TLS) and HiveMQ in the
+  Brokers form, with a scoped topic filter and a data-privacy note. The full
+  public matrix is verified: TCP, TLS, WebSocket, and authenticated connects.
+- **TVQ model envelopes reachable.** `POST /api/models` persists
+  `envelope`/`staleMs` (the engine always honored them); the Models form gains
+  the fields — merged objects publish `{v,t,q}` per attribute.
+- **Contract-violation and QoS-downgrade toasts.** Both events streamed on the
+  socket with no listener; schema drift and silent QoS 1→0 downgrades now
+  toast + log app-wide.
+- **Discovery follow-through.** Auth-required brokers hand off to the Brokers
+  form prefilled; OPC UA connects report the real session outcome; badge
+  tooltips; truthful empty state; scan timestamp.
+- **Trends CSV export** (wide format, union of timestamps).
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker
