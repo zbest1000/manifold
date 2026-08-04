@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Waypoints } from 'lucide-react';
+import { Waypoints, Sun, Moon } from 'lucide-react';
 import { useStore } from '@/store/store';
 import FlowsView from '@/components/FlowsView';
 import PageHeader from '@/components/PageHeader';
@@ -15,7 +15,14 @@ import { EmptyState, Button } from '@/components/ui';
 export default function Flows() {
   const brokers = useStore((s) => s.brokers);
   const [brokerId, setBrokerId] = useState(null);
+  const [canvasTheme, setCanvasTheme] = useState(() => localStorage.getItem('tc.flowsTheme') || 'dark');
   const connected = brokers.filter((b) => b.status === 'connected');
+
+  const toggleCanvasTheme = () => {
+    const next = canvasTheme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('tc.flowsTheme', next);
+    setCanvasTheme(next);
+  };
 
   useEffect(() => {
     if (!brokerId && connected.length) setBrokerId(connected[0].id);
@@ -49,20 +56,29 @@ export default function Flows() {
         subtitle="Producer → topic → consumer lineage, from observed traffic + the broker admin API"
         helpTopic="guide-flows"
         actions={
-          <select
-            value={brokerId || ''}
-            onChange={(e) => setBrokerId(e.target.value)}
-            className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-          >
-            {connected.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleCanvasTheme}
+              className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-300 transition hover:bg-white/5"
+            >
+              {canvasTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+              {canvasTheme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+            <select
+              value={brokerId || ''}
+              onChange={(e) => setBrokerId(e.target.value)}
+              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
+            >
+              {connected.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
         }
       />
-      <div className="min-h-0 flex-1">{broker && <FlowsView broker={broker} />}</div>
+      <div className="min-h-0 flex-1">{broker && <FlowsView broker={broker} theme={canvasTheme} />}</div>
     </div>
   );
 }

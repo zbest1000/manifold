@@ -12,7 +12,7 @@ import ConsumerFlows from '@/components/ConsumerFlows';
  *    API, with every wildcard filter RESOLVED against the observed topic set so
  *    a broad filter like `spBv1.0/#` shows the concrete topics it covers.
  */
-export default function FlowsView({ broker }) {
+export default function FlowsView({ broker, theme = 'dark' }) {
   const [tab, setTab] = useState('producers');
   return (
     <div className="flex h-full w-full flex-col">
@@ -20,7 +20,7 @@ export default function FlowsView({ broker }) {
         <SubTab active={tab === 'producers'} onClick={() => setTab('producers')} icon={Radio} label="Producers" hint="who publishes what (Sparkplug + $SYS)" />
         <SubTab active={tab === 'consumers'} onClick={() => setTab('consumers')} icon={Users} label="Consumers" hint="who receives what (admin API, wildcards resolved)" />
       </div>
-      <div className="min-h-0 flex-1">{tab === 'producers' ? <ProducerFlows broker={broker} /> : <ConsumerFlows broker={broker} />}</div>
+      <div className="min-h-0 flex-1">{tab === 'producers' ? <ProducerFlows broker={broker} theme={theme} /> : <ConsumerFlows broker={broker} theme={theme} />}</div>
     </div>
   );
 }

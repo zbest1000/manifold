@@ -128,8 +128,13 @@ services:
     environment:
       EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_CONNECTED: "true"
       EMQX_SYS_TOPICS__SYS_EVENT_MESSAGES__CLIENT_DISCONNECTED: "true"
+      # Fixed demo API key so the Flows → Consumers tab (per-client
+      # subscriptions via the admin REST API) works on a fresh stack; the
+      # seeded broker profile references the same key.
+      EMQX_API_KEY__BOOTSTRAP_FILE: /opt/emqx/etc/api-keys.txt
     volumes:
       - ./docker/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+      - ./docker/emqx/api-keys.txt:/opt/emqx/etc/api-keys.txt:ro
     ports:
       - "127.0.0.1:1886:1883" # MQTT (host access; in-cluster it's emqx:1883)
       - "127.0.0.1:18083:18083" # EMQX dashboard (admin/public by default)

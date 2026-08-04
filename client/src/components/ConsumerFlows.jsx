@@ -3,6 +3,7 @@ import { KeyRound, Users, Radio, RefreshCw, Trash2, ShieldCheck, AlertTriangle, 
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import { buildLineageGraph, coverageToMatchIds } from '@/graph/buildGraph';
+import { DEFAULT_STYLE } from '@/graph/graphStyles';
 import { topicMatches } from '@/lib/mqtt';
 import ForceGraph from '@/graph/ForceGraph';
 import { Card, Badge, Button, Input, Field, EmptyState } from '@/components/ui';
@@ -18,8 +19,11 @@ import { Card, Badge, Button, Input, Field, EmptyState } from '@/components/ui';
  * Broker → Client → Filter (n matches) → matched subtrees → (drill-down) leaves.
  * Dormant filters (matching nothing) are flagged — dead wiring is a finding.
  */
-export default function ConsumerFlows({ broker }) {
+export default function ConsumerFlows({ broker, theme = 'dark' }) {
   const graphStyle = useStore((s) => s.graphStyle);
+  // Light mode maps to the "Slate" paper preset; dark keeps the user's chosen
+  // graph style (falling back to the default if that choice is itself light).
+  const styleId = theme === 'light' ? 'slate' : graphStyle === 'slate' ? DEFAULT_STYLE : graphStyle;
   const setCoverage = useStore((s) => s.setCoverage);
   const [admin, setAdmin] = useState(null);
   const [form, setForm] = useState({ type: 'emqx', url: '', apiKey: '', apiSecret: '' });
@@ -220,7 +224,7 @@ export default function ConsumerFlows({ broker }) {
           <ForceGraph
             ref={graphRef}
             data={graph}
-            styleId={graphStyle}
+            styleId={styleId}
             layoutId="organic"
             selectedId={selected}
             onSelect={(n) => setSelected(n.id)}
@@ -236,12 +240,20 @@ export default function ConsumerFlows({ broker }) {
           </div>
         )}
         {graph.nodes.length > 1 && (
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+          <div
+            className={`pointer-events-none absolute bottom-4 left-4 rounded-xl border px-3 py-2 text-[11px] backdrop-blur ${
+              theme === 'dark' ? 'border-white/10 bg-surface-900/70 text-slate-400' : 'border-slate-300/60 bg-white/85 text-slate-600'
+            }`}
+          >
             filters show exact match counts · double-click an aggregate to drill into real topics · red = dormant filter
           </div>
         )}
         {data?.resolution && (
-          <div className="pointer-events-none absolute right-4 top-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+          <div
+            className={`pointer-events-none absolute right-4 top-4 rounded-xl border px-3 py-2 text-[11px] backdrop-blur ${
+              theme === 'dark' ? 'border-white/10 bg-surface-900/70 text-slate-500' : 'border-slate-300/60 bg-white/85 text-slate-600'
+            }`}
+          >
             resolved against {data.resolution.topicTotal.toLocaleString()} observed topics
             {data.resolution.dropped > 0 && ` · ${data.resolution.dropped.toLocaleString()} dropped at cap`}
           </div>
