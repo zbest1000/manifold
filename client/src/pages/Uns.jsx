@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Network, Radio, Cpu, Boxes, X, Activity, ListTree, Share2, Search, Pencil,
-  ShieldCheck, History, Layers, Plug, Trash2, Plus
+  ShieldCheck, History, Layers, Plug, Trash2, Plus, Ruler
 } from 'lucide-react';
 import { useStore, onMessageActivity } from '@/store/store';
 import { api } from '@/lib/api';
@@ -52,8 +52,8 @@ export default function Uns() {
   const [i3xStatus, setI3xStatus] = useState(null);
   const [rate, setRate] = useState(0);
   const rateCount = useRef(0);
-  // Side panel (docked, right): 'lint' | 'events' | null. The node detail
-  // column shows when no panel is open.
+  // Side panel (docked, right): 'lint' | 'model' | 'events' | null. The node
+  // detail column shows when no panel is open.
   const [panel, setPanel] = useState(null);
   // Editable level ladder (persisted).
   const [levels, setLevels] = useState(loadLevels);
@@ -226,8 +226,9 @@ export default function Uns() {
               </ul>
               <p className="text-slate-400">
                 The buttons up top: <b>Lint</b> checks the namespace for structural problems and jumps you to each one.
-                <b> Events</b> is a live feed of new topics and Sparkplug births and deaths. <b>Levels</b> renames the ISA-95
-                tiers. <b>Mounts</b> grafts in OPC UA and i3X sources.
+                <b> Model</b> lets you declare the hierarchy you expect (one rule per level) and grades the live namespace
+                against it with a conformance score. <b>Events</b> is a live feed of new topics and Sparkplug births and
+                deaths. <b>Levels</b> renames the ISA-95 tiers. <b>Mounts</b> grafts in OPC UA and i3X sources.
               </p>
             </HelpButton>
             <div className="flex overflow-hidden rounded-xl border border-white/10">
@@ -239,6 +240,12 @@ export default function Uns() {
               label="Lint"
               active={panel === 'lint'}
               onClick={() => setPanel((p) => (p === 'lint' ? null : 'lint'))}
+            />
+            <HeaderButton
+              icon={Ruler}
+              label="Model"
+              active={panel === 'model'}
+              onClick={() => setPanel((p) => (p === 'model' ? null : 'model'))}
             />
             <HeaderButton
               icon={History}
@@ -331,6 +338,7 @@ export default function Uns() {
               Never overlays the canvas, so it can't block nodes or the second
               click of a double-click. */}
           {panel === 'lint' && <LintPanel brokers={scoped} onJump={jumpTo} onClose={() => setPanel(null)} />}
+          {panel === 'model' && <ModelPanel brokers={scoped} onJump={jumpTo} onClose={() => setPanel(null)} />}
           {panel === 'events' && <EventsPanel brokers={scoped} onJump={jumpTo} onClose={() => setPanel(null)} />}
           {!panel && selected && (
             <aside className="w-72 shrink-0 overflow-y-auto border-l border-white/5 bg-surface-900/40 p-3">
@@ -725,6 +733,362 @@ function LintPanel({ brokers, onJump, onClose }) {
 function ScoreBadge({ score }) {
   const color = score >= 85 ? 'text-emerald-400 border-emerald-500/40' : score >= 60 ? 'text-amber-400 border-amber-500/40' : 'text-red-400 border-red-500/40';
   return <span className={`rounded-lg border px-1.5 py-0.5 font-mono text-[11px] ${color}`}>{score}/100</span>;
+}
+
+// ---- Namespace model panel ---------------------------------------------------------
+
+// Editor rows keep rule values as plain text (comma list for enum, regex for
+// pattern); converted to/from the API's { kind, values|pattern } shape.
+function toDraft(model) {
+  return {
+    id: model.id,
+    name: model.name,
+    appliesTo: model.appliesTo || '',
+    allowDeeper: Boolean(model.allowDeeper),
+    levels: model.levels.map((l) => ({
+      name: l.name,
+      kind: l.rule.kind,
+      value: l.rule.kind === 'enum' ? l.rule.values.join(', ') : l.rule.kind === 'pattern' ? l.rule.pattern : ''
+    }))
+  };
+}
+
+function fromDraft(draft) {
+  return {
+    id: draft.id,
+    name: draft.name,
+    appliesTo: draft.appliesTo,
+    allowDeeper: draft.allowDeeper,
+    levels: draft.levels.map((l) => ({
+      name: l.name,
+      rule:
+        l.kind === 'enum'
+          ? { kind: 'enum', values: l.value.split(',').map((v) => v.trim()).filter(Boolean) }
+          : l.kind === 'pattern'
+            ? { kind: 'pattern', pattern: l.value }
+            : { kind: 'any' }
+    }))
+  };
+}
+
+// Seeded ISA-95 example (enterprise/site/area/line/cell), tuned so the demo
+// namespace (factory/plant-a/line1/cnc1/temperature, building/…, energy/…,
+// utility/…) produces a meaningful mixed score out of the box: factory and
+// building branches conform, the shallow energy/utility branches violate.
+const EXAMPLE_DRAFT = {
+  name: 'ISA-95 hierarchy',
+  appliesTo: '',
+  allowDeeper: false,
+  levels: [
+    { name: 'enterprise', kind: 'enum', value: 'factory, building, energy, utility' },
+    { name: 'site', kind: 'pattern', value: '^[a-z]+-[a-z0-9]+$' },
+    { name: 'area', kind: 'pattern', value: '^(line|floor)[0-9]+$' },
+    { name: 'line', kind: 'any', value: '' },
+    { name: 'cell', kind: 'pattern', value: '^[a-z][a-z0-9_]*$' }
+  ]
+};
+
+const MODEL_SCORE_COLOR = (score) => (score >= 90 ? 'text-emerald-400' : score >= 70 ? 'text-amber-400' : 'text-rose-400');
+const MAX_SHOWN_VIOLATIONS = 100;
+
+function ModelPanel({ brokers, onJump, onClose }) {
+  const [models, setModels] = useState(null);
+  const [selectedId, setSelectedId] = useState('');
+  const [draft, setDraft] = useState(null); // non-null = editor open
+  const [reports, setReports] = useState(null); // [{ broker, report|null }]
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = () =>
+    api
+      .listNsModels()
+      .then(({ models: list }) => {
+        setModels(list);
+        if (list.length === 0) setDraft({ ...EXAMPLE_DRAFT, levels: EXAMPLE_DRAFT.levels.map((l) => ({ ...l })) });
+        else setSelectedId((id) => (list.some((m) => m.id === id) ? id : list[0].id));
+        return list;
+      })
+      .catch(() => setModels([]));
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const run = async (modelId = selectedId) => {
+    if (!modelId) return;
+    setRunning(true);
+    setError('');
+    const results = await Promise.all(
+      brokers.map((b) =>
+        api
+          .unsModelReport(b.id, modelId)
+          .then((report) => ({ broker: b, report }))
+          .catch(() => ({ broker: b, report: null }))
+      )
+    );
+    setReports(results);
+    setRunning(false);
+  };
+
+  const save = async (andRun) => {
+    setError('');
+    try {
+      const saved = await api.saveNsModel(fromDraft(draft));
+      setDraft(null);
+      setSelectedId(saved.id);
+      await load();
+      if (andRun) await run(saved.id);
+    } catch (e) {
+      setError(e.message); // e.g. "level "site": invalid pattern …"
+    }
+  };
+
+  const remove = async (id) => {
+    try {
+      await api.deleteNsModel(id);
+      setReports(null);
+      setSelectedId('');
+      await load();
+    } catch {
+      // pushLog already captured it
+    }
+  };
+
+  const setLevel = (i, patch) =>
+    setDraft((d) => ({ ...d, levels: d.levels.map((l, j) => (j === i ? { ...l, ...patch } : l)) }));
+
+  const selected = models?.find((m) => m.id === selectedId);
+
+  return (
+    <aside className="flex w-96 shrink-0 flex-col border-l border-white/5 bg-surface-900/40">
+      <PanelHeader icon={Ruler} title="Namespace model" onClose={onClose} />
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {!models && <p className="text-xs text-slate-500">Loading models…</p>}
+
+        {/* Model chooser + actions */}
+        {models && !draft && (
+          <div className="space-y-2">
+            {models.length === 0 ? (
+              <p className="text-[11px] text-slate-500">No models yet.</p>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedId}
+                  onChange={(e) => {
+                    setSelectedId(e.target.value);
+                    setReports(null);
+                  }}
+                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1.5 text-xs text-slate-200 focus:outline-none"
+                >
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => selected && setDraft(toDraft(selected))}
+                  title="Edit this model"
+                  className="rounded p-1.5 text-slate-400 hover:bg-white/10"
+                >
+                  <Pencil size={13} />
+                </button>
+                <button
+                  onClick={() => selectedId && remove(selectedId)}
+                  title="Delete this model"
+                  className="rounded p-1.5 text-slate-500 hover:bg-white/10 hover:text-red-400"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2">
+              {models.length > 0 && (
+                <button
+                  onClick={() => run()}
+                  disabled={running || !selectedId}
+                  className="flex-1 rounded-lg bg-accent-500/20 px-2.5 py-1.5 text-[11px] font-medium text-accent-200 hover:bg-accent-500/30 disabled:opacity-40"
+                >
+                  {running ? 'Grading…' : 'Run report'}
+                </button>
+              )}
+              <button
+                onClick={() => setDraft({ ...EXAMPLE_DRAFT, levels: EXAMPLE_DRAFT.levels.map((l) => ({ ...l })) })}
+                className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-white/5"
+              >
+                <Plus size={12} /> New model
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Editor */}
+        {draft && (
+          <div className="space-y-2">
+            <p className="text-[11px] leading-snug text-slate-500">
+              Declare your hierarchy — one rule per level, top-down (ISA-95: enterprise / site / area / line / cell).
+              The live namespace is graded against it; $SYS and Sparkplug topics are exempt.
+            </p>
+            <input
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder="Model name"
+              className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:border-accent-500/60 focus:outline-none"
+            />
+            <input
+              value={draft.appliesTo}
+              onChange={(e) => setDraft((d) => ({ ...d, appliesTo: e.target.value }))}
+              placeholder="Applies to prefix (blank = whole namespace), e.g. factory"
+              className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1.5 font-mono text-[11px] text-slate-200 placeholder:font-sans placeholder:text-slate-500 focus:border-accent-500/60 focus:outline-none"
+            />
+            <div className="space-y-1.5">
+              {draft.levels.map((lvl, i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  <span className="w-3 text-right font-mono text-[10px] text-slate-500">{i + 1}</span>
+                  <input
+                    value={lvl.name}
+                    onChange={(e) => setLevel(i, { name: e.target.value })}
+                    placeholder="level"
+                    className="w-20 shrink-0 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:border-accent-500/60 focus:outline-none"
+                  />
+                  <select
+                    value={lvl.kind}
+                    onChange={(e) => setLevel(i, { kind: e.target.value })}
+                    className="shrink-0 rounded-lg border border-white/10 bg-surface-950/60 px-1.5 py-1 text-[11px] text-slate-200 focus:outline-none"
+                  >
+                    <option value="enum">enum</option>
+                    <option value="pattern">pattern</option>
+                    <option value="any">any</option>
+                  </select>
+                  <input
+                    value={lvl.value}
+                    onChange={(e) => setLevel(i, { value: e.target.value })}
+                    disabled={lvl.kind === 'any'}
+                    placeholder={lvl.kind === 'enum' ? 'a, b, c' : lvl.kind === 'pattern' ? '^regex$ (whole segment)' : '—'}
+                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 font-mono text-[11px] text-slate-200 placeholder:font-sans placeholder:text-slate-500 focus:border-accent-500/60 focus:outline-none disabled:opacity-40"
+                  />
+                  {draft.levels.length > 1 && (
+                    <button
+                      aria-label="Remove level"
+                      onClick={() => setDraft((d) => ({ ...d, levels: d.levels.filter((_, j) => j !== i) }))}
+                      className="shrink-0 rounded p-1 text-slate-500 hover:bg-white/10 hover:text-red-400"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => setDraft((d) => ({ ...d, levels: [...d.levels, { name: `level${d.levels.length + 1}`, kind: 'any', value: '' }] }))}
+                className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-accent-300 hover:bg-white/10"
+              >
+                <Plus size={12} /> add level
+              </button>
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={draft.allowDeeper}
+                  onChange={(e) => setDraft((d) => ({ ...d, allowDeeper: e.target.checked }))}
+                  className="accent-accent-500"
+                />
+                allow deeper topics
+              </label>
+            </div>
+            {error && <p className="break-words text-[11px] text-rose-400">{error}</p>}
+            <div className="flex gap-2">
+              <button
+                onClick={() => save(true)}
+                disabled={running}
+                className="flex-1 rounded-lg bg-accent-500/20 px-2.5 py-1.5 text-[11px] font-medium text-accent-200 hover:bg-accent-500/30 disabled:opacity-40"
+              >
+                Save &amp; run report
+              </button>
+              <button
+                onClick={() => save(false)}
+                className="rounded-lg border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-300 hover:bg-white/5"
+              >
+                Save
+              </button>
+              {models?.length > 0 && (
+                <button
+                  onClick={() => {
+                    setDraft(null);
+                    setError('');
+                  }}
+                  className="rounded px-2 py-1.5 text-[11px] text-slate-400 hover:bg-white/10"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Reports, one section per scoped broker */}
+        {reports?.map(({ broker, report }) => (
+          <div key={broker.id} className="border-t border-white/5 pt-2">
+            <div className="mb-1 truncate text-xs font-semibold text-slate-200">{broker.name}</div>
+            {!report && <p className="text-[11px] text-slate-500">report unavailable</p>}
+            {report && (
+              <>
+                <div className="mb-2 flex items-end gap-3">
+                  <span className={`text-4xl font-bold leading-none ${MODEL_SCORE_COLOR(report.score)}`}>{report.score}</span>
+                  <div className="pb-0.5 text-[11px] leading-tight text-slate-400">
+                    <div>{report.conforming.toLocaleString()} of {report.checked.toLocaleString()} topics conform</div>
+                    <div className="text-slate-500">model: {report.model.name}</div>
+                  </div>
+                </div>
+                {report.checked === 0 && (
+                  <p className="text-[11px] text-slate-500">No topics in scope — check the &quot;applies to&quot; prefix.</p>
+                )}
+                {report.perLevel.some((l) => l.failures > 0) && (
+                  <div className="mb-2 flex flex-wrap gap-1">
+                    {report.perLevel.map((l) => (
+                      <span
+                        key={l.name}
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+                          l.failures > 0 ? 'border-rose-500/40 text-rose-300' : 'border-white/10 text-slate-500'
+                        }`}
+                      >
+                        {l.name}: {l.failures.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {report.violationsTotal === 0 && report.checked > 0 && (
+                  <p className="text-[11px] text-emerald-400">Fully conformant — every checked topic matches the model.</p>
+                )}
+                {report.violations.slice(0, MAX_SHOWN_VIOLATIONS).map((v, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => onJump(broker.id, v.topic)}
+                    title="Jump to this topic in the topology"
+                    className="group mb-1 block w-full rounded-lg bg-black/20 px-2 py-1.5 text-left text-[11px] transition hover:bg-white/5"
+                  >
+                    <div className="flex items-start gap-1.5">
+                      <span className="font-semibold text-rose-400">{v.level ? `level: ${v.level}` : 'depth'}</span>
+                      <span className="ml-auto shrink-0 text-[10px] text-accent-300 opacity-0 transition group-hover:opacity-100">jump →</span>
+                    </div>
+                    <div className="mt-0.5 break-all font-mono text-[10px] text-slate-400">{v.topic}</div>
+                    <div className="mt-0.5 text-slate-400">{v.reason}</div>
+                  </button>
+                ))}
+                {report.violationsTotal > Math.min(report.violations.length, MAX_SHOWN_VIOLATIONS) && (
+                  <p className="text-[10px] text-slate-500">
+                    …and {(report.violationsTotal - Math.min(report.violations.length, MAX_SHOWN_VIOLATIONS)).toLocaleString()} more violation(s) — per-level counts above are exact.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
 }
 
 // ---- Events panel -------------------------------------------------------------------

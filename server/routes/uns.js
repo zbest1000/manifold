@@ -1,5 +1,6 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
+const { evaluate, validateModel, collectTopics } = require('../services/namespaceModel');
 const router = express.Router();
 
 // UNS mounts: external sources (OPC UA connections, the i3X namespace) grafted
@@ -84,6 +85,63 @@ router.delete('/icons/:id', (req, res) => {
     return res.status(404).json({ error: 'Icon not found' });
   }
   res.json({ removed: req.params.id });
+});
+
+// Namespace models: declared ISA-95-style hierarchies the live namespace is
+// graded against. Where the heuristic lint asks "does this look healthy?", a
+// model asks "does it match what WE declared?" — per-level rules, conformance
+// score, concrete violations. Pure configuration, persisted in the profile
+// store ('nsmodels' — 'models' is taken by the payload model engine).
+//
+//   { id, name, appliesTo (prefix, '' = all), levels: [{ name, rule }], allowDeeper }
+
+// GET /api/uns/models
+router.get('/models', (req, res) => {
+  const { profiles } = req.app.locals.services;
+  res.json({ models: profiles?.listIn('nsmodels') || [] });
+});
+
+// POST /api/uns/models { id?, name, appliesTo?, levels, allowDeeper? } — upserts by id.
+// Regexes must compile at save time — a 400 here names the bad pattern, so a
+// broken model can never be stored and blow up report runs later.
+router.post('/models', (req, res) => {
+  const { profiles } = req.app.locals.services;
+  const { id } = req.body || {};
+  const v = validateModel(req.body);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const existing = id ? profiles.getIn('nsmodels', id) : null;
+  const saved = profiles.upsertIn('nsmodels', existing ? id : uuidv4(), v.model);
+  res.status(existing ? 200 : 201).json(saved);
+});
+
+// DELETE /api/uns/models/:id
+router.delete('/models/:id', (req, res) => {
+  const { profiles } = req.app.locals.services;
+  if (!profiles.removeIn('nsmodels', req.params.id)) {
+    return res.status(404).json({ error: 'Model not found' });
+  }
+  res.json({ removed: req.params.id });
+});
+
+// GET /api/uns/brokers/:brokerId/model-report?modelId= — grade one broker's
+// observed topics against a saved model. Topics come from the same lazily
+// maintained trie the lint and wildcard resolution use, so a report never
+// re-scans the raw store.
+router.get('/brokers/:brokerId/model-report', (req, res) => {
+  const { profiles, mqttManager } = req.app.locals.services;
+  const model = profiles?.getIn('nsmodels', req.query.modelId || '');
+  if (!model) return res.status(404).json({ error: 'Model not found' });
+  if (!mqttManager?.getConnection(req.params.brokerId)) {
+    return res.status(404).json({ error: 'Broker not found' });
+  }
+  const trie = mqttManager.getTrie(req.params.brokerId);
+  const topics = trie ? collectTopics(trie) : [];
+  try {
+    res.json({ model: { id: model.id, name: model.name }, ...evaluate(topics, model) });
+  } catch (error) {
+    // A stored model can only be invalid if it predates validation — surface it.
+    res.status(400).json({ error: error.message });
+  }
 });
 
 module.exports = router;
