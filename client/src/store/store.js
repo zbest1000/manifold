@@ -269,6 +269,52 @@ export const useStore = create((set, get) => ({
       };
     }),
   clearLogs: () => set({ logs: [], unseen: 0 }),
+
+  // --- Alarms: live feed from the server alert engine (socket 'alert').
+  // `alerts` is the recent event feed (newest first, capped). `activeAlarms`
+  // tracks what is firing RIGHT NOW, keyed `ruleId|topic` — wildcard
+  // value-threshold rules fire per concrete topic, so one pump recovering must
+  // not clear another pump's alarm (mirrors the engine's per-topic state).
+  alerts: [],
+  alertUnseen: 0,
+  activeAlarms: {}, // `${ruleId}|${topic||''}` -> firing event
+  ingestAlert: (evt) =>
+    set((s) => {
+      const key = `${evt.ruleId}|${evt.topic || ''}`;
+      const activeAlarms = { ...s.activeAlarms };
+      if (evt.status === 'firing') activeAlarms[key] = evt;
+      else if (evt.status === 'resolved') delete activeAlarms[key];
+      return {
+        alerts: [evt, ...s.alerts].slice(0, 200),
+        activeAlarms,
+        // 'resolved' is good news — it clears the alarm but shouldn't demand
+        // attention the way a new firing (or a new-topic event) does.
+        alertUnseen: evt.status === 'resolved' ? s.alertUnseen : s.alertUnseen + 1
+      };
+    }),
+  // Seed current firing state after a page load (from GET /api/alerts/active)
+  // so alarms that fired before this tab opened still show as active.
+  seedActiveAlarms: (events) =>
+    set(() => {
+      const activeAlarms = {};
+      for (const evt of events || []) activeAlarms[`${evt.ruleId}|${evt.topic || ''}`] = evt;
+      return { activeAlarms };
+    }),
+  markAlertsSeen: () => set({ alertUnseen: 0 }),
+
+  // --- Help center. `helpTopic` deep-links to a specific entry (pages call
+  // openHelp('guide-alarm') from their headers). First open remembers itself so
+  // the sidebar's "new here" pulse only shows until help has been seen once.
+  helpOpen: false,
+  helpTopic: null,
+  helpSeen: localStorage.getItem('tc.helpSeen') === 'true',
+  openHelp: (topic = null) =>
+    set(() => {
+      localStorage.setItem('tc.helpSeen', 'true');
+      return { helpOpen: true, helpTopic: topic, helpSeen: true };
+    }),
+  closeHelp: () => set({ helpOpen: false, helpTopic: null }),
+
   logOpen: false,
   logBrokerFilter: null, // when set, the panel shows only this broker's entries
   openLog: (brokerId = null) => set({ logOpen: true, logBrokerFilter: brokerId ?? null, unseen: 0 }),
@@ -288,7 +334,12 @@ export function initRealtime() {
   wired = true;
   const s = useStore.getState();
 
-  socket.on('connect', () => useStore.getState().setConnected(true));
+  socket.on('connect', () => {
+    useStore.getState().setConnected(true);
+    // Sync alarm state on every (re)connect: alarms that fired before this tab
+    // opened — or while the socket was down — still show as active.
+    api.alertsActive().then((r) => useStore.getState().seedActiveAlarms(r.active)).catch(() => {});
+  });
   socket.on('disconnect', () => useStore.getState().setConnected(false));
 
   // Throttle connect_error: socket.io retries every second while the server is
@@ -337,6 +388,25 @@ export function initRealtime() {
   socket.on('opcua-connected', () => refreshOpcua());
   socket.on('opcua-disconnected', () => refreshOpcua());
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
+
+  // Alert engine firings/resolutions land here at message latency. Firings get
+  // a toast (throttled per rule — a flapping sensor must not bury the UI) and a
+  // warning log entry; resolutions clear the active alarm quietly.
+  const lastAlertToast = new Map();
+  socket.on('alert', (evt) => {
+    s.ingestAlert(evt);
+    if (evt.status === 'firing' || evt.status === 'event') {
+      const level = evt.status === 'firing' ? 'warning' : 'info';
+      s.pushLog(level, 'alert', `${evt.ruleName}: ${evt.detail || evt.status}`, { brokerId: evt.brokerId, topic: evt.topic });
+      const now = Date.now();
+      if (evt.status === 'firing' && now - (lastAlertToast.get(evt.ruleId) || 0) > 30_000) {
+        lastAlertToast.set(evt.ruleId, now);
+        toast(`⚠ ${evt.ruleName}${evt.detail ? ` — ${evt.detail}` : ''}`, { duration: 6000 });
+      }
+    } else if (evt.status === 'resolved') {
+      s.pushLog('info', 'alert', `${evt.ruleName}: ${evt.detail || 'resolved'}`, { brokerId: evt.brokerId, topic: evt.topic });
+    }
+  });
 
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));

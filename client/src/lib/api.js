@@ -172,6 +172,7 @@ export const api = {
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
+  alertsActive: () => request('/api/alerts/active'),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
@@ -204,14 +205,6 @@ export const api = {
   startDiscovery: (options) => request('/api/system/discovery/start', { method: 'POST', body: JSON.stringify(options) }),
   stopDiscovery: () => request('/api/system/discovery/stop', { method: 'POST' }),
   discoveryResults: () => request('/api/system/discovery/results'),
-
-  // CESMII SMIP
-  cesmiiStatus: () => request('/api/cesmii/status'),
-  cesmiiConfig: (config) => request('/api/cesmii/config', { method: 'POST', body: JSON.stringify(config) }),
-  cesmiiReset: () => request('/api/cesmii/config', { method: 'DELETE' }),
-  cesmiiEquipment: () => request('/api/cesmii/equipment'),
-  cesmiiAttributes: () => request('/api/cesmii/attributes'),
-  cesmiiHistory: (body) => request('/api/cesmii/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // i3X
   i3xStatus: () => request('/api/i3x/status'),

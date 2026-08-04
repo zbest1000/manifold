@@ -131,7 +131,7 @@ export default function Overview() {
               warn={sum(engine?.bindings, 'errors') > 0}
             />
             <HealthCard
-              to="/settings"
+              to="/alerts"
               icon={BellRing}
               label="Alerts"
               value={alerts?.recent ?? 0}

@@ -280,6 +280,38 @@ test('value-threshold clearValue hysteresis holds firing through the deadband', 
   eng.stop();
 });
 
+test('getActive reports firing silence + per-topic value alarms and clears on resolve', () => {
+  const m = managerWith('b6', ['plant/line1/temp']);
+  const io = fakeIo();
+  const rules = [
+    { id: 's1', name: 'Line silent', type: 'branch-silent', brokerId: 'b6', path: 'plant', thresholdMs: 60_000 },
+    { id: 'vA', name: 'Overheat', type: 'value-threshold', brokerId: 'b6', topic: 'plant/+/temp', op: '>', value: 80 }
+  ];
+  const eng = new AlertEngine({ io, profiles: { alertRules: () => rules }, mqttManager: m, fetchImpl: null });
+
+  assert.deepStrictEqual(eng.getActive(), [], 'nothing firing yet');
+
+  // Two pumps breach independently; the silence rule fires too.
+  eng.onMessage(msg('b6', 'plant/A/temp', 95));
+  eng.onMessage(msg('b6', 'plant/B/temp', 91));
+  eng.evaluate(Date.now() + 120_000);
+
+  const active = eng.getActive();
+  assert.strictEqual(active.length, 3);
+  const topics = active.filter((a) => a.ruleId === 'vA').map((a) => a.topic).sort();
+  assert.deepStrictEqual(topics, ['plant/A/temp', 'plant/B/temp']);
+  const silent = active.find((a) => a.ruleId === 's1');
+  assert.ok(silent && !silent.topic, 'silence alarm has no topic dimension');
+  assert.match(active.find((a) => a.topic === 'plant/A/temp').detail, /value = 95 \(> 80\)/);
+
+  // Pump A resolves → only its alarm clears.
+  eng.onMessage(msg('b6', 'plant/A/temp', 40));
+  const after = eng.getActive();
+  assert.strictEqual(after.length, 2);
+  assert.ok(!after.some((a) => a.topic === 'plant/A/temp'));
+  m.shutdown();
+});
+
 test('historyStore snapshots recent rings and restores them into empty rings', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-hist-'));
   const m1 = new MqttManager({ emit() {} });

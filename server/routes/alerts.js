@@ -83,4 +83,11 @@ router.get('/events', (req, res) => {
   res.json({ events: alerts ? alerts.getEvents(limit) : [] });
 });
 
+// GET /api/alerts/active — everything firing right now (seeds a fresh client's
+// active-alarm state; live updates then ride the 'alert' socket event)
+router.get('/active', (req, res) => {
+  const { alerts } = req.app.locals.services;
+  res.json({ active: alerts ? alerts.getActive() : [] });
+});
+
 module.exports = router;

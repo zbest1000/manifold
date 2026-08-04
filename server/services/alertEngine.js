@@ -346,6 +346,50 @@ class AlertEngine {
   getEvents(limit = 200) {
     return this.history.slice(-limit).reverse();
   }
+
+  /**
+   * Everything firing RIGHT NOW, shaped like 'firing' socket events — lets a
+   * freshly opened client seed its active-alarm state instead of only learning
+   * about alarms that fire after it connects. Newest first.
+   */
+  getActive() {
+    const rules = new Map((this.profiles?.alertRules() || []).map((r) => [r.id, r]));
+    const out = [];
+    for (const [ruleId, s] of this.state) {
+      if (!s.firing) continue;
+      const rule = rules.get(ruleId);
+      if (!rule) continue;
+      const threshold = Number(rule.thresholdMs) || 60_000;
+      out.push({
+        ruleId,
+        ruleName: rule.name || rule.type,
+        type: rule.type,
+        brokerId: rule.brokerId,
+        status: 'firing',
+        ts: s.since,
+        detail: `Silent past the ${Math.round(threshold / 1000)}s threshold`
+      });
+    }
+    for (const [ruleId, byTopic] of this.valueState) {
+      const rule = rules.get(ruleId);
+      if (!rule) continue;
+      for (const [topic, s] of byTopic) {
+        if (!s.firing) continue;
+        out.push({
+          ruleId,
+          ruleName: rule.name || rule.type,
+          type: rule.type,
+          brokerId: rule.brokerId,
+          status: 'firing',
+          ts: s.since,
+          topic,
+          value: s.lastValue,
+          detail: `${rule.field || 'value'} = ${s.lastValue} (${rule.op} ${rule.value}) on ${topic}`
+        });
+      }
+    }
+    return out.sort((a, b) => b.ts - a.ts);
+  }
 }
 
 module.exports = { AlertEngine, RULE_TYPES, VALUE_OPS };
