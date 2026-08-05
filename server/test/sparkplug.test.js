@@ -112,6 +112,21 @@ test('parseSparkplugTopic recognizes STATE host topics and rejects malformed one
   assert.strictEqual(edge.edgeNodeId, 'E');
 });
 
+test('decoder reinterprets signed integer metrics by datatype (unsigned two-s-complement on the wire)', () => {
+  const d = new SparkplugDecoder();
+  // Signed ints arrive unsigned; -5 on the wire per width:
+  assert.strictEqual(d.extractMetricValue({ int_value: 251, datatype: 1 }), -5, 'Int8');
+  assert.strictEqual(d.extractMetricValue({ int_value: 65531, datatype: 2 }), -5, 'Int16');
+  assert.strictEqual(d.extractMetricValue({ int_value: 4294967291, datatype: 3 }), -5, 'Int32');
+  assert.strictEqual(d.extractMetricValue({ long_value: '18446744073709551611', datatype: 4 }), '-5', 'Int64');
+  // Unsigned datatypes are left untouched.
+  assert.strictEqual(d.extractMetricValue({ int_value: 4294967291, datatype: 7 }), 4294967291, 'UInt32');
+  assert.strictEqual(d.extractMetricValue({ long_value: '18446744073709551611', datatype: 8 }), '18446744073709551611', 'UInt64');
+  // Positive values and non-int types are unaffected.
+  assert.strictEqual(d.extractMetricValue({ int_value: 42, datatype: 3 }), 42);
+  assert.strictEqual(d.extractMetricValue({ double_value: 3.5, datatype: 10 }), 3.5);
+});
+
 test('registry folds Sparkplug 3.0 JSON STATE with events only on transitions', () => {
   const r = new SparkplugRegistry();
   r.update('spBv1.0/STATE/scada', null, 10, { online: true, timestamp: 111 });
