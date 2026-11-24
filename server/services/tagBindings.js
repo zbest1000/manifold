@@ -287,6 +287,27 @@ class TagBindings {
 
     this._syncRetained();
     this._publishMetaAll();
+    this._publishStatusForNewUnits(changed);
+  }
+
+  /**
+   * A binding created or edited while its source is already online gets its
+   * status now; otherwise `_status` would not exist until the next transition.
+   */
+  _publishStatusForNewUnits(changed) {
+    const units = this.index().units;
+    if (!this._statusUnits) this._statusUnits = new Set();
+    for (const id of [...this._statusUnits]) {
+      if (!units.has(id) || changed.has(bindingIdOf(id))) this._statusUnits.delete(id);
+    }
+    for (const unit of units.values()) {
+      if (this._statusUnits.has(unit.id)) continue;
+      const st = this.sourceState.get(`${unit.sourceType} ${unit.sourceId}`);
+      if (!st) continue; // source state unknown yet: the first transition publishes it
+      this._statusUnits.add(unit.id);
+      this._status(unit.binding.id).sourceState = { ...st };
+      if ((unit.binding.target || {}).mode === 'mqtt') this._publishDeviceStatus(unit, st);
+    }
   }
 
   /** Clear (empty retained publish) every retained topic the config no longer owns. */
@@ -416,6 +437,7 @@ class TagBindings {
     for (const unit of this.index().bySource.get(sk) || []) {
       this._status(unit.binding.id).sourceState = { ...st };
       if (evt.state === 'offline') this._publishBad(unit, now);
+      (this._statusUnits ||= new Set()).add(unit.id);
       this._publishDeviceStatus(unit, st);
     }
   }

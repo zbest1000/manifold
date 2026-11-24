@@ -285,3 +285,26 @@ test('an EtherNet/IP device reads, browses the controller, and never writes', as
     await plc.close?.();
   }
 });
+
+test('a binding created while its device is already online gets _status immediately', async () => {
+  const t = await setup();
+  try {
+    const saved = await t.devices.save(t.device);
+    await until(() => t.devices.list()[0].status.state === 'online', 8000, 'online');
+    await sleep(150); // the source-state event has been delivered before the binding exists
+    t.profiles.upsertIn('bindings', 'late', {
+      enabled: true,
+      source: { type: 'device', deviceId: saved.id, tags: [{ address: 'count', name: 'count' }] },
+      target: { mode: 'mqtt', brokerId: 'br', pathTemplate: 'acme/late/{name}', format: 'envelope' }
+    });
+    t.bindings.reconcile();
+    await until(() => t.values('acme/late/_status').some((s) => s.online === true), 3000, 'status for late binding');
+    assert.strictEqual(t.bindings.getStatus().late.sourceState.state, 'online');
+    const n = t.values('acme/late/_status').length;
+    t.bindings.reconcile(); // idempotent: no republish without a change
+    await sleep(100);
+    assert.strictEqual(t.values('acme/late/_status').length, n);
+  } finally {
+    await t.cleanup();
+  }
+});
