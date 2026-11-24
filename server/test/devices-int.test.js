@@ -359,7 +359,17 @@ test('a quality change reaches the UI on a reliable emit; routine values may be 
     devices._onSamples({ deviceId: 'd1', samples: [{ key: 'a', v: 2, q: 0, qReason: 'disconnected' }] });
     devices._flushValues();
     assert.strictEqual(values().at(-1).volatile, false); // Good -> Bad must arrive
-    assert.strictEqual(values().at(-1).payload.values.a.q, 0);
+    assert.strictEqual(values().at(-1).payload.batch[0].values.a.q, 0);
+
+    // several devices in one window travel in ONE event (per-device volatile
+    // emits in a loop are dropped by the transport after the first)
+    const before = values().length;
+    devices._onSamples({ deviceId: 'd1', samples: [{ key: 'a', v: 3, q: 0 }] });
+    devices._onSamples({ deviceId: 'd2', samples: [{ key: 'b', v: 9, q: 192 }] });
+    devices._onSamples({ deviceId: 'd3', samples: [{ key: 'c', v: 7, q: 192 }] });
+    devices._flushValues();
+    assert.strictEqual(values().length, before + 1);
+    assert.deepStrictEqual(values().at(-1).payload.batch.map((e) => e.deviceId).sort(), ['d1', 'd2', 'd3']);
   } finally {
     await devices.stop();
   }

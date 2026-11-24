@@ -669,19 +669,24 @@ class DeviceManager extends EventEmitter {
     }
   }
 
-  /** Coalesced, volatile UI updates: at most one batch per device per window. */
+  /** Coalesced UI updates: one event per window carrying every touched device. */
   _flushValues() {
     this._flushTimer = null;
+    // ONE event per flush for all devices. Socket.IO drops a volatile packet
+    // whenever the transport is still busy with the previous one, so a loop of
+    // per-device volatile emits delivered only the first device's values.
+    const batch = [];
     for (const [deviceId, keys] of this._dirty) {
       const store = this.values.get(deviceId);
       if (!store) continue;
       const values = {};
       for (const key of keys) values[key] = store.get(key);
-      // Routine value churn may be dropped for a lagging client; a batch that
-      // carries a quality change is delivered reliably.
-      const target = this._reliable.has(deviceId) ? this.io : this.io.volatile || this.io;
-      target.emit('device-values', { deviceId, values });
+      batch.push({ deviceId, values });
     }
+    // Routine value churn may be dropped for a lagging client; a flush that
+    // carries a quality change is delivered reliably.
+    const target = this._reliable.size ? this.io : this.io.volatile || this.io;
+    if (batch.length) target.emit('device-values', { batch });
     this._dirty.clear();
     this._reliable.clear();
   }

@@ -712,7 +712,7 @@ tags per device), applies the egress guard (`assertAllowedDeviceTarget`), pushes
 the desired set to the supervisor, keeps the latest value per tag, and emits the
 tag-source events above. A device whose target is refused is reported Stopped
 with the reason instead of being started. Live values reach the UI as coalesced
-volatile `device-values` batches (250 ms) and `device-state` events.
+one `device-values` event per 250 ms window carrying every touched device (volatile, except when it carries a quality change, which is delivered reliably) and `device-state` events.
 
 **Device profiles.** `services/deviceProfiles.js` is the pure half: a profile
 (`protocol`, `options`, `pollGroups`, `params`, `tags` with `{param}` placeholders

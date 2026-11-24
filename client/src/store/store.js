@@ -369,10 +369,17 @@ export function initRealtime() {
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
 
   socket.on('device-state', ({ deviceId, ...st } = {}) => deviceId && useStore.getState().setDeviceState(deviceId, st));
-  socket.on('device-values', ({ deviceId, values } = {}) => {
-    if (!deviceId || !values) return;
-    pendingDeviceValues.set(deviceId, { ...(pendingDeviceValues.get(deviceId) || {}), ...values });
-    scheduleDeviceFlush(useStore);
+  // The server sends one event per flush: { batch: [{ deviceId, values }] }.
+  // A bare { deviceId, values } (older servers) is accepted too.
+  socket.on('device-values', (msg = {}) => {
+    const entries = Array.isArray(msg.batch) ? msg.batch : [msg];
+    let any = false;
+    for (const { deviceId, values } of entries) {
+      if (!deviceId || !values) continue;
+      pendingDeviceValues.set(deviceId, { ...(pendingDeviceValues.get(deviceId) || {}), ...values });
+      any = true;
+    }
+    if (any) scheduleDeviceFlush(useStore);
   });
   socket.on('devices-changed', () => useStore.setState((st) => ({ devicesVersion: st.devicesVersion + 1 })));
 
