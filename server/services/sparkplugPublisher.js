@@ -140,7 +140,14 @@ class SparkplugPublisher {
   _deviceBirth(s, deviceId, d) {
     this._publish(s, `spBv1.0/${s.group}/DBIRTH/${s.edge}/${deviceId}`, {
       seq: this._nextSeq(s),
-      metrics: [...d.lastValues.entries()].map(([name, v]) => ({ name, value: v.value, ts: v.ts, type: d.types.get(name) }))
+      // Metadata (engUnit, engLow/engHigh, description) travels in BIRTH only.
+      metrics: [...d.lastValues.entries()].map(([name, v]) => ({
+        name,
+        value: v.value,
+        ts: v.ts,
+        type: d.types.get(name),
+        properties: d.props?.get(name)
+      }))
     });
     d.birthed = true;
   }
@@ -154,15 +161,24 @@ class SparkplugPublisher {
     const s = this._session(brokerId, group, edge);
     let d = s.devices.get(device);
     if (!d) {
-      d = { metricNames: new Set(), lastValues: new Map(), types: new Map(), birthed: false };
+      d = { metricNames: new Set(), lastValues: new Map(), types: new Map(), props: new Map(), birthed: false };
       s.devices.set(device, d);
     }
+    if (!d.props) d.props = new Map();
     d.offline = false;
     let needsBirth = !d.birthed;
     for (const m of metrics) {
       if (!d.metricNames.has(m.name)) {
         d.metricNames.add(m.name);
         needsBirth = true;
+      }
+      // Changed metadata (e.g. a unit edited on the tag) needs a new BIRTH to reach hosts.
+      if (m.properties !== undefined) {
+        const prevProps = d.props.get(m.name);
+        if (JSON.stringify(prevProps) !== JSON.stringify(m.properties)) {
+          if (d.props.has(m.name)) needsBirth = true;
+          d.props.set(m.name, m.properties);
+        }
       }
       // The datatype is pinned at first sight so BIRTH and DATA always agree.
       if (!d.types.has(m.name)) d.types.set(m.name, m.type);

@@ -22,8 +22,12 @@ function fakeProfiles(data = {}) {
 function fakeMqtt() {
   const m = new EventEmitter();
   m.published = [];
+  m.meta = []; // retained _meta documents (phase 4) are kept apart so the counts below stay about values
+  m.cleared = []; // empty retained publishes (stale-topic cleanup)
   m.publish = async (brokerId, topic, payload, opts) => {
-    m.published.push({ brokerId, topic, payload, opts });
+    if (topic.endsWith('/_meta') && payload !== '') m.meta.push({ brokerId, topic, payload, opts });
+    else if (payload === '') m.cleared.push({ brokerId, topic, opts });
+    else m.published.push({ brokerId, topic, payload, opts });
   };
   return m;
 }

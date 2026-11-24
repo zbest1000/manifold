@@ -101,7 +101,7 @@ test('opcua binding publishes with deadband suppression and TVQ envelope', async
   const m = new MqttManager({ emit() {} });
   const published = [];
   m.publish = async (brokerId, topic, payload, opts) => {
-    published.push({ brokerId, topic, payload, opts });
+    if (!topic.endsWith('/_meta')) published.push({ brokerId, topic, payload, opts }); // retained _meta doc (phase 4) is not a value
   };
   const opcua = new EventEmitter();
   opcua.monitor = async () => ({ status: 'monitoring' });

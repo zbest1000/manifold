@@ -84,10 +84,72 @@ function render(services) {
   out += line('manifold_alert_events', null, alerts?.history?.length ?? 0);
 
   counter('manifold_binding_published_total', 'Tag binding publishes');
-  for (const [id, s] of Object.entries(bindings?.getStatus() || {})) {
+  counter('manifold_binding_suppressed_total', 'Tag binding samples suppressed by report-by-exception');
+  counter('manifold_binding_errors_total', 'Tag binding publish errors');
+  const bindingStatus = Object.entries(bindings?.getStatus() || {}).slice(0, MAX_BINDINGS);
+  for (const [id, s] of bindingStatus) {
     out += line('manifold_binding_published_total', { binding: id.slice(0, 8) }, s.published);
   }
+  for (const [id, s] of bindingStatus) out += line('manifold_binding_suppressed_total', { binding: id.slice(0, 8) }, s.suppressed);
+  for (const [id, s] of bindingStatus) out += line('manifold_binding_errors_total', { binding: id.slice(0, 8) }, s.errors);
 
+  out += renderDevices(services.devices);
+  return out;
+}
+
+// Label cardinality bounds: devices/bindings/hosts come from configuration
+// (bounded by it, and capped here); exception codes and poll groups are capped
+// per device so a misbehaving device cannot explode the series count.
+const MAX_DEVICES = 500;
+const MAX_BINDINGS = 500;
+const MAX_CODES_PER_DEVICE = 16;
+const MAX_GROUPS_PER_DEVICE = 16;
+
+/** Southbound devices and driver hosts (design 4.3 "Metrics"). */
+function renderDevices(devices) {
+  if (!devices?.list) return '';
+  let out = '';
+  const gauge = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} gauge\n`);
+  const counter = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} counter\n`);
+  let list = [];
+  let hosts = {};
+  try {
+    list = devices.list().slice(0, MAX_DEVICES);
+    hosts = devices.hosts() || {};
+  } catch {
+    return '';
+  }
+  const rows = list.map((d) => ({ labels: { device: d.name || d.id.slice(0, 8), device_id: String(d.id).slice(0, 8), protocol: d.protocol }, st: d.status || {} }));
+
+  gauge('manifold_device_up', 'Device connection state (1 online, 0 otherwise)');
+  for (const r of rows) out += line('manifold_device_up', r.labels, r.st.state === 'online' ? 1 : 0);
+  counter('manifold_device_connects_total', 'Device connection attempts that succeeded');
+  for (const r of rows) out += line('manifold_device_connects_total', r.labels, Number(r.st.connects));
+  counter('manifold_device_requests_total', 'Device read requests sent');
+  for (const r of rows) out += line('manifold_device_requests_total', r.labels, Number(r.st.requests));
+  counter('manifold_device_timeouts_total', 'Device requests that hit their deadline');
+  for (const r of rows) out += line('manifold_device_timeouts_total', r.labels, Number(r.st.timeouts));
+  counter('manifold_device_exceptions_total', 'Device protocol exceptions by code');
+  for (const r of rows) {
+    for (const [code, n] of Object.entries(r.st.exceptions || {}).slice(0, MAX_CODES_PER_DEVICE)) {
+      out += line('manifold_device_exceptions_total', { ...r.labels, code }, Number(n));
+    }
+  }
+  gauge('manifold_device_cycle_ms', 'Average poll cycle time per poll group');
+  counter('manifold_device_overruns_total', 'Poll cycles skipped because the previous one overran');
+  for (const r of rows) {
+    const groups = Object.entries(r.st.groups || {}).slice(0, MAX_GROUPS_PER_DEVICE);
+    for (const [group, g] of groups) out += line('manifold_device_cycle_ms', { ...r.labels, group }, Number(g.avgCycleMs));
+    for (const [group, g] of groups) out += line('manifold_device_overruns_total', { ...r.labels, group }, Number(g.overruns));
+  }
+  gauge('manifold_device_quarantined_tags', 'Tags currently quarantined (failing reads retried slowly)');
+  for (const r of rows) out += line('manifold_device_quarantined_tags', r.labels, Array.isArray(r.st.quarantined) ? r.st.quarantined.length : 0);
+
+  gauge('manifold_driver_host_up', 'Driver host process state (1 running)');
+  counter('manifold_driver_host_restarts_total', 'Driver host process restarts');
+  const hostRows = Object.entries(hosts).slice(0, MAX_DEVICES);
+  for (const [id, h] of hostRows) out += line('manifold_driver_host_up', { host: id, protocol: h.protocol }, h.state === 'running' ? 1 : 0);
+  for (const [id, h] of hostRows) out += line('manifold_driver_host_restarts_total', { host: id, protocol: h.protocol }, Number(h.restarts));
   return out;
 }
 

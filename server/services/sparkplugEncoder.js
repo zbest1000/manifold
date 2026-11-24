@@ -73,18 +73,44 @@ function metricValue(m) {
 }
 
 /**
- * Encode a Sparkplug payload. `metrics`: [{ name, value, ts?, datatype?, type?, isBdSeq? }]; `type` is an optional
- * normalized type name (int16, float32, bool, ...) selecting the Sparkplug datatype.
+ * Metric PropertySet from a plain object. Strings -> String (12), finite
+ * numbers -> Double (10), booleans -> Boolean (11); other values are skipped.
+ * Conventional keys used by bindings (as Ignition and other Sparkplug hosts
+ * read them): engUnit, engLow, engHigh, description.
+ */
+function propertySet(props) {
+  if (!props || typeof props !== 'object') return null;
+  const keys = [];
+  const values = [];
+  for (const [k, v] of Object.entries(props)) {
+    if (typeof v === 'string') values.push({ type: DataType.String, string_value: v });
+    else if (typeof v === 'number' && Number.isFinite(v)) values.push({ type: DataType.Double, double_value: v });
+    else if (typeof v === 'boolean') values.push({ type: DataType.Boolean, boolean_value: v });
+    else continue;
+    keys.push(k);
+  }
+  return keys.length ? { keys, values } : null;
+}
+
+/**
+ * Encode a Sparkplug payload. `metrics`: [{ name, value, ts?, datatype?, type?, isBdSeq?, properties? }]; `type` is an
+ * optional normalized type name (int16, float32, bool, ...) selecting the Sparkplug datatype; `properties` a plain
+ * object encoded as the metric's PropertySet (BIRTH metadata such as engUnit/engLow/engHigh/description).
  */
 function encodePayload({ metrics = [], seq = null, ts = Date.now() }) {
   if (!decoder.Payload) throw new Error('Sparkplug protobuf schema unavailable');
   const payload = {
     timestamp: ts,
-    metrics: metrics.map((m) => ({
-      name: m.name,
-      timestamp: m.ts || ts,
-      ...(m.isBdSeq ? { datatype: DataType.Int64, long_value: m.value } : metricValue(m))
-    }))
+    metrics: metrics.map((m) => {
+      const out = {
+        name: m.name,
+        timestamp: m.ts || ts,
+        ...(m.isBdSeq ? { datatype: DataType.Int64, long_value: m.value } : metricValue(m))
+      };
+      const props = propertySet(m.properties);
+      if (props) out.properties = props;
+      return out;
+    })
   };
   if (seq !== null) payload.seq = seq;
   const err = decoder.Payload.verify(payload);
@@ -92,4 +118,4 @@ function encodePayload({ metrics = [], seq = null, ts = Date.now() }) {
   return Buffer.from(decoder.Payload.encode(decoder.Payload.create(payload)).finish());
 }
 
-module.exports = { encodePayload, DataType, datatypeFor };
+module.exports = { encodePayload, DataType, datatypeFor, propertySet };

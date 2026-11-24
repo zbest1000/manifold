@@ -45,6 +45,12 @@ const RULES = {
     title: 'Long single-child chain',
     why: 'Several consecutive levels with exactly one child add depth without adding information.'
   },
+  'raw-address': {
+    severity: 'warn',
+    weight: 3,
+    title: 'Topic name looks like a raw device address',
+    why: 'A leaf named after a PLC address (DB10.DBD4, 40012, ns=2;s=..., Program:Main.X) ties every consumer to the device wiring; map it to a property name such as "speed".'
+  },
   'depth-variance': {
     severity: 'info',
     weight: 2,
@@ -52,6 +58,28 @@ const RULES = {
     why: 'Leaves at wildly different depths suggest branches modeling different hierarchy schemes.'
   }
 };
+
+// Raw device address shapes: S7 (DB10.DBD4, DB1.DBX0.1), Modicon 5/6-digit
+// references (0xxxx coils, 1xxxx inputs, 3xxxx input / 4xxxx holding registers),
+// OPC UA node ids (ns=2;s=...), Logix program-scoped tags (Program:Main.X).
+const RAW_ADDRESS_RES = [
+  /^DB\d+\.DB[XBWD]\d+(\.\d+)?$/i,
+  /^[0134]\d{4,5}$/,
+  /^ns=\d+;/i,
+  /^Program:/i
+];
+
+/** Does a topic segment look like a raw device address? */
+function looksLikeRawAddress(seg) {
+  const s = String(seg || '');
+  return RAW_ADDRESS_RES.some((re) => re.test(s));
+}
+
+// Roots whose shape is defined by a protocol, not by an ISA-95 hierarchy:
+// hierarchy-shape rules (depth-variance, deep-chain) do not apply under them.
+// (`$`-prefixed roots such as $SYS are skipped by the walk altogether.)
+const NON_HIERARCHY_ROOTS = new Set(['spBv1.0']);
+const isHierarchyRoot = (seg) => !seg.startsWith('$') && !NON_HIERARCHY_ROOTS.has(seg);
 
 /** Classify a segment's naming convention (coarse buckets are enough for a mix check). */
 function convention(seg) {
@@ -85,6 +113,7 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
 
   let topicCount = 0;
   let branchCount = 0;
+  let hierarchyTopics = 0; // leaf topics under ISA-95-style roots (depth-variance basis)
   let leafDepthMin = Infinity;
   let leafDepthMax = 0;
 
@@ -94,11 +123,11 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
   const stack = [];
   for (const [seg, child] of trie.root.children || []) {
     if (seg.startsWith('$')) continue;
-    stack.push({ node: child, seg, path: seg, depth: 1, chain: 0 });
+    stack.push({ node: child, seg, path: seg, depth: 1, chain: 0, hierarchy: isHierarchyRoot(seg) });
   }
 
   while (stack.length) {
-    const { node, seg, path, depth, chain } = stack.pop();
+    const { node, seg, path, depth, chain, hierarchy } = stack.pop();
     const kidCount = node.children ? node.children.size : 0;
     const isLeaf = kidCount === 0;
 
@@ -109,8 +138,12 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
       topicCount++;
       if (kidCount > 0) add('data-on-branch', path, `Topic has a payload and ${kidCount} child level(s).`);
       if (isLeaf) {
-        if (depth < leafDepthMin) leafDepthMin = depth;
-        if (depth > leafDepthMax) leafDepthMax = depth;
+        if (looksLikeRawAddress(seg)) add('raw-address', path, `Leaf "${seg}" looks like a device address, not a property name.`);
+        if (hierarchy) {
+          hierarchyTopics++;
+          if (depth < leafDepthMin) leafDepthMin = depth;
+          if (depth > leafDepthMax) leafDepthMax = depth;
+        }
       }
     }
     if (kidCount > 0) branchCount++;
@@ -118,7 +151,7 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
     // Single-child chain accounting.
     const passThrough = kidCount === 1 && node.slot < 0;
     const chainHere = passThrough ? chain + 1 : 0;
-    if (!passThrough && chain >= 3) {
+    if (!passThrough && chain >= 3 && hierarchy) {
       add('deep-chain', path, `${chain} consecutive level(s) above this node each have exactly one child.`);
     }
 
@@ -135,7 +168,8 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
           seg: cSeg,
           path: `${path}/${cSeg}`,
           depth: depth + 1,
-          chain: chainHere
+          chain: chainHere,
+          hierarchy
         });
       }
       // 'lowercase' mixes fine with anything single-word; only flag when two or
@@ -148,7 +182,7 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
     }
   }
 
-  if (topicCount > 1 && leafDepthMax - leafDepthMin > 3) {
+  if (hierarchyTopics > 1 && leafDepthMax - leafDepthMin > 3) {
     add(
       'depth-variance',
       '',
@@ -171,11 +205,11 @@ function lintTrie(trie, { maxFindings = MAX_FINDINGS } = {}) {
     stats: {
       topics: topicCount,
       branches: branchCount,
-      leafDepthMin: topicCount ? leafDepthMin : 0,
+      leafDepthMin: hierarchyTopics ? leafDepthMin : 0,
       leafDepthMax,
       byRule: ruleCounts
     }
   };
 }
 
-module.exports = { lintTrie, RULES };
+module.exports = { lintTrie, RULES, looksLikeRawAddress, NON_HIERARCHY_ROOTS };

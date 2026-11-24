@@ -1,6 +1,7 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const bindingModel = require('../services/bindingModel');
 
 // Tag browser + bindings: browse device tags across our drivers (OPC UA
 // address space, Sparkplug device registry, MQTT topic trie) with one unified
@@ -28,21 +29,29 @@ router.get('/sources', (req, res) => {
 
 // GET /api/tags/browse?type=&id=&node= — one level of children under `node`
 router.get('/browse', async (req, res) => {
-  const { mqttManager, opcuaManager, profiles } = req.app.locals.services;
+  const { mqttManager, opcuaManager, profiles, devices } = req.app.locals.services;
   const { type, id, node = '' } = req.query;
   try {
     if (type === 'device') {
-      // Configured tags, grouped by poll group when a device has more than one.
+      // Configured (effective: profile + ad-hoc) tags, grouped by poll group when a device has more than one.
       const device = profiles.getIn('devices', id);
       if (!device) return res.status(404).json({ error: 'Device not found' });
-      const tags = device.tags || [];
+      const tags = devices?.effectiveTags ? devices.effectiveTags(id) : device.tags || [];
       const groups = [...new Set(tags.map((t) => t.pollGroup || 'default'))];
       const asNode = (t) => ({
         id: t.key,
         name: t.property || t.key,
         kind: 'tag',
         address: t.key,
-        meta: { deviceAddress: t.address, type: t.type, unit: t.unit || null, description: t.description || null }
+        meta: {
+          deviceAddress: t.address,
+          type: t.type,
+          unit: t.unit || null,
+          description: t.description || null,
+          property: t.property || null,
+          range: t.range || null,
+          origin: t.origin || 'device'
+        }
       });
       if (!node && groups.length > 1) {
         return res.json({ children: groups.map((g) => ({ id: `group:${g}`, name: g, kind: 'folder', address: `group:${g}` })) });
@@ -144,47 +153,53 @@ router.get('/bindings', (req, res) => {
   });
 });
 
-// POST /api/bindings
+// POST /api/tags/bindings — create or edit (by id). Validation lives in
+// services/bindingModel.js. The response is the stored binding plus
+// `warnings: [...]` (non-blocking: raw-address-looking names, topic collisions
+// with other bindings). Retained topics the edit made stale (old path/broker,
+// _status, _meta, retained values) are cleared by bindings.reconcile().
 router.post('/bindings', async (req, res) => {
   const { profiles, bindings } = req.app.locals.services;
-  const { id, name, enabled, source, target, rbe } = req.body || {};
-  if (!source?.type || !['opcua', 'sparkplug', 'device'].includes(source.type)) {
-    return res.status(400).json({ error: 'source.type must be "device", "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)' });
+  const id = req.body?.id || uuidv4();
+  let body;
+  try {
+    body = bindingModel.validateBinding({ ...(req.body || {}), id }, { profiles });
+  } catch (error) {
+    if (error instanceof bindingModel.BindingValidationError) return res.status(400).json({ error: error.message, details: error.details });
+    return res.status(500).json({ error: error.message });
   }
-  if (source.type === 'device') {
-    const device = profiles.getIn('devices', source.deviceId);
-    if (!device) return res.status(400).json({ error: 'device source needs an existing deviceId' });
-    if (!Array.isArray(source.tags) || !source.tags.length) return res.status(400).json({ error: 'device source needs tags[]' });
-    const keys = new Set((device.tags || []).map((t) => t.key));
-    const missing = source.tags.filter((t) => !keys.has(t.address)).map((t) => t.address);
-    if (missing.length) return res.status(400).json({ error: `device has no tag(s): ${missing.slice(0, 5).join(', ')}` });
-  }
-  if (source.type === 'opcua' && (!source.connectionId || !Array.isArray(source.tags) || !source.tags.length)) {
-    return res.status(400).json({ error: 'opcua source needs connectionId and tags[]' });
-  }
-  if (source.type === 'sparkplug' && (!source.brokerId || !source.group || !source.edge)) {
-    return res.status(400).json({ error: 'sparkplug source needs brokerId, group, edge' });
-  }
-  if (!target?.mode || !['mqtt', 'sparkplug'].includes(target.mode)) {
-    return res.status(400).json({ error: 'target.mode must be "mqtt" or "sparkplug"' });
-  }
-  if (!target.brokerId) return res.status(400).json({ error: 'target.brokerId is required' });
-  if (target.mode === 'sparkplug' && (!target.group || !target.edge)) {
-    return res.status(400).json({ error: 'sparkplug target needs group and edge' });
-  }
-  const saved = profiles.upsertIn('bindings', id || uuidv4(), {
-    name: name || null,
-    enabled: enabled !== false,
-    source,
-    target,
-    // report-by-exception extras: { heartbeatMs } republishes an unchanged value
-    ...(rbe && Number(rbe.heartbeatMs) > 0 ? { rbe: { heartbeatMs: Math.max(1000, Math.round(Number(rbe.heartbeatMs))) } } : {})
-  });
-  bindings.reconcile(); // reset state if this edited an existing binding
+  const warnings = bindingModel.bindingWarnings({ ...body, id }, profiles);
+  const saved = profiles.upsertIn('bindings', id, body);
+  bindings.reconcile(); // reset state if this edited an existing binding; clear stale retained topics; publish _meta
   await bindings.syncMonitors();
-  res.status(201).json(saved);
+  res.status(201).json({ ...saved, warnings });
 });
 
+// POST /api/tags/bindings/preview — read-only dry run of a binding draft:
+// resolved topics + example payloads (latest known values) for up to 50 tags,
+// collisions with other bindings' topics, and the save-time warnings. Nothing
+// is stored or published.
+router.post('/bindings/preview', (req, res) => {
+  const { profiles, bindings, devices } = req.app.locals.services;
+  const draft = { ...(req.body || {}), id: req.body?.id || '__preview__' };
+  let body;
+  try {
+    body = bindingModel.validateBinding(draft, { profiles });
+  } catch (error) {
+    if (error instanceof bindingModel.BindingValidationError) {
+      return res.json({ valid: false, error: error.message, details: error.details });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+  const latest = (unit, address, name) => {
+    if (unit.sourceType === 'device' && devices?.getValues) {
+      const v = devices.getValues(unit.sourceId)[address];
+      if (v) return { v: v.v, q: v.q, t: v.tRead, type: v.type };
+    }
+    return bindings.latest?.(unit.id, name) || null;
+  };
+  res.json({ valid: true, ...bindingModel.previewBinding({ ...body, id: draft.id }, profiles, { latest }) });
+});
 // ---- Sparkplug host application STATE -----------------------------------------
 
 // POST /api/tags/sparkplug/state { brokerId, hostId, enabled } — start/stop a

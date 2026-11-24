@@ -3,6 +3,20 @@ const os = require('os');
 const mqtt = require('mqtt');
 const { EventEmitter } = require('events');
 const { isAllowedAddress } = require('./egressGuard');
+const deviceIdentify = require('./deviceIdentify');
+
+// Southbound device ports. Opt-in: scanned only with `includeDevices: true` or
+// explicit modbusPorts / s7Ports / eipPorts. Identification is read-only (see
+// ./deviceIdentify.js): Modbus FC3 single-register read through the driver's
+// read-only encoder, S7 COTP connect request only, EtherNet/IP ListIdentity.
+const DEFAULT_MODBUS_PORTS = [502];
+const DEFAULT_S7_PORTS = [102];
+const DEFAULT_EIP_PORTS = [44818];
+const DEVICE_IDENTIFIERS = {
+  modbus: (host, port) => deviceIdentify.identifyModbus(host, port),
+  s7: (host, port) => deviceIdentify.identifyS7(host, port),
+  'ethernet-ip': (host, port) => deviceIdentify.identifyEip(host, port)
+};
 
 const DEFAULT_MQTT_PORTS = [1883, 8883];
 const DEFAULT_OPCUA_PORTS = [4840];
@@ -39,6 +53,25 @@ class DiscoveryService extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /**
+   * Identify a southbound device (read-only probe). Result merged into the
+   * discovery candidate:
+   *   { verified: true, protocol: 'modbus-tcp'|'s7'|'ethernet-ip', identity: {...},
+   *     suggestedDevice: { name, protocol, host, port } }   // body for POST /api/devices
+   * or null when the port does not speak the protocol.
+   */
+  async identifyDevice(kind, host, port) {
+    const r = await DEVICE_IDENTIFIERS[kind](host, port).catch(() => null);
+    if (!r) return null;
+    const name = r.identity?.productName ? `${r.identity.productName} ${host}` : `${r.protocol} ${host}`;
+    return {
+      verified: true,
+      protocol: r.protocol,
+      identity: r.identity,
+      suggestedDevice: { name, protocol: r.protocol, host, port }
+    };
   }
 
   isScanning() {
@@ -153,10 +186,17 @@ class DiscoveryService extends EventEmitter {
     const mqttPorts = options.mqttPorts || DEFAULT_MQTT_PORTS;
     const opcuaPorts = options.opcuaPorts || DEFAULT_OPCUA_PORTS;
     const i3xPorts = options.i3xPorts || (options.includeI3x === false ? [] : DEFAULT_I3X_PORTS);
+    const devices = options.includeDevices === true;
+    const modbusPorts = options.modbusPorts || (devices ? DEFAULT_MODBUS_PORTS : []);
+    const s7Ports = options.s7Ports || (devices ? DEFAULT_S7_PORTS : []);
+    const eipPorts = options.eipPorts || (devices ? DEFAULT_EIP_PORTS : []);
     const ports = [
       ...mqttPorts.map((p) => ({ port: p, kind: 'mqtt' })),
       ...opcuaPorts.map((p) => ({ port: p, kind: 'opcua' })),
-      ...i3xPorts.map((p) => ({ port: p, kind: 'i3x' }))
+      ...i3xPorts.map((p) => ({ port: p, kind: 'i3x' })),
+      ...modbusPorts.map((p) => ({ port: p, kind: 'modbus' })),
+      ...s7Ports.map((p) => ({ port: p, kind: 's7' })),
+      ...eipPorts.map((p) => ({ port: p, kind: 'ethernet-ip' }))
     ];
 
     const allHosts = this.expandCidr(range);
@@ -217,6 +257,10 @@ class DiscoveryService extends EventEmitter {
               continue;
             }
             Object.assign(candidate, identity);
+          } else if (DEVICE_IDENTIFIERS[job.kind]) {
+            const found = await this.identifyDevice(job.kind, job.host, job.port);
+            if (!found) continue; // open port that did not answer the protocol: not reported
+            Object.assign(candidate, found);
           }
 
           results.push(candidate);
