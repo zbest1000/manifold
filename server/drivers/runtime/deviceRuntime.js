@@ -639,6 +639,15 @@ class DeviceRuntime {
     return p;
   }
 
+  /** When the current lastError was first observed (null when there is none). */
+  _errorStamp() {
+    if (this._lastError !== this._stampedError) {
+      this._stampedError = this._lastError;
+      this._lastErrorAt = this._lastError ? this._now() : null;
+    }
+    return this._lastErrorAt ?? null;
+  }
+
   async probe(args) {
     if (this._phase !== 'online') throw new Error('device is offline');
     const gen = this._gen;
@@ -674,6 +683,7 @@ class DeviceRuntime {
       state: this._lastState || 'offline',
       since: this._since,
       lastError: this._lastError,
+      lastErrorAt: this._errorStamp(),
       connects: this.stats.connects,
       requests: this.stats.requests,
       timeouts: this.stats.timeouts,

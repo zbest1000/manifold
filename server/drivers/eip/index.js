@@ -62,6 +62,7 @@ function describe() {
       },
     ],
     tagTypes: TAG_TYPES,
+    tagTypeOptional: true, // resolved from the controller when omitted
     addressHelp:
       'Logix tag names: Tag, Program:MainProgram.Tag, Motor.Speed (UDT member), Arr[3], Arr[1,2], Word.5 (bit of an integer). ' +
       'Type is optional: it is resolved from the controller.',
@@ -539,9 +540,11 @@ class EipDriver {
   _symbolNode(sym, address) {
     const dims = sym.dims.slice(0, sym.dimCount);
     let dataType;
+    let isString = false;
     if (sym.struct) {
       const tpl = this.templates.get(sym.templateId);
       dataType = tpl ? tpl.name : `UDT#${sym.templateId}`;
+      isString = Boolean(tpl && tpl.string); // a STRING reads as a value, not as members
     } else dataType = sym.typeName;
     const accessible = sym.access !== 'None';
     return {
@@ -554,7 +557,7 @@ class EipDriver {
         dims,
         struct: sym.struct,
         templateId: sym.struct ? sym.templateId : undefined,
-        hasChildren: sym.struct && dims.length === 0 && accessible,
+        hasChildren: sym.struct && !isString && dims.length === 0 && accessible,
         externalAccess: sym.access || 'unknown',
         accessible,
         ...(accessible ? {} : { reason: 'External Access is None' }),

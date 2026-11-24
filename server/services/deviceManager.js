@@ -255,7 +255,10 @@ class DeviceManager extends EventEmitter {
         deviceFields: split(d.deviceFields).fields,
         optionFields: split(d.optionFields).fields,
         presets: split(d.deviceFields).presets,
-        tagTypes: d.tagTypes || []
+        // Always plain names; per-type details (size, needs a length) separately.
+        tagTypes: (d.tagTypes || []).map((t) => (typeof t === 'string' ? t : t.name)),
+        tagTypeInfo: Object.fromEntries((d.tagTypes || []).filter((t) => t && typeof t === 'object').map((t) => [t.name, t])),
+        tagTypeOptional: Boolean(d.tagTypeOptional)
       };
     });
   }
@@ -550,7 +553,10 @@ class DeviceManager extends EventEmitter {
     if (!device) throw new DeviceValidationError('device not found');
     const caps = this.protocols().find((p) => p.id === device.protocol)?.capabilities;
     if (!caps?.browse) throw new DeviceValidationError(`${device.protocol} devices cannot be browsed; enter tags manually or import a CSV`);
-    return this.supervisor.browse(id, node || undefined, 20000);
+    // Folder nodes need a unique address for consumers that key on it.
+    return this.supervisor
+      .browse(id, node || undefined, 20000)
+      .then((nodes) => (nodes || []).map((n) => (n.kind === 'folder' && !n.address ? { ...n, address: n.id } : n)));
   }
 
   getValues(id) {
