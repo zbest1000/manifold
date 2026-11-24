@@ -201,6 +201,14 @@ router.post('/config/import', (req, res) => {
     for (const r of body.alertRules) profiles.upsertAlertRule(r.id, restoreSecrets(r, existing.get(r.id)));
     imported.alertRules = body.alertRules.length;
   }
+  // Imported bindings/devices take effect now, not at the next edit or restart.
+  const { bindings, devices } = req.app.locals.services;
+  try {
+    bindings?.reconcile?.();
+  } catch (error) {
+    console.warn(`import: bindings reconcile: ${error.message}`);
+  }
+  devices?.apply?.().catch((error) => console.warn(`import: devices apply: ${error.message}`));
   res.json({ imported });
 });
 

@@ -68,6 +68,7 @@ const VIEWER_READ_ONLY_POSTS = [
   /^\/pipelines\/preview$/, // pipeline dry-run
   /^\/mqtt\/brokers\/[^/]+\/subscriptions\/resolve$/, // wildcard -> concrete topics
   /^\/devices\/validate-tags$/, // device tag validation (no writes)
+  /^\/tags\/bindings\/preview$/, // binding dry run (no publishing)
   /^\/contracts\/infer$/, // schema inference from an observed payload
   /^\/i3x\/(related|value|history)$/ // i3X reads
 ];
