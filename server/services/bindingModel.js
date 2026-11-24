@@ -90,6 +90,7 @@ const SOURCE_TYPES = ['opcua', 'sparkplug', 'device', 'device-profile'];
 const META_FIELDS = ['type', 'unit', 'description', 'range'];
 const MAX_WARNINGS = 50;
 const PREVIEW_MAX_TAGS = 50;
+const PREVIEW_HARD_MAX = 2000;
 
 class BindingValidationError extends Error {
   constructor(message, details) {
@@ -908,6 +909,14 @@ function bindingWarnings(b, profiles, { owners } = {}) {
   const warnings = [];
   const push = (w) => warnings.length < MAX_WARNINGS && warnings.push(w);
   mappingWarnings(b, profiles, push);
+  // Options that are accepted but cannot take effect on this target.
+  const t = b?.target || {};
+  if (t.contextMode === 'payload' && t.mode === 'mqtt' && t.format !== 'envelope' && t.layout !== 'object-per-asset') {
+    push({ type: 'option-ignored', topic: null, message: 'context cannot ride a plain payload (it is a bare value); use the envelope format or the object layout, or keep context in _meta' });
+  }
+  if (t.mode === 'sparkplug' && Array.isArray(t.metaFields)) {
+    push({ type: 'option-ignored', topic: null, message: 'metaFields has no effect on a Sparkplug target (there is no _meta document; metadata travels as metric properties in BIRTH)' });
+  }
   if (b?.target?.mode !== 'mqtt') return warnings;
   const own = owners || topicOwners(profiles, b.id);
   for (const unit of expandUnits(b, profiles)) {
@@ -934,7 +943,9 @@ function bindingWarnings(b, profiles, { owners } = {}) {
  * Preview a binding draft (read-only). `latest(unit, address)` returns the
  * newest known sample { v, q, t, type } or null (args: unit, address, name).
  */
-function previewBinding(b, profiles, { latest = () => null } = {}) {
+function previewBinding(b, profiles, { latest = () => null, maxTags } = {}) {
+  // Callers that render a full editor table may ask for more rows (bounded).
+  const cap = Math.min(PREVIEW_HARD_MAX, Math.max(1, Math.floor(Number(maxTags)) || PREVIEW_MAX_TAGS));
   const target = b.target || {};
   const layout = layoutOf(b);
   const owners = topicOwners(profiles, b.id);
@@ -965,7 +976,7 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
   for (const unit of units) {
     totalTags += unit.tags.length;
     if (unit.error) continue;
-    if (contexts.length < PREVIEW_MAX_TAGS) contexts.push({ unitId: unit.id, context: unit.assetContext || null });
+    if (contexts.length < cap) contexts.push({ unitId: unit.id, context: unit.assetContext || null });
     if (target.mode === 'mqtt') {
       if (target.statusTopic !== false) status.push(statusTopicOf(unit));
       if (target.metaTopic !== false && unit.tags.length && meta.length < 10) meta.push({ topic: metaTopicOf(unit), payload: { ...metaDoc(unit), updatedAt: now } });
@@ -980,7 +991,7 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
       if (layout === 'object-per-asset') {
         const member = memberPayload(fp.member, tag, e);
         values[slug(tag.name)] = member;
-        if (members.length < PREVIEW_MAX_TAGS) {
+        if (members.length < cap) {
           const topic = objectTopicOf(unit);
           members.push({
             name: tag.name,
@@ -1004,7 +1015,7 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
         worstCycle += worst;
         if (worst > worstPayload) worstPayload = worst;
       }
-      if (tags.length >= PREVIEW_MAX_TAGS) continue;
+      if (tags.length >= cap) continue;
       const entry = { name: tag.name, address: tag.address, unitId: unit.id, hasValue: Boolean(smp) };
       if (target.mode === 'sparkplug') {
         entry.topic = `spBv1.0/${target.group}/DDATA/${target.edge}/${unit.spDevice}`;
@@ -1028,7 +1039,7 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
       const est = objectEstimate(unit);
       worstCycle += est.total;
       if (est.total > worstPayload) worstPayload = est.total;
-      if (objects.length < PREVIEW_MAX_TAGS) {
+      if (objects.length < cap) {
         const payload = { t: t || now, values };
         const topic = objectTopicOf(unit);
         const o = { topic, unitId: unit.id, payload, bytes: Buffer.byteLength(JSON.stringify(payload)), worstCaseBytes: est.total, capBytes: objectCapOf(b) };
@@ -1050,7 +1061,7 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
     tags,
     objects,
     meta,
-    status: status.slice(0, PREVIEW_MAX_TAGS),
+    status: status.slice(0, cap),
     warnings,
     members,
     selection: {

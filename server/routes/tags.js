@@ -198,7 +198,7 @@ router.post('/bindings/preview', (req, res) => {
     }
     return bindings.latest?.(unit.id, name) || null;
   };
-  res.json({ valid: true, ...bindingModel.previewBinding({ ...body, id: draft.id }, profiles, { latest }) });
+  res.json({ valid: true, ...bindingModel.previewBinding({ ...body, id: draft.id }, profiles, { latest, maxTags: req.body?.previewTags }) });
 });
 
 // GET /api/tags/bindings/schema — read-only description of the mapping options

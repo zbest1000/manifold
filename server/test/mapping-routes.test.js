@@ -483,3 +483,29 @@ test('POST /api/devices/bulk is all-or-nothing and reports every bad row', async
   assert.strictEqual(r.status, 201);
   assert.strictEqual(r.body.created[0].profileId, pid);
 });
+
+test('preview: more rows on request, and warnings for options that cannot take effect', () => {
+  const model = require('../services/bindingModel');
+  const tags = Array.from({ length: 120 }, (_, i) => ({ key: `t${i}`, address: `holding:${i}`, type: 'uint16' }));
+  const profiles = {
+    data: { devices: { d1: { id: 'd1', name: 'Dev', protocol: 'modbus-tcp', host: 'h', tags } }, bindings: {} },
+    listIn: (c) => Object.values(profiles.data[c] || {}),
+    getIn: (c, id) => (profiles.data[c] || {})[id] || null
+  };
+  const draft = {
+    id: 'b',
+    source: { type: 'device', deviceId: 'd1', tags: 'all' },
+    target: { mode: 'mqtt', brokerId: 'br', assetPath: 'acme/x', format: 'plain', contextMode: 'payload', context: { site: 'a' } }
+  };
+  const body = model.validateBinding(draft, { profiles });
+  assert.strictEqual(model.previewBinding(body, profiles).tags.length, 50);
+  assert.strictEqual(model.previewBinding(body, profiles, { maxTags: 500 }).tags.length, 120);
+  assert.strictEqual(model.previewBinding(body, profiles, { maxTags: 1e9 }).tags.length, 120); // clamped, not unbounded
+  const w = model.previewBinding(body, profiles).warnings;
+  assert.ok(w.some((x) => x.type === 'option-ignored' && /plain payload/.test(x.message)));
+  const sp = model.validateBinding(
+    { id: 's', source: draft.source, target: { mode: 'sparkplug', brokerId: 'br', group: 'G', edge: 'E', metaFields: ['unit'] } },
+    { profiles }
+  );
+  assert.ok(model.previewBinding(sp, profiles).warnings.some((x) => x.type === 'option-ignored' && /Sparkplug/.test(x.message)));
+});
