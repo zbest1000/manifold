@@ -97,6 +97,20 @@ test('webhook is POSTed with the alert payload; failures are swallowed', async (
   m.shutdown();
 });
 
+test('default webhook delivery goes through the egress guard (metadata/loopback blocked)', async () => {
+  const m = managerWith('b5', ['a/b']);
+  const rules = [
+    { id: 'r5', type: 'branch-silent', brokerId: 'b5', path: 'a', thresholdMs: 1000, webhookUrl: 'http://169.254.169.254/latest/meta-data/' }
+  ];
+  // no fetchImpl: the production default (guarded) is used
+  const eng = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: m });
+  eng.evaluate(Date.now() + 10_000);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(eng.webhookFailures, 1);
+  assert.match(eng.lastWebhookError, /blocked/);
+  m.shutdown();
+});
+
 test('disabled rules and unknown brokers are skipped without error', () => {
   const m = managerWith('b5', ['a/b']);
   const io = fakeIo();

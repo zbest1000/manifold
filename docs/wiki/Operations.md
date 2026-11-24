@@ -39,8 +39,12 @@ npm start
 Auth is enforced identically on the REST API **and** the Socket.IO handshake —
 the socket can publish and actuate, so it is gated the same way. Viewers see a
 persistent *read-only* badge in the UI and mutation controls are disabled, so a
-read-only session is never a wall of silent 403s. `/health` and `/metrics` stay
-open for probes and scrapers.
+read-only session is never a wall of silent 403s. `/health` stays open for
+probes. `/metrics` requires a bearer token (any role) whenever a token is
+configured; set `MANIFOLD_METRICS_PUBLIC=1` to leave it open for an
+unauthenticated scraper. Failed logins, viewer 403s and throttled requests are
+audited (never with the token), and `audit.jsonl` rotates by size
+(`MANIFOLD_AUDIT_MAX_BYTES`, default 10 MiB; `MANIFOLD_AUDIT_KEEP`, default 5).
 
 ### Fail closed by default
 
@@ -111,9 +115,14 @@ and binding publishes:
 ```yaml
 scrape_configs:
   - job_name: manifold
+    authorization:            # needed when MANIFOLD_AUTH_TOKEN / MANIFOLD_TOKENS is set
+      credentials: <viewer-token>   # a viewer-role token is enough
     static_configs:
       - targets: ['manifold-host:5000']
 ```
+
+With auth enabled `/metrics` returns 401 without a token; set
+`MANIFOLD_METRICS_PUBLIC=1` to scrape anonymously.
 
 > 💡 The Overview cards never poll — engine numbers are pushed over the existing
 > socket every 2 s, only while a client is connected. The **System → Health**

@@ -73,8 +73,72 @@ test('mutations land in the audit trail with secrets redacted; viewer cannot rea
   assert.strictEqual(viewer.status, 403);
 });
 
-test('/metrics is Prometheus text and needs no token', async () => {
-  const res = await fetch(`${baseUrl}/metrics`);
+test('/metrics requires a token when auth is configured (any role), unless MANIFOLD_METRICS_PUBLIC=1', async () => {
+  const anon = await fetch(`${baseUrl}/metrics`);
+  assert.strictEqual(anon.status, 401);
+  const wrong = await fetch(`${baseUrl}/metrics`, { headers: { Authorization: 'Bearer nope' } });
+  assert.strictEqual(wrong.status, 401);
+  const viewer = await fetch(`${baseUrl}/metrics`, { headers: { Authorization: 'Bearer viewer-token' } });
+  assert.strictEqual(viewer.status, 200);
+
+  process.env.MANIFOLD_METRICS_PUBLIC = '1';
+  try {
+    assert.strictEqual((await fetch(`${baseUrl}/metrics`)).status, 200);
+  } finally {
+    delete process.env.MANIFOLD_METRICS_PUBLIC;
+  }
+});
+
+test('viewer may call allowlisted read-only POSTs; mutating POSTs stay forbidden', async () => {
+  const allowed = [
+    ['/api/historians/nope/query', {}],
+    ['/api/pipelines/preview', {}],
+    ['/api/mqtt/brokers/nope/subscriptions/resolve', {}],
+    ['/api/devices/validate-tags', {}]
+  ];
+  for (const [p, body] of allowed) {
+    const res = await call(p, { method: 'POST', token: 'viewer-token', body });
+    assert.notStrictEqual(res.status, 403, `${p} must pass the role gate for viewers`);
+    assert.notStrictEqual(res.status, 401, p);
+  }
+  const forbidden = [
+    '/api/pipelines',
+    '/api/historians',
+    '/api/historians/nope/test',
+    '/api/mqtt/brokers/nope/publish',
+    '/api/mqtt/brokers/nope/subscribe',
+    '/api/system/config/import',
+    '/api/system/discovery/start',
+    '/api/tags/bindings',
+    '/api/pipelines/preview/../x',
+    '/api/historians/a/b/query'
+  ];
+  for (const p of forbidden) {
+    const res = await call(p, { method: 'POST', token: 'viewer-token', body: {} });
+    assert.strictEqual(res.status, 403, `${p} must stay forbidden for viewers`);
+  }
+  for (const method of ['PUT', 'DELETE', 'PATCH']) {
+    const res = await call('/api/historians/nope/query', { method, token: 'viewer-token', body: {} });
+    assert.strictEqual(res.status, 403, `${method} on an allowlisted path is still forbidden`);
+  }
+});
+
+test('rejected requests (401, viewer 403) are audited, without tokens', async () => {
+  await call('/api/mqtt/brokers', { token: 'wrong-token-xyz' });
+  await call('/api/pipelines', { method: 'POST', token: 'viewer-token', body: { token: 'leak-me-not' } });
+  const { events } = await (await call('/api/audit')).json();
+  const unauth = events.find((e) => e.outcome === 'unauthorized' && e.path === '/api/mqtt/brokers');
+  assert.ok(unauth, '401 must be audited even for GET');
+  assert.strictEqual(unauth.role, 'none');
+  const forbidden = events.find((e) => e.outcome === 'forbidden' && e.path === '/api/pipelines');
+  assert.ok(forbidden, 'viewer 403 must be audited');
+  assert.strictEqual(forbidden.role, 'viewer');
+  const blob = JSON.stringify(events);
+  assert.ok(!blob.includes('wrong-token-xyz') && !blob.includes('leak-me-not') && !blob.includes('viewer-token'));
+});
+
+test('/metrics is Prometheus text', async () => {
+  const res = await fetch(`${baseUrl}/metrics`, { headers: { Authorization: 'Bearer admin-token' } });
   assert.strictEqual(res.status, 200);
   assert.match(res.headers.get('content-type'), /text\/plain/);
   const body = await res.text();

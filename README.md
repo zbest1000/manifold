@@ -95,7 +95,7 @@ Connection profiles persist in `server/data/profiles.json` (mode 0600; directory
 |----------|---------|---------|
 | `MANIFOLD_AUTH_TOKEN` | _(none — open)_ | Admin bearer token; when unset the server binds loopback only |
 | `MANIFOLD_VIEWER_TOKEN` | _(none)_ | Optional read-only token (GETs succeed, mutations 403) |
-| `MANIFOLD_TOKENS` | _(none)_ | Named revocable tokens: `alice:secret:admin,grafana:tok:viewer` |
+| `MANIFOLD_TOKENS` | _(none)_ | Named revocable tokens: `name:token[:role]`, e.g. `alice:secret:admin,grafana:tok:viewer`. Role is `admin` or `viewer` (default `admin` when omitted); an unrecognised role rejects that entry with a startup error (never treated as admin), and a token containing `:` needs an explicit role (`bot:ab:cd:viewer`). If entries are configured but all rejected, auth stays on (everything 401). Viewers may also call read-only POSTs (historian query, pipeline preview, subscription resolve, device tag validation) |
 | `MANIFOLD_HOST` | `127.0.0.1` (open) / `0.0.0.0` (auth on) | Bind address; set to `0.0.0.0` to expose an open instance (not advised) |
 | `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `0` | Set to `1` to let the scanner / outbound clients reach RFC1918/LAN targets (needed for Discovery and on-prem i3X/CESMII — safe only on a trusted network). Fail-closed by default; loopback and cloud-metadata link-local are **always** blocked. The server warns at startup when this is on |
 | `MANIFOLD_MAX_PAYLOAD_BYTES` | `262144` (256 KB) | Per-topic retained payload cap; larger payloads are truncated for storage/preview |

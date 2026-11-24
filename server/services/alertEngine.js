@@ -28,10 +28,16 @@
  */
 
 const { matchParts, compiledView } = require('./mqttMatch');
+const { guardedFetch } = require('./egressGuard');
 
 const EVAL_MS = 15_000;
 const HISTORY_MAX = 500;
 const WEBHOOK_TIMEOUT_MS = 5_000;
+
+// Webhook delivery goes through the egress guard (SSRF: private/metadata targets,
+// redirects and DNS rebinding are blocked). An injected `fetchImpl` is a TEST SEAM
+// and bypasses the guard — production wiring never passes one.
+const guardedWebhookFetch = (url, opts) => guardedFetch(url, opts, WEBHOOK_TIMEOUT_MS);
 // A wildcard value-threshold rule keeps one state machine PER concrete topic it
 // matches; bound that fan-out so a rule over a huge namespace can't grow state
 // without limit. Oldest-inserted topic is evicted past the cap.
@@ -71,7 +77,7 @@ function extractValue(payload, fieldParts) {
 }
 
 class AlertEngine {
-  constructor({ io, profiles, mqttManager, fetchImpl = globalThis.fetch, intervalMs = EVAL_MS }) {
+  constructor({ io, profiles, mqttManager, fetchImpl = guardedWebhookFetch, intervalMs = EVAL_MS }) {
     this.io = io;
     this.profiles = profiles;
     this.manager = mqttManager;

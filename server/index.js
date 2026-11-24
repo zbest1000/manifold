@@ -24,6 +24,7 @@ const { SchemaContracts } = require('./services/schemaContracts');
 const ModelEngine = require('./services/modelEngine');
 const HistorianOutbox = require('./services/historianOutbox');
 const { AuditLog, redact } = require('./services/auditLog');
+const { parseNamedTokens, roleAllows } = require('./services/authConfig');
 const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
@@ -94,16 +95,15 @@ const apiLimiter = rateLimit({
 // loudly at startup.
 const AUTH_TOKEN = process.env.MANIFOLD_AUTH_TOKEN || '';
 const VIEWER_TOKEN = process.env.MANIFOLD_VIEWER_TOKEN || '';
-const NAMED_TOKENS = (process.env.MANIFOLD_TOKENS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map((s) => {
-    const [name, token, role] = s.split(':');
-    return name && token ? { name, token, role: role === 'viewer' ? 'viewer' : 'admin' } : null;
-  })
-  .filter(Boolean);
-const AUTH_ENABLED = Boolean(AUTH_TOKEN || NAMED_TOKENS.length);
+// MANIFOLD_TOKENS = name:token[:role], role admin|viewer (default admin). An
+// unrecognised role is REJECTED (never treated as admin); a token may contain
+// ':' only with an explicit role. See services/authConfig.js.
+const TOKENS_PARSED = parseNamedTokens(process.env.MANIFOLD_TOKENS);
+const NAMED_TOKENS = TOKENS_PARSED.tokens;
+for (const message of TOKENS_PARSED.errors) console.error(`[auth] ${message}`);
+// Fail closed: if tokens were configured at all (even if every entry was
+// rejected), auth stays ON — a typo must never turn into an open server.
+const AUTH_ENABLED = Boolean(AUTH_TOKEN || VIEWER_TOKEN || NAMED_TOKENS.length || TOKENS_PARSED.configured);
 
 function timingEqual(candidate, expected) {
   if (typeof candidate !== 'string' || candidate.length === 0 || !expected) return false;
@@ -155,6 +155,14 @@ function checkAuth(token, ip) {
   return { throttled };
 }
 
+// The audit middleware is mounted BEFORE auth so rejected requests (401 bad
+// token, 403 viewer, 429 throttled) are recorded too. The AuditLog is built
+// with the other services further down, hence the lazy lookup.
+app.use('/api', (req, res, next) => {
+  const auditLog = app.locals.services?.audit;
+  return auditLog ? auditLog.middleware()(req, res, next) : next();
+});
+
 app.use('/api', apiLimiter, (req, res, next) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -165,11 +173,13 @@ app.use('/api', apiLimiter, (req, res, next) => {
     }
     return res.status(401).json({ error: 'Unauthorized: missing or invalid bearer token' });
   }
-  if (identity.role === 'viewer' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-    return res.status(403).json({ error: 'Forbidden: viewer token is read-only' });
-  }
   req.role = identity.role;
   req.tokenName = identity.tokenName;
+  // Viewers: reads plus an explicit allowlist of read-only POSTs (historian
+  // query, pipeline preview, subscription resolve, ...). See authConfig.js.
+  if (!roleAllows(identity.role, req.method, req.path)) {
+    return res.status(403).json({ error: 'Forbidden: viewer token is read-only' });
+  }
   next();
 });
 
@@ -210,8 +220,7 @@ app.locals.services = {
   outbox, audit, sparkplugPublisher, bindings, devices
 };
 
-// Every mutating API call lands in the audit trail (role, ip, route, outcome).
-app.use('/api', audit.middleware());
+// (The audit middleware is mounted ahead of auth, above.)
 
 // Restore saved connection profiles so a server restart doesn't lose state.
 // Every restore is individually try/caught: an unreachable broker must not stop
@@ -323,9 +332,19 @@ app.get('/health', (req, res) => {
   });
 });
 
-// GET /metrics — Prometheus exposition for Manifold itself. Counters only, no
-// topic names or payloads, so like /health it stays open for scrapers.
+// GET /metrics — Prometheus exposition for Manifold itself. Counters only, but
+// broker ids and route names are still reconnaissance: when a token is
+// configured it requires one (any role; Prometheus: `authorization` bearer),
+// unless MANIFOLD_METRICS_PUBLIC=1. /health stays open.
 app.get('/metrics', (req, res) => {
+  if (AUTH_ENABLED && process.env.MANIFOLD_METRICS_PUBLIC !== '1') {
+    const header = req.headers.authorization || '';
+    const { identity, throttled } = checkAuth(header.startsWith('Bearer ') ? header.slice(7) : '', req.ip);
+    if (!identity) {
+      audit.record({ role: 'none', ip: req.ip, method: req.method, path: '/metrics', status: throttled ? 429 : 401, outcome: throttled ? 'throttled' : 'unauthorized' });
+      return res.status(throttled ? 429 : 401).json({ error: 'Unauthorized: /metrics requires a bearer token (or set MANIFOLD_METRICS_PUBLIC=1)' });
+    }
+  }
   res.setHeader('Content-Type', 'text/plain; version=0.0.4');
   res.send(metricsExporter.render(app.locals.services));
 });
@@ -469,6 +488,13 @@ server.listen(PORT, HOST, () => {
         'clients may reach RFC1918/LAN addresses. This is safe on a trusted on-prem ' +
         'network but turns an internet-exposed instance into an SSRF/scan pivot. ' +
         '(Loopback and cloud metadata stay blocked.)'
+    );
+  }
+  if (require('./services/egressGuard').ALLOW_LOOPBACK_DEVICES) {
+    console.warn(
+      '⚠️  MANIFOLD_ALLOW_LOOPBACK_DEVICES is set — device-driver targets (PLC/simulator hosts) ' +
+        'may be 127.0.0.0/8 or ::1. Intended for local simulators; leave unset in production. ' +
+        '(Cloud-metadata ranges stay blocked.)'
     );
   }
   if (!AUTH_ENABLED) {

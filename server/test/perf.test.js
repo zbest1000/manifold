@@ -78,6 +78,7 @@ test('restart survival: DataOps config persists and a fresh engine compiles it',
   });
   p1.upsertIn('historians', 'h-1', { type: 'influxdb', url: 'http://i:8086', org: 'o', bucket: 'b', token: 'secret' });
 
+  p1.flush(); // writes are coalesced; a clean shutdown flushes
   // "Restart": a brand-new store over the same dir must see everything…
   const p2 = new ProfileStore(dir);
   assert.strictEqual(p2.getIn('pipelines', 'route-1').name, 'survivor');
