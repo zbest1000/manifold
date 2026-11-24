@@ -138,3 +138,18 @@ test('audit log rotates by size and keeps N files', async () => {
   const last = fs.readFileSync(path.join(dir, 'audit.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).pop();
   assert.strictEqual(last.path, '/api/x/59');
 });
+
+test('device tag keys survive redaction; credentials named key do not', () => {
+  const { redactSecrets } = require('../services/secrets');
+  const out = redactSecrets({
+    devices: { d1: { host: 'plc', tags: [{ key: 'temp', address: '40001' }], ownTags: [{ key: 'x' }] } },
+    brokers: { b1: { config: { key: '-----BEGIN PRIVATE KEY-----', apiKey: 'abc', tags: 'not-a-list' } } }
+  });
+  assert.strictEqual(out.devices.d1.tags[0].key, 'temp');
+  assert.strictEqual(out.devices.d1.ownTags[0].key, 'x');
+  assert.strictEqual(out.brokers.b1.config.key, null);
+  assert.strictEqual(out.brokers.b1.config.apiKey, null);
+  // a nested secret inside a tag definition is still masked
+  assert.strictEqual(redactSecrets({ tags: [{ key: 'a', password: 'p', nested: { key: 'secret' } }] }).tags[0].password, null);
+  assert.strictEqual(redactSecrets({ tags: [{ key: 'a', nested: { key: 'secret' } }] }).tags[0].nested.key, null);
+});

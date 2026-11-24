@@ -30,6 +30,34 @@ const { encodePayload } = require('./sparkplugEncoder');
  * broker passwords, profiles do).
  */
 
+/**
+ * Connection URL + options for a broker profile, matching what the intake
+ * connection uses: TLS material, WebSocket path and MQTT version included.
+ */
+function connectTarget(cfg) {
+  const protocol = cfg.protocol || 'mqtt';
+  const isWs = protocol === 'ws' || protocol === 'wss';
+  const port = Number(cfg.port) || (protocol === 'mqtts' ? 8883 : 1883);
+  const url = `${protocol}://${cfg.host}:${port}${isWs ? cfg.wsPath || '/mqtt' : ''}`;
+  const options = {
+    username: cfg.username || undefined,
+    password: cfg.username ? cfg.password || '' : cfg.password || undefined,
+    rejectUnauthorized: cfg.rejectUnauthorized !== false
+  };
+  if (Number(cfg.mqttVersion) === 5) options.protocolVersion = 5;
+  if (protocol === 'mqtts' || protocol === 'wss') {
+    for (const k of ['ca', 'cert', 'key']) if (cfg[k]) options[k] = cfg[k];
+  }
+  return { url, options };
+}
+
+/** Changes whenever anything that affects the connection changes. */
+function configSignature(cfg) {
+  return JSON.stringify(
+    ['protocol', 'host', 'port', 'wsPath', 'mqttVersion', 'username', 'password', 'rejectUnauthorized', 'ca', 'cert', 'key'].map((k) => cfg[k] ?? null)
+  );
+}
+
 class SparkplugPublisher {
   constructor({ profiles }) {
     this.profiles = profiles;
@@ -46,9 +74,26 @@ class SparkplugPublisher {
   _session(brokerId, group, edge) {
     const key = `${brokerId} ${group} ${edge}`;
     let s = this.sessions.get(key);
-    if (s) return s;
-
+    // Fast path: nothing in the profile store changed since this session was
+    // checked, so its broker config cannot have changed either.
+    if (s && (s.signature === undefined || s.rev === this.profiles.rev)) return s;
     const cfg = this._brokerConfig(brokerId);
+    const signature = configSignature(cfg);
+    if (s && s.signature === signature) {
+      s.rev = this.profiles.rev;
+      return s;
+    }
+    if (s) {
+      // The broker profile was edited: never keep publishing with the old
+      // host or credentials.
+      try {
+        s.client?.end(true);
+      } catch {
+        /* already closed */
+      }
+      this.sessions.delete(key);
+    }
+
     const bdSeq = Math.floor(Math.random() * 256);
     s = {
       key,
@@ -63,11 +108,12 @@ class SparkplugPublisher {
       client: null
     };
 
-    const url = `${cfg.protocol || 'mqtt'}://${cfg.host}:${Number(cfg.port) || 1883}`;
+    const { url, options } = connectTarget(cfg);
+    s.signature = signature;
+    s.rev = this.profiles.rev;
     s.client = mqtt.connect(url, {
+      ...options,
       clientId: `manifold_spb_${edge}_${Date.now().toString(36)}`,
-      username: cfg.username || undefined,
-      password: cfg.password || undefined,
       clean: true,
       reconnectPeriod: 5000,
       will: {
@@ -256,11 +302,10 @@ class SparkplugPublisher {
       client: null
     };
 
-    const url = `${cfg.protocol || 'mqtt'}://${cfg.host}:${Number(cfg.port) || 1883}`;
+    const { url, options } = connectTarget(cfg);
     h.client = mqtt.connect(url, {
+      ...options,
       clientId: `manifold_host_${hostId}_${Date.now().toString(36)}`,
-      username: cfg.username || undefined,
-      password: cfg.password || undefined,
       clean: true,
       reconnectPeriod: 5000,
       will: {

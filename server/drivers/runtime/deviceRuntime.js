@@ -584,6 +584,9 @@ class DeviceRuntime {
       code: res.code,
       message: res.message
     });
+    // The reason (e.g. "PUT/GET not permitted") must reach the operator, not
+    // only the probe panel.
+    this._lastError = `tag ${key}: ${res.message || res.name || `error ${res.code}`}`;
     samples.push(this._bad(key, 'quarantined', now));
     for (const g of this._groups.values()) if (g.keys.includes(key)) g.plan = null;
   }
@@ -676,6 +679,11 @@ class DeviceRuntime {
       timeouts: this.stats.timeouts,
       exceptions: Object.assign({}, this.stats.exceptions),
       quarantined: Array.from(this._quarantine.keys()),
+      quarantineReasons: Object.fromEntries(
+        Array.from(this._quarantine.entries())
+          .slice(0, 100)
+          .map(([k, q]) => [k, { code: q.code, message: q.message || null, since: q.since }])
+      ),
       openUnits: Array.from(this._units.entries())
         .filter(([, b]) => b.open)
         .map(([u]) => u),

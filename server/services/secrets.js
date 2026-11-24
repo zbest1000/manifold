@@ -28,15 +28,26 @@ function stripUrlCredentials(s) {
  * (arrays are not truncated). Cycles and depth beyond `maxDepth` collapse to
  * `mask` rather than leaking the raw value.
  */
-function redactSecrets(value, { mask = null, maxDepth = 12 } = {}, depth = 0) {
+// Arrays under these property names hold definitions whose `key` field is an
+// identifier (device/profile tag key), not key material.
+const IDENTIFIER_LISTS = new Set(['tags', 'ownTags']);
+
+function redactSecrets(value, { mask = null, maxDepth = 12 } = {}, depth = 0, identifiers = false) {
   if (typeof value === 'string') return stripUrlCredentials(value);
   if (!value || typeof value !== 'object') return value;
   if (depth > maxDepth) return mask;
-  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, { mask, maxDepth }, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, { mask, maxDepth }, depth + 1, identifiers));
   const out = {};
   for (const [k, v] of Object.entries(value)) {
     if (k === '__proto__') continue; // never copy a prototype-rewriting key
-    out[k] = isSecretKey(k) && v !== null && v !== undefined && v !== '' ? mask : redactSecrets(v, { mask, maxDepth }, depth + 1);
+    if (identifiers && k === 'key') {
+      out[k] = typeof v === 'string' || typeof v === 'number' ? v : mask;
+      continue;
+    }
+    out[k] =
+      isSecretKey(k) && v !== null && v !== undefined && v !== ''
+        ? mask
+        : redactSecrets(v, { mask, maxDepth }, depth + 1, IDENTIFIER_LISTS.has(k) && Array.isArray(v));
   }
   return out;
 }
