@@ -77,6 +77,7 @@ export default function TopicGraph() {
   );
   // Selecting a node opens its details panel; the Properties button reopens it.
   const selectNode = (n) => {
+    setFitTarget(null); // a newer selection wins over a pending deep-link framing
     setSelected(n);
     setPanelOpen(Boolean(n));
     setPendingTopic(null);
@@ -204,14 +205,28 @@ export default function TopicGraph() {
       deepLinkMiss = pendingTopic;
     }
   }
-  // Frame a deep-linked node once the layout has placed it.
+  // Frame a deep-linked node once it can be framed for good: the force layout
+  // has settled (positions final) and the canvas size has been stable for a
+  // few polls (the details panel opens with the selection and narrows it).
+  // Not on a timer: under load the layout can take longer than any fixed delay.
   useEffect(() => {
     if (!fitTarget || view !== 'graph') return undefined;
-    const t = setTimeout(() => {
-      graphRef.current?.fitTo(new Set([fitTarget]));
-      setFitTarget(null);
-    }, 900);
-    return () => clearTimeout(t);
+    let lastSize = '';
+    let stable = 0;
+    let tries = 0;
+    const t = setInterval(() => {
+      const g = graphRef.current;
+      tries += 1;
+      const size = g?.size ? `${g.size().w}x${g.size().h}` : '';
+      stable = size && size === lastSize ? stable + 1 : 0;
+      lastSize = size;
+      if ((g?.isSettled?.() && g.hasNode?.(fitTarget) && stable >= 2) || tries > 200) {
+        clearInterval(t);
+        if (g?.hasNode?.(fitTarget)) g.fitTo(new Set([fitTarget]));
+        setFitTarget(null);
+      }
+    }, 100);
+    return () => clearInterval(t);
   }, [fitTarget, view]);
 
   // Groups actually present, for the color legend.

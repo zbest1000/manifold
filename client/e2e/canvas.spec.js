@@ -181,23 +181,32 @@ test('Topics graph: crisp, not blank, node hit-testing at two zoom levels, settl
   expectCrisp(s);
   expect(s.distinct).toBeGreaterThan(4);
 
-  for (const k of [null, 2.5]) {
-    if (k) {
-      await page.evaluate((kk) => {
-        const h = window.__manifoldTest.graph2d;
-        h.zoomTo(kk, h.size.w / 2, h.size.h / 2);
-      }, k);
-    }
-    // Camera applied and nothing moving (after the zoom, and after the details
-    // panel from the previous click resized the canvas) before reading positions.
-    await graphStable(page, k);
-    // A leaf away from the floating toolbar / legend overlays.
-    const node = await page.evaluate(() => {
+  // A labelled node clear of the overlays (toolbar row above, replay and legend
+  // below, details panel to the right), other than `except`.
+  const pickNode = (except) =>
+    page.evaluate((ex) => {
       const h = window.__manifoldTest.graph2d;
       const { w, h: hh } = h.size;
-      return h.nodes().find((n) => n.label && n.sx > 60 && n.sx < w - 260 && n.sy > 90 && n.sy < hh - 140);
-    });
+      return h.nodes().find((n) => n.label && n.id !== ex && n.sx > 60 && n.sx < w - 260 && n.sy > 90 && n.sy < hh - 140);
+    }, except);
+
+  let clicked = null;
+  for (const k of [null, 2.5]) {
+    // Camera applied and nothing moving (after the details panel from the
+    // previous click resized the canvas) before reading positions.
+    await graphStable(page);
+    let node = await pickNode(clicked);
     expect(node, `a clickable node at zoom ${k ?? 'fit'}`).toBeTruthy();
+    if (k) {
+      // Zoom about that node, so it stays where it is (in the clear area)
+      // whatever the data, then read its position again once still.
+      await page.evaluate(([kk, x, y]) => window.__manifoldTest.graph2d.zoomTo(kk, x, y), [k, node.sx, node.sy]);
+      await graphStable(page, k);
+      const id = node.id;
+      node = await page.evaluate((nid) => window.__manifoldTest.graph2d.nodes().find((n) => n.id === nid), id);
+      expect(node, `node ${id} on screen at zoom ${k}`).toBeTruthy();
+    }
+    clicked = node.id;
     const box = await canvas.boundingBox();
     await page.mouse.click(box.x + node.sx, box.y + node.sy);
     await expect(page.getByRole('complementary', { name: 'Topic details' })).toContainText(node.label);
@@ -275,7 +284,8 @@ test('theme switch recolours the UNS map in place: same canvas, camera and selec
   await page.goto('/uns?broker=e2e-broker&path=plant/line1');
   const canvas = page.locator('canvas[aria-describedby="uns-canvas-help"]');
   await expect(page.getByRole('complementary', { name: 'Node details' })).toBeVisible();
-  await page.waitForTimeout(600);
+  // The deep-link jump has finished (node centred, layout and canvas still).
+  await page.waitForFunction(() => window.__manifoldTest?.uns?.selectedId && window.__manifoldTest.uns.jumping === null, null, { timeout: 30_000 });
   await canvas.evaluate((c) => (c.dataset.mark = 'same'));
   const before = await page.evaluate(() => ({ t: window.__manifoldTest.uns.transform, sel: window.__manifoldTest.uns.selectedId }));
   const darkBg = await dominantColor(canvas);
@@ -301,7 +311,10 @@ test('theme switch recolours the Topics graph (2D and 3D) without a remount, kee
   const canvas = page.getByTestId('graph2d');
   await expect(page.getByRole('complementary', { name: 'Topic details' })).toContainText('temperature');
   await page.waitForFunction(() => window.__manifoldTest?.graph2d?.settled, null, { timeout: 30_000 });
-  await page.waitForTimeout(1200); // the deep-link framing
+  // The deep link frames its node once the layout has settled (a single node is
+  // framed at the 1.6 zoom cap); wait for that, then for a still camera.
+  await page.waitForFunction(() => Math.abs(window.__manifoldTest.graph2d.transform.k - 1.6) < 1e-6, null, { timeout: 30_000 });
+  await graphStable(page, 1.6);
   await canvas.evaluate((c) => (c.dataset.mark = 'same'));
   const t0 = await page.evaluate(() => window.__manifoldTest.graph2d.transform);
   const dark2d = await dominantColor(canvas);

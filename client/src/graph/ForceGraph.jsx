@@ -734,6 +734,9 @@ const ForceGraph = forwardRef(function ForceGraph(
     () => ({
       fitTo,
       redraw: () => drawRef.current(),
+      isSettled: () => !simRef.current || simRef.current.alpha() <= simRef.current.alphaMin(),
+      hasNode: (id) => nodeByIdRef.current.has(id),
+      size: () => ({ ...sizeRef.current }),
       pulseNode: (nodeId) => emitPulse(nodeId, true),
       exportPng: () => canvasRef.current?.toDataURL('image/png'),
       exportGraph: () => ({

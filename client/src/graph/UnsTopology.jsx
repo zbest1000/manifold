@@ -24,6 +24,8 @@ import {
 import { MIN_K } from './unsLayout';
 
 const MAX_K = 3;
+const JUMP_MS = 280; // camera glide to a jump target
+const SETTLE_MS = 1500; // a jump keeps the target centred until node and canvas are this long still
 
 /**
  * UNS topology renderer: the Unified-Namespace lens on the data fabric.
@@ -106,35 +108,64 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     fitAll();
   }, [fitAll]);
 
-  // Center the viewport on one laid node at a readable zoom — the target of a
-  // "jump to this node" from the lint / events panels.
-  const centerOn = useCallback(
-    (l) => {
+  // ---- Jump to a node (deep link, lint finding, event) ----
+  // A small state machine, stepped on every frame while it is active:
+  //   pending   the target is not laid out yet, or the canvas has no size;
+  //   following the camera glides (instantly with reduced motion) to centre the
+  //             target, and re-centres whenever the target's world position or
+  //             the canvas size changes: topics still streaming in re-lay the
+  //             tidy tree, the details panel opening narrows the canvas;
+  //   done      after the target and the canvas have been still for SETTLE_MS.
+  // Any user camera input (pan, zoom, drag, keys, Fit) cancels it. A one-shot
+  // centre used to run before the layout / size settled and the node then
+  // drifted away from the centre (the intermittent deep-link failure).
+  const reducedRef = useRef(false); // prefers-reduced-motion, kept current by the scheduler effect
+  const jumpRef = useRef(null); // { brokerId, path, phase, anim, lastKey, stillSince }
+  const cancelJump = useCallback(() => {
+    jumpRef.current = null;
+  }, []);
+  const stepJump = useCallback(
+    (now) => {
+      const j = jumpRef.current;
+      if (!j) return;
       const { w, h } = sizeRef.current;
-      if (!w || !h) return false;
-      const p = posOf(l);
+      const target = visibleRef.current.find((l) => l.node.brokerId === j.brokerId && l.node.path === j.path);
+      if (!target || !w || !h) return; // pending
+      const p = posOf(target);
       const t = transformRef.current;
-      t.k = Math.min(1.15, Math.max(t.k, 0.85)); // a readable zoom, never focus while zoomed way out
-      t.x = w / 2 - t.k * p.x;
-      t.y = h / 2 - t.k * p.y;
-      schedRef.current?.request();
-      return true;
+      const k = j.k ?? Math.min(1.15, Math.max(t.k, 0.85)); // a readable zoom, never focus while zoomed way out
+      j.k = k;
+      const goal = { k, x: w / 2 - k * p.x, y: h / 2 - k * p.y };
+      const key = `${Math.round(goal.x)},${Math.round(goal.y)},${w}x${h}`;
+      if (key !== j.lastKey) {
+        // New goal (first time, or the node / canvas moved): glide from here.
+        j.lastKey = key;
+        j.stillSince = now;
+        // The first move glides (unless reduced motion); a retarget while gliding
+        // restarts the glide from where the camera is; later drift is corrected
+        // instantly so the target never visibly wanders off.
+        const glide = !reducedRef.current && (j.phase === 'pending' || j.anim);
+        j.anim = glide ? { from: { ...t }, start: now } : null;
+        j.phase = 'following';
+      }
+      if (j.anim) {
+        const f = Math.min(1, (now - j.anim.start) / JUMP_MS);
+        const e = 1 - (1 - f) ** 3;
+        t.k = j.anim.from.k + (goal.k - j.anim.from.k) * e;
+        t.x = j.anim.from.x + (goal.x - j.anim.from.x) * e;
+        t.y = j.anim.from.y + (goal.y - j.anim.from.y) * e;
+        if (f >= 1) j.anim = null;
+      } else {
+        Object.assign(t, goal);
+      }
+      if (!j.anim && now - j.stillSince >= SETTLE_MS) jumpRef.current = null; // done
     },
     [posOf]
   );
-  // A pending "focus this node" request, applied once the node is laid out AND
-  // the canvas has a size (tried on every layout, on resize and on request).
-  const focusPendingRef = useRef(null);
-  const applyFocus = useCallback(() => {
-    const pending = focusPendingRef.current;
-    if (!pending) return;
-    const target = visibleRef.current.find((l) => l.node.brokerId === pending.brokerId && l.node.path === pending.path);
-    if (target && centerOn(target)) focusPendingRef.current = null;
-  }, [centerOn]);
-  const applyFocusRef = useRef(applyFocus);
+  const stepJumpRef = useRef(stepJump);
   useEffect(() => {
-    applyFocusRef.current = applyFocus;
-  }, [applyFocus]);
+    stepJumpRef.current = stepJump;
+  }, [stepJump]);
 
   const [expanded, setExpanded] = useState(() => new Set());
   const toggle = useCallback((node) => {
@@ -202,8 +233,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }
   useEffect(() => {
     if (!focusTarget?.brokerId || focusTarget.path == null) return;
-    focusPendingRef.current = { brokerId: focusTarget.brokerId, path: String(focusTarget.path) };
+    jumpRef.current = { brokerId: focusTarget.brokerId, path: String(focusTarget.path), phase: 'pending' };
     userMovedRef.current = true; // a deliberate jump — auto-fit must not override it
+    schedRef.current?.request();
   }, [focusTarget]);
 
   // Live activity: stamp ancestors, count per-branch rates, record leaf values.
@@ -233,12 +265,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
       fitAll();
     }
-    // Apply a queued focus once its node has a position (it may take an extra
-    // layout pass for the just-expanded ancestors to lay the node out).
-    applyFocus();
+    // A pending jump is stepped by the frame loop (see stepJump).
     schedRef.current?.request();
-    // focusTarget: a jump to a node whose ancestors are already open changes no layout.
-  }, [layout, fitAll, posOf, applyFocus, focusTarget]);
+  }, [layout, fitAll, posOf]);
 
   // Read-only hook for e2e tests (enabled by ?e2e=1 only): world AND screen
   // (CSS px, canvas-relative) positions of the visible nodes, the camera, the
@@ -269,17 +298,20 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           });
         },
         fit: () => fitAll(),
+        get jumping() {
+          return jumpRef.current?.phase || null;
+        },
         setTransform: (t) => {
+          cancelJump();
           userMovedRef.current = true;
           Object.assign(transformRef.current, t);
           schedRef.current?.request();
         }
       }),
-    [posOf, fitAll]
+    [posOf, fitAll, cancelJump]
   );
 
   // ---- Drawing ----
-  const reducedRef = useRef(false);
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -323,12 +355,15 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       schedRef.current?.request();
     };
     mq?.addEventListener?.('change', onMq);
-    const sched = createFrameScheduler(() => drawRef.current(), {
+    const sched = createFrameScheduler(() => {
+      stepJumpRef.current(Date.now());
+      drawRef.current();
+    }, {
       el: wrapRef.current,
       idleMs: 1000,
       isActive: () => {
         const now = Date.now();
-        return now - interactAt.current < 1000 || (!reducedRef.current && now - liveMeta.lastDataAt < 3000);
+        return Boolean(jumpRef.current) || now - interactAt.current < 1000 || (!reducedRef.current && now - liveMeta.lastDataAt < 3000);
       }
     });
     schedRef.current = sched;
@@ -360,7 +395,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         transformRef.current.y += (h - prev.h) / 2;
       }
       sizeRef.current = applyCanvasSize(canvas, w, h, dpr);
-      applyFocusRef.current();
+      if (jumpRef.current) stepJumpRef.current(Date.now()); // re-centre for the new size before painting
       // Until the user takes the camera, keep the forest framed in the new box.
       if (!userMovedRef.current && visibleRef.current.length) fitAll();
       drawRef.current(); // paint synchronously: a resized canvas is cleared
@@ -386,6 +421,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas,
       (factor, cx, cy) => {
         userMovedRef.current = true;
+        cancelJump();
         Object.assign(transformRef.current, zoomAround(transformRef.current, cx, cy, factor, MIN_K, MAX_K));
         kick();
       },
@@ -406,6 +442,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.focus({ preventScroll: true });
       kick();
       userMovedRef.current = true; // any canvas interaction hands the camera to the user
+      cancelJump();
       moved = 0;
       ctrlToggled = false;
       last = { x: e.clientX, y: e.clientY };
@@ -541,6 +578,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
     const onWheel = (e) => {
       userMovedRef.current = true; // zooming = user owns the camera now
+      cancelJump();
       e.preventDefault();
       const p = clientToLocal(canvas, e.clientX, e.clientY);
       Object.assign(transformRef.current, zoomAround(transformRef.current, p.x, p.y, wheelFactor(e), MIN_K, MAX_K));
@@ -574,7 +612,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onSelect, posOf, toggle, fitAll, kick]);
+  }, [onSelect, posOf, toggle, fitAll, kick, cancelJump]);
 
   const keyboardHint = 'Arrow keys pan, plus and minus zoom, F fits the view.';
   const summary = useMemo(() => {
@@ -602,12 +640,14 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     else handled = false;
     if (handled) {
       e.preventDefault();
+      cancelJump();
       userMovedRef.current = true;
       kick();
     }
   };
 
   const zoomBy = (f) => {
+    cancelJump();
     const { w, h } = sizeRef.current;
     userMovedRef.current = true;
     Object.assign(transformRef.current, zoomAround(transformRef.current, w / 2, h / 2, f, MIN_K, MAX_K));
@@ -646,8 +686,24 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         <IconButton icon={Plus} label="Zoom in" side="left" onClick={() => zoomBy(1.25)} />
         <IconButton icon={Minus} label="Zoom out" side="left" onClick={() => zoomBy(0.8)} />
         <span aria-hidden="true" className="mx-1.5 my-0.5 h-px bg-line" />
-        <IconButton icon={Maximize2} label="Fit to view (F)" side="left" onClick={fitAll} />
-        <IconButton icon={Workflow} label="Auto arrange: reset moved nodes and fit" side="left" onClick={autoArrange} />
+        <IconButton
+          icon={Maximize2}
+          label="Fit to view (F)"
+          side="left"
+          onClick={() => {
+            cancelJump();
+            fitAll();
+          }}
+        />
+        <IconButton
+          icon={Workflow}
+          label="Auto arrange: reset moved nodes and fit"
+          side="left"
+          onClick={() => {
+            cancelJump();
+            autoArrange();
+          }}
+        />
       </div>
     </div>
   );
