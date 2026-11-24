@@ -541,12 +541,23 @@ test('outbox spill cap honors dropPolicy: oldest rewrites the file head, newest 
     capMessages[id] = outbox.getStats()[id].lastError;
   }
 
-  const readTs = (id) =>
-    fs
-      .readFileSync(outbox.spillPath(id), 'utf8')
+  // Live spill = segment bytes after the persisted cursor offset.
+  const readTs = (id) => {
+    const od = path.join(dir, 'outbox');
+    const segs = fs.readdirSync(od).filter((f) => f.startsWith(`${id}.`) && f.endsWith('.seg')).sort();
+    let cursor = { seg: null, offset: 0 };
+    try {
+      cursor = JSON.parse(fs.readFileSync(path.join(od, `${id}.cursor`), 'utf8'));
+    } catch {
+      // no cursor yet: nothing consumed
+    }
+    return segs
+      .map((f) => fs.readFileSync(path.join(od, f)).subarray(f === cursor.seg ? cursor.offset : 0).toString('utf8'))
+      .join('')
       .split('\n')
       .filter(Boolean)
       .map((l) => JSON.parse(l).ts);
+  };
 
   assert.deepStrictEqual(readTs('hNew'), [1, 2, 3], 'default keeps the outage start, drops the new point');
   assert.strictEqual(outbox.getStats().hNew.dropped, 1);

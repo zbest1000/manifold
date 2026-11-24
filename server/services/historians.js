@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { Agent } = require('undici');
 const { fetchWithTimeout } = require('./httpTimeout');
 
@@ -74,6 +75,7 @@ async function httpFetch(conn, url, opts, fetchImpl) {
  *
  * Backends normalize to one write call:
  *   writePoints(conn, points)  with  points: [{ tag, ts, value, quality? }]
+ *   -> { written, skipped }  (skipped = points with no representable value/tag/ts)
  * where `tag` is the (possibly re-pathed) topic, `ts` is epoch ms, and `value`
  * is whatever the transform chain produced (numbers become proper numeric
  * fields; everything else is stringified).
@@ -122,53 +124,123 @@ function timebaseWritePath(dataset) {
   return `/api/datasets/${encodeURIComponent(dataset)}/data`;
 }
 
+// ---- value classification -----------------------------------------------------
+//
+// Decision (documented here and in ARCHITECTURE.md): only a REAL finite number,
+// or a string that is unambiguously a plain decimal number (optional sign,
+// digits, optional fraction, optional exponent; NO whitespace, hex, "Infinity"
+// or empty string), is numeric. Booleans are NOT 0/1 — they are stored as the
+// text "true"/"false" (raw). "", " ", [], {}, NaN, Infinity are raw text.
+// null/undefined carry no information: the point is skipped and counted.
+const NUMERIC_STRING = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function classifyValue(v) {
+  if (v === null || v === undefined) return { kind: 'null' };
+  if (typeof v === 'number') return Number.isFinite(v) ? { kind: 'num', num: v } : { kind: 'raw', raw: String(v) };
+  if (typeof v === 'string') {
+    if (NUMERIC_STRING.test(v)) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return { kind: 'num', num: n };
+    }
+    return { kind: 'raw', raw: v };
+  }
+  if (typeof v === 'object') {
+    try {
+      return { kind: 'raw', raw: JSON.stringify(v) };
+    } catch {
+      return { kind: 'raw', raw: String(v) };
+    }
+  }
+  return { kind: 'raw', raw: String(v) }; // boolean, bigint, ...
+}
+
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
 // ---- line protocol helpers (InfluxDB) ---------------------------------------
+//
+// Measurement, tag keys and tag values cannot carry a newline in line protocol
+// at all (there is no escape), so a name containing a control character is
+// REJECTED (the point is skipped and counted; a bad measurement in the config
+// throws). Backslashes are doubled so a trailing or `\,`-looking backslash in a
+// topic cannot escape the following delimiter. String field values are
+// escaped: `"` and `\` per spec, newline/CR/other control characters become the
+// visible text `\n`, `\r`, `\xNN` so a line can never be split.
 
 function escMeasurement(s) {
-  return String(s).replace(/([, ])/g, '\\$1');
+  return String(s).replace(/\\/g, '\\\\').replace(/([, ])/g, '\\$1');
 }
 
 function escTag(s) {
-  return String(s).replace(/([,= ])/g, '\\$1');
+  return String(s).replace(/\\/g, '\\\\').replace(/([,= ])/g, '\\$1');
 }
 
 function escFieldString(s) {
-  return String(s).replace(/(["\\])/g, '\\$1');
+  return String(s)
+    .replace(/(["\\])/g, '\\$1')
+    .replace(/[\u0000-\u001f\u007f]/g, (c) => (c === '\n' ? '\\n' : c === '\r' ? '\\r' : `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`));
+}
+
+/** Build the write body; returns { body, skipped } (skipped = points that cannot be represented). */
+function buildLineProtocol(points, measurement) {
+  if (CONTROL_CHARS.test(String(measurement))) throw new Error('influxdb measurement must not contain control characters');
+  const m = escMeasurement(measurement);
+  const lines = [];
+  let skipped = 0;
+  for (const p of points) {
+    const tag = p.tag === undefined || p.tag === null ? '' : String(p.tag);
+    const ts = Math.round(Number(p.ts));
+    const c = classifyValue(p.value);
+    if (c.kind === 'null' || !tag || CONTROL_CHARS.test(tag) || !Number.isFinite(ts)) {
+      skipped++;
+      continue;
+    }
+    // Numerics and strings go to DIFFERENT fields (`value` vs `raw`): InfluxDB
+    // locks a field's type per shard, so a topic that alternates 21.5 / "error"
+    // would otherwise get its writes rejected — and with store-and-forward those
+    // rejects would spill and retry forever. Two fields make mixed topics legal.
+    const field = c.kind === 'num' ? `value=${c.num}` : `raw="${escFieldString(c.raw)}"`;
+    lines.push(`${m},topic=${escTag(tag)} ${field} ${ts}`);
+  }
+  return { body: lines.join('\n'), skipped };
 }
 
 function toLineProtocol(points, measurement) {
-  // Numerics and strings go to DIFFERENT fields (`value` vs `raw`): InfluxDB
-  // locks a field's type per shard, so a topic that alternates 21.5 / "error"
-  // would otherwise get its writes rejected — and with store-and-forward those
-  // rejects would spill and retry forever. Two fields make mixed topics legal.
-  const lines = [];
-  for (const p of points) {
-    const num = typeof p.value === 'number' ? p.value : Number(p.value);
-    const field = Number.isFinite(num)
-      ? `value=${num}`
-      : `raw="${escFieldString(typeof p.value === 'object' ? JSON.stringify(p.value) : p.value)}"`;
-    lines.push(`${escMeasurement(measurement)},topic=${escTag(p.tag)} ${field} ${Math.round(p.ts)}`);
-  }
-  return lines.join('\n');
+  return buildLineProtocol(points, measurement).body;
+}
+
+// Permanent vs transient failures (drives outbox dead-lettering). HTTP 4xx is
+// a permanent rejection of THIS payload except 408/429 (retry) and 401/403
+// (credentials — operator-fixable, so the backlog must wait, not be discarded).
+// Postgres: SQLSTATE class 22 (data exception) and 23 (integrity violation).
+function httpError(label, res, text) {
+  const err = new Error(`${label} (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
+  err.status = res.status;
+  err.permanent = res.status >= 400 && res.status < 500 && ![401, 403, 408, 429].includes(res.status);
+  return err;
+}
+
+function isPermanentError(err) {
+  if (!err) return false;
+  if (typeof err.permanent === 'boolean') return err.permanent;
+  return typeof err.code === 'string' && /^(22|23)/.test(err.code);
 }
 
 async function influxWrite(conn, points, fetchImpl) {
   const base = String(conn.url || '').replace(/\/+$/, '');
   if (!base) throw new Error('influxdb url is required');
   const q = new URLSearchParams({ org: conn.org || '', bucket: conn.bucket || '', precision: 'ms' });
+  const { body, skipped } = buildLineProtocol(points, conn.measurement || 'manifold');
+  if (!body) return { written: 0, skipped };
   const res = await httpFetch(conn, `${base}/api/v2/write?${q}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       ...(conn.token ? { Authorization: `Token ${conn.token}` } : {})
     },
-    body: toLineProtocol(points, conn.measurement || 'manifold')
+    body
   }, fetchImpl);
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`influxdb write failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
-  }
-  return { written: points.length };
+  if (!res.ok) throw httpError('influxdb write failed', res, await res.text().catch(() => ''));
+  return { written: points.length - skipped, skipped };
 }
 
 // ---- Timebase (TVQ into a dataset) ------------------------------------------
@@ -182,15 +254,45 @@ async function timebaseWrite(conn, points, fetchImpl) {
   // each value an array of TVQs: { "plant/temp": [{ t, v, q }, ...], ... }
   // (t = ISO-8601 timestamp, v = value, q = OPC quality — 192 is "good",
   // matching the vendor's own examples).
+  //
+  // Ordering: Timebase may ignore a TVQ older than the tag's newest point, so
+  // each tag's TVQs are sorted oldest-first (stable) before sending, and the
+  // outbox replays strictly in arrival order, never letting live points
+  // overtake a spilled backlog.
+  //
+  // Quality: carried from p.quality for every point (0 = Bad is preserved —
+  // no falsy-coalescing); 192 only when the source supplied none.
+  //
+  // Null value: a Bad-quality sample (e.g. the Bad point published on
+  // disconnect) has no value. We send `v: null` with its `q`. UNVERIFIED:
+  // Timebase's accepted shape for a null v has not been checked against the
+  // real product (the old code sent the string "null", which is wrong). A null
+  // value WITHOUT an explicit quality carries no information and is skipped.
   const byTag = new Map();
+  let skipped = 0;
   for (const p of points) {
+    const ts = Number(p.ts);
+    const hasQ = p.quality !== undefined && p.quality !== null && Number.isFinite(Number(p.quality));
+    const isNull = p.value === null || p.value === undefined;
+    if (!Number.isFinite(ts) || !p.tag || (isNull && !hasQ)) {
+      skipped++;
+      continue;
+    }
     if (!byTag.has(p.tag)) byTag.set(p.tag, []);
     byTag.get(p.tag).push({
-      t: new Date(p.ts).toISOString(),
-      v: typeof p.value === 'object' ? JSON.stringify(p.value) : p.value,
-      q: p.quality ?? 192 // OPC "good"
+      ms: ts,
+      tvq: {
+        t: new Date(ts).toISOString(),
+        v: isNull ? null : typeof p.value === 'object' ? JSON.stringify(p.value) : p.value,
+        q: hasQ ? Number(p.quality) : 192 // OPC "good"
+      }
     });
   }
+  for (const [tag, arr] of byTag) {
+    arr.sort((x, y) => x.ms - y.ms); // Array.prototype.sort is stable
+    byTag.set(tag, arr.map((e) => e.tvq));
+  }
+  if (!byTag.size) return { written: 0, skipped };
   const body = Object.fromEntries(byTag);
 
   const path = conn.writePath || timebaseWritePath(conn.dataset);
@@ -202,27 +304,54 @@ async function timebaseWrite(conn, points, fetchImpl) {
     },
     body: JSON.stringify(body)
   }, fetchImpl);
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`timebase write failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
-  }
-  return { written: points.length };
+  if (!res.ok) throw httpError('timebase write failed', res, await res.text().catch(() => ''));
+  return { written: points.length - skipped, skipped };
 }
 
 // ---- TimescaleDB / PostgreSQL ------------------------------------------------
 
 let PgPool = null; // lazy — the pg driver only loads if a timescaledb historian exists
-const pgPools = new Map(); // cache key -> { pool, schemaReady: Set(table) }
+const pgPools = new Map(); // config hash -> { pool, schemaReady: Set(table) }
+const pgIdentityKey = new Map(); // identity (historian id, else host/port/db) -> current config hash
 
 function safeIdent(name) {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/.test(name)) throw new Error(`invalid table name "${name}"`);
   return name;
 }
 
+// The cache key is a hash of the FULL connection config (password and every
+// SSL option included) so an edited credential takes effect immediately; the
+// pool it replaces is closed. The hash keeps the password out of Map keys.
+function pgConfigKey(conn) {
+  return crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify([
+        conn.host,
+        Number(conn.port) || 5432,
+        conn.database,
+        conn.user,
+        conn.password || '',
+        Boolean(conn.ssl),
+        Boolean(conn.sslInsecure),
+        conn.sslRootCert ? String(conn.sslRootCert) : ''
+      ])
+    )
+    .digest('hex');
+}
+
 function pgEntryFor(conn) {
   if (conn.__pool) return { pool: conn.__pool, schemaReady: conn.__schemaReady || new Set() }; // test injection
   if (!PgPool) PgPool = require('pg').Pool;
-  const key = JSON.stringify([conn.host, conn.port, conn.database, conn.user, Boolean(conn.ssl)]);
+  const key = pgConfigKey(conn);
+  const identity = conn.id ? `id:${conn.id}` : `addr:${conn.host}|${Number(conn.port) || 5432}|${conn.database}`;
+  const previous = pgIdentityKey.get(identity);
+  if (previous && previous !== key) {
+    const old = pgPools.get(previous);
+    pgPools.delete(previous);
+    if (old) old.pool.end().catch(() => {}); // checked-out clients finish first
+  }
+  pgIdentityKey.set(identity, key);
   let entry = pgPools.get(key);
   if (!entry) {
     entry = {
@@ -284,22 +413,34 @@ async function timescaleWrite(conn, points) {
     schemaReady.add(table);
   }
 
-  // One multi-row parameterized INSERT per batch.
+  // One multi-row parameterized INSERT per batch. `value` holds only real
+  // numbers (see classifyValue); `raw` keeps the text of every non-null value.
+  // A null value with an explicit quality (a Bad sample) is stored as
+  // NULL/NULL + quality; without a quality there is nothing to record: skipped.
   const params = [];
-  const rows = points.map((p, i) => {
-    const base = i * 5;
-    const num = typeof p.value === 'number' ? p.value : Number(p.value);
+  const rows = [];
+  let skipped = 0;
+  for (const p of points) {
+    const c = classifyValue(p.value);
+    const hasQ = p.quality !== undefined && p.quality !== null && Number.isFinite(Number(p.quality));
+    const ts = new Date(p.ts);
+    if (!p.tag || Number.isNaN(ts.getTime()) || (c.kind === 'null' && !hasQ)) {
+      skipped++;
+      continue;
+    }
+    const base = rows.length * 5;
     params.push(
-      new Date(p.ts),
+      ts,
       p.tag,
-      Number.isFinite(num) ? num : null,
-      typeof p.value === 'object' ? JSON.stringify(p.value) : String(p.value),
-      p.quality ?? 192
+      c.kind === 'num' ? c.num : null,
+      c.kind === 'null' ? null : c.kind === 'num' ? String(p.value) : c.raw,
+      hasQ ? Number(p.quality) : 192
     );
-    return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5})`;
-  });
+    rows.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5})`);
+  }
+  if (!rows.length) return { written: 0, skipped };
   await pool.query(`INSERT INTO ${table} (ts, topic, value, raw, quality) VALUES ${rows.join(',')}`, params);
-  return { written: points.length };
+  return { written: rows.length, skipped };
 }
 
 // ---- read-back (Trends) ------------------------------------------------------
@@ -569,6 +710,7 @@ async function querySeries(conn = {}, { tags = [], start, end, maxPoints = 1000 
 async function closePools() {
   for (const { pool } of pgPools.values()) await pool.end().catch(() => {});
   pgPools.clear();
+  pgIdentityKey.clear();
   for (const agent of tlsAgents.values()) await agent.close().catch(() => {});
   tlsAgents.clear();
 }
@@ -580,7 +722,7 @@ async function writePoints(conn = {}, points = [], fetchImpl = timedFetch) {
   if (!backend) throw new Error(`unsupported historian type "${conn.type}" (supported: ${Object.keys(BACKENDS).join(', ')})`);
   // timescaledb talks Postgres, not HTTP — only the HTTP backends need fetch
   if (conn.type !== 'timescaledb' && typeof fetchImpl !== 'function') throw new Error('no fetch implementation available');
-  if (!points.length) return { written: 0 };
+  if (!points.length) return { written: 0, skipped: 0 };
   return backend(conn, points, fetchImpl);
 }
 
@@ -594,4 +736,4 @@ function publicConfig(conn) {
   return { ...rest, hasSecret: Boolean(token || apiKey || apiSecret || password) };
 }
 
-module.exports = { writePoints, queryTags, querySeries, supportedTypes, publicConfig, toLineProtocol, closePools, timebaseWritePath };
+module.exports = { writePoints, queryTags, querySeries, supportedTypes, publicConfig, toLineProtocol, closePools, timebaseWritePath, isPermanentError, classifyValue };
