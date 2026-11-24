@@ -39,6 +39,19 @@ export const setHostState = (body) => api.sparkplugState(body);
 /** POST /api/tags/bindings/preview -> { valid, error? | resolved topics, payloads, warnings }. Read-only. */
 export const previewBinding = (draft, signal) => call('/api/tags/bindings/preview', { method: 'POST', body: draft, signal });
 
+/** GET /api/tags/bindings/schema -> the option catalogue the editor renders from (cached for the session). */
+let schemaPromise = null;
+export const fetchSchema = () => {
+  schemaPromise ||= call('/api/tags/bindings/schema').catch((e) => {
+    schemaPromise = null;
+    throw e;
+  });
+  return schemaPromise;
+};
+
+/** POST /api/tags/bindings/suggest { source } -> { tags: [{ address, suggestedName, basis, rawAddress, ... }], context }. Read-only. */
+export const suggestMapping = (source) => call('/api/tags/bindings/suggest', { method: 'POST', body: { source } });
+
 export const fetchHistorians = () => api.listHistorians().then((r) => r.historians || []);
 export const fetchProfiles = () => call('/api/devices/profiles').then((r) => r.profiles || []);
 export const fetchDevices = () => api.devices().then((r) => r.devices || []);

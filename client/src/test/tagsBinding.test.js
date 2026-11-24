@@ -1,28 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import {
-  formFromBinding, buildBinding, buildRbe, buildTarget, rowsFromBinding, rowsFromSelection, rowsFromProfile, profileRowsFor, renameRow
-} from '@/pages/tags/bindingForm';
+import { formFromBinding, buildRbe, buildTarget } from '@/pages/tags/bindingForm';
 import { visibleRows, validateAssetPath, validateAssetTemplate, normalizeAssetPath, bindingAssetPath, parentPath } from '@/pages/tags/assetPath';
 import { instanceRows, allowedPlaceholders, substituteTemplate, cleanOverrides } from '@/pages/tags/profileModel';
-import { blockingCollisions, matchEntries, sizeSummary, generalWarnings, buildItems, fmtBytes, unitTypeLabel } from '@/pages/tags/previewModel';
-import { validateWizard } from '@/pages/tags/wizardModel';
+import { blockingCollisions, sizeSummary, generalWarnings, fmtBytes, unitTypeLabel } from '@/pages/tags/previewModel';
+import { stateFromBinding, buildMapping } from '@/pages/tags/mappingModel';
 import { layoutLabel, rbeLabel, instanceCount, detailFacts, historianReason } from '@/pages/tags/bindingView';
 
 const brokers = [{ id: 'b1', name: 'Local' }];
 
-// Build the request body the wizard would send for a stored binding, with nothing changed.
+// The request the mapping editor sends for a stored binding when nothing is changed.
 const roundTrip = (b, metaByAddress = {}, profile = null) => {
-  const srcType = b.source.type;
-  const form = formFromBinding(b, { brokers, srcType });
-  let rows;
-  let allTags = false;
-  if (srcType === 'device-profile') {
-    const r = profileRowsFor(profile, b);
-    rows = r.rows.filter((x) => r.selected.has(x.key));
-    allTags = r.selected.size === r.rows.length;
-  } else rows = rowsFromBinding(b, metaByAddress);
-  allTags = allTags || b.source.tags === 'all';
-  return buildBinding({ name: b.name, mode: b.target.mode, form, rows, srcType, editing: b, allTags, profileId: b.source.profileId });
+  const tagDefs = b.source.type === 'device-profile' ? profile?.tags || [] : Object.entries(metaByAddress).map(([key, m]) => ({ key, ...m }));
+  return buildMapping(stateFromBinding(b, { brokers, tagDefs }));
 };
 
 describe('asset paths', () => {
@@ -130,28 +119,6 @@ describe('form <-> binding round trip', () => {
   });
 });
 
-describe('names: only edited names are sent', () => {
-  const sel = new Map([['kw', { id: 'kw', address: 'kw', name: 'activePower', meta: { property: 'activePower', unit: 'kW', type: 'float32' } }],
-    ['40012', { id: '40012', address: '40012', name: '40012', meta: { type: 'uint16' } }]]);
-  const rows = rowsFromSelection(sel, 'device');
-  const base = (rs) => buildBinding({ mode: 'mqtt', form: formFromBinding(null, { brokers, srcType: 'device' }), rows: rs, srcType: 'device', source: { id: 'd1' } });
-  it('defaults to the property and falls back to the key', () => {
-    expect(rows.map((r) => r.name)).toEqual(['activePower', '40012']);
-    expect(base(rows).source.tags).toEqual(['kw', '40012']);
-  });
-  it('sends a name once the user edits it, and not when edited back', () => {
-    const edited = rows.map((r) => (r.address === '40012' ? renameRow(r, 'speed') : r));
-    expect(base(edited).source.tags).toEqual(['kw', { address: '40012', name: 'speed' }]);
-    const back = edited.map((r) => renameRow(r, r.defaultName));
-    expect(base(back).source.tags).toEqual(['kw', '40012']);
-  });
-  it('opcua always sends names', () => {
-    const r = rowsFromSelection(new Map([['n', { id: 'n', address: 'ns=2;s=A', name: 'A', meta: {} }]]), 'opcua');
-    const b = buildBinding({ mode: 'mqtt', form: formFromBinding(null, { brokers, srcType: 'opcua' }), rows: r, srcType: 'opcua', source: { id: 'c1' } });
-    expect(b.source.tags).toEqual([{ address: 'ns=2;s=A', name: 'A' }]);
-  });
-});
-
 describe('request details', () => {
   it('buildRbe', () => {
     const f = (o) => ({ ...formFromBinding(null, { brokers }), ...o });
@@ -170,10 +137,8 @@ describe('request details', () => {
     expect(cleanOverrides({ a: ' x/y/ ', b: '', zz: 'q' }, [{ id: 'a' }, { id: 'b' }])).toEqual({ a: 'x/y' });
     expect(cleanOverrides({ zz: 'q' }, null)).toEqual({ zz: 'q' });
   });
-  it('rowsFromProfile names tags by property', () => {
-    const r = rowsFromProfile({ tags: [{ key: 'kw', property: 'activePower', unit: 'kW' }, { key: 'x' }] });
-    expect(r.map((x) => x.name)).toEqual(['activePower', 'x']);
-    expect(unitTypeLabel(r[0].meta)).toBe('kW');
+  it('unit/type label', () => {
+    expect(unitTypeLabel({ type: 'float32', unit: 'kW' })).toBe('float32 · kW');
   });
 });
 
@@ -219,29 +184,6 @@ describe('server preview model', () => {
     expect(blockingCollisions(data).map((c) => c.topic)).toEqual(['a/m1/DB10.DBD4', 'a/m9/beyond-first-50']);
     expect(blockingCollisions(null)).toEqual([]);
   });
-  it('matches rows by address, and by position for profile bindings (first unit)', () => {
-    const rows = [{ key: 'r1', address: 'kw' }, { key: 'r2', address: 'pf' }];
-    expect(matchEntries(rows, data, false).get('r2').entry.topic).toBe('a/m1/DB10.DBD4');
-    expect(matchEntries(rows, data, false).get('r2').rawAddress.message).toBe('raw');
-    const m = matchEntries([{ key: 'p1', address: 'kw{x}' }, { key: 'p2', address: 'pf{x}' }], data, true);
-    expect(m.get('p1').entry.topic).toBe('a/m1/activePower');
-    expect(m.get('p2').entry.topic).toBe('a/m1/DB10.DBD4');
-  });
-  it('buildItems flags the raw name and clash on the right row', () => {
-    const rows = [{ key: 'r1', address: 'kw', name: 'activePower', meta: {} }, { key: 'r2', address: 'pf', name: 'DB10.DBD4', meta: {} }];
-    const items = buildItems({ rows, resolved: [], data, isProfile: false, selfClash: new Set() });
-    expect(items[0].rawAddress).toBeNull();
-    expect(items[1].rawAddress).toBeTruthy();
-    expect(items[1].clashOthers[0].name).toBe('other');
-  });
-  it('buildItems falls back to client-side checks when there is no server data', () => {
-    const rows = [{ key: 'r1', address: 'x', name: 'DB1.DBD0', meta: {} }];
-    const resolved = [{ key: 'r1', topic: 'a/DB1.DBD0', warnings: [] }];
-    const [it1] = buildItems({ rows, resolved, data: null, isProfile: false, selfClash: new Set(['r1']) });
-    expect(it1.rawAddress).toBeTruthy();
-    expect(it1.clashSelf).toBe(true);
-    expect(it1.fallbackTopic).toBe('a/DB1.DBD0');
-  });
   it('general warnings and size summary', () => {
     expect(generalWarnings({ ...data, unitErrors: [{ unitId: 'b#d1', error: 'oops' }] }).map((w) => w.message)).toEqual(['bad asset', 'd1: oops']);
     const obj = { layout: 'object-per-asset', objects: [{ bytes: 100, worstCaseBytes: 1000, capBytes: 65536 }, { bytes: 90, worstCaseBytes: 3000, capBytes: 65536 }] };
@@ -249,46 +191,6 @@ describe('server preview model', () => {
     expect(sizeSummary(data)).toBeNull();
     expect(fmtBytes(512)).toBe('512 B');
     expect(fmtBytes(65536)).toBe('64 KB');
-  });
-});
-
-describe('wizard validation', () => {
-  const rows = [{ key: 'r1', address: 'kw', name: 'power', defaultName: 'power', explicit: false, meta: {} }];
-  const form = (o) => ({ ...formFromBinding(null, { brokers, srcType: 'device' }), assetPath: 'acme/line4', ...o });
-  const run = (o = {}) => validateWizard({ srcType: 'device', mode: 'mqtt', form: form(), rows, brokers, ...o });
-  it('accepts a valid asset-path binding', () => {
-    expect(run().errors).toEqual([]);
-  });
-  it('blocks an invalid asset path on step 0 (dest field)', () => {
-    const e = run({ form: form({ assetPath: 'a//b' }) }).errors;
-    expect(e[0]).toMatchObject({ step: 0, field: 'dest' });
-  });
-  it('blocks collisions with other bindings and the server rejection', () => {
-    const clash = { status: 'ok', data: { valid: true, tags: [], objects: [], warnings: [{ type: 'collision', topic: 'acme/line4/power', bindings: [{ id: 'b0', name: 'first' }] }] } };
-    const e = run({ preview: clash }).errors;
-    expect(e[0].step).toBe(1);
-    expect(e[0].message).toMatch(/already published by another binding \(acme\/line4\/power by first\)/);
-    const rejected = run({ preview: { status: 'ok', data: { valid: false, error: 'payload could reach 99999 bytes' } } }).errors;
-    expect(rejected[0].message).toMatch(/99999 bytes/);
-  });
-  it('detects duplicates within one binding after slugging', () => {
-    const dup = [...rows, { ...rows[0], key: 'r2', address: 'pf', name: 'power' }];
-    expect(run({ rows: dup }).errors[0].message).toMatch(/same topic/);
-  });
-  it('profile binding needs a valid template and instances resolve', () => {
-    const profile = { id: 'p', params: [{ name: 'line' }] };
-    const devices = [{ id: 'd1', name: 'A', profileId: 'p', params: { line: 'l1' } }];
-    const f = formFromBinding(null, { brokers, srcType: 'device-profile' });
-    const bad = validateWizard({ srcType: 'device-profile', mode: 'mqtt', form: { ...f, assetPathTemplate: 'a/{zzz}' }, rows, brokers, profile, devices });
-    expect(bad.errors[0].message).toMatch(/Unknown placeholder/);
-    const ok = validateWizard({ srcType: 'device-profile', mode: 'mqtt', form: { ...f, assetPathTemplate: 'a/{line}/{device}' }, rows, brokers, profile, devices });
-    expect(ok.errors).toEqual([]);
-  });
-  it('checks deadband, heartbeat and object size', () => {
-    expect(run({ form: form({ dbType: 'percent', dbValue: '150' }) }).errors[0].message).toMatch(/0 and 100/);
-    expect(run({ form: form({ heartbeatMs: '500' }) }).errors[0].message).toMatch(/1000/);
-    expect(run({ form: form({ layout: 'object-per-asset', maxObjectBytes: '10' }) }).errors[0].message).toMatch(/1024/);
-    expect(run({ form: form({ layout: 'object-per-asset', maxObjectBytes: '4096' }) }).errors).toEqual([]);
   });
 });
 

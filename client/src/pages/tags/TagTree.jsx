@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, ChevronDown, FolderClosed, CircleDot, Search, ListChecks, Link2, RefreshCw, Tags as TagsIcon } from 'lucide-react';
+import { ChevronRight, ChevronDown, Search, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
-import { Button, EmptyState } from '@/components/ui';
-import ErrorBanner from './Banner';
+import { Button, EmptyState, Input, IconButton, Banner, LoadingState, Tooltip, Badge } from '@/components/ui';
 import { browse } from './tagsApi';
 import { flattenVisible, treeKeyAction } from './treeNav';
 import { boundFor } from './helpers';
@@ -11,10 +10,11 @@ const MAX_TAGS = 500; // bound for "select all in folder"
 const MAX_CALLS = 40;
 
 /**
- * Lazy, accessible tag tree (WAI-ARIA tree pattern, flat treeitems with aria-level).
+ * Lazy, accessible tag tree (WAI-ARIA tree pattern, flat treeitems with aria-level), laid out as
+ * columns: name and address, type, unit, and whether a mapping already publishes the tag.
  * selection: Map<nodeId, { id, address, name, meta }>.
  */
-export default function TagTree({ source, selection, onToggle, onAddMany, boundIndex }) {
+export default function TagTree({ source, selection, onToggle, onAddMany, boundIndex, toolbarEnd }) {
   const [nodes, setNodes] = useState({}); // browse key -> children[]
   const [loading, setLoading] = useState(() => new Set());
   const [errors, setErrors] = useState({}); // browse key -> message
@@ -23,7 +23,9 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
   const [filter, setFilter] = useState('');
   const [bulk, setBulk] = useState(null); // { busy, message }
   const nodesRef = useRef(nodes);
-  nodesRef.current = nodes;
+  useEffect(() => {
+    nodesRef.current = nodes;
+  });
   const inflight = useRef(new Set());
   const rowRefs = useRef(new Map());
   const alive = useRef(true);
@@ -68,9 +70,21 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
     [source]
   );
 
+  // A device's poll-group folders open by themselves: they are few, and the tags are what you came for.
+  const openGroups = useCallback(
+    (children) => {
+      if (source.type !== 'device' || !children) return;
+      const folders = children.filter((c) => c.kind === 'folder');
+      if (!folders.length || folders.length > 8) return;
+      setExpanded(new Set(folders.map((f) => f.id)));
+      for (const f of folders) load(f.address);
+    },
+    [source.type, load]
+  );
+
   useEffect(() => {
-    load('');
-  }, [load]);
+    load('').then(openGroups);
+  }, [load, openGroups]);
 
   const reload = () => {
     nodesRef.current = {};
@@ -78,11 +92,13 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
     setExpanded(new Set());
     setErrors({});
     setBulk(null);
-    load('', true);
+    load('', true).then(openGroups);
   };
 
   const items = useMemo(() => flattenVisible(nodes, expanded, filter), [nodes, expanded, filter]);
   const tabKey = items.some((i) => i.key === focusKey) ? focusKey : items[0]?.key;
+  const tagItems = items.filter((i) => !i.isFolder);
+  const allShownSelected = tagItems.length > 0 && tagItems.every((i) => selection.has(i.node.id));
 
   const focusRow = (key) => {
     setFocusKey(key);
@@ -102,7 +118,7 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
 
   // Select every tag under a folder: breadth-first, bounded by MAX_TAGS / MAX_CALLS.
   const selectFolder = async (folder) => {
-    setBulk({ busy: true, message: `Loading tags under ${folder.name}...` });
+    setBulk({ busy: true, message: `Loading tags under ${folder.name}…` });
     const found = [];
     const queue = [folder.address];
     let calls = 0;
@@ -187,157 +203,172 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
   const rootLoaded = nodes[''];
   const otherErrors = Object.entries(errors).filter(([k]) => k !== '');
   const filtering = filter.trim().length > 0;
+  const showMeta = source.type === 'device';
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[12rem] flex-1">
-          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-          <input
-            type="search"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            aria-label="Filter loaded tags"
-            aria-describedby="tag-filter-note"
-            placeholder="Filter loaded tags..."
-            className="w-full rounded-xl border border-white/10 bg-surface-950/60 py-2 pl-8 pr-3 text-sm text-slate-100 placeholder:text-slate-400 focus:border-accent-500/60 focus:outline-none focus:ring-2 focus:ring-accent-500/20"
-          />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
+        <div className="relative min-w-0 flex-1 basis-32">
+          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" aria-hidden="true" />
+          <Input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter loaded tags" aria-describedby="tag-filter-note" placeholder="Filter loaded tags" className="pl-8" />
         </div>
-        <Button size="sm" variant="outline" onClick={reload} aria-label="Reload tree">
-          <RefreshCw size={12} aria-hidden="true" /> Reload
-        </Button>
+        {tagItems.length > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => (allShownSelected ? tagItems.forEach((i) => selection.has(i.node.id) && onToggle(i.node)) : onAddMany(tagItems.map((i) => i.node)))}
+          >
+            {allShownSelected ? 'Clear shown' : `Select shown (${tagItems.length})`}
+          </Button>
+        )}
+        <IconButton icon={RefreshCw} size={14} label="Reload tree" onClick={reload} />
+        {toolbarEnd}
       </div>
-      <p id="tag-filter-note" className="text-xs text-slate-400">
-        {filtering
-          ? 'Showing matches among nodes already loaded. Deeper levels load when you expand a folder.'
-          : 'Deeper levels load when you expand a folder. Keys: arrows move, Right/Left expand/collapse, Space selects, Enter expands.'}
+      <p id="tag-filter-note" className="sr-only">
+        {filtering ? 'Showing matches among nodes already loaded. Deeper levels load when you expand a folder.' : 'Arrow keys move, Right and Left expand and collapse, Space selects, Enter expands.'}
       </p>
-      <div aria-live="polite" className="min-h-0 text-xs text-slate-300">
+      <div aria-live="polite" className="empty:hidden border-b border-line px-3 py-1.5 text-xs text-muted">
         {bulk && <span role="status">{bulk.message}</span>}
       </div>
 
-      {rootErr && <ErrorBanner title="Could not load this source's tags" message={rootErr} onRetry={() => load('', true)} busy={loading.has('')} />}
-      {otherErrors.map(([k, msg]) => (
-        <ErrorBanner key={k} title={`Could not load folder ${k}`} message={msg} onRetry={() => load(k, true)} busy={loading.has(k)} />
-      ))}
-
-      {!rootErr && !rootLoaded && <p className="py-2 text-xs text-slate-400">Loading...</p>}
-      {rootLoaded && rootLoaded.length === 0 && (
-        <div className="min-h-[12rem] flex-1">
-          <EmptyState
-            icon={TagsIcon}
-            title="Connected, but nothing to browse yet"
-            hint={
-              source.type === 'sparkplug'
-                ? 'No Sparkplug birth certificates seen yet. Metrics appear once an edge node publishes NBIRTH/DBIRTH on this broker.'
-                : source.type === 'mqtt'
-                  ? 'No topics observed on this broker yet. They appear as messages arrive.'
-                  : 'This source returned no nodes. Check its configuration, then reload.'
-            }
-            action={<Button size="sm" variant="outline" onClick={reload}>Reload</Button>}
-          />
+      {(rootErr || otherErrors.length > 0) && (
+        <div className="space-y-2 p-3">
+          {rootErr && (
+            <Banner variant="error" title="Could not load this source's tags" onRetry={() => load('', true)}>
+              {rootErr}
+            </Banner>
+          )}
+          {otherErrors.map(([k, msg]) => (
+            <Banner key={k} variant="error" title={`Could not load folder ${k}`} onRetry={() => load(k, true)}>
+              {msg}
+            </Banner>
+          ))}
         </div>
       )}
-      {filtering && rootLoaded && rootLoaded.length > 0 && items.length === 0 && (
-        <p className="py-2 text-xs text-slate-300">No loaded node matches &quot;{filter}&quot;. Expand folders to load deeper levels.</p>
+
+      {!rootErr && !rootLoaded && <LoadingState label="tags" rows={5} className="m-3" />}
+      {rootLoaded && rootLoaded.length === 0 && (
+        <EmptyState
+          title="Connected, but nothing to browse yet"
+          hint={
+            source.type === 'sparkplug'
+              ? 'No Sparkplug birth certificates seen yet. Metrics appear once an edge node publishes NBIRTH or DBIRTH on this broker.'
+              : source.type === 'mqtt'
+                ? 'No topics seen on this broker yet. They appear as messages arrive.'
+                : 'This source returned no tags. Add tags to the device on the Devices page, then reload.'
+          }
+          action={
+            <Button size="sm" variant="secondary" onClick={reload}>
+              Reload
+            </Button>
+          }
+        />
       )}
+      {filtering && rootLoaded && rootLoaded.length > 0 && items.length === 0 && <p className="px-3 py-3 text-sm text-muted">No loaded tag matches &quot;{filter}&quot;. Expand folders to load deeper levels.</p>}
 
       {items.length > 0 && (
-        <div
-          role="tree"
-          aria-label={`Tags in ${source.label}`}
-          aria-multiselectable="true"
-          className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-white/5 bg-black/10 p-1"
-        >
-          {items.map((item) => {
-            const { node } = item;
-            const isTag = !item.isFolder;
-            const selected = isTag && selection.has(node.id);
-            const bound = isTag ? boundFor(boundIndex, source, node) : [];
-            const busyRow = item.isFolder && loading.has(node.address);
-            return (
-              <div
-                key={item.key}
-                ref={(el) => {
-                  if (el) rowRefs.current.set(item.key, el);
-                  else rowRefs.current.delete(item.key);
-                }}
-                role="treeitem"
-                aria-level={item.level}
-                aria-posinset={item.posInSet}
-                aria-setsize={item.setSize}
-                aria-expanded={item.isFolder ? item.expanded : undefined}
-                aria-selected={isTag ? selected : undefined}
-                aria-checked={isTag ? selected : undefined}
-                aria-busy={busyRow || undefined}
-                tabIndex={item.key === tabKey ? 0 : -1}
-                onFocus={() => setFocusKey(item.key)}
-                onKeyDown={(e) => e.target === e.currentTarget && onKeyDown(e, item)}
-                onClick={() => {
-                  setFocusKey(item.key);
-                  if (isTag) onToggle(node);
-                  else if (item.expanded) collapse(item);
-                  else expand(item);
-                }}
-                style={{ paddingLeft: `${(item.level - 1) * 16 + 6}px` }}
-                className={clsx(
-                  'flex cursor-pointer items-center gap-1.5 rounded-lg py-1.5 pr-2 text-xs outline-none',
-                  'hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-accent-400',
-                  selected && 'bg-accent-500/10'
-                )}
-              >
-                {isTag ? (
-                  <>
-                    <input
-                      type="checkbox"
-                      tabIndex={-1}
-                      checked={selected}
-                      onChange={() => onToggle(node)}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Select ${node.name}`}
-                      className="h-3.5 w-3.5 shrink-0 accent-accent-500"
-                    />
-                    <CircleDot size={12} className="shrink-0 text-teal-400" aria-hidden="true" />
-                  </>
-                ) : (
-                  <>
-                    {item.expanded ? <ChevronDown size={13} className="shrink-0 text-slate-400" aria-hidden="true" /> : <ChevronRight size={13} className="shrink-0 text-slate-400" aria-hidden="true" />}
-                    <FolderClosed size={12} className="shrink-0 text-slate-400" aria-hidden="true" />
-                  </>
-                )}
-                <span className={clsx('min-w-0 truncate', isTag ? 'font-mono text-slate-100' : 'text-slate-200')} title={node.address}>
-                  {node.name}
-                </span>
-                {node.meta?.subtreeCount > 1 && <span className="text-xs text-slate-400">{node.meta.subtreeCount}</span>}
-                {busyRow && <span className="text-xs text-slate-400">loading...</span>}
-                {bound.length > 0 && (
-                  <span
-                    title={`Already bound: ${bound.map((b) => `${b.name} -> ${b.path}`).join('; ')}`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-xs text-emerald-300 ring-1 ring-inset ring-emerald-500/30"
-                  >
-                    <Link2 size={10} aria-hidden="true" /> bound
+        <>
+          <div aria-hidden="true" className={clsx('grid h-8 shrink-0 items-center gap-2 border-b border-line pl-9 pr-3 text-xs font-medium text-muted', showMeta ? 'grid-cols-[minmax(0,1fr)_4.5rem] sm:grid-cols-[minmax(0,1fr)_4.5rem_4rem_4.5rem]' : 'grid-cols-[minmax(0,1fr)_4.5rem]')}>
+            <span>Tag</span>
+            {showMeta && <span className="hidden sm:block">Type</span>}
+            {showMeta && <span className="hidden sm:block">Unit</span>}
+            <span className="text-right">Mapped</span>
+          </div>
+          <div role="tree" aria-label={`Tags in ${source.label}`} aria-multiselectable="true" className="min-h-0 flex-1 overflow-y-auto py-1">
+            {items.map((item) => {
+              const { node } = item;
+              const isTag = !item.isFolder;
+              const selected = isTag && selection.has(node.id);
+              const bound = isTag ? boundFor(boundIndex, source, node) : [];
+              const busyRow = item.isFolder && loading.has(node.address);
+              const meta = node.meta || {};
+              return (
+                <div
+                  key={item.key}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(item.key, el);
+                    else rowRefs.current.delete(item.key);
+                  }}
+                  role="treeitem"
+                  aria-level={item.level}
+                  aria-posinset={item.posInSet}
+                  aria-setsize={item.setSize}
+                  aria-expanded={item.isFolder ? item.expanded : undefined}
+                  aria-selected={isTag ? selected : undefined}
+                  aria-checked={isTag ? selected : undefined}
+                  aria-busy={busyRow || undefined}
+                  tabIndex={item.key === tabKey ? 0 : -1}
+                  onFocus={() => setFocusKey(item.key)}
+                  onKeyDown={(e) => e.target === e.currentTarget && onKeyDown(e, item)}
+                  onClick={() => {
+                    setFocusKey(item.key);
+                    if (isTag) onToggle(node);
+                    else if (item.expanded) collapse(item);
+                    else expand(item);
+                  }}
+                  className={clsx(
+                    'grid h-8 cursor-pointer items-center gap-2 pr-3 text-sm outline-none transition-colors duration-100',
+                    'hover:bg-[rgb(var(--tint)/0.035)] focus-visible:shadow-[inset_0_0_0_2px_rgb(var(--focus))]',
+                    selected && 'bg-accent/[0.07] shadow-[inset_2px_0_0_rgb(var(--accent))]',
+                    showMeta ? 'grid-cols-[minmax(0,1fr)_4.5rem] sm:grid-cols-[minmax(0,1fr)_4.5rem_4rem_4.5rem]' : 'grid-cols-[minmax(0,1fr)_4.5rem]'
+                  )}
+                >
+                  <span className={clsx('flex min-w-0 items-center gap-2', item.isFolder && 'col-span-full')} style={{ paddingLeft: `${(item.level - 1) * 16 + 12}px` }}>
+                    {isTag ? (
+                      <input
+                        type="checkbox"
+                        tabIndex={-1}
+                        checked={selected}
+                        onChange={() => onToggle(node)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Select ${node.name}`}
+                        className="h-4 w-4 shrink-0 accent-accent"
+                      />
+                    ) : item.expanded ? (
+                      <ChevronDown size={14} className="shrink-0 text-subtle" aria-hidden="true" />
+                    ) : (
+                      <ChevronRight size={14} className="shrink-0 text-subtle" aria-hidden="true" />
+                    )}
+                    <span className={clsx('min-w-0 truncate', isTag ? 'font-mono text-xs text-fg' : 'font-medium text-fg')} title={node.address}>
+                      {node.name}
+                    </span>
+                    {isTag && meta.property && node.address !== node.name && <span className="hidden min-w-0 truncate font-mono text-2xs text-subtle sm:inline">{node.address}</span>}
+                    {!isTag && meta.subtreeCount > 1 && <span className="shrink-0 font-mono text-2xs text-subtle">{meta.subtreeCount}</span>}
+                    {busyRow && <span className="shrink-0 text-xs text-muted">loading…</span>}
+                    {item.isFolder && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        tabIndex={-1}
+                        disabled={bulk?.busy}
+                        className="ml-auto h-6 px-1.5"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectFolder(node);
+                        }}
+                        aria-label={`Select all tags in ${node.name}`}
+                        title="Select every tag in this folder (loads sub-folders, up to 500 tags)"
+                      >
+                        Select all
+                      </Button>
+                    )}
                   </span>
-                )}
-                {item.isFolder && (
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    disabled={bulk?.busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      selectFolder(node);
-                    }}
-                    aria-label={`Select all tags in ${node.name}`}
-                    title="Select all tags in this folder (loads sub-folders, up to 500 tags)"
-                    className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40"
-                  >
-                    <ListChecks size={12} aria-hidden="true" /> Select all
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                  {isTag && showMeta && <span className="hidden truncate font-mono text-2xs text-subtle sm:block">{meta.type || ''}</span>}
+                  {isTag && showMeta && <span className="hidden truncate text-xs text-muted sm:block">{meta.unit || ''}</span>}
+                  {isTag && (
+                    <span className="flex justify-end">
+                      {bound.length > 0 && (
+                        <Tooltip label={`Mapped by ${bound.map((b) => b.name).join(', ')}`} side="left">
+                          <Badge>{bound.length > 1 ? `${bound.length} maps` : 'mapped'}</Badge>
+                        </Tooltip>
+                      )}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

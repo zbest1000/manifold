@@ -1,13 +1,13 @@
-// Pure mapping between the wizard form and the stored binding (POST /api/tags/bindings).
-// formFromBinding(buildBinding(...)) round-trips every stored shape: legacy pathTemplate,
-// assetPath, object-per-asset layout, device-profile (template + per-instance paths).
+// Target and delivery fields of a mapping <-> the stored binding's target / rbe.
+// Rows, selection and per-tag settings live in mappingModel.js, which builds on these.
 import { normalizeAssetPath, validateAssetPath } from './assetPath';
 import { cleanOverrides } from './profileModel';
 
 // Target keys the form owns; any other stored key is carried through an edit untouched.
 const OWNED_TARGET_KEYS = [
   'mode', 'brokerId', 'assetPath', 'pathTemplate', 'assetPathTemplate', 'assetPaths', 'layout', 'maxObjectBytes', 'format',
-  'retain', 'qos', 'deadband', 'statusTopic', 'metaTopic', 'historian', 'group', 'edge', 'device'
+  'retain', 'qos', 'deadband', 'statusTopic', 'metaTopic', 'historian', 'group', 'edge', 'device',
+  'context', 'contextMode', 'fields', 'metaFields'
 ];
 
 export const DEADBAND_HELP = {
@@ -93,92 +93,6 @@ export function buildTarget({ mode, form, srcType, editing = null, devices = nul
     ...(form.metaTopic ? {} : { metaTopic: false }),
     ...historian
   };
-}
-
-const entryOf = (row, alwaysName) => (alwaysName || row.explicit ? { address: row.address, name: row.name.trim() } : row.address);
-
-/** `source` for a binding. `allTags` keeps `tags: 'all'` when no tag carries an explicit name. */
-export function buildSource({ srcType, source, editing, rows, form, allTags = false, profileId }) {
-  const named = srcType === 'opcua';
-  const tags = allTags && !rows.some((r) => r.explicit) && (srcType === 'device' || srcType === 'device-profile') ? 'all' : rows.map((r) => entryOf(r, named));
-  if (editing) {
-    const s = editing.source;
-    if (srcType === 'sparkplug') return s;
-    const next = { ...s, tags };
-    return srcType === 'opcua' ? { ...next, samplingInterval: Number(form.samplingInterval) || 1000 } : next;
-  }
-  if (srcType === 'opcua') return { type: 'opcua', connectionId: source.id, tags, samplingInterval: Number(form.samplingInterval) || 1000 };
-  if (srcType === 'device-profile') return { type: 'device-profile', profileId, tags };
-  if (srcType === 'sparkplug') {
-    const meta = rows[0]?.meta || {};
-    return { type: 'sparkplug', brokerId: source.id, group: meta.group, edge: meta.edge, device: meta.device || null, metrics: rows.map((r) => r.address) };
-  }
-  return { type: srcType, deviceId: source.id, tags };
-}
-
-/** Whole request body (also the body of POST /api/tags/bindings/preview). */
-export function buildBinding({ name, mode, form, rows, srcType, source, editing = null, allTags = false, profileId, devices = null }) {
-  const rbe = buildRbe(form);
-  return {
-    ...(editing ? { id: editing.id, enabled: editing.enabled !== false } : {}),
-    name: name || null,
-    source: buildSource({ srcType, source, editing, rows, form, allTags, profileId }),
-    target: buildTarget({ mode, form, srcType, editing, devices }),
-    ...(rbe ? { rbe } : {})
-  };
-}
-
-/** Rows ([{ key, address, name, defaultName, explicit, meta }]) for a stored binding. metaByAddress: { address: node.meta }. */
-export function rowsFromBinding(b, metaByAddress = {}, profileTags = null) {
-  const s = b?.source || {};
-  if (Array.isArray(s.metrics)) return s.metrics.map((m) => ({ key: m, address: m, name: m, defaultName: m, explicit: false, meta: {} }));
-  let entries = s.tags;
-  if (entries === 'all') entries = (profileTags || Object.keys(metaByAddress).map((k) => ({ key: k }))).map((t) => t.key);
-  if (!Array.isArray(entries)) return [];
-  return entries.map((e, i) => {
-    const address = typeof e === 'string' ? e : e.address;
-    const meta = metaByAddress[address] || {};
-    const defaultName = s.type === 'opcua' ? address : meta.property || address;
-    const stored = typeof e === 'string' ? '' : e.name || '';
-    return { key: `${i}:${address}`, address, name: stored || defaultName, defaultName, explicit: Boolean(stored), meta };
-  });
-}
-
-/** Rows from the Tags-page selection. Device tags default to their `property`. */
-export function rowsFromSelection(selection, srcType) {
-  return [...selection.values()].map((t) => {
-    const meta = t.meta || {};
-    const defaultName = srcType === 'device' ? meta.property || t.address : t.name;
-    return { key: t.id, address: t.address, name: defaultName, defaultName, explicit: false, meta };
-  });
-}
-
-/** Rows for a profile: every profile tag, named by its property. */
-export function rowsFromProfile(profile) {
-  return (profile?.tags || []).map((t) => ({
-    key: t.key, address: t.key, name: t.property || t.key, defaultName: t.property || t.key, explicit: false,
-    meta: { property: t.property || null, unit: t.unit || null, type: t.type, range: t.range || null }
-  }));
-}
-
-/**
- * Profile editing/creation: every profile tag as a row plus the set of selected keys.
- * A stored binding overlays its explicit names and selection (`tags: 'all'` = everything).
- */
-export function profileRowsFor(profile, binding = null) {
-  const rows = rowsFromProfile(profile);
-  const stored = binding?.source?.tags;
-  if (!Array.isArray(stored)) return { rows, selected: new Set(rows.map((r) => r.key)) };
-  const byAddr = new Map(stored.map((e) => [typeof e === 'string' ? e : e.address, typeof e === 'string' ? '' : e.name || '']));
-  return {
-    rows: rows.map((r) => (byAddr.get(r.address) ? { ...r, name: byAddr.get(r.address), explicit: true } : r)),
-    selected: new Set(rows.filter((r) => byAddr.has(r.address)).map((r) => r.key))
-  };
-}
-
-/** Rename a row: explicit only when the text differs from the default (server lets an explicit name win over `property`). */
-export function renameRow(row, value, alwaysExplicit = false) {
-  return { ...row, name: value, explicit: alwaysExplicit || value.trim() !== row.defaultName };
 }
 
 export { validateAssetPath };
