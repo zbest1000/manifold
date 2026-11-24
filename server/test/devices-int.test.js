@@ -308,3 +308,35 @@ test('a binding created while its device is already online gets _status immediat
     await t.cleanup();
   }
 });
+
+test('retained _meta and _status are retried when the broker was not ready', async () => {
+  const profiles = memoryProfiles();
+  const mqtt = fakeBroker();
+  let down = true;
+  const realPublish = mqtt.publish;
+  mqtt.publish = async (...args) => {
+    if (down) throw new Error('Broker br is not connected');
+    return realPublish(...args);
+  };
+  const source = new EventEmitter();
+  source.ensureMonitored = async () => {};
+  const bindings = new TagBindings({ mqttManager: mqtt, profiles, sparkplugPublisher: null, retryMs: 40 });
+  bindings.registerSource('device', source);
+  profiles.upsertIn('bindings', 'b1', {
+    enabled: true,
+    source: { type: 'device', deviceId: 'd1', tags: [{ address: 'a', name: 'a' }] },
+    target: { mode: 'mqtt', brokerId: 'br', pathTemplate: 'acme/x/{name}', format: 'envelope' }
+  });
+  bindings.start();
+  try {
+    source.emit('source-state', { sourceType: 'device', sourceId: 'd1', state: 'online', reason: 'connected' });
+    bindings.reconcile();
+    await sleep(60);
+    assert.strictEqual(mqtt.published.length, 0);
+    down = false; // broker comes up; nothing else changes
+    await until(() => mqtt.published.some((p) => p.topic === 'acme/x/_meta') && mqtt.published.some((p) => p.topic === 'acme/x/_status'), 3000, 'retried retained documents');
+    assert.strictEqual(mqtt.published.find((p) => p.topic === 'acme/x/_status').payload.online, true);
+  } finally {
+    bindings.stop();
+  }
+});

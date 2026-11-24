@@ -1,6 +1,7 @@
 'use strict';
 
 const { compiledView } = require('./mqttMatch');
+const { messageTime } = require('./pipelineEngine');
 const { OpcuaSource, opcQuality } = require('./tagSources/opcuaSource');
 const model = require('./bindingModel');
 
@@ -234,6 +235,8 @@ class TagBindings {
     this.objectTimer = null;
     this._dirtyObjects.clear();
     this.started = false;
+    if (this.retainedRetryTimer) clearTimeout(this.retainedRetryTimer);
+    this.retainedRetryTimer = null;
   }
 
   _status(id) {
@@ -349,7 +352,8 @@ class TagBindings {
         .catch((error) => {
           s.errors++;
           s.lastError = `_meta: ${error.message}`;
-          this.metaSent.delete(unit.id); // retried on the next reconcile
+          this.metaSent.delete(unit.id);
+          this._scheduleRetainedRetry(); // e.g. broker not connected yet at startup
         });
     }
     for (const id of [...this.metaSent.keys()]) if (!seen.has(id)) this.metaSent.delete(id);
@@ -463,7 +467,18 @@ class TagBindings {
       }
       return;
     }
-    if (target.format !== 'envelope') return;
+    if (target.format !== 'envelope') {
+      // Plain payloads cannot carry quality, but history can: the direct
+      // historian target still records the loss.
+      if (target.historian?.historianId) {
+        for (const [name, e] of m) {
+          if (e.q === 0) continue;
+          e.q = 0;
+          this._toHistorian(unit, model.valueTopicOf(unit, name), e.v, 0, now);
+        }
+      }
+      return;
+    }
     for (const [name, e] of m) {
       if (e.q === 0) continue;
       e.q = 0;
@@ -506,7 +521,21 @@ class TagBindings {
       .catch((error) => {
         s.errors++;
         s.lastError = error.message;
+        this._statusUnits?.delete(unit.id);
+        this._scheduleRetainedRetry();
       });
+  }
+
+  /** Retained documents that could not be published are retried, not forgotten. */
+  _scheduleRetainedRetry() {
+    if (!this.started || this.retainedRetryTimer) return;
+    this.retainedRetryTimer = setTimeout(() => {
+      this.retainedRetryTimer = null;
+      if (!this.started) return;
+      this._publishMetaAll();
+      this._publishStatusForNewUnits(new Set());
+    }, this.retryMs);
+    this.retainedRetryTimer.unref?.();
   }
 
   _heartbeatSweep() {
@@ -554,7 +583,7 @@ class TagBindings {
           m.value,
           // per-metric quality/timestamp when the publisher supplied them
           m.quality === 0 || m.quality === 64 ? m.quality : 192,
-          Number(m.sourceTimestamp) > 0 ? Number(m.sourceTimestamp) : new Date(msg.timestamp).getTime() || Date.now(),
+          messageTime({ sourceTimestamp: m.sourceTimestamp ?? msg.sourceTimestamp, timestamp: msg.timestamp }),
           SPB_TYPES[m.datatypeName]
         );
       }

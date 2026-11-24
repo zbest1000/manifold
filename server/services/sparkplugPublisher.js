@@ -289,17 +289,28 @@ class SparkplugPublisher {
   /** Start (or return) a host-application session for (brokerId, hostId). */
   startHost({ brokerId, hostId }) {
     const key = `${brokerId} ${hostId}`;
-    let h = this.hostSessions.get(key);
-    if (h) return h;
-
     const cfg = this._brokerConfig(brokerId);
+    const signature = configSignature(cfg);
+    let h = this.hostSessions.get(key);
+    if (h && h.signature === signature) return h;
+    if (h) {
+      // Broker profile edited: reconnect with the new settings.
+      try {
+        h.client?.end(true);
+      } catch {
+        /* already closed */
+      }
+      this.hostSessions.delete(key);
+    }
+
     h = {
       key,
       brokerId,
       hostId,
       online: false,
       stats: { published: 0, errors: 0, lastError: null, lastStateTs: null },
-      client: null
+      client: null,
+      signature
     };
 
     const { url, options } = connectTarget(cfg);

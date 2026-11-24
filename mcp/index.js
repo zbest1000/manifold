@@ -655,8 +655,8 @@ server.tool(
     id: z.string().optional().describe('Binding id to update; omit to create.'),
     name: z.string().optional(),
     enabled: z.boolean().optional().describe('Default true.'),
-    source: z.object({ type: z.enum(['opcua', 'sparkplug']) }).passthrough()
-      .describe('Source: { type: "opcua", connectionId, tags } or { type: "sparkplug", brokerId, group, edge }.'),
+    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile']) }).passthrough()
+      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags } or { type: "device-profile", profileId, tags }.'),
     target: z.object({ mode: z.enum(['mqtt', 'sparkplug']), brokerId: z.string() }).passthrough()
       .describe('Target: { mode, brokerId, ... }; sparkplug mode also needs group and edge.')
   },
