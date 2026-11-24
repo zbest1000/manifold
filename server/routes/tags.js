@@ -147,7 +147,7 @@ router.get('/bindings', (req, res) => {
 // POST /api/bindings
 router.post('/bindings', async (req, res) => {
   const { profiles, bindings } = req.app.locals.services;
-  const { id, name, enabled, source, target } = req.body || {};
+  const { id, name, enabled, source, target, rbe } = req.body || {};
   if (!source?.type || !['opcua', 'sparkplug', 'device'].includes(source.type)) {
     return res.status(400).json({ error: 'source.type must be "device", "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)' });
   }
@@ -176,7 +176,9 @@ router.post('/bindings', async (req, res) => {
     name: name || null,
     enabled: enabled !== false,
     source,
-    target
+    target,
+    // report-by-exception extras: { heartbeatMs } republishes an unchanged value
+    ...(rbe && Number(rbe.heartbeatMs) > 0 ? { rbe: { heartbeatMs: Math.max(1000, Math.round(Number(rbe.heartbeatMs))) } } : {})
   });
   bindings.reconcile(); // reset state if this edited an existing binding
   await bindings.syncMonitors();
