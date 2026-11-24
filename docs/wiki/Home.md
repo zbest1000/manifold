@@ -18,8 +18,9 @@
 | 🔌 | **[Broker Setup](Broker-Setup)** | Intake QoS, transports and MQTT 5, shared subscriptions, the EMQX ACL recipe, admin APIs for consumer lineage |
 | 🗄️ | **[Historians](Historians)** | InfluxDB, TimescaleDB, Timebase — store-and-forward in, Trends charts back out |
 | 🔀 | **[Pipelines and Models](Pipelines-and-Models)** | Route, reshape, and contextualize the live stream |
-| 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | Poll Modbus TCP, S7 and EtherNet/IP PLCs: addressing, byte order, PLC-side prerequisites, polling health, the read-only guarantee |
-| 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | Device tags to topics: path versus address, quality and the `_status` topic, heartbeat, Sparkplug, Timebase |
+| 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | Poll Modbus TCP, S7 and EtherNet/IP PLCs: addressing, byte order, PLC-side prerequisites, profiles and bulk creation, finding devices, polling health, the read-only guarantee |
+| 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | Device tags to topics: asset paths, one topic per tag or one object per asset, quality, `_status` and `_meta`, deadband and heartbeat, profile bindings, preview, the direct historian target |
+| ✅ | **[Verifying on real hardware](Verifying-on-Real-Hardware)** | The ordered checklist for an engineer with a real Modbus, S7 or EtherNet/IP device or a Timebase historian |
 | 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse tags, publish them into the UNS, run a Sparkplug primary host |
 | 🛡️ | **[Operations](Operations)** | Fail-closed auth and named tokens, the egress guard and its limits, audit, profile durability, the System health page, config as code, alerts |
 | 🩺 | **[Troubleshooting](Troubleshooting)** | Symptom → cause → fix |

@@ -98,8 +98,11 @@ limits, timeouts) is in the
 
 ## Where to next
 
-- Poll a PLC directly (Modbus TCP, S7, EtherNet/IP) → [Devices and Drivers](Devices-and-Drivers),
+- Poll a PLC directly (Modbus TCP, S7, EtherNet/IP) → [Devices and Drivers](Devices-and-Drivers)
+  (it can also find them on the network and create many from a profile),
   then publish its tags with [Mapping to the UNS](Mapping-to-the-UNS)
+- Have a real PLC and want to help lift the "experimental" label →
+  [Verifying on real hardware](Verifying-on-Real-Hardware)
 - Wire up consumer lineage and broker health → [Broker Setup](Broker-Setup)
 - Send data to a time-series database → [Historians](Historians)
 - Reshape a messy namespace into a clean UNS → [Pipelines and Models](Pipelines-and-Models)

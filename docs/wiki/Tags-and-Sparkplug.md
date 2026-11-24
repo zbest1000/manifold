@@ -16,13 +16,25 @@
 
 Tick tags, hit **Add to UNS**, and the wizard does the right thing per
 source: MQTT selections compile into a pipeline route; device, OPC UA and
-Sparkplug selections become **bindings**. The wizard previews the resolved
-topic for every tag, and **retain is off by default** (a retained value
-outlives a dead device). The tree is keyboard accessible (arrow keys to move,
-Space to select) and has a filter box.
+Sparkplug selections become **bindings**. The wizard has three steps: **Target**
+(name, broker, plain MQTT or Sparkplug B, the asset path chosen in a picker over
+the live UNS tree, the layout), **Naming** (the published name of each tag, the
+format, and the topics and payloads the **server** would publish, with
+collisions and raw-address warnings) and **Options** (QoS, deadband type and
+value, heartbeat, retain, the retained `_status` and `_meta` documents, the
+direct historian target, the object size cap). **Retain is off by default** (a
+retained value outlives a dead device). The tree is keyboard accessible (arrow
+keys to move, Space to select, Enter to open) and has a filter box, a
+select-all for a folder (up to 500 tags) and a marker on tags that are already
+bound. Warnings from the last save appear in a banner above the bindings table.
+A device profile can be bound as a whole (every instance gets its own asset);
+see [Mapping to the UNS](Mapping-to-the-UNS#one-definition-for-many-identical-devices-profile-bindings).
 
-For the full story on device tags (path versus address, quality, the `_status`
-topic, heartbeat, historians) see [Mapping to the UNS](Mapping-to-the-UNS).
+For the full story on device tags (asset paths versus templates, the two
+layouts, quality, the `_status` and `_meta` documents, deadband, heartbeat,
+retained cleanup, historians) see [Mapping to the UNS](Mapping-to-the-UNS).
+The MQTT-source path is the exception: it compiles to a pipeline route and does
+not get `_status`, `_meta`, object payloads or a historian target.
 
 ## How a binding flows
 
@@ -36,8 +48,9 @@ flowchart LR
     FMT -->|sparkplug| P3[DDATA on a proper<br/>Sparkplug B device]
 ```
 
-- **Report by exception** — an absolute deadband suppresses numeric noise;
-  non-numeric values publish on change only. Change detection keys on
+- **Report by exception** — an absolute or **percent** deadband suppresses
+  numeric noise (percent is of the tag's range, or of the last published value
+  when it has none); non-numeric values publish on change only. Change detection keys on
   **(value, quality)**, so Good to Bad with an unchanged value is still
   published (in the envelope format). An optional **heartbeat** republishes
   unchanged tags so "unchanged" can be told from "dead".
@@ -47,7 +60,11 @@ flowchart LR
   bindings gets one Bad publish, and a retained `_status` document says why.
   Sparkplug targets get DDEATH instead.
 - **Types survive** — Sparkplug targets use the tag's real type (Int16, Float,
-  Boolean, ...) rather than sending everything as Double.
+  Boolean, ...) rather than sending everything as Double, and carry the unit,
+  description and range as metric properties in the BIRTH.
+- **Metadata travels** — envelopes carry the unit (`u`), and a retained
+  `_meta` document lists each property's type, unit, description, range and
+  source.
 - **Read-only by design** — bindings never write toward a device. There is no
   write path in the engine, and the device drivers' frame encoders refuse
   every write service (see [Devices and Drivers](Devices-and-Drivers#the-read-only-guarantee-and-its-limits)).

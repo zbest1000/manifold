@@ -32,9 +32,13 @@ on startup to:
 - three simulated devices from `device-sim`: *Demo pump (Modbus TCP)* at
   `device-sim:5020`, *Demo CPU (S7)* at `device-sim:10102` and *Demo Logix
   (EtherNet/IP)* at `device-sim:44818`, polled every second
-- one binding, *Demo pump to UNS*, which publishes the Modbus device's tags as
-  TVQ envelopes under `demo/plant1/pump1/` (plus a retained
-  `demo/plant1/pump1/_status` and a 10 s heartbeat) to the demo broker
+- two bindings for the Modbus device: *Demo pump to UNS* publishes its tags as
+  TVQ envelopes under `demo/plant1/pump1/` (a legacy `pathTemplate`, plus a
+  retained `demo/plant1/pump1/_status` and a 10 s heartbeat), and *Demo pump as
+  one object* publishes all tags as one JSON object to `demo/plant1/pump1-object`
+  (`assetPath` with `object-per-asset`, same heartbeat). The retained `_meta`
+  documents may be missing until a binding is saved again (known issue: they are
+  published only if the broker is connected when the app starts)
 
 The simulator continuously publishes a tree of plain JSON telemetry topics
 (`factory/…`, `building/…`, `energy/…`) plus valid Sparkplug B
@@ -46,7 +50,7 @@ The simulator continuously publishes a tree of plain JSON telemetry topics
 - **OPC UA** — browse the OPC-PLC address space, read and monitor nodes
 - **MQTT Brokers** — the connected broker with live message/topic counts
 - **Devices** — three devices online with cycle times, live tag values, and the probe
-- **Tags** — the *Demo pump to UNS* binding, publishing `demo/plant1/pump1/#`
+- **Tags** — the *Demo pump to UNS* and *Demo pump as one object* bindings, publishing `demo/plant1/pump1/#` and `demo/plant1/pump1-object`
 
 ## Connecting things manually
 
@@ -164,7 +168,7 @@ directly.
 > passes `docker compose config`, parses as YAML, and the exact command the
 > service runs (`node server/tools/simulators.js --modbus 5020 --s7 10102 --eip
 > 44818 --host 0.0.0.0 --quiet`), its health check and a SIGTERM shutdown were
-> run directly with Node. The seeded devices and binding were run against a
+> run directly with Node. The seeded devices and bindings were run against a
 > local server and an in-process MQTT broker with the hostnames rewritten to
 > loopback. `docker compose up` itself, the image build, and name resolution of
 > `device-sim` on the compose network have **not** been exercised. If something

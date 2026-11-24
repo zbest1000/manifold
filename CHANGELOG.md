@@ -25,24 +25,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Devices page and API.** `GET/POST /api/devices`, `PUT/DELETE
   /api/devices/:id`, `POST /api/devices/test`, `POST /api/devices/validate-tags`,
   `POST /api/devices/:id/probe`, `GET /api/devices/:id/browse` (EtherNet/IP
-  controller tags), `GET /api/devices/:id/values`. The page has a tag table
-  (spreadsheet paste, CSV import, inline validation), a connection test, per-group
-  cycle times and overruns, quarantine and last-error display, and a probe that
-  decodes raw registers under all four Modbus byte/word orders. Modbus accepts
-  `holding:100` and Modicon `40001` / `400001`.
+  controller tags), `GET /api/devices/:id/values`. The page has generic forms
+  for all three protocols with presets, an **Experimental** badge and the
+  driver's prerequisites text, a tag table (spreadsheet paste, CSV import,
+  inline validation), a connection test, polling health (per-group cycle times
+  and overruns, quarantine reasons, last error with its time), **Import from
+  controller** for EtherNet/IP, and a probe that decodes raw registers under all
+  four Modbus byte/word orders. Modbus accepts `holding:100` and Modicon
+  `40001` / `400001`. The device status gained `quarantineReasons` and
+  `lastErrorAt`; driver descriptors are uniform (`tagTypeInfo`,
+  `tagTypeOptional`).
+- **Device profiles and instances.** `GET/POST /api/devices/profiles`,
+  `GET/PUT/DELETE /api/devices/profiles/:id`, `POST
+  /api/devices/profiles/:id/instantiate`. A profile holds protocol, options,
+  poll groups, `params[]` and tags whose `key`, `address` and `property` may use
+  `{param}` placeholders; a device references it with `profileId` and `params`.
+  Editing a profile re-applies it to every instance atomically (400 listing the
+  instances that would break); deleting one is refused (409) while a binding
+  uses it. The **Profiles** tab creates a profile (or one from an existing
+  device), creates a device from it, and **bulk-creates** devices from a pasted
+  table or CSV (one request per row; each row's result is shown).
+- **Mapping to the UNS: asset paths, objects and metadata.** A binding's
+  `target.assetPath` (ISA-95, no placeholders) replaces the `pathTemplate`
+  (still accepted); the topic is `<assetPath>/<property>`. Envelopes carry the
+  engineering unit as `u`. `layout: 'object-per-asset'` publishes one JSON
+  object per asset (`{ t, values: { <property>: { v, q, u? } } }`), capped by
+  `target.maxObjectBytes` (default 64 KB, at most 1 MB) and rejected at save
+  time when the worst case would exceed it. A retained `<asset>/_meta` document
+  (`target.metaTopic: false` to disable) lists each property's type, unit,
+  description, range and source; Sparkplug targets carry unit, description and
+  range as metric properties in the BIRTH. A percent deadband
+  (`rbe.deadband: { type: 'percent', value }`) is of the tag's range, or of the
+  last published value when it has none. Profile bindings (`source.type:
+  'device-profile'`, `target.assetPathTemplate` such as `acme/{site}/{device}`
+  or an explicit `assetPaths` map) publish one unit per instance of a profile,
+  including instances added later.
+- **Retained cleanup.** Retained topics a binding owns (`_status`, `_meta`,
+  retained values) are cleared with an empty retained publish when a binding is
+  deleted, disabled, renamed (path or broker) or has retain switched off, or a
+  profile instance goes away.
+- **Direct historian target** on a binding (`target.historian.historianId`):
+  each published sample goes to the store-and-forward outbox with its read
+  timestamp and quality. Timebase and TimescaleDB only; InfluxDB is rejected at
+  save time because its writer drops quality.
+- **Binding preview and save-time warnings.** `POST /api/tags/bindings/preview`
+  (open to viewers) resolves topics and example payloads for up to 50 tags (or
+  the first 50 objects), flags topics another binding already publishes and
+  names that look like raw device addresses. `POST /api/tags/bindings` returns
+  the same non-blocking `warnings` with the saved binding. The namespace lint
+  also flags topic leaves that look like raw device addresses and no longer
+  applies hierarchy rules under `spBv1.0`.
+- **Discovery of devices (opt-in).** The scan can look for Modbus TCP (502), S7
+  (102) and EtherNet/IP (44818) devices (`includeDevices: true`, or explicit
+  `modbusPorts`, `s7Ports`, `eipPorts`). Each port gets one read-only
+  identification probe built with the drivers' own frame encoders; the Discovery
+  page has "Find devices" and "Add as device". Loopback targets are always
+  refused by the scan.
+- **Device metrics on `/metrics`:** `manifold_device_up`,
+  `manifold_device_connects_total`, `manifold_device_requests_total`,
+  `manifold_device_timeouts_total`, `manifold_device_exceptions_total`,
+  `manifold_device_cycle_ms`, `manifold_device_overruns_total`,
+  `manifold_device_quarantined_tags`, `manifold_driver_host_up`,
+  `manifold_driver_host_restarts_total`, plus
+  `manifold_binding_suppressed_total` and `manifold_binding_errors_total`.
+- **UI shell.** A navigation drawer below the `md` breakpoint, AA contrast
+  tokens, a global focus ring, shared dialog, table and form primitives, lazy
+  routes with a skeleton fallback (smaller initial bundle), an ESLint config for
+  the client, a dark UNS canvas with the Sparkplug namespace labelled as such,
+  one topic counter and one ingest-rate source for Overview, Topics and UNS.
 - **Tag sources and bindings v2.** Bindings consume pluggable tag sources
   (device drivers, OPC UA) emitting normalized `sample` / `source-state` events.
   Change detection keys on (value, quality); a source going offline publishes one
   Bad envelope per tag and a retained `<path>/_status` document
-  (`statusTopic: false` to disable); Sparkplug targets use the real tag type and
-  get DDEATH / DBIRTH on loss and recovery; `rbe.heartbeatMs` republishes
-  unchanged tags.
-- **Accessible tag tree and a bind wizard** with a live preview of the resolved
-  topic, a filter box, and keyboard navigation (arrows, Space, Enter).
+  (`{ online, since, reason }`; `statusTopic: false` to disable; also published
+  when a binding is created while its source is already online); Sparkplug
+  targets use the real tag type and get DDEATH / DBIRTH on loss and recovery;
+  `rbe.heartbeatMs` republishes unchanged tags.
+- **Accessible tag tree and a three-step bind wizard** (target, naming, options):
+  an asset-path picker over the live UNS tree, the layout choice, units, deadband
+  type, heartbeat, the historian target, profile bindings, and a topic and
+  payload preview computed by the server. The tree has a filter box and keyboard
+  navigation (arrows, Space, Enter).
 - **Demo stack: simulated devices.** `server/tools/simulators.js` runs the Modbus,
   S7 and EtherNet/IP test simulators with changing values; the compose file gains
-  a `device-sim` service, and the demo seed includes three devices and a binding
-  that publishes the Modbus device to `demo/plant1/pump1/`. See DOCKER.md.
+  a `device-sim` service, and the demo seed includes three devices and two
+  bindings for the Modbus device: per-tag topics under `demo/plant1/pump1/` (a
+  legacy `pathTemplate`) and one object under `demo/plant1/pump1-object`
+  (`assetPath` with `object-per-asset`). See DOCKER.md.
 - **Historian outbox:** segmented spill with an atomic cursor, a dead-letter file
   for permanently rejected points, and strict oldest-first delivery that live
   traffic cannot overtake.
@@ -56,9 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MANIFOLD_MAX_MSG_PROPS`.
 - Optional idle-topic eviction, a `topic-cap-reached` event, and a
   `sparkplugCoalesced` broker metric.
-- New wiki pages **Devices and Drivers** and **Mapping to the UNS**, and a design
-  document for the drivers (`docs/design/southbound-drivers.md`, partly
-  implemented).
+- New wiki pages **Devices and Drivers**, **Mapping to the UNS** and **Verifying
+  on real hardware** (one ordered checklist for Modbus, S7 and EtherNet/IP), and
+  a design document for the drivers (`docs/design/southbound-drivers.md`).
 
 - **System (Health) page.** Renders Manifold's own Prometheus `/metrics` in the
   browser — process health (uptime, memory, event-loop delay), per-broker
@@ -84,6 +153,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are configured but all rejected, auth stays on and every request is 401.
 - **`/metrics` requires a bearer token** (any role) when auth is on. Set
   `MANIFOLD_METRICS_PUBLIC=1` to keep it open for an anonymous scraper.
+- **Imported configuration applies immediately** (bindings are reconciled and
+  devices re-applied) instead of at the next restart.
+- **Viewers may call the binding preview** (a read-only POST) and still cannot
+  see alert webhook URLs in the rule listing.
 - **Alert webhooks pass the egress guard.** Webhooks to `localhost`, link-local
   and (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) private addresses are refused.
 - **Viewers** can call a short list of read-only POSTs (historian query, pipeline
@@ -92,6 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Device targets** pass the egress guard: private ranges need
   `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`, loopback needs
   `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`.
+- **The Sparkplug publisher honours the broker profile:** TLS material
+  (`ca`, `cert`, `key`, `rejectUnauthorized`), WebSocket path, MQTT version and
+  credentials, and an edge-node session is rebuilt when its broker profile is
+  edited.
 - **Sparkplug messages are delivered in order and un-coalesced** (bounded queue,
   overflow counted). They reach consumers at flush cadence, up to 100 ms later.
 - **Bindings publish more:** a quality-only change publishes (envelope format),
@@ -105,9 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (booleans were `1`/`0` before); `null` is skipped and counted; names with
   control characters are rejected. InfluxDB stores no quality, so it is not
   offered for device data.
-- **Pipeline and historian timestamps and quality** come from the payload when it
-  carries them (TVQ envelope `t`/`q`, Sparkplug timestamps and the metric
-  `Quality` property) instead of always being arrival time and Good.
+- **Pipeline, recorder and historian timestamps and quality** come from the
+  payload when it carries them (TVQ envelope `t`/`q`, Sparkplug timestamps and
+  the metric `Quality` property) instead of always being arrival time and Good.
+  Pipelines and the recorder ignore a source time before 2000-01-01 or more than
+  24 hours ahead and use arrival time. Sparkplug-source bindings use the metric's
+  own time and quality without that window.
 - **OPC UA:** a lost or never-established saved connection is retried forever
   (1 s to 60 s, jittered) and monitors are rebuilt; socket value updates are
   coalesced to 100 ms; `publish-success` socket events are summarized (a leading event, then at most
@@ -134,6 +214,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Config export no longer blanks device tag keys: arrays named `tags` and
+  `ownTags` keep their `key` identifiers, while a secret inside a tag or a key
+  anywhere else is still masked.
+- A refused or quarantined device tag now reaches the device status: `lastError`
+  reads `tag <key>: <reason>` (for an S7 CPU with PUT/GET off, the PUT/GET hint),
+  `quarantineReasons` lists code, message and time per tag, and `lastErrorAt` is
+  set. Before, only Probe showed the cause.
+- A binding created or edited while its source is already online now publishes
+  `_status` immediately instead of at the next state change.
+- Controller browse returns an address for folder nodes, and an EtherNet/IP
+  STRING is browsed as a value, not as members.
 - OPC UA bindings no longer go silent after a restart, an edit or a delete, and a
   dropped OPC UA connection is no longer given up on after a few retries.
 - Sparkplug DATA messages are no longer lost to per-flush coalescing (the
@@ -168,8 +259,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Egress guard: alert webhooks (with redirect re-validation and connect-time
-  address pinning) and device targets now pass it. It still does **not** cover
-  MQTT broker hosts, OPC UA endpoints or historian/database URLs.
+  address pinning), device targets and every Discovery scan candidate now pass
+  it. It deliberately does **not** cover MQTT broker hosts, OPC UA endpoints or
+  historian/database URLs: a broker or historian on `localhost` or the LAN is the
+  standard setup, and an admin configures these by hand. The residual risk is
+  that an admin token can make the server connect to any host it can reach
+  through those three paths, internal services included; protect admin tokens and
+  use network policy.
+- Discovery's device probes send read-only identification requests only (Modbus
+  function 3 on one register, an S7 COTP connection request, an EtherNet/IP
+  ListIdentity), are opt-in, and are built with the drivers' allowlisted encoders.
+  Scanning an OT network is still intrusive.
 - Roles fail closed: unknown roles are rejected, never treated as admin; a failed
   token configuration keeps auth on.
 - Viewer role: explicit allowlist of read-only POSTs, webhook URLs hidden.
@@ -185,15 +285,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues
 
-- Config export blanks each device tag's `key` (the secret-name rule matches
-  `key`); do not use export/import to move devices until fixed.
-- When an S7 CPU refuses reads (PUT/GET off, optimized access), the device stays
-  Online with its tags quarantined and no `lastError`; the explanation is shown
-  only by Probe.
-- The Sparkplug publisher session still ignores a broker's TLS settings, `wsPath`
-  and `mqttVersion`, and caches sessions across edits.
-- Device metrics are not on `/metrics`; the Devices page and `GET /api/devices`
-  carry them.
+- **S7 and EtherNet/IP are experimental, and no driver was verified on real
+  hardware.** Modbus TCP, S7 and EtherNet/IP were checked only against in-process
+  simulators written with the drivers. The ordered procedure for engineers with
+  a real PLC is [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md).
+- **The Timebase REST API reference could not be read**, so ordering of old
+  samples, the shape of a Bad sample without a value, the 500 ms resolution,
+  quality codes, batch limits and tokens are unconfirmed for the direct historian
+  target and for pipeline writes.
+- **A pipeline historian target on an envelope topic stores the envelope as JSON
+  text.** Add a `numeric` transform with `field: "v"`. A binding's direct
+  historian target is not affected.
+- **`_meta` can be missing after a start.** If the broker is not connected when
+  the server first reconciles bindings, the `_meta` publish fails (the binding's
+  last error says so) and is retried only at the next binding, device or profile
+  save. Saving the binding republishes it. `_status` and values are not affected.
+- **Retained cleanup is best effort.** Edits made while the server is down are
+  not cleaned up (the owned-topic set is rebuilt at start), a clear sent while
+  the target broker is disconnected is dropped, and retained value topics of a
+  Sparkplug-source binding are not known in advance.
+- **MQTT, OPC UA and historian endpoints are outside the egress guard**, by
+  decision (see Security above).
+- **The device egress check is check-only**: a hostname is re-resolved when the
+  driver connects, so a small DNS-rebinding window remains (literal IPs have
+  none).
+- A Sparkplug **host-application STATE** session keeps its old connection when
+  its broker profile is edited until it is stopped and started again.
+- The MCP `binding_save` tool lists only `opcua` and `sparkplug` source types;
+  create device and profile bindings through the UI or REST.
+- `isolate` (a process per device) and the Modbus `options.unmapped` ranges are
+  not editable in the UI.
 
 ## [1.0.0] - 2026-07-15
 

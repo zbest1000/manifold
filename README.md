@@ -21,7 +21,7 @@ Manifold connects to brokers and servers, streams their data in real time, and r
 - MQTT 3.1.1 and 5 (per broker), over `mqtt`/`mqtts`/`ws`/`wss`, with a configurable intake filter including `$share` shared subscriptions. MQTT 5 user properties, content type, response topic, and correlation data decoded on messages; the first three publishable.
 - OPC UA address-space browsing with live monitored values; secure connections (Sign / SignAndEncrypt) with endpoint discovery and a built-in certificate trust store.
 - Producer/consumer lineage: Sparkplug topology from BIRTH/DEATH certificates (including host application STATE), per-client subscriptions from broker admin APIs (EMQX, HiveMQ), wildcard filters resolved against observed topics.
-- Network discovery by CIDR scan with protocol handshake verification.
+- Network discovery by CIDR scan with protocol handshake verification; opt-in, read-only identification of Modbus TCP, S7 and EtherNet/IP devices, with "Add as device".
 - Message history survives restarts; any two payloads can be diffed structurally.
 
 **Unified Namespace**
@@ -40,13 +40,15 @@ Manifold connects to brokers and servers, streams their data in real time, and r
 
 **Devices** (southbound drivers, **read-only by construction**)
 - **Modbus TCP**, **Siemens S7** (S7comm; **experimental**) and **EtherNet/IP** Logix (**experimental**). Experimental means verified only against in-process simulators, not real hardware; the per-driver checklists are in [`server/drivers/s7/NOTES.md`](server/drivers/s7/NOTES.md) and [`server/drivers/eip/NOTES.md`](server/drivers/eip/NOTES.md).
-- Devices, poll groups and tags are edited on the Devices page (spreadsheet paste and CSV import, inline address validation, a connection test, and a **probe** that shows raw registers decoded under all four Modbus byte/word orders). Modbus addresses accept `holding:100` or Modicon `40001` / `400001` with explicit 0/1-based handling. The EtherNet/IP controller tag list is available over REST.
+- Devices, poll groups and tags are edited on the Devices page (generic forms with presets and experimental badges, spreadsheet paste and CSV import, inline address validation, a connection test, polling health with the device's own reason for every quarantined tag, and a **probe** that shows raw registers decoded under all four Modbus byte/word orders). Modbus addresses accept `holding:100` or Modicon `40001` / `400001` with explicit 0/1-based handling. EtherNet/IP tags can be imported from the controller's own tag list.
+- **Device profiles**: define a meter, drive or PLC type once (tags with `{param}` placeholders, poll groups, options), then create devices from it one at a time or in bulk from a pasted table or CSV.
 - Each driver runs in a supervised child process: a crash, hang or protocol fault takes down only that process, which restarts with backoff and is parked if it crash-loops. Each device keeps one connection, reconnects forever with jittered backoff, skips (and counts) overrunning poll cycles instead of queueing them, and quarantines tags that fail permanently while the rest keep polling.
 - Read-only is enforced where bytes are built: each driver's single frame encoder has an allowlist (Modbus function codes 1-4; S7 setup, Read Var and SZL read; CIP read and connection services), and the tests assert that no write ever reaches a socket. It is a guarantee about Manifold, not about your network: none of these protocols authenticates the client.
 
 **Tags**
 - Unified tag browser (devices, OPC UA, Sparkplug registry, MQTT trie) with an accessible tree, filter and CSV import.
-- Bindings publish tags into the UNS as plain values, TVQ envelopes, or a Sparkplug B device (typed metrics: Int16, Float, Boolean, ...), with deadband, a heartbeat, and quality mapping. Quality is part of change detection; when a source goes offline every tag gets one Bad publish and a retained `<path>/_status` document (or DDEATH for Sparkplug). Read-only toward devices.
+- Bindings publish tags under an **ISA-95 asset path** as plain values, TVQ envelopes with units, **one JSON object per asset** (size-capped), or a Sparkplug B device (typed metrics: Int16, Float, Boolean, ...), with absolute or percent deadband, a heartbeat, and quality mapping. Quality is part of change detection; when a source goes offline every tag gets one Bad publish and a retained `<path>/_status` document (or DDEATH for Sparkplug), and a retained `<path>/_meta` document carries types, units, ranges and sources. A **profile binding** maps every instance of a device profile with one definition. Retained topics are cleared when a binding is renamed or deleted. The wizard previews what the server would publish, and warns about raw-address names and topic collisions. Read-only toward devices.
+- An opt-in **direct historian target** on a binding (Timebase or TimescaleDB; InfluxDB is refused because it stores no quality).
 - Optional Sparkplug primary-host session: Manifold publishes retained `STATE` so edge nodes see a host application.
 
 **Operations**
@@ -54,7 +56,7 @@ Manifold connects to brokers and servers, streams their data in real time, and r
 - Fail-closed by default: with no token the server binds `127.0.0.1` only. An egress guard blocks the network scanner, i3X/CESMII/broker-admin clients, alert webhooks and device targets from reaching loopback (device targets: opt-in for simulators), cloud-metadata, and (unless opted in) private ranges. It does not cover MQTT broker, OPC UA or historian endpoints, which an admin configures by hand. Security headers (`helmet`) and a general request rate limit are on by default.
 - Durable state: `profiles.json` is written with fsync and rotating backups, and recovered from the newest valid backup if it is ever corrupt.
 - OPC UA connections are supervised: a lost session or a restart retries forever with jittered backoff and rebuilds its monitored items.
-- Self-observability: a **System (Health)** page renders Manifold's own Prometheus `/metrics` live — process health, per-broker ingest, and every engine counter, each with a rolling sparkline. `/metrics` requires a bearer token when auth is on. Device health (state, cycle times, overruns, quarantined tags) is on the Devices page and `GET /api/devices`; it is not on `/metrics` yet.
+- Self-observability: a **System (Health)** page renders Manifold's own Prometheus `/metrics` live — process health, per-broker ingest, and every engine counter, each with a rolling sparkline. `/metrics` requires a bearer token when auth is on. Device and driver-host health (state, cycle times, overruns, timeouts, exceptions, quarantined tags) is on `/metrics` as `manifold_device_*` and `manifold_driver_host_*`, on the Devices page and in `GET /api/devices`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works: system design, the message hot path, the API surface, protocol notes, and testing. Operational guides (broker ACLs, historian setup, transform reference, troubleshooting) live in the [wiki](../../wiki), generated from [`docs/wiki/`](docs/wiki). Release history is in [CHANGELOG.md](CHANGELOG.md); release steps and verification status are in [docs/RELEASING.md](docs/RELEASING.md).
 
@@ -106,7 +108,8 @@ With a token set (`MANIFOLD_AUTH_TOKEN`, `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TO
 - Sparkplug messages are delivered **in order and un-coalesced** (a bounded queue; overflow is counted, not silent), and bindings **publish a Bad-quality envelope when a source goes offline** and a retained `_status` topic. The binding wizard no longer ticks **retain** by default.
 - The historian spill is now **segment files plus a cursor** under `outbox/` (a legacy `<id>.jsonl` is still read first and drained, no conversion needed), and permanently rejected points go to a dead-letter file.
 - `audit.jsonl` rotates by size and now records rejected requests (401/403/429).
-- **Known issue:** config export blanks device tag `key` fields (the secret-name rule matches `key`); see the [Operations guide](docs/wiki/Operations.md#configuration-as-code).
+- Config export keeps device tag `key` fields (an earlier build blanked them) and an import applies immediately.
+- **Not verified on real hardware:** none of the three device drivers has been run against real PLCs, and the Timebase REST behaviour is unconfirmed. See [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md) and the [changelog's known issues](CHANGELOG.md).
 
 Connection profiles persist in `server/data/profiles.json` (mode 0600; directory configurable via `MANIFOLD_DATA_DIR`, restore disabled via `MANIFOLD_NO_RESTORE=1`). The file may contain broker credentials, so protect the host.
 

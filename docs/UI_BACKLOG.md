@@ -8,16 +8,43 @@ PR that closed them is noted inline.
 
 ### Medium
 
-- [~] **Modal portal consistency.** A shared portaled `Modal` primitive now
-  exists (`components/ui.jsx`) — it renders through `document.body` (escaping any
-  `backdrop-blur` ancestor Card, which becomes the containing block for
-  `position:fixed` and otherwise traps the modal under its neighbours) and owns
-  Esc + backdrop-close. `HelpButton` migrated. **Still to migrate:**
-  `components/UnsIconPicker.jsx` and `components/ErrorLog.jsx`. None are
-  currently *visibly* broken (their ancestors aren't blur-Cards today), so this
-  is preventive — migrate them to the primitive as they're touched.
-  **Done (Nov 2026):** `HistoryChartModal` and the expanded `TopicPanel`
-  (`pages/topics/`) and the System `MetricModal` now use the shared `Modal`.
+- [x] **Modal portal consistency.** *Done: every overlay uses the shared portaled
+  `Modal` (`components/ui.jsx`), including `UnsIconPicker`, `ErrorLog`, the topic
+  panels, the System metric modal, the Tags wizard and the Devices dialogs; no
+  `fixed inset-0` overlay remains outside the primitive (searched Nov 2026).* The
+  primitive renders through `document.body` (escaping any `backdrop-blur`
+  ancestor Card, which becomes the containing block for `position:fixed`), owns
+  Esc and backdrop-close, traps focus and restores it.
+
+- [ ] **No deep link from a binding to its node in the UNS.** The binding detail
+  (`pages/tags/BindingDetail.jsx`) shows the resolved topics and a copyable asset
+  path, but there is no "show in UNS" link, and the UNS page (`pages/Uns.jsx`)
+  does not read a selected path from the URL, so the link cannot be built without
+  changing both.
+
+- [ ] **Sparkplug primary-host control sits on the Tags page**
+  (`pages/tags/HostStatePanel.jsx`), beside bindings; it belongs on the broker.
+
+- [ ] **Device fields without a UI:** the `isolate` flag (own host process per
+  device) and the Modbus `options.unmapped` ranges are REST only.
+
+- [ ] **A connections hub.** The design (section 8) lists MQTT and OPC UA
+  connections next to devices under one "Add" picker; today they are separate
+  pages. Device nodes do not appear in the UNS topology either.
+
+- [ ] **Sorting and table semantics are partial.** Brokers, OPC UA connections and
+  Discovery results sort (`lib/sortRows.js`); the Devices, Profiles and bindings
+  tables do not.
+
+- [ ] **Binding preview has no lint delta**, only collisions and raw-address
+  warnings, and the MQTT-source bind path (pipeline routes) has none of the
+  asset-path, `_meta` or historian options.
+
+- [ ] **Not re-verified since the shell rewrite:** layout at 390 px on every page,
+  contrast ratios (the AA tokens were not measured here), bundle size (every page
+  is lazy, but both `lucide` and `lucide-react` are still dependencies), and the
+  page-level `.catch(() => ...)` handlers that still swallow errors (seven in
+  `client/src`).
 
 - [x] **UNS topology over-zooms when a deep mount is present.** *Done: the auto-fit now frames only broker trees (mounts are excluded whenever any broker node exists), via `fitTransform` in `graph/unsLayout.js`; covered by a unit test.* With the demo
   OPC-UA mount (opc-plc, hundreds of nodes) grafted in, the "fit everything on
@@ -45,6 +72,22 @@ PR that closed them is noted inline.
   items land.
 
 ## Done (recent)
+
+- [x] **Shell and accessibility pass (Nov 2026).** Off-canvas navigation drawer
+  below `md`, global `:focus-visible`, AA colour tokens, shared `Modal`, `Table`
+  and form primitives, lazy routes with a skeleton fallback, an ESLint config.
+- [x] **Tags page.** Accessible tree (arrows, Space, Enter), filter box,
+  select-all-in-folder, bound-tag indicator, a three-step bind wizard (target,
+  naming with the server's topic preview, options) with an asset-path picker,
+  layout choice (topic per tag or object per asset), units and deadband type,
+  heartbeat, direct historian target (Timebase and TimescaleDB only) and profile
+  bindings; save-time warnings are shown after saving.
+- [x] **Devices page.** Generic forms for Modbus, S7 and EtherNet/IP with
+  presets, experimental badges and the prerequisites text, controller import
+  (EtherNet/IP), probe, polling health, quarantine reasons, Profiles tab with
+  bulk creation. Discovery: "Find devices" and "Add as device".
+- [x] **UNS and Topics.** Dark UNS theme, the Sparkplug namespace labelled as
+  such, one topic counter and one ingest-rate hook, label level of detail.
 
 - [x] A shared Y axis flattened mixed-magnitude tags (temperature ~50 went flat
   next to speed ~1450). Added a Normalize toggle to Trends that rescales each

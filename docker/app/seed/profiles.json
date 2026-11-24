@@ -226,6 +226,28 @@
       "rbe": {
         "heartbeatMs": 10000
       }
+    },
+    "demo-bind-modbus-object": {
+      "id": "demo-bind-modbus-object",
+      "name": "Demo pump as one object",
+      "enabled": true,
+      "source": {
+        "type": "device",
+        "deviceId": "demo-modbus",
+        "tags": "all"
+      },
+      "target": {
+        "mode": "mqtt",
+        "brokerId": "demo-mqtt",
+        "assetPath": "demo/plant1/pump1-object",
+        "layout": "object-per-asset",
+        "format": "envelope",
+        "qos": 0,
+        "retain": false
+      },
+      "rbe": {
+        "heartbeatMs": 10000
+      }
     }
   }
 }

@@ -78,7 +78,10 @@ Under `MANIFOLD_DATA_DIR/outbox/`, per historian:
 > rejected rather than written, so a topic can't inject extra lines.
 >
 > ⚠️ The InfluxDB writer stores **no quality**. By decision it is not offered
-> for [device data](Mapping-to-the-UNS#historians-timebase-is-the-reference).
+> for [device data](Mapping-to-the-UNS#historians-timebase-is-the-reference):
+> a binding's direct historian target refuses it at save time, and the wizard
+> lists it as unavailable. A pipeline can still write device topics to InfluxDB;
+> you then lose quality.
 
 ### TimescaleDB / PostgreSQL
 
@@ -111,7 +114,11 @@ own collector at the UNS is an equally valid integration, and **for device
 data it is the path to try first**. See
 [Mapping to the UNS](Mapping-to-the-UNS#historians-timebase-is-the-reference),
 which also lists what about the Timebase API is still unverified (the shape of
-a Bad sample with no value, ordering rules, resolution).
+a Bad sample with no value, ordering rules, resolution); the checks to run are
+in [Verifying on real hardware](Verifying-on-Real-Hardware#timebase-direct-write).
+A pipeline that writes an **envelope** topic stores the JSON wrapper as text
+unless you add a `numeric` transform with `field: "v"`; the direct target of a
+binding stores the number itself.
 
 > ℹ️ Timebase has no tag-listing API, so the Trends tag *search* is off for
 > it — type the exact tag path instead. Querying works for all three
@@ -124,8 +131,15 @@ a Bad sample with no value, ordering rules, resolution).
   payload has them (TVQ envelope, Sparkplug), rather than stamping arrival time.
 - **Device tags**: publish them to the UNS with a binding
   ([Mapping to the UNS](Mapping-to-the-UNS)), then either let Timebase's own
-  collector subscribe, or route the topics through a pipeline. There is no
-  historian target on bindings themselves yet.
+  collector subscribe, route the topics through a pipeline, or give the binding
+  a **direct historian target**: every sample it publishes is also enqueued to
+  the outbox here with its read timestamp, the value itself and its quality,
+  under the resolved topic as the tag name. The target must be a **Timebase or
+  TimescaleDB** historian; a binding that names an InfluxDB historian is
+  rejected at save time. See
+  [Mapping to the UNS](Mapping-to-the-UNS#historians-timebase-is-the-reference)
+  for what is stored, and the limits (use `envelope` or the object layout so
+  quality changes reach history).
 - The **Recorder** capturing a topic filter straight into a historian.
 
 ## Reading it back — the Trends page

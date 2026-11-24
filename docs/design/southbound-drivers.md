@@ -1,6 +1,10 @@
 # Design: southbound device drivers (Modbus TCP, S7, EtherNet/IP) and UNS mapping
 
-Status: **partly implemented** (checked against the code, November 2026).
+Status: **implemented, with S7 and EtherNet/IP experimental** (checked against
+the code, November 2026, after the Devices, Profiles, Tags-wizard and Discovery
+UI work). Nothing in this document has been verified against real hardware or
+against the Timebase REST reference; see
+[Verifying on real hardware](../wiki/Verifying-on-Real-Hardware.md).
 The rest of this document is the original proposal and is kept as written, so
 where it differs from the code, the table below and the notes after it win.
 Scope: read-only data collection from PLCs and field devices, and a mapping
@@ -11,39 +15,42 @@ layer that lands their tags in the Unified Namespace with context.
 | Area | Status | Where, and how it differs from the proposal |
 |---|---|---|
 | Phase 0: defects P1 to P5 | **implemented** | Source lifecycle and re-sync on reconnect (P1), supervised OPC UA reconnect (P2), change detection on (value, quality) (P3), typed Sparkplug metrics (P4), Bad on source loss (P5). `services/tagBindings.js`, `services/opcuaManager.js`, `services/tagSources/` |
-| Tag-source contract | **implemented, narrower** | Bindings consume normalized `sample` / `source-state` events from registered adapters (OPC UA adapter, device manager). OPC UA does **not** implement the full Driver interface (`connect`/`plan`/`execute`); only the event contract is shared. There is no separate `sampleBus` or `deviceRegistry`: `deviceManager` plus the profile store fill those roles |
-| Driver contract (4.1) | **implemented, renamed** | Modules export `describe()`, `validateTag()` and `createDriver()`; the driver has `connect`, `plan`, `execute`, `bisect`, `probe`, `browse?`, `close`. `validateAddress` became `validateTag`; `execute` returns per-item results |
-| Supervisor and process model (4.2) | **implemented** | One host process per protocol, `isolate: true` for one per device, heartbeats both ways, exponential backoff (0.5 s to 30 s), crash-loop parking (more than 5 crashes in 60 s), host exits when its parent disconnects. Parking is surfaced on the Devices page; there is no `/metrics` series for it |
-| Runtime (4.3) | **implemented, mostly** | State machine with 1 s to 60 s jittered backoff and no cap, staggered first connects (25 ms per device, up to 500 ms), one in-flight request per connection, deadlines with a watchdog, socket destroyed on timeout, TCP keepalive and `TCP_NODELAY`, bisect and quarantine (retry every 60 s), per-unit breakers, adaptive slowdown (x2 up to x8 after 5 overrunning cycles). **Not implemented:** per-device metrics on `/metrics`; a ceiling on request rate (`interRequestDelayMs` is only a lower bound the user sets) |
-| Egress guard for devices | **implemented, check-only** | `assertAllowedDeviceTarget` at save, test and apply, with loopback behind `MANIFOLD_ALLOW_LOOPBACK_DEVICES`. Drivers open their own sockets, so hostnames keep a small DNS-rebinding window |
-| Device configuration (4.4) | **partly implemented** | Collection `devices` exists and is used (host, port, options, limits, pollGroups, tags, protocol fields, `isolate`). Collection `deviceProfiles` exists in the profile store but nothing reads or writes it: **device profiles, parameters and instances are planned**. CSV import and export of tags is in the UI; the JSON/YAML schema document is the config export, which currently has a defect (below) |
-| Modbus TCP (5.1) | **implemented** | Own client; explicit table, wire offset, byte and word order; Modicon 5 and 6 digit; probe with four decodings; planner with `maxGap` default 0 and declared `unmapped` ranges; exceptions 02 (bisect, then quarantine), 04/05/06 (retry), 0A (gateway) and 0B (unit-down breaker). **Not implemented:** a warning when the client deadline is shorter than a gateway's serial timeout |
-| S7 (5.2) | **implemented, experimental** | Own read-only S7comm client, rack/slot presets and TSAP override, negotiated PDU, at most 20 items per request, block merging, the type list in 5.2, SZL identity, the PUT/GET prerequisites text. **Not implemented:** the optional sentinel tag per DB (rule 9), symbol / TIA export import. The "function refused by CPU" translation exists in the driver but is not shown in the device status (see below) |
-| EtherNet/IP (5.3) | **implemented, experimental; differs from the proposal** | The spike rejected both candidate libraries (`drivers/eip/NOTES.md`), so this is our own read-only CIP client: Large then small Forward Open, Multiple Service Packet with per-item status, fragmented reads, symbol and template browse, External Access, BOOL arrays, orderly Forward Close. **Not implemented:** ListIdentity as a client call, PCCC, Micro800 and Omron specifics (only a `maxPacketBytes` knob), controller change detection (drift is caught by path errors and structure-handle mismatches), the keepalive timer (poll traffic keeps the connection alive) |
-| Read-only enforcement (7) | **implemented** | Allowlisted frame encoders in all three drivers; tests try every refused service and assert no bytes reach the socket |
-| Bindings v2 (6) | **partly implemented** | Done: quality-aware change detection (rule 3), `_status` topic (rule 4), absolute deadband and heartbeat (rule 5), typed Sparkplug metrics (rule 7), live topic preview in the wizard (part of rule 9), retain off by default (rule 12 for values). The target uses `pathTemplate` plus a tag name, not the proposal's `assetPath`/`layout`/`property` fields |
-| | **planned** | Percent deadband; `_meta` document and metadata in Sparkplug BIRTH properties (rule 6); `object-per-asset` layout (rule 10); profile-level mappings (rule 2); clearing retained messages when a mapping is renamed or deleted (rule 8); collision check and lint delta in the preview, and namespace lint flagging topics that look like device addresses (rules 1 and 9); a direct historian target on a mapping |
-| Historian delivery for device data | **partly implemented** | Timebase is the documented reference. Delivery path 1 (via the broker) needs no code. Path 2 is a pipeline from the binding's output topics to a historian; outbox ordering, dead-letter and Bad-quality writes are in place. InfluxDB is excluded by decision, not by code. The Timebase API facts listed under section 11 as unverified are still unverified |
-| Devices page (8) | **partly implemented** | Done: device list with state, cycle time, overruns, quarantine and last error; add/edit with protocol fields, presets, prerequisites and Test connection; tag table with paste, CSV, inline validation and probe; the Tags wizard maps device tags. **Planned:** a hub that lists MQTT and OPC UA connections too, a browse tree for EtherNet/IP in the UI (the REST endpoint exists), device nodes in the UNS topology |
-| Discovery of 502 / 102 / 44818 | **planned** | Discovery does not probe these ports |
+| Tag-source contract | **implemented, narrower** | Bindings consume normalized `sample` / `source-state` events (and an optional `batch-end`) from registered adapters (OPC UA adapter, device manager). OPC UA does **not** implement the full Driver interface (`connect`/`plan`/`execute`); only the event contract is shared. There is no separate `sampleBus` or `deviceRegistry`: `deviceManager` plus the profile store fill those roles |
+| Driver contract (4.1) | **implemented, renamed** | Modules export `describe()`, `validateTag()` and `createDriver()`; the driver has `connect`, `plan`, `execute`, `bisect`, `probe`, `browse?`, `close`. `validateAddress` became `validateTag`; `execute` returns per-item results. The descriptors are uniform: tag types are plain names plus a separate `tagTypeInfo`, and `tagTypeOptional` marks drivers (EtherNet/IP) that resolve the type from the device |
+| Supervisor and process model (4.2) | **implemented** | One host process per protocol, `isolate: true` for one per device (no UI field), heartbeats both ways, exponential backoff (0.5 s to 30 s), crash-loop parking (more than 5 crashes in 60 s), host exits when its parent disconnects. Parking is on the Devices page and on `/metrics` (`manifold_driver_host_up`, `manifold_driver_host_restarts_total`) |
+| Runtime (4.3) | **implemented, mostly** | State machine with 1 s to 60 s jittered backoff and no cap, staggered first connects (25 ms per device, up to 500 ms), one in-flight request per connection, deadlines with a watchdog, socket destroyed on timeout, TCP keepalive and `TCP_NODELAY`, bisect and quarantine (retry every 60 s), per-unit breakers, adaptive slowdown (x2 up to x8 after 5 overrunning cycles). **Metrics** are on `/metrics` (`metricsExporter.js`, names in [Operations](../wiki/Operations.md#prometheus)). The device status carries `quarantineReasons` (per tag: code, message, since), `lastError` and `lastErrorAt`. **Not implemented:** a ceiling on request rate (`interRequestDelayMs` is only a lower bound the user sets) |
+| Egress guard for devices | **implemented, check-only** | `assertAllowedDeviceTarget` at save, test and apply, with loopback behind `MANIFOLD_ALLOW_LOOPBACK_DEVICES`. Drivers open their own sockets, so hostnames keep a small DNS-rebinding window. The Discovery scan uses `isAllowedAddress` without the device flag, so loopback targets are **always** refused there |
+| Device configuration (4.4) | **implemented, mostly** | Collections `devices` and `deviceProfiles` are both used. A **profile** (`services/deviceProfiles.js`) holds protocol, options, poll groups, `params[]` and tags whose `key`, `address` and `property` may contain `{param}` placeholders; a **device** references it with `profileId` and `params` and may add ad-hoc tags (a key that equals a profile tag key is a validation error). `PUT /api/devices/profiles/:id` re-applies to every instance atomically; `DELETE` is refused with 409 while a binding uses the profile. The UI has a Profiles tab with create-from-device, new device from profile and **bulk create** from a pasted table or CSV (the browser sends one `instantiate` request per row; it is not an atomic server operation). CSV import and export of tags is in the UI. There is still no separate JSON/YAML schema document: the config export is that document, and it now keeps device tag keys |
+| Modbus TCP (5.1) | **implemented** | Own client; explicit table, wire offset, byte and word order; Modicon 5 and 6 digit; probe with four decodings; planner with `maxGap` default 0 and declared `unmapped` ranges (REST only, no UI field); exceptions 02 (bisect, then quarantine), 04/05/06 (retry), 0A (gateway) and 0B (unit-down breaker). **Not implemented:** a warning when the client deadline is shorter than a gateway's serial timeout |
+| S7 (5.2) | **implemented, experimental** | Own read-only S7comm client, rack/slot presets and TSAP override, negotiated PDU, at most 20 items per request, block merging, the type list in 5.2, SZL identity, the PUT/GET prerequisites text. A refused read now surfaces in `lastError` as `tag <key>: <message>` and in `quarantineReasons`. **Not implemented:** the optional sentinel tag per DB (rule 9), symbol / TIA export import |
+| EtherNet/IP (5.3) | **implemented, experimental; differs from the proposal** | The spike rejected both candidate libraries (`drivers/eip/NOTES.md`), so this is our own read-only CIP client: Large then small Forward Open, Multiple Service Packet with per-item status, fragmented reads, symbol and template browse, External Access, BOOL arrays, orderly Forward Close. The Devices page has an **Import from controller** browse tree. **Not implemented:** ListIdentity as a driver call (the Discovery probe sends it), PCCC, Micro800 and Omron specifics (only a `maxPacketBytes` knob), controller change detection (drift is caught by path errors and structure-handle mismatches), the keepalive timer (poll traffic keeps the connection alive) |
+| Read-only enforcement (7) | **implemented** | Allowlisted frame encoders in all three drivers; tests try every refused service and assert no bytes reach the socket. The Discovery probes build their frames with the same encoders (`services/deviceIdentify.js`) |
+| Bindings v2 (6) | **implemented** | Rule 1 (`assetPath` and `property`, raw-address lint and save-time warning), rule 2 (profile bindings: `source.type: 'device-profile'` with `assetPathTemplate` or `assetPaths`, one unit per instance, picks up instances added later), 3 (quality in change detection, Bad on loss), 4 (`_status`; also published when a binding is created while its source is already online), 5 (absolute and percent deadband, heartbeat), 6 (units in envelopes, retained `_meta`, Sparkplug BIRTH properties `engUnit`/`description`/`engLow`/`engHigh`), 7 (typed metrics), 8 (retained cleanup, see limits below), 9 (server preview with collisions and warnings, three-step wizard; **not** a lint delta), 10 (`object-per-asset`, size-capped, rejected at save time when the worst case exceeds the cap), 12 (retain off by default). The legacy `pathTemplate` form is still accepted and used by stored bindings and the demo seed. **The `property` field of the proposal is not a binding field**: the published name comes from the binding entry's `name`, else the tag's `property`, else its key |
+| Retained cleanup (rule 8), limit | **implemented, with a limit** | Topics a binding owns are derived from config and cleared (empty retained publish, QoS 1) when they leave the set: delete, disable, path or broker change, retain switched off, instance removed. The set lives in memory and is rebuilt at start, so edits made **while the server is down** are not cleaned up, retained topics of a **Sparkplug-source** binding are not derivable and not cleaned, and a clear aimed at a broker that is disconnected at that moment is dropped |
+| Historian delivery for device data | **implemented; Timebase REST unverified** | Path 1 (via the broker) needs no code. Path 2a: a pipeline from the binding's output topics to a historian. Path 2b: the **direct historian target** on a binding (`target.historian.historianId`; Timebase and TimescaleDB only, InfluxDB is rejected at save time) enqueues each published sample, with its read timestamp and quality, to the store-and-forward outbox under the resolved topic name (for `object-per-asset`, the per-member topic; for a Sparkplug target, `group/edge/device/metric`). Heartbeat repeats are not enqueued. The Timebase API facts listed under section 11 as unverified are still unverified |
+| Devices page (8) | **implemented; hub planned** | Device list with state, cycle time, overruns, quarantine, last error and polling health; add/edit with protocol fields, presets, experimental badges, prerequisites and Test connection; tag table with paste, CSV, inline validation and probe; **Import from controller** (EtherNet/IP); Profiles tab. The Tags page maps device tags and profiles. **Planned:** a hub that lists MQTT and OPC UA connections too, device nodes in the UNS topology, a UI field for `isolate`, a deep link from a binding to its node in the UNS |
+| Discovery of 502 / 102 / 44818 | **implemented, opt-in** | `includeDevices: true` or explicit `modbusPorts` / `s7Ports` / `eipPorts` in the scan options; the Discovery page's "Find devices" ticks each protocol and "Add as device" turns a result into a device. Each port gets one read-only identification probe (Modbus FC 3 of one register at address 0, unit 1; S7 COTP connection request only; EtherNet/IP ListIdentity). A port that does not answer the protocol is not reported. The design's "Modbus device identification (FC 43/14)" was **not** used |
 | Testing (9) | **partly implemented** | Done: pure-core tests, fault-injecting in-process simulators for all three protocols (the simulators are our own, not jsmodbus, snap7 or cpppo), runtime and supervisor tests, simulators in the Docker demo (`server/tools/simulators.js`). **Not done:** a shared contract suite run against every driver as one table, and, above all, **verification on real hardware** (decision 1 in section 11): S7 and EtherNet/IP remain experimental until it happens |
-| Delivery plan phases | | Phase 0, 1, 2 and 3 code exist (2 and 3 without hardware verification); phase 4 (profiles, `_meta`, object-per-asset) and 5 are not started |
+| Delivery plan phases | | Phases 0 to 4 are implemented (2 and 3 without hardware verification). Phase 5 (libplctag host, Modbus/TCP Security) is not started |
 
-Where the code contradicts this document or the review, open items:
+Where the code differs from this document, or a defect remains, open items:
 
-- **Config export blanks device tag keys.** The shared secret-name rule matches
-  `key`, so `GET /api/system/config/export` writes `"key": null` for every device
-  tag (`services/secrets.js`, `routes/system.js`). The proposal's "round-trips
-  through a schema-validated document" does not hold for devices until this is
-  fixed.
-- **Refusal reasons do not reach the status.** Section 5.2 says a refusal is
-  translated into the operator's real cause. The driver does that for Probe, but
-  the runtime keeps only `key`, `v`, `type`, `q` and `qReason` per sample and the
-  numeric exception code per request, so a CPU with PUT/GET off leaves the device
-  Online, every tag Bad (`quarantined`), `lastError` null, and the cause visible
-  only through Probe. The same applies to Modbus exception text.
 - **Modbus exception 02 is quarantined, not "marked unmapped and stopped".**
   Quarantined tags are retried every minute, forever.
+- **Sparkplug-source bindings** take the metric's own timestamp and quality
+  without the plausibility window that pipelines and the recorder apply (a
+  source time before 2000-01-01 or more than 24 h ahead is replaced by arrival
+  time there).
+- **The MCP `binding_save` tool** declares only `opcua` and `sparkplug` source
+  types, although the REST API accepts `device` and `device-profile`.
+- **`_meta` can be missing after a start** when the broker connects after the
+  first reconcile; it is retried only at the next save (review finding N16).
+- **No lint delta in the preview** (rule 9), and **no deep link** from a
+  binding to its UNS node.
+
+Fixed since the first status pass: config export blanked every device tag
+`key` (`services/secrets.js`, commit `ceb979a5`); refusal reasons did not reach
+the device status (`ceb979a5`).
 
 Evidence levels used in this document:
 
@@ -630,8 +637,10 @@ Decided
 
 Open
 
-1. Percent deadband needs an engineering range per tag; is requiring a range
-   acceptable, or should percent be of last value?
+1. Percent deadband: settled in code, still open as a product question.
+   Percent is of the tag's `range` (max minus min) when it defines one, and
+   otherwise of the magnitude of the last **published** value (so from 0 any
+   change publishes). Is that fallback what users expect?
 2. Is the GPL-3.0 S7 library acceptable as an optional, separately installed
    plugin for users who prefer it?
 

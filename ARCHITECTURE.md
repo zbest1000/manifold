@@ -393,6 +393,8 @@ normalized events (`server/services/tagSources/`):
 'sample'       { sourceType, sourceId, address, v, type, q, qReason?, tSource?, tRead }
 // the source as a whole
 'source-state' { sourceType, sourceId, state: 'online' | 'offline', reason }
+// optional: the end of one batch of samples (the device manager sends it per poll-group cycle)
+'batch-end'    { sourceType, sourceId }
 ```
 
 `type` is a normalized name (`bool`, `int8` ... `uint64`, `float32`, `float64`,
@@ -408,38 +410,84 @@ MQTT-source selections still compile into pipeline routes instead.
 
 ### Bindings
 
-A binding is `{ source, target, rbe }`:
+A binding is `{ source, target, rbe }`. The pure half (validation, expansion into
+publishing units, topic and payload shapes, the retained-topic set, warnings and
+the preview) is `services/bindingModel.js`; `services/tagBindings.js` is the run
+time on top of it.
 
 ```js
-source: { type: 'device', deviceId, tags: [{ address: <tagKey>, name }] }
+source: { type: 'device', deviceId, tags: [{ address: <tagKey>, name? }] | 'all' }
+      | { type: 'device-profile', profileId, tags: [<profile tag key>] | 'all' }
       | { type: 'opcua', connectionId, samplingInterval?, tags: [{ address: <nodeId>, name }] }
       | { type: 'sparkplug', brokerId, group, edge, device?, metrics? }
-target: { mode: 'mqtt', brokerId, pathTemplate, format: 'plain' | 'envelope',
-          qos?, retain?, deadband?, statusTopic? }
-      | { mode: 'sparkplug', brokerId, group, edge, device }
-rbe:    { heartbeatMs? }
+target: { mode: 'mqtt', brokerId,
+          assetPath                       // 'acme/dallas/line4/filler' (no placeholders)
+          | pathTemplate                  // legacy 'site/area/{name}'
+          | assetPathTemplate | assetPaths // device-profile only: 'acme/{site}/{device}' | { deviceId: path }
+          layout?: 'topic-per-tag' | 'object-per-asset', maxObjectBytes?,   // default 64 KB, 1 KB..1 MB
+          format: 'plain' | 'envelope',   // object layout always carries quality
+          qos?, retain?, statusTopic?, metaTopic?,   // false opts out of <asset>/_status, <asset>/_meta
+          historian?: { historianId } }   // direct store-and-forward target (Timebase, TimescaleDB)
+      | { mode: 'sparkplug', brokerId, group, edge, device /* profile: may use {device}, {param} */, historian? }
+rbe:    { heartbeatMs?, deadband?: { type: 'absolute' | 'percent', value } }   // legacy target.deadband = absolute
 ```
 
-Semantics (all covered by `bindings-v2.test.js` and the OPC UA integration test):
+**Units.** A binding expands into **units**, one per (source, asset) pair: a plain
+binding is one unit; a `device-profile` binding is one unit per instance of the
+profile (unit id `<bindingId>#<deviceId>`), re-expanded whenever devices or the
+profile change, so instances added later are picked up. A unit whose asset path
+cannot be resolved is skipped and reported as a warning.
 
-- **Report-by-exception on (value, quality).** An absolute `deadband`
-  suppresses numeric changes smaller than the band; other values publish on
-  change; structures compare by bounded JSON. A quality change is always a
-  change (Good to Bad with the same value publishes), but only the `envelope`
-  format can express it, so for `plain` and Sparkplug targets a quality-only
-  change is counted as suppressed. Percent deadband is not implemented.
+**Names and topics.** The published name of a device tag is the binding entry's
+`name`, else the tag's `property`, else its key; the device address never becomes
+a topic by itself. The topic is `<assetPath>/<slugged name>` (slug: whitespace,
+`/`, `+`, `#` to `_`). An asset path has no empty segments, wildcards, braces or
+segment starting with `$`, and is at most 512 characters. In a profile template
+`{device}` is the device name, `{deviceId}` its id, and any other placeholder a
+profile parameter with that instance's value; an unknown placeholder fails at
+save time.
+
+**Payloads (mqtt).** `plain` is the bare value. `envelope` is `{ v, t, q }` plus
+`u` when the tag has a unit; `t` is the source time when there is one, else the
+read time, and stays the time of the last change on a heartbeat repeat.
+`object-per-asset` publishes one object to the asset path itself,
+`{ t, values: { <name>: { v, q, u? } } }`, at the end of a source batch (or after
+a 50 ms timer, whichever comes first) when some member changed, plus the
+heartbeat. It is rejected at save time when tags times the worst-case member size
+(by type) could exceed the cap, and an object that is over the cap at run time is
+not published and counted as an error. `<asset>/_status` is the retained QoS 1
+document `{ online, since, reason }`; `<asset>/_meta` is the retained QoS 1
+document `{ properties: { <name>: { type?, unit?, description?, range?,
+source: { deviceId | connectionId, address, profileId? } } }, updatedAt }`,
+published when its content changes. Sparkplug targets carry unit, description
+and range as metric properties (`engUnit`, `description`, `engLow`, `engHigh`) in
+the BIRTH instead of `_meta`.
+
+Semantics (covered by `bindings-v2.test.js`, `mapping-phase4.test.js`,
+`mapping-routes.test.js`, `devices-int.test.js` and the OPC UA integration test):
+
+- **Report-by-exception on (value, quality).** An **absolute** deadband
+  suppresses numeric changes smaller than the band. A **percent** deadband is that
+  percentage of the tag's `range` (max minus min) when it defines one, otherwise
+  of the magnitude of the **last published** value (so from 0 any change
+  publishes); a change equal to the band publishes. Other values publish on
+  change; structures compare by bounded JSON. A quality change is always a change
+  (Good to Bad with the same value publishes), but only the `envelope` format and
+  the object layout can express it, so for `plain` and Sparkplug targets a
+  quality-only change is counted as suppressed.
 - **Bad on source loss.** When a source goes `offline` (a device loses its
   connection, its driver host dies, an OPC UA session drops) every known tag
   of that source's bindings gets one Bad publish: the last value with `q: 0`
-  in an `envelope` binding. `plain` cannot carry quality, so there only the
-  status document changes. Recovery republishes as Good. The heartbeat
-  continues to republish an offline envelope binding's last values with `q: 0`
-  and skips offline `plain` bindings so stale values do not masquerade as live.
-- **`_status` topic.** An `mqtt` target publishes a retained, QoS 1
-  `<path>/_status` document `{ online, since, reason }` at start and on every
-  state change (the path template with `{name}` replaced by `_status`, or
-  `/_status` appended). `statusTopic: false` turns it off. No MQTT last-will
-  covers it, so it keeps its last value if Manifold itself stops.
+  in an `envelope` binding, and every member `q: 0` in one object publish.
+  `plain` cannot carry quality, so there only the status document changes.
+  Recovery republishes as Good. The heartbeat continues to republish an offline
+  envelope or object binding's last values with `q: 0` and skips offline `plain`
+  bindings so stale values do not masquerade as live.
+- **`_status` topic.** Published whenever the source reports a state, and also
+  when a binding is created or edited while its source is already online
+  (`_publishStatusForNewUnits`; without it the topic would not exist until the
+  next transition). `statusTopic: false` turns it off. No MQTT last-will covers
+  it, so it keeps its last value if Manifold itself stops.
 - **Typed Sparkplug metrics.** The sample's `type` selects the Sparkplug
   datatype (Int8 ... UInt64, Float, Double, Boolean, String, DateTime). The
   datatype is pinned the first time a metric is seen so BIRTH and DATA agree,
@@ -448,16 +496,40 @@ Semantics (all covered by `bindings-v2.test.js` and the OPC UA integration test)
   per-metric quality; a device going offline is a **DDEATH** (sequence-numbered,
   only for a device that has been birthed) and recovery is a **DBIRTH** with the
   last values before any further DDATA.
-- **Heartbeat.** `rbe.heartbeatMs` (at least 1000 when set through the API)
-  republishes unchanged tags at least that often. The envelope's `t` stays the
-  time of the last change.
+- **Heartbeat.** `rbe.heartbeatMs` (at least 1000 when set through the API,
+  swept once a second) republishes unchanged tags (or the whole object) at least
+  that often. Heartbeat repeats are not sent to a historian target.
+- **Retained cleanup.** `retainedTopics()` derives from configuration the set of
+  retained topics a binding owns (`_status`, `_meta`, and value or object topics
+  when `retain` is on); `reconcile()` keeps the previous set in memory and
+  publishes an empty retained message (QoS 1) to every topic that left it
+  (binding deleted, disabled, path or broker changed, retain off, instance
+  removed). The set is rebuilt at start, so an edit made while the server was
+  down is not cleaned up; Sparkplug-source value topics are not derivable; a
+  clear sent to a disconnected broker is dropped.
+- **Direct historian target.** `target.historian.historianId` enqueues each
+  published sample, after report-by-exception, to the outbox as `{ tag: <resolved
+  topic>, ts, value, quality }` (object layout: the per-member topic; Sparkplug:
+  `group/edge/device/metric`). `validateBinding` accepts only `timebase` and
+  `timescaledb` historians and rejects InfluxDB (its writer stores no quality).
+  A quality change a `plain` or Sparkplug target suppresses never reaches the
+  outbox either, and the Bad sample on source loss is enqueued only for envelope
+  and object bindings.
+- **Preview and warnings.** `bindingModel.previewBinding` and
+  `POST /api/tags/bindings/preview` resolve topics and example payloads from the
+  latest known values without storing or publishing anything; `bindingWarnings`
+  (also returned by the save) reports names that look like raw device addresses,
+  topics another enabled binding on the same broker already publishes, and
+  unresolvable instance paths, at most 50, never blocking.
 - **Lifecycle.** When a source comes (back) online its monitored items are
   re-requested; a failed monitor request retries on a slow timer; editing or
-  deleting a binding resets its state (`reconcile`). The old defect where OPC UA
-  bindings went silent after a restart, an edit or a delete is gone.
-- **Path is not address.** The topic is `pathTemplate` plus a slugged tag
-  *name*; for devices the name defaults to the tag's `property` (the UNS name)
-  and falls back to its key. The device address never becomes a topic by itself.
+  deleting a binding resets its state (`reconcile`), which is also called after
+  a profile edit and after a config import. The old defect where OPC UA bindings
+  went silent after a restart, an edit or a delete is gone.
+- **Time and quality of Sparkplug-source bindings** are the metric's own
+  timestamp and quality; unlike pipelines and the recorder (`messageTime`: a
+  source time before 2000-01-01 or more than 24 h ahead is replaced by arrival
+  time) they apply no plausibility window.
 
 **Bindings never write toward devices**, and this is enforced where the bytes
 are built, not by the binding engine's good manners: the engine has no write
@@ -510,7 +582,8 @@ with a matching last-will, so edge nodes waiting on a primary host see one.
 Read-only polling of Modbus TCP, Siemens S7 (S7comm) and EtherNet/IP (Logix)
 devices, with tags landing in the same binding engine as OPC UA. The design is
 in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
-(status: partly implemented); this section describes what exists.
+(status: implemented, S7 and EtherNet/IP experimental, nothing verified on real
+hardware); this section describes what exists.
 
 ```mermaid
 flowchart LR
@@ -559,7 +632,10 @@ everything that must not be reimplemented per driver. Per device:
 - **Per-unit circuit breakers** for Modbus gateways: three gateway exceptions
   (0A/0B) open a unit's breaker (Bad, `unit-down`); it is probed every 30 s.
 - A device status (state, phase, connects, requests, timeouts, exception counts,
-  quarantined keys, per-group cycle times, overruns) that the supervisor relays.
+  quarantined keys, `quarantineReasons` (per key: code, message, since; at most
+  100), `lastError` and `lastErrorAt`, per-group cycle times, overruns) that the
+  supervisor relays. Quarantining a tag sets `lastError` to `tag <key>:
+  <message>`.
 
 **Driver contract.** A driver module exports `describe()` (static description:
 fields, types, prerequisites, `experimental`, `readOnly`, capabilities),
@@ -575,26 +651,57 @@ decision record (`drivers/eip/NOTES.md`) explains why the candidate libraries
 were rejected.
 
 **Device manager.** Owns the stored configuration (profile-store collections
-`devices` and `deviceProfiles`; only `devices` is used so far), validates it with
-each driver's validators (tag keys `[A-Za-z0-9_.\-:[\]]{1,128}`, at most 20,000
+`devices` and `deviceProfiles`), validates it with each driver's validators (tag keys `[A-Za-z0-9_.\-:[\]]{1,128}`, at most 20,000
 tags per device), applies the egress guard (`assertAllowedDeviceTarget`), pushes
 the desired set to the supervisor, keeps the latest value per tag, and emits the
 tag-source events above. A device whose target is refused is reported Stopped
 with the reason instead of being started. Live values reach the UI as coalesced
 volatile `device-values` batches (250 ms) and `device-state` events.
 
+**Device profiles.** `services/deviceProfiles.js` is the pure half: a profile
+(`protocol`, `options`, `pollGroups`, `params`, `tags` with `{param}` placeholders
+in `key`, `address` and `property`) merged with a device instance (`profileId`,
+`params`, own tags) into the **effective device** the drivers see. Options
+override by key, poll groups by id; the instance's own tag with the same key as a
+profile tag is an error; effective profile tags carry `origin: 'profile'` so a
+client that echoes `GET /api/devices` into a `PUT` does not turn them into ad-hoc
+tags. `deviceManager` validates every instance against the driver and applies a
+profile edit to all instances atomically (a 400 lists the instances that would
+break); deleting a profile with instances or bindings is a 409. Bulk creation is a
+client loop over `POST /api/devices/profiles/:id/instantiate` (not atomic).
+
+**Discovery.** `services/deviceIdentify.js` holds the read-only identification
+probes the CIDR scan uses when device ports are requested (`includeDevices` or
+`modbusPorts` / `s7Ports` / `eipPorts`): one TCP connection, one request, one
+bounded reply (4 KB, 3 s), closed. The requests are built with the drivers' own
+frame encoders: Modbus `encodeRequest` with function 3 for one register at
+address 0, unit 1 (the encoder throws for anything but functions 1 to 4); S7
+`encodeConnectRequest`, a COTP Connection Request only, no S7 setup or job;
+EtherNet/IP `encodeFrame` with the ListIdentity command. A port that does not
+answer the protocol is not reported; a result carries the protocol, the decoded
+identity and a `suggestedDevice` body for `POST /api/devices`. Every candidate
+address goes through `isAllowedAddress` first, so loopback and link-local are
+always refused and private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
+
+**Metrics.** `metricsExporter.renderDevices` renders, per device (name,
+`device_id`, protocol): `manifold_device_up`, `_connects_total`,
+`_requests_total`, `_timeouts_total`, `_exceptions_total` (by code),
+`_cycle_ms` and `_overruns_total` (per poll group) and `_quarantined_tags`; per
+driver host: `manifold_driver_host_up` and `_restarts_total`; and per binding
+`manifold_binding_published_total`, `_suppressed_total`, `_errors_total`. Series
+are capped (500 devices, bindings and hosts; 16 groups and 16 exception codes per
+device).
+
 **Samples.** A sample is `{ key, v, type, q, qReason?, tRead }`; `qReason` is one
 of `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode`,
 `unavailable`. Polled protocols have no device timestamp, so `tRead` is the
 honest timestamp.
 
-**Known gap.** Item-level refusal text is dropped on the way to the device
-status: an S7 CPU that refuses reads (PUT/GET off, optimized access) leaves the
-device Online with its tags quarantined, `lastError` null and the exception
-counter at `33028` (0x8104); the explanation ("PUT/GET not permitted, optimized
-block access enabled, or protection level too high") is visible only through
-Probe. See the review notes at the end of
-[`docs/REVIEW-2026-11.md`](docs/REVIEW-2026-11.md).
+**Refusal reasons.** A tag that a device refuses (an S7 CPU with PUT/GET off or
+optimized access, a Modbus exception, a CIP status) is quarantined with the
+driver's message, which reaches the device status as above and the Devices page.
+The exception counter still reads `33028` (0x8104) for a whole-request S7
+refusal. `lastError` holds the most recent quarantined tag's reason, not a list.
 
 ## OPC UA security
 
@@ -712,10 +819,10 @@ path and the differences matter:
 
 | Path | How it is checked |
 |---|---|
-| Network scanner | each candidate address through `isAllowedAddress` |
+| Network scanner (including the device probes) | each candidate address through `isAllowedAddress`: loopback, link-local and reserved always refused, private ranges only with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`; `MANIFOLD_ALLOW_LOOPBACK_DEVICES` does not apply |
 | i3X, CESMII, broker admin, alert webhooks | `guardedFetch`: check before the request, a connect-time `lookup` that pins the checked address (closes DNS rebinding), manual redirects (at most 5, each hop re-checked, `Authorization`/cookies dropped across origins), one overall deadline |
 | Device drivers | `assertAllowedDeviceTarget` when a device is saved, tested or applied. Check-only: the driver opens its own socket, so a hostname is re-resolved at connect time and a small rebinding window remains (literal IPs have none). Loopback is additionally allowed when `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` |
-| MQTT brokers, OPC UA endpoints, historian and database URLs | **not checked**: admin-configured connections that the libraries open themselves |
+| MQTT brokers, OPC UA endpoints, historian and database URLs | **not checked, by decision**: admin-configured connections that the libraries open themselves. A broker or historian on `localhost` or the LAN is the normal setup, so guarding them by default would break it. Residual risk: an admin token can make the server connect to any host it can reach through these three paths; protect admin tokens and use network policy |
 
 **Audit** (`services/auditLog.js`). The middleware is mounted *before* auth so
 rejected requests (401, 403, 429) are recorded even when they are GETs. Mutations
@@ -730,8 +837,12 @@ synchronously, so nothing is buffered across a crash.
 **Config export and import.** Export strips secrets by the shared name rule and
 includes devices and device profiles. Import is validated whole before anything
 is applied (ids, sizes, depth, prototype-polluting keys) and keeps stored
-secrets where the import carries null. Known issue: the name rule matches
-`key`, so export also blanks each device tag's `key`.
+secrets where the import carries null. The name rule matches `key`, so
+`redactSecrets` keeps `key` only inside arrays named `tags` or `ownTags` (device
+and profile tag identifiers, strings or numbers); a secret nested in a tag, or a
+`key` anywhere else (a TLS private key), is still masked. A tag list under any
+other property name would lose its keys. Import applies immediately (bindings
+reconciled, devices re-applied).
 
 **Profile store durability** (`services/profileStore.js`). The in-memory view
 updates synchronously; the disk write is coalesced (one per tick) and goes temp
@@ -794,7 +905,7 @@ Observed behavior that shapes the implementation:
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/system/status` | Overall status |
-| `POST` | `/api/system/discovery/start` | Start a network scan |
+| `POST` | `/api/system/discovery/start` | Start a network scan (`range`, `mqttPorts`, `opcuaPorts`, `i3xPorts`; device probes only with `includeDevices` or `modbusPorts` / `s7Ports` / `eipPorts`) |
 | `GET/POST` | `/api/mqtt/brokers` | List / connect brokers |
 | `PUT/DELETE` | `/api/mqtt/brokers/:id` | Edit in place (reconnects); disconnect |
 | `GET` | `/api/mqtt/brokers/:id/topics` · `/messages` | Topic list; recent messages |
@@ -814,18 +925,22 @@ Observed behavior that shapes the implementation:
 | `GET/POST/DELETE` | `/api/recorder` · `GET /:id/data` · `POST/DELETE /replay` | Recording; read-back; replay |
 | `GET/POST/DELETE` | `/api/contracts` · `/infer` · `/violations` | Schema contracts |
 | `GET` | `/api/tags/sources` · `/browse` | Tag browser (devices, OPC UA, Sparkplug, MQTT) |
-| `GET/POST/DELETE` | `/api/tags/bindings` | Tag bindings (device, OPC UA or Sparkplug source; mqtt or Sparkplug target) |
+| `GET/POST/DELETE` | `/api/tags/bindings` | Tag bindings (device, device-profile, OPC UA or Sparkplug source; mqtt or Sparkplug target); a save returns the binding plus non-blocking `warnings` |
+| `POST` | `/api/tags/bindings/preview` | Dry run of a binding draft: resolved topics and example payloads, collisions, `_meta` and `_status` topics, warnings; stores and publishes nothing (allowed for viewers) |
 | `POST` | `/api/tags/sparkplug/state` | Start/stop a Sparkplug host STATE session |
 | `GET` | `/api/audit` | Audit trail (admin only) |
 | `GET/POST` | `/api/system/config/export` · `/import` | Config as code (devices included; import validated whole) |
 | `GET` | `/metrics` | Prometheus metrics (bearer token required when auth is on, unless `MANIFOLD_METRICS_PUBLIC=1`) |
 | `GET` | `/api/devices` | Devices with live status, driver host states, and the driver descriptors (protocols, fields, types, prerequisites, `experimental`) |
 | `POST` | `/api/devices` | Create a device (validated, egress-checked, applied live) |
+| `GET/POST` | `/api/devices/profiles` | Device profiles with their instances; create a profile |
+| `GET/PUT/DELETE` | `/api/devices/profiles/:id` | Read; edit (re-applied to every instance atomically, 400 lists instances that would break); delete (409 while a device or a binding uses it) |
+| `POST` | `/api/devices/profiles/:id/instantiate` | Create a device from a profile (`name`, `host`, `port?`, `params`, protocol fields) |
 | `PUT/DELETE` | `/api/devices/:id` | Edit in place; delete (409 while a binding uses it) |
 | `POST` | `/api/devices/test` | One-off connect with an unsaved config: identity and negotiated limits, or the error |
 | `POST` | `/api/devices/validate-tags` | Validate and normalize tags for a protocol (read-only; allowed for viewers) |
 | `POST` | `/api/devices/:id/probe` | Read raw bytes at one address and return every candidate decoding |
-| `GET` | `/api/devices/:id/browse?node=` | The controller's own tag list (drivers with `browse`; EtherNet/IP) |
+| `GET` | `/api/devices/:id/browse?node=` | The controller's own tag list (drivers with `browse`; EtherNet/IP); folder nodes carry an `address` |
 | `GET` | `/api/devices/:id/values` | Latest value, type, quality and read time per tag |
 | `POST` | `/api/opcua/connections` · `/:id/monitor` | OPC UA connect; monitor |
 | `PUT/DELETE` | `/api/opcua/connections/:id` | Edit in place (reconnects); disconnect |
@@ -852,19 +967,25 @@ A device is stored and returned as:
   id, name, enabled, protocol: 'modbus-tcp' | 's7' | 'ethernet-ip',
   host, port,                       // egress-checked on save
   unitId | rack, slot | slot, routePath,   // protocol-specific top-level fields
-  options: { byteOrder, wordOrder, addressBase, maxRegisters, maxGap, ... },
+  options: { byteOrder, wordOrder, addressBase, maxRegisters, maxGap, ... },  // Modbus also unmapped: [{table, from, to}] (REST only)
   limits:  { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 },
   pollGroups: [{ id, intervalMs }],           // intervalMs >= 100
   tags: [{ key, address, type, pollGroup?, unit?, description?, property?, ... }],
-  isolate?: boolean                           // own host process; no UI
+  isolate?: boolean,                          // own host process; no UI
+  profileId?, params?: { name: value }        // instance of a device profile
 }
 ```
 
 `GET /api/devices` adds `status` to each device (`state`, `phase`, `reason`,
 `since`, `lastError`, `connects`, `requests`, `timeouts`, `exceptions` by code,
-`quarantined` keys, `openUnits`, and per-poll-group `intervalMs`,
+`quarantined` keys, `quarantineReasons`, `lastErrorAt`, `openUnits`, and per-poll-group `intervalMs`,
 `effectiveIntervalMs`, `lastCycleMs`, `avgCycleMs`, `overruns`, `cycles`), the
-driver host states, and the driver descriptors the UI builds its forms from.
+driver host states, and the driver descriptors the UI builds its forms from
+(`tagTypes` as plain names, `tagTypeInfo` for per-type detail, `tagTypeOptional`
+where the device resolves the type, `experimental`, `prerequisites`,
+`capabilities`). For a profile instance the listed `tags` are the **effective**
+tags (profile tags marked `origin: 'profile'` plus its own) and `ownTags` lists
+only the ad-hoc ones.
 Saving a device returns the stored record; a device that fails validation
 returns 400 with `details: [{ key, error }]`. Deleting a device that a binding
 uses returns 409.
@@ -872,7 +993,9 @@ uses returns 409.
 ## MCP tools
 
 75 tools, covering reads and mutations across the whole backend (there are no
-device-specific tools yet; devices are managed through the REST API and the UI). Mutating
+device-specific tools yet; devices and profiles are managed through the REST API
+and the UI, and `binding_save` declares only `opcua` and `sparkplug` source types,
+so device and device-profile bindings cannot be created through MCP). Mutating
 tools say so in their descriptions, and every call goes through the same
 authenticated REST API (and therefore the same audit log) as the UI.
 

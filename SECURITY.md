@@ -47,9 +47,17 @@ instance beyond your own machine:
   webhooks (so a webhook to `localhost` is refused) and **device targets**;
   loopback device targets need the separate opt-in
   `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, meant for local simulators only. It does
-  **not** cover MQTT broker hosts, OPC UA endpoints or historian/database URLs:
-  an admin configures those by hand, so protect admin tokens and use network
-  policy.
+  **not** cover MQTT broker hosts, OPC UA endpoints or historian/database URLs.
+  That is a deliberate choice: a broker or historian on `localhost` or the LAN is
+  the standard setup. The residual risk is that anyone holding an admin token can
+  make the server connect to any host it can reach through those three paths,
+  internal services included, so protect admin tokens and use network policy.
+- **Discovery of devices is opt-in and read-only, but intrusive.** The scan can
+  send one identification request per ticked protocol to every address in a range
+  (a Modbus read of one register, an S7 COTP connection request, an EtherNet/IP
+  ListIdentity), built with the drivers' allowlisted encoders. Scan only networks
+  you are allowed to scan; the scanner refuses loopback and link-local always and
+  private ranges unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
 - **Treat device networks as writable by everyone on them.** Modbus TCP, S7comm
   and plain EtherNet/IP do not authenticate clients, and enabling PUT/GET on an
   S7 CPU (required for Manifold to read it) makes its data blocks readable and
@@ -62,8 +70,9 @@ instance beyond your own machine:
   admin API keys (owner-readable `0600`), and so do its rotating backups
   (`profiles.json.bak.*`); restrict the host and the directory. The audit log
   rotates by size and never records bearer tokens, only token names.
-- **Config exports are secret-stripped by field name**, and a known issue also
-  blanks device tag keys; review an export before committing it.
+- **Config exports are secret-stripped by field name** (device tag `key`
+  identifiers are kept, a secret inside a tag or a TLS `key` is not); review an
+  export before committing it.
 - **Put TLS and a reverse proxy in front** of any internet-facing instance, and
   prefer network segmentation for OT deployments (IEC 62443 zones/conduits).
 

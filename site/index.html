@@ -250,9 +250,10 @@
             <p>Browse device tags and publish them into the UNS.</p>
             <ul>
               <li>Unified tag browser: devices, OPC UA, Sparkplug registry, MQTT trie</li>
-              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP (S7 and EtherNet/IP experimental)</li>
-              <li>Bindings publish as values, TVQ, or a Sparkplug B device</li>
-              <li>Deadband, heartbeat + quality mapping, read-only toward devices</li>
+              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP (S7 and EtherNet/IP experimental; not yet verified on real hardware)</li>
+              <li>Device profiles with parameters, bulk creation, opt-in device discovery</li>
+              <li>Bindings publish under an ISA-95 asset path as values, TVQ with units, one object per asset, or a Sparkplug B device</li>
+              <li>Absolute or percent deadband, heartbeat, quality mapping, <code>_status</code> and <code>_meta</code> documents, read-only toward devices</li>
               <li>Optional Sparkplug primary-host <code>STATE</code></li>
             </ul>
           </div>

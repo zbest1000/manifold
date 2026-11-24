@@ -12,13 +12,18 @@ drivers here are for the many devices that only speak the older protocols.
 |---|---|---|---|---|
 | **Modbus TCP** | supported | 502 | no | Registers and coils; byte/word order and addressing are explicit |
 | **Siemens S7** (S7comm) | **experimental** | 102 | no | Classic S7-300/400/1200/1500 access. Needs PUT/GET and non-optimized DBs |
-| **EtherNet/IP** (Logix) | **experimental** | 44818 | yes (REST only) | CompactLogix / ControlLogix tags by name |
+| **EtherNet/IP** (Logix) | **experimental** | 44818 | yes (**Import from controller**, and REST) | CompactLogix / ControlLogix tags by name |
 
 **Experimental** means the S7 and EtherNet/IP drivers were checked only against
 in-process simulators written by the same author as the drivers. The
 simulators show that driver and simulator agree with each other, not that they
 match real firmware. Each driver has a "verify on real hardware" list; see
-[What is not yet verified](#what-is-not-yet-verified).
+[What is not yet verified](#what-is-not-yet-verified) and the ordered procedure
+in [Verifying on real hardware](Verifying-on-Real-Hardware). **Modbus TCP is
+"supported" in the sense that it is the simplest protocol and the best tested
+against its simulator; it has not been run against real devices either.**
+The Devices page marks S7 and EtherNet/IP with an **Experimental** badge and
+shows the same notice before the first connect.
 
 ## Concepts
 
@@ -44,11 +49,21 @@ The **key and address are not the UNS name.** The address is where the value
 lives in the device (`DB10.DBD4`, `40012`). What the topic is called is decided
 when you map the tag; see [Mapping to the UNS](Mapping-to-the-UNS).
 
-Devices are created on the **Devices** page. Each card shows state, the
-cycle time of each poll group, overruns, quarantined tags and the last error.
-Tags are entered in a table: paste rows from a spreadsheet or import a CSV
-(header names are matched in any order: `key, address, type, pollGroup, scale,
-offset, unit, property, description, length, bit, byteOrder, wordOrder`).
+Devices are created on the **Devices** page (tabs **Devices** and
+**Profiles**). One form serves all three protocols: it is built from the
+driver's own description (protocol fields such as unit ID, rack and slot or
+route path, presets, options, the PLC-side prerequisites text, shown in full
+because it can carry a security warning). **Test connection** connects with the
+unsaved settings and reports the identity and negotiated limits, or the error.
+Each device card shows state, the cycle time of each poll group, overruns,
+quarantined tags and the last error. Tags are entered in a table: paste rows
+from a spreadsheet or import a CSV (header names are matched in any order:
+`key, address, type, pollGroup, scale, offset, unit, property, description,
+length, bit, byteOrder, wordOrder`); each row is validated by the driver as you
+type. For EtherNet/IP, **Import from controller** opens the controller's own tag
+list (controller scope, programs, UDT members, External Access) and appends the
+tags you tick, with generated keys and suggested property names. EtherNet/IP
+tags may omit the type: it is resolved from the controller.
 
 ### Where the polling runs
 
@@ -205,8 +220,104 @@ disagrees makes the tag Bad. Structures and STRINGs are decoded from the
 controller's own template. EtherNet/IP tags have no `scale` or `offset`.
 
 `GET /api/devices/<id>/browse` lists the controller's tags and data types
-(controller scope, program scope, UDT members, External Access). The Devices
-page does not have a browse tree yet.
+(controller scope, program scope, UDT members, External Access); the Devices
+page's **Import from controller** is a tree over it. Only EtherNet/IP can be
+browsed: classic S7comm has no tag list and Modbus has no names.
+
+## Device profiles and instances
+
+When many devices are the same kind of thing (fifty meters, ten drives), define
+them once as a **profile** and create **instances** from it.
+
+A **profile** has a name, a protocol, protocol **options**, **poll groups**,
+**parameters** and **tags**. A parameter is a name with an optional default
+(`site`, `base`, `db`). Tag `key`, `address` and `property` may contain
+`{param}` placeholders, for example key `{unit}_power`, address
+`holding:{base}`, property `power`. An **instance** is a normal device that
+references the profile (`profileId`) and supplies the parameter values
+(`params`) plus the host, port and protocol fields (unit ID, rack, slot ...).
+
+- The effective device is the profile merged with the instance: options
+  `{ ...profile, ...instance }`, poll groups from both (the instance wins by
+  group id), and the profile's tags with the parameters substituted, followed by
+  the instance's own ad-hoc tags. An ad-hoc tag whose key equals a profile tag key
+  is a **validation error**, never a silent override.
+- A parameter without a value or default, an unknown parameter name, and a
+  placeholder with no value are validation errors at save time, with the
+  offending tag key.
+- **Editing a profile re-applies it to every instance, atomically.** If any
+  instance would become invalid the save is refused (HTTP 400) with the list of
+  instances and why; nothing changes.
+- **Deleting a profile** is refused (409) while a [device-profile
+  binding](Mapping-to-the-UNS#one-definition-for-many-identical-devices-profile-bindings)
+  uses it, with the binding names. Deleting a profile that still has instances is
+  also refused (409) until they are deleted; the error lists the devices.
+- A device that belongs to a profile shows the profile's tags as read-only
+  ("from the profile") next to its own tags.
+
+On the **Profiles** tab: **New profile**, **Create from device** (copies a
+device's own tags, poll groups and options into a new profile for you to
+parametrize), **New device** from a profile, and **Create several devices**
+(**bulk create**).
+
+**Bulk create.** Paste a table copied from a spreadsheet, or load a CSV. The
+first row is the header: `name`, `host`, optional `port` and `enabled`, then one
+column per profile parameter; a column named like a protocol field (`unitId`,
+`rack`, `slot` ...) sets that field. Each row is checked before anything is sent
+(missing name or host, bad port, missing parameter, repeated name). The browser
+then creates the devices **one request per row, in order**
+(`POST /api/devices/profiles/<id>/instantiate`), and shows each row as created,
+failed (with the server's message) or not sent. It is **not atomic**: a failure
+part-way leaves the earlier rows created, and running it again retries only the
+failed rows.
+
+```csv
+name,host,port,site,base
+Line 1 meter,192.168.1.21,502,dallas,100
+Line 2 meter,192.168.1.22,502,dallas,100
+```
+
+Map the whole set to the UNS with one profile binding; see
+[Mapping to the UNS](Mapping-to-the-UNS#one-definition-for-many-identical-devices-profile-bindings).
+
+## Finding devices on the network (Discovery)
+
+The **Discovery** page's CIDR scan can also look for PLCs and meters. It is
+**opt-in**: tick **Modbus TCP**, **Siemens S7** and/or **EtherNet/IP** under
+"Also find PLCs and meters" (each with its port list; default 502, 102 and
+44818). Over the API the same thing is `includeDevices: true` or explicit
+`modbusPorts`, `s7Ports`, `eipPorts` in `POST /api/system/discovery/start`;
+without them the scan only looks for MQTT brokers, OPC UA servers and i3X.
+
+Each ticked port of each address gets **one TCP connection and one
+identification request**, read-only by construction (the frames are built with
+the drivers' own allowlisted encoders, which throw on any write service):
+
+| Protocol | What is sent | What counts as an answer |
+|---|---|---|
+| Modbus TCP (502) | one **Read Holding Registers** (function 3) request for one register at address 0, unit 1 | any well-formed Modbus reply, registers or an exception (for example "illegal data address"), with a matching transaction id |
+| S7 (102) | one **COTP Connection Request** (rack 0, slot 1 TSAP) and nothing else: no S7 setup, no S7 job | a COTP Connection Confirm, or a Disconnect/Error from a CPU that refuses the TSAP (the CPU still speaks ISO-on-TCP) |
+| EtherNet/IP (44818) | the encapsulation **ListIdentity** command (an identification request, no CIP service) | a ListIdentity reply; the identity (vendor, product name, revision ...) is decoded when present |
+
+A port that does not answer the protocol within about 3 seconds is **not
+reported** (an open port is not a finding by itself). A result shows what
+answered and a suggested device (name, protocol, host, port). **Add as device**
+opens the Devices page with that device pre-filled; nothing is created until
+you save it. **Add all** shows a review list (devices at a `host:port` that
+already exists start unticked) and creates the ticked ones one by one when you
+confirm.
+
+**Why it is opt-in, and what it does not protect.** The probes cannot write, but
+scanning an OT network is still intrusive: it opens connections to every address
+in the range, and fragile PLCs and gateways can react badly to unexpected
+connections. Scan only networks you are allowed to scan, keep
+the range small, and prefer a maintenance window. The scan uses the egress
+guard: **private (LAN) ranges are refused unless the server runs with
+`MANIFOLD_ALLOW_PRIVATE_TARGETS=1`**, and **loopback, link-local (including
+cloud metadata), multicast and reserved addresses are always refused**, whatever
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES` says; that variable affects saved devices,
+not the scanner. To try the scan against the demo simulators, add the devices by
+hand instead.
 
 ## Polling health
 
@@ -231,8 +342,14 @@ blocks) or accept the longer interval.
 Modbus block spanning a register the device does not have (exception 02), the
 runtime splits the request in half repeatedly to find the culprit. The tags
 that cannot be read are **quarantined**: published as Bad (reason
-`quarantined`), listed on the card, and retried once a minute, while the
-rest keep polling. For Modbus gateways, if a single unit ID answers with a
+`quarantined`), listed on the card **with the reason the device gave** (for
+example "PUT/GET not permitted, optimized block access enabled, or protection
+level too high" from an S7 CPU, or "illegal data address" from a Modbus
+device) and since when, and retried once a minute, while the rest keep polling.
+The device's **last error** reads `tag <key>: <reason>` and has a time
+(`lastErrorAt`); it is the most recent quarantined tag's reason, not a list. In
+the API these are `quarantineReasons` (per tag: `code`, `message`, `since`; the
+first 100) and `lastError` / `lastErrorAt` in `GET /api/devices`. For Modbus gateways, if a single unit ID answers with a
 gateway exception (0A or 0B, "target device failed to respond") three times,
 its breaker opens: its tags are Bad (reason `unit-down`) and it is probed only
 every 30 s, so one dead slave does not slow the healthy ones. A timeout is
@@ -242,6 +359,15 @@ A tag's quality is always one of Good (192), Uncertain (64) or Bad (0), with a
 reason such as `disconnected`, `quarantined`, `unit-down`, `device-exception`,
 `decode` or `unavailable`. Bad is never silently replaced by the last good
 value.
+
+### Metrics
+
+The same numbers are on `GET /metrics` (see [Operations](Operations#prometheus)
+for the names): `manifold_device_up`, `manifold_device_cycle_ms` and
+`manifold_device_overruns_total` per poll group,
+`manifold_device_quarantined_tags`, `manifold_device_exceptions_total` by code,
+and `manifold_driver_host_up` / `manifold_driver_host_restarts_total` for the
+driver processes, so a parked driver or a rising overrun count can alert.
 
 ## The read-only guarantee, and its limits
 
@@ -271,7 +397,9 @@ What this does and does not mean:
 
 ## Egress: which addresses a device may use
 
-Device hosts pass the egress guard when you save, test or start a device.
+Device hosts pass the egress guard when you save, test or start a device (the
+Discovery scan checks every candidate address too, and never allows loopback;
+see above).
 Private networks are refused unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` (the
 normal setting on a plant network). **Loopback is refused** unless
 `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, which exists for local simulators and
@@ -295,8 +423,12 @@ refused. See [Operations](Operations#network-safety-egress-guard).
   be wrong), template sizes, Multiple Service Packet limits, behaviour after a
   controller download, and route paths through a bridge. The Rockwell and ODVA
   documents were not available when the driver was written.
+- **Discovery probes** (Modbus FC 3 at address 0 unit 1, S7 COTP CR with rack 0
+  slot 1, ListIdentity) have also only been run against the simulators; how
+  real devices and gateways react to them is part of the checklist.
 - The design intent is that S7 and EtherNet/IP leave "experimental" only after
-  verification against real hardware. See
+  verification against real hardware. The consolidated, ordered procedure is
+  [Verifying on real hardware](Verifying-on-Real-Hardware); the design is in
   [`docs/design/southbound-drivers.md`](https://github.com/zbest1000/manifold/blob/main/docs/design/southbound-drivers.md).
 
 ## Try it without hardware

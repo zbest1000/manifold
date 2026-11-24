@@ -147,7 +147,7 @@ it becomes `audit.jsonl.1`, then `.2` and so on up to `MANIFOLD_AUDIT_KEEP`
 
 `GET /metrics` exposes event-loop delay percentiles, per-broker ingest,
 per-route pipeline counters, outbox depth/spill/drops, contract violations,
-and binding publishes:
+binding counters and device and driver-host health:
 
 ```yaml
 scrape_configs:
@@ -160,6 +160,33 @@ scrape_configs:
 
 With auth enabled `/metrics` returns 401 without a token; set
 `MANIFOLD_METRICS_PUBLIC=1` to scrape anonymously.
+
+**Device and binding metrics** (labels: `device` is the device name, `device_id`
+its first 8 characters, `protocol`; bindings are the first 8 characters of the
+binding id; `group` is a poll group id; `host` a driver host id). Series are
+capped (500 devices, 500 bindings, 500 hosts, 16 poll groups and 16 exception
+codes per device) so a misbehaving device cannot explode cardinality.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `manifold_device_up` | gauge | 1 when the device is Online |
+| `manifold_device_connects_total` | counter | connections that succeeded |
+| `manifold_device_requests_total` | counter | read requests sent |
+| `manifold_device_timeouts_total` | counter | requests that hit their deadline |
+| `manifold_device_exceptions_total` | counter | protocol exceptions, by `code` |
+| `manifold_device_cycle_ms` | gauge | average poll cycle time, per `group` |
+| `manifold_device_overruns_total` | counter | cycles skipped because the previous one overran, per `group` |
+| `manifold_device_quarantined_tags` | gauge | tags currently quarantined |
+| `manifold_driver_host_up` | gauge | 1 while a driver host process runs (`host`, `protocol`) |
+| `manifold_driver_host_restarts_total` | counter | driver host restarts |
+| `manifold_binding_published_total` | counter | publishes, per `binding` |
+| `manifold_binding_suppressed_total` | counter | samples suppressed by report-by-exception |
+| `manifold_binding_errors_total` | counter | publish errors |
+
+A parked driver shows as `manifold_driver_host_up 0` with a climbing restart
+counter; a stalled device as `manifold_device_up 0` or a growing
+`manifold_device_overruns_total`. The historian's dead-letter count is **not** a
+Prometheus series yet.
 
 > 💡 The Overview cards never poll — engine numbers are pushed over the existing
 > socket every 2 s, only while a client is connected. The **System → Health**
@@ -186,10 +213,11 @@ Secrets are stripped by field **name**, one shared rule for export and audit
 URLs. Import is validated whole before anything is applied (ids, sizes, depth,
 prototype-polluting keys); one bad item rejects the document with a 400.
 
-> ⚠️ **Known issue.** Because the secret rule matches the name `key`, **export
-> also blanks each device tag's `key`**, which is not a secret. Do not rely on
-> export/import to move devices between instances until this is fixed. Importing
-> over the same instance restores the keys by position.
+Device and profile **tag keys** (`tags` and `ownTags` lists) are identifiers,
+not secrets, and are kept in an export; a secret nested inside a tag, or a
+`key` anywhere else (a TLS private key in a broker profile), is still stripped.
+Imported configuration **applies immediately**: bindings are reconciled and
+devices re-applied without a restart.
 
 ## Alerts
 
@@ -226,7 +254,16 @@ events show in **Settings → Alerts** and stream over the socket.
   A hung driver is killed after missing heartbeats.
 - A device config can set `"isolate": true` to get its own process (useful for
   a flaky gateway). This is honoured by the supervisor but not exposed in the
-  UI.
+  UI (REST only).
+- **Profiles** are admin-only to create, edit and delete. Editing a profile
+  re-applies it to every instance atomically and is refused if any instance
+  would break; deleting one is refused while a device or a binding uses it.
+- **Discovery of devices** is opt-in and sends one read-only identification
+  request per ticked protocol per address (see
+  [Devices and Drivers](Devices-and-Drivers#finding-devices-on-the-network-discovery)).
+  It is intrusive on an OT network: scan small ranges in a window. It follows
+  the egress guard (private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`;
+  loopback is always refused).
 - Device setup is admin-only and audited like any other change. A viewer can
   read devices and live values; `POST /api/devices/validate-tags` is the only
   device POST a viewer may call.
@@ -234,9 +271,12 @@ events show in **Settings → Alerts** and stream over the socket.
   session, Manifold keeps retrying (1 s growing to 60 s, jittered) until you
   delete the connection, and re-creates its monitored items. A first connect you
   start from the UI that fails is reported and not kept.
-- Device metrics are not on `/metrics` yet; use the Devices page or
-  `GET /api/devices` (state, cycle times, overruns, quarantined tags, last
-  error).
+- Device health is on `/metrics` (see [Prometheus](#prometheus)) and on the
+  Devices page and `GET /api/devices` (state, cycle times, overruns, quarantined
+  tags with their reasons, last error and its time).
+- **Retained topics**: a binding clears what it published when it is deleted,
+  disabled or renamed, but not for edits made while Manifold was down
+  ([details](Mapping-to-the-UNS#retain-and-what-is-cleaned-up)).
 
 ## Limits that protect the server
 
