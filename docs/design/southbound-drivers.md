@@ -535,6 +535,18 @@ Decided
    sees the same data. A direct historian target is opt-in per mapping, for
    data whose history must survive a broker outage; it goes through the
    existing store-and-forward outbox with the read timestamp preserved.
+3. **Timebase is the reference historian for device data.** A device sample
+   is a TVQ (value, read timestamp, quality) and Timebase stores TVQs
+   natively, so Good/Bad transitions — including the Bad sample published on
+   disconnect — are kept without translation. The existing Timebase backend
+   already writes `q` [code]. Two things to handle:
+   - Timebase ignores TVQs older than a tag's newest point [code comment in
+     `server/services/historians.js`], so the outbox must replay spilled
+     device samples strictly oldest-first per tag and must not interleave
+     live samples ahead of a backlog for the same tag.
+   - The other backends differ: TimescaleDB has a `quality` column, but the
+     InfluxDB line-protocol writer currently drops quality [code]. It needs a
+     `quality` field before InfluxDB is offered as a device-data target.
 
 Open
 
