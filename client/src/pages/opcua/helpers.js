@@ -72,3 +72,33 @@ export function pickConnectionId(connections, currentId) {
   const firstConnected = connections.find((c) => c.status === 'connected');
   return firstConnected ? firstConnected.id : null;
 }
+
+/** Which form field a validation message belongs to ('url' or 'security'). */
+export const problemField = (message) => (/endpoint url/i.test(message || '') ? 'url' : 'security');
+
+/**
+ * What a connection's state means for the person looking at it: label, tone and a plain explanation.
+ * The server retries a lost or failing connection forever with growing, jittered delays.
+ */
+export function connectionState(c) {
+  switch (c.status) {
+    case 'connected':
+      return { label: 'Connected', tone: 'good', note: null };
+    case 'connecting':
+      return { label: 'Connecting', tone: 'warn', note: 'Opening a session.' };
+    case 'reconnecting':
+      return { label: 'Reconnecting', tone: 'warn', note: 'Keeps retrying with growing delays.' };
+    case 'error':
+      return { label: 'Failed', tone: 'bad', note: null };
+    default:
+      return { label: c.status || 'Unknown', tone: 'neutral', note: null };
+  }
+}
+
+/** Quality word and tone for an OPC UA status string such as "Good (0x00000000)". */
+export function qualityOf(status) {
+  const s = String(status || '');
+  if (!s || /^good/i.test(s)) return { label: 'Good', tone: 'good' };
+  if (/^uncertain/i.test(s)) return { label: 'Uncertain', tone: 'warn' };
+  return { label: 'Bad', tone: 'bad' };
+}

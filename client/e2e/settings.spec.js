@@ -5,11 +5,25 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Settings: config export/import (the same file can be imported twice in a row) and alert rules
- * (editing brings the editor into view and focuses it; deleting asks first and says it happened).
+ * Settings: the tabs live in the URL, config export/import (the same file can be imported twice in a row)
+ * and alert rules (editing opens the editor with focus in it; deleting asks first and says it happened).
  */
+test('the Settings tab is part of the URL and the theme switch agrees with the sidebar', async ({ page }) => {
+  await page.goto('/settings?tab=alerts');
+  await expect(page.getByRole('tab', { name: 'Alert rules' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'General' }).click();
+  await expect(page).not.toHaveURL(/tab=/);
+  await expect(page.getByRole('heading', { name: 'Session' })).toBeVisible();
+
+  await page.getByRole('radio', { name: 'Light' }).first().click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.getByRole('radio', { name: 'Dark' }).first().click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
 test('config: export downloads a file, importing the same file twice asks and reports both times', async ({ page }) => {
-  await page.goto('/settings');
+  await page.goto('/settings?tab=configuration');
+  await expect(page.getByText(/Redacted: tokens, passwords/)).toBeVisible(); // what is left out is stated
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export config' }).click()]);
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-config-')), 'manifold-config.json');
   await download.saveAs(file);
@@ -36,20 +50,26 @@ test('config: export downloads a file, importing the same file twice asks and re
 
 test('alert rules: add, edit (the editor is focused), delete with confirmation', async ({ page }) => {
   const topic = `plant/${unique('quiet')}/x`;
-  await page.goto('/settings');
-  const form = page.getByRole('form', { name: 'Add alert rule' });
+  await page.goto('/settings?tab=alerts');
+  await page.getByRole('button', { name: 'Add rule' }).click();
+  const form = page.getByRole('dialog', { name: 'Add alert rule' });
   await form.getByRole('combobox', { name: /^Type/ }).selectOption('topic-silent');
-  await form.getByLabel('Topic', { exact: true }).fill(topic);
+  // nothing is flagged until a save is attempted
+  await expect(form.getByRole('alert')).toHaveCount(0);
+  await form.getByRole('button', { name: 'Add rule' }).click();
+  await expect(form.getByRole('alert').filter({ hasText: 'Enter the topic to watch' })).toBeVisible();
+  await form.getByLabel(/^Topic/).fill(topic);
   await form.getByRole('button', { name: 'Add rule' }).click();
   const row = page.getByRole('row', { name: new RegExp(topic.replace(/\//g, '\\/')) });
   await expect(row).toBeVisible();
+  await expect(row.getByText('Idle')).toBeVisible();
 
   await row.getByRole('button', { name: /^Edit alert rule/ }).click();
-  const editForm = page.getByRole('form', { name: 'Edit alert rule' });
+  const editForm = page.getByRole('dialog', { name: 'Edit alert rule' });
   await expect(editForm).toBeVisible();
-  await expect(editForm.getByRole('combobox').first()).toBeFocused(); // clicking Edit lands you in the editor
-  await expect(editForm.getByLabel('Topic', { exact: true })).toHaveValue(topic);
-  await editForm.getByLabel('Threshold (s)').fill('90');
+  await expect(editForm.getByRole('combobox').first()).toBeFocused(); // opening Edit lands you in the editor
+  await expect(editForm.getByLabel(/^Topic/)).toHaveValue(topic);
+  await editForm.getByLabel(/^Threshold/).fill('90');
   await editForm.getByRole('button', { name: 'Save rule' }).click();
   await expect(row).toContainText('90s');
 

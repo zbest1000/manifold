@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Activity, Eye, X } from 'lucide-react';
+import { Eye, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { socket } from '@/lib/socket';
 import { usePolled } from '@/lib/usePolled';
 import JsonView from '@/components/JsonView';
-import { Card, Button, Banner, Skeleton } from '@/components/ui';
+import { Button, Banner, IconButton, Skeleton, StatusText, Timestamp } from '@/components/ui';
 import { READ_ONLY_REASON } from '@/store/selectors';
-import { formatValue } from './helpers';
+import { formatValue, qualityOf } from './helpers';
 
-/** Side panel with a node's attributes, a live value and a "monitor" action. */
+/** Details of the selected node: a live value, a "monitor" action and the node's attributes. */
 export default function NodePanel({ node, connectionId, values, onClose, readOnly = false }) {
   const nodeId = node.meta?.nodeId;
   const [monitoring, setMonitoring] = useState(false);
@@ -41,35 +41,40 @@ export default function NodePanel({ node, connectionId, values, onClose, readOnl
   }, [monitoring, connectionId, nodeId]);
 
   return (
-    <aside aria-label="Node details" className="absolute inset-y-0 right-0 z-10 flex w-full shrink-0 flex-col border-l border-white/5 bg-surface-900 sm:static sm:w-96 sm:bg-surface-900/50">
-      <div className="flex items-start justify-between gap-2 border-b border-white/5 px-4 py-3">
+    <aside aria-label="Node details" className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-start justify-between gap-2 border-b border-line px-4 py-3">
         <div className="min-w-0">
-          <p className="label-xs">{node.meta?.nodeClass || 'Node'}</p>
-          <h2 className="mt-0.5 break-all text-sm font-medium text-slate-100">{node.label}</h2>
-          <p className="mono helper mt-0.5 break-all">{nodeId}</p>
+          <p className="text-xs text-muted">{node.meta?.nodeClass || 'Node'}</p>
+          <h2 className="break-all text-sm font-medium text-fg">{node.label}</h2>
+          <p className="mono mt-0.5 break-all text-xs text-subtle">{nodeId}</p>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close node details" className="rounded-lg p-1.5 text-muted hover:bg-white/5 hover:text-slate-200">
-          <X size={16} />
-        </button>
+        <IconButton icon={X} label="Close node details" onClick={onClose} />
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {node.meta?.nodeClass === 'Variable' && (
-          <Button onClick={monitor} disabled={monitoring || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} className="w-full">
+          <Button variant={monitoring ? 'secondary' : 'primary'} onClick={monitor} disabled={monitoring || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} className="w-full">
             <Eye size={14} aria-hidden="true" /> {monitoring ? 'Monitoring live' : 'Monitor value'}
           </Button>
         )}
 
         {liveValue && (
-          <Card className="border-accent-500/20 p-3">
-            <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-accent-400">
-              <Activity size={12} aria-hidden="true" /> Live value
-            </p>
-            <p className="mono break-all text-lg font-semibold text-slate-100" aria-live="polite">
+          <section aria-label="Live value" className="border-l-2 border-accent pl-3">
+            <p className="text-xs text-muted">Live value</p>
+            <p className="mono break-all text-lg font-medium text-fg" aria-live="polite">
               {formatValue(liveValue.value)}
             </p>
-            {liveValue.sourceTimestamp && <p className="helper mt-1">{new Date(liveValue.sourceTimestamp).toLocaleString()}</p>}
-          </Card>
+            <p className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-subtle">
+              <StatusText tone={qualityOf(liveValue.status).tone} className="text-xs">
+                {qualityOf(liveValue.status).label}
+              </StatusText>
+              {liveValue.sourceTimestamp && (
+                <span title={`${new Date(liveValue.sourceTimestamp).toLocaleString()} (local) · ${new Date(liveValue.sourceTimestamp).toISOString()}`}>
+                  source time <Timestamp value={liveValue.sourceTimestamp} />
+                </span>
+              )}
+            </p>
+          </section>
         )}
 
         {error && (
@@ -85,10 +90,14 @@ export default function NodePanel({ node, connectionId, values, onClose, readOnl
           </div>
         )}
         {details && (
-          <Card className="p-3">
-            <p className="label-xs mb-2">Attributes</p>
-            <JsonView data={details} />
-          </Card>
+          <section aria-labelledby="node-attrs">
+            <h3 id="node-attrs" className="mb-2 text-sm font-medium text-fg">
+              Attributes
+            </h3>
+            <div className="rounded-md border border-line bg-app p-3">
+              <JsonView data={details} />
+            </div>
+          </section>
         )}
       </div>
     </aside>

@@ -1,99 +1,128 @@
-import { Cpu, Radar } from 'lucide-react';
+import { Radar } from 'lucide-react';
 import clsx from 'clsx';
-import { Card, Button, Badge, Input, Field, Select, Checkbox } from '@/components/ui';
+import { Banner, Button, Checkbox, Dialog, Field, Input, Select, Mono } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import CertificatesSection from './CertificatesSection';
-import { SECURITY_MODES, SECURITY_POLICIES, withCurrent } from './helpers';
+import { SECURITY_MODES, SECURITY_POLICIES, problemField, withCurrent } from './helpers';
 
-/** The connect / edit form for an OPC UA server, including endpoint discovery. */
-export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, onDiscover, onSubmit, onCancel }) {
+/**
+ * The connect / edit dialog for an OPC UA server: endpoint with discovery, security, credentials and
+ * the certificate trust flow. `problem` is a validation message shown only after the first submit;
+ * `submitError` is what the server answered.
+ */
+export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, onDiscover, onSubmit, onCancel }) {
   const readOnly = useReadOnly();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const field = problem ? problemField(problem) : null;
+  const secure = form.securityMode !== 'None';
   return (
-    <Card className="max-h-[70vh] overflow-y-auto p-4 sm:p-5">
-      <form
-        aria-label={editing ? 'Edit OPC UA connection' : 'New OPC UA connection'}
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit();
-        }}
-      >
-      <h2 className="mb-4 text-sm font-semibold text-slate-100">{editing ? 'Edit OPC UA connection' : 'New OPC UA connection'}</h2>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Name">
-          <Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="PLC gateway" />
-        </Field>
-        <Field label="Endpoint URL">
-          <div className="flex gap-2">
-            <Input value={form.endpointUrl} onChange={(e) => set({ endpointUrl: e.target.value })} placeholder="opc.tcp://host:4840" />
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onDiscover}
-              disabled={discovering || !form.endpointUrl}
-              title="List the server's endpoints and their security settings"
-              className="shrink-0"
-            >
-              <Radar size={14} aria-hidden="true" /> {discovering ? 'Discovering…' : 'Discover'}
+    <Dialog
+      title={editing ? 'Edit OPC UA connection' : 'New OPC UA connection'}
+      description={editing ? 'Saving reconnects with the new settings. Leave the password blank to keep the stored one.' : 'Manifold opens a session, browses the address space and can monitor values live.'}
+      size="lg"
+      onClose={onCancel}
+      onSubmit={onSubmit}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button type="submit" loading={busy} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
+            {editing ? 'Save changes' : 'Connect'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-6">
+        {submitError && (
+          <Banner variant="error" title={editing ? 'Could not save the connection' : 'Could not connect'}>
+            {submitError}
+          </Banner>
+        )}
+
+        <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+          <legend className="mb-2 text-sm font-medium text-fg">Server</legend>
+          <Field label="Name" className="sm:col-span-2">
+            <Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="PLC gateway" data-autofocus />
+          </Field>
+          <div className="flex items-start gap-2 sm:col-span-2">
+            <Field label="Endpoint URL" error={field === 'url' ? problem : undefined} className="min-w-0 flex-1">
+              <Input className="mono" aria-invalid={field === 'url' ? 'true' : undefined} value={form.endpointUrl} onChange={(e) => set({ endpointUrl: e.target.value })} placeholder="opc.tcp://host:4840" />
+            </Field>
+            <Button type="button" variant="secondary" className="mt-[22px]" onClick={onDiscover} loading={discovering} disabled={!form.endpointUrl} title="List the server's endpoints and their security settings">
+              {!discovering && <Radar size={14} aria-hidden="true" />} Discover
             </Button>
           </div>
-        </Field>
-        <Select label="Security mode" value={form.securityMode} onChange={(e) => set({ securityMode: e.target.value })} options={withCurrent(SECURITY_MODES, form.securityMode)} />
-        <Select label="Security policy" value={form.securityPolicy} onChange={(e) => set({ securityPolicy: e.target.value })} options={withCurrent(SECURITY_POLICIES, form.securityPolicy)} />
-        <Field label="Username (optional)">
-          <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" placeholder="anonymous" />
-        </Field>
-        <Field label="Password">
-          <Input type="password" value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editing ? 'unchanged' : ''} />
-        </Field>
-      </div>
+        </fieldset>
 
-      {endpoints && (
-        <div className="mt-4 space-y-1.5" role="group" aria-label="Discovered endpoints">
-          <p className="label-xs">Discovered endpoints</p>
-          {endpoints.length === 0 ? (
-            <p className="helper">The server reported no endpoints.</p>
-          ) : (
-            endpoints.map((ep, i) => {
-              const active = form.securityMode === ep.securityMode && form.securityPolicy === ep.securityPolicy;
-              return (
-                <button
-                  type="button"
-                  key={`${ep.securityMode}-${ep.securityPolicy}-${i}`}
-                  aria-pressed={active}
-                  onClick={() => set({ securityMode: ep.securityMode, securityPolicy: ep.securityPolicy })}
-                  className={clsx(
-                    'flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left text-xs transition-colors',
-                    active ? 'border-accent-500/50 bg-accent-500/10 text-slate-100' : 'border-white/10 bg-surface-950/40 text-slate-300 hover:border-white/20 hover:bg-white/5'
-                  )}
-                >
-                  <span className="mono truncate">
-                    {ep.securityMode} · {ep.securityPolicy}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2 text-muted">
-                    {ep.serverCertificate?.thumbprint && <span className="mono hidden sm:inline">{ep.serverCertificate.thumbprint.slice(0, 12)}…</span>}
-                    <Badge>level {ep.securityLevel}</Badge>
-                  </span>
-                </button>
-              );
-            })
+        {endpoints && (
+          <fieldset>
+            <legend className="mb-1 text-sm font-medium text-fg">Endpoints the server offers</legend>
+            <p className="mb-2 text-xs text-subtle">Pick one to fill in the security mode and policy. A higher level is stronger.</p>
+            {endpoints.length === 0 ? (
+              <p className="text-sm text-muted">The server reported no endpoints.</p>
+            ) : (
+              <ul className="divide-y divide-line rounded-md border border-line" aria-label="Discovered endpoints">
+                {endpoints.map((ep, i) => {
+                  const active = form.securityMode === ep.securityMode && form.securityPolicy === ep.securityPolicy;
+                  return (
+                    <li key={`${ep.securityMode}-${ep.securityPolicy}-${i}`}>
+                      <button
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => set({ securityMode: ep.securityMode, securityPolicy: ep.securityPolicy })}
+                        className={clsx(
+                          'flex w-full items-center justify-between gap-3 border-l-2 px-3 py-2 text-left text-sm transition-colors hover:bg-raised',
+                          active ? 'border-accent bg-accent/[0.07]' : 'border-transparent'
+                        )}
+                      >
+                        <Mono className="truncate">
+                          {ep.securityMode} · {ep.securityPolicy}
+                        </Mono>
+                        <span className="flex shrink-0 items-center gap-3 text-xs text-muted">
+                          {ep.serverCertificate?.thumbprint && <Mono className="hidden text-subtle sm:inline">{ep.serverCertificate.thumbprint.slice(0, 12)}…</Mono>}
+                          <span className="tabular-nums">level {ep.securityLevel}</span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </fieldset>
+        )}
+
+        <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+          <legend className="mb-2 text-sm font-medium text-fg">Security</legend>
+          <Select label="Security mode" value={form.securityMode} onChange={(e) => set({ securityMode: e.target.value })} options={withCurrent(SECURITY_MODES, form.securityMode)} />
+          <Select
+            label="Security policy"
+            value={form.securityPolicy}
+            error={field === 'security' ? problem : undefined}
+            aria-invalid={field === 'security' ? 'true' : undefined}
+            onChange={(e) => set({ securityPolicy: e.target.value })}
+            options={withCurrent(SECURITY_POLICIES, form.securityPolicy)}
+          />
+          {!secure && (
+            <div className="sm:col-span-2">
+              <Banner variant="info">Mode None sends everything unencrypted and unsigned. Use it only on a trusted plant network; choose Sign or SignAndEncrypt with a policy otherwise.</Banner>
+            </div>
           )}
-        </div>
-      )}
+          {secure && <Checkbox className="sm:col-span-2" label="Trust server certificate on first connect" checked={form.trustServer} onChange={(v) => set({ trustServer: v })} />}
+        </fieldset>
 
-      <Checkbox className="mt-4" label="Trust server certificate on first connect" checked={form.trustServer} onChange={(v) => set({ trustServer: v })} />
+        <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+          <legend className="mb-2 text-sm font-medium text-fg">Authentication</legend>
+          <Field label="Username (optional)">
+            <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" placeholder="Anonymous" />
+          </Field>
+          <Field label="Password">
+            <Input type="password" value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editing ? 'Unchanged' : ''} />
+          </Field>
+        </fieldset>
 
-      <CertificatesSection />
-
-      <div className="mt-4 flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
-          <Cpu size={15} aria-hidden="true" /> {busy ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect'}
-        </Button>
+        <CertificatesSection key={secure ? 'secure' : 'plain'} defaultOpen={secure} />
       </div>
-      </form>
-    </Card>
+    </Dialog>
   );
 }

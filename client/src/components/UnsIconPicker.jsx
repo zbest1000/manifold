@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Modal } from './ui';
-import { X, Search, RotateCcw, Plus, Trash2, Library } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, RotateCcw, Plus, Trash2, Library } from 'lucide-react';
+import clsx from 'clsx';
+import { Banner, Button, Dialog, Field, Input, Textarea } from './ui';
+import { useTheme } from '@/lib/theme';
 import {
   loadIcons,
   allIconNames,
@@ -20,15 +22,83 @@ import {
 const NAME_RE = /^[a-z0-9-]{1,40}$/;
 const PATH_RE = /^[MmLlHhVvCcSsQqTtAaZz0-9\s,.+-]+$/;
 
+const COLUMNS = 8;
+
+/** The theme's text colour as #rrggbb, so previews are legible in both themes. */
+function themeInk() {
+  try {
+    const parts = getComputedStyle(document.documentElement).getPropertyValue('--text').trim().split(/\s+/).map(Number);
+    if (parts.length === 3 && parts.every(Number.isFinite)) return `#${parts.map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+  } catch {
+    /* fall through */
+  }
+  return '#cbd5e1';
+}
+
+/**
+ * A grid of icon buttons with one tab stop (roving tabindex): arrow keys move by one icon or one row,
+ * Home and End jump to the first and last. Enter or Space picks the focused icon.
+ */
+function IconGrid({ names, current, ink, label, onPick, renderExtra }) {
+  const refs = useRef([]);
+  const [focusIdx, setFocusIdx] = useState(0);
+  const active = Math.min(focusIdx, Math.max(0, names.length - 1));
+  const onKeyDown = (e, i) => {
+    const n = names.length;
+    let next = null;
+    if (e.key === 'ArrowRight') next = Math.min(n - 1, i + 1);
+    else if (e.key === 'ArrowLeft') next = Math.max(0, i - 1);
+    else if (e.key === 'ArrowDown') next = Math.min(n - 1, i + COLUMNS);
+    else if (e.key === 'ArrowUp') next = Math.max(0, i - COLUMNS);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = n - 1;
+    if (next === null) return;
+    e.preventDefault();
+    setFocusIdx(next);
+    refs.current[next]?.focus();
+  };
+  return (
+    <div role="group" aria-label={label} className="grid grid-cols-8 gap-1.5">
+      {names.map((name, i) => {
+        const img = getIconImage(name, ink, 40);
+        return (
+          <div key={name} className="group relative">
+            <button
+              ref={(el) => (refs.current[i] = el)}
+              type="button"
+              tabIndex={i === active ? 0 : -1}
+              onClick={() => onPick(name)}
+              onKeyDown={(e) => onKeyDown(e, i)}
+              onFocus={() => setFocusIdx(i)}
+              aria-pressed={name === current}
+              aria-label={name}
+              title={name}
+              className={clsx(
+                'grid aspect-square w-full place-items-center rounded-md border transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[rgb(var(--focus))]',
+                name === current ? 'border-accent bg-accent/15' : 'border-line bg-panel hover:border-line-stronger hover:bg-raised'
+              )}
+            >
+              {img && <img src={img.src} alt="" className="h-5 w-5" />}
+            </button>
+            {renderExtra?.(name)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * Icon picker for UNS nodes. Three sources:
  *   - Custom: user-defined single-path SVG icons, stored server-side.
  *   - Curated: the bundled ~130-icon industrial subset (default, searchable).
  *   - Full library: the complete Lucide set (~2,000 icons) as an explicit
- *     lazy opt-in — nothing pulls the big chunk until the user asks.
+ *     lazy opt-in: nothing pulls the big chunk until the user asks.
  * Icons preview using the same rasterizer the canvas uses.
  */
 export default function UnsIconPicker({ node, onClose, onPicked }) {
+  useTheme(); // re-render when the theme changes so the previews pick up the new text colour
+  const ink = themeInk();
   const [query, setQuery] = useState('');
   const [customIcons, setCustomIcons] = useState(customIconList());
   const [fullReady, setFullReady] = useState(fullLibraryLoaded());
@@ -44,10 +114,7 @@ export default function UnsIconPicker({ node, onClose, onPicked }) {
   }, []);
 
   const q = query.trim().toLowerCase();
-  const customNames = useMemo(
-    () => customIcons.map((i) => i.name).filter((n) => !q || n.includes(q)),
-    [customIcons, q]
-  );
+  const customNames = useMemo(() => customIcons.map((i) => i.name).filter((n) => !q || n.includes(q)), [customIcons, q]);
   const gridNames = useMemo(() => {
     const customSet = new Set(customIcons.map((i) => i.name));
     const source = fullReady ? allIconNames().filter((n) => !customSet.has(n)) : curatedIconNames();
@@ -68,11 +135,11 @@ export default function UnsIconPicker({ node, onClose, onPicked }) {
     const name = newName.trim();
     const svgPath = newPath.trim();
     if (!NAME_RE.test(name)) {
-      setFormError('Name must be 1-40 chars: lowercase letters, digits, hyphens.');
+      setFormError('Name must be 1 to 40 characters: lowercase letters, digits and hyphens.');
       return;
     }
     if (!svgPath || svgPath.length > 4000 || !PATH_RE.test(svgPath)) {
-      setFormError('Path must be SVG path data only (M/L/C… commands and numbers), max 4000 chars.');
+      setFormError('Path must be SVG path data only (M, L, C… commands and numbers), at most 4000 characters.');
       return;
     }
     setSaving(true);
@@ -99,201 +166,146 @@ export default function UnsIconPicker({ node, onClose, onPicked }) {
     }
   };
 
-  const iconCell = (name, extra = null) => {
-    const img = getIconImage(name, '#cbd5e1', 40);
-    return (
-      <div key={name} className="group relative">
-        <button
-          type="button"
-          onClick={() => pick(name)}
-          aria-pressed={name === current}
-          aria-label={name}
-          title={name}
-          className={`grid aspect-square w-full place-items-center rounded-lg border transition hover:border-accent-500/60 hover:bg-accent-500/10 ${
-            name === current ? 'border-accent-500/70 bg-accent-500/15' : 'border-white/5 bg-white/[0.03]'
-          }`}
-        >
-          {img && <img src={img.src} alt="" className="h-5 w-5" />}
-        </button>
-        {extra}
-      </div>
-    );
-  };
-
   const previewPathOk = newPath.trim() && PATH_RE.test(newPath.trim());
 
   return (
-    <Modal title={`Choose an icon for ${node.name}`} onClose={onClose} className="flex max-w-lg flex-col p-4">
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-slate-100">
-              Icon for <span className="font-mono text-accent-300">{node.name}</span>
-            </p>
-            <p className="helper">
-              current: <span className="font-mono">{current}</span>
-              {hasOverride ? ' (manual)' : ' (automatic)'}
-            </p>
-          </div>
-          <button type="button" aria-label="Close icon picker" onClick={onClose} className="rounded p-1.5 text-slate-400 hover:bg-white/10">
-            <X size={16} />
-          </button>
+    <Dialog
+      title={`Icon for ${node.name}`}
+      description={
+        <>
+          Current: <span className="mono text-xs text-fg">{current}</span> ({hasOverride ? 'chosen by you' : 'automatic'})
+        </>
+      }
+      size="md"
+      onClose={onClose}
+      bodyClassName="space-y-4"
+    >
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
+          <Input data-autofocus aria-label="Search icons" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${allIconNames().length.toLocaleString()} icons…`} className="pl-8" />
         </div>
-
-        <div className="mb-3 flex items-center gap-2">
-          <div className="flex flex-1 items-center gap-1.5 rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2">
-            <Search size={14} className="text-subtle" aria-hidden="true" />
-            <input
-              data-autofocus
-              aria-label="Search icons"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search ${allIconNames().length.toLocaleString()} icons…`}
-              className="w-full bg-transparent text-sm text-slate-200 placeholder:text-faint focus:outline-none"
-            />
-          </div>
-          {hasOverride && (
-            <button
-              onClick={() => {
-                setIconOverride(node.brokerId, node.path, null);
-                onPicked?.(null);
-                onClose();
-              }}
-              title="Reset to automatic mapping"
-              className="flex items-center gap-1.5 rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 hover:border-white/25"
-            >
-              <RotateCcw size={13} /> Auto
-            </button>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto pr-1">
-          {/* Custom icons */}
-          <div className="mb-1 flex items-center justify-between">
-            <p className="label-xs">Custom</p>
-            <button
-              onClick={() => {
-                setShowAdd((v) => !v);
-                setFormError('');
-              }}
-              className="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:border-white/25"
-            >
-              <Plus size={12} /> Add custom icon
-            </button>
-          </div>
-
-          {showAdd && (
-            <div className="mb-3 rounded-xl border border-white/10 bg-surface-950/60 p-3">
-              <div className="flex items-start gap-3">
-                <div className="flex-1 space-y-2">
-                  <input
-                    aria-label="Custom icon name"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    placeholder="name (e.g. my-reactor)"
-                    className="w-full rounded-lg border border-white/10 bg-transparent px-2.5 py-1.5 font-mono text-xs text-slate-200 placeholder:text-faint focus:outline-none"
-                  />
-                  <textarea
-                    aria-label="SVG path data"
-                    value={newPath}
-                    onChange={(e) => setNewPath(e.target.value)}
-                    placeholder="SVG path data (d attribute, 24x24 viewBox), e.g. M4 20h16M6 20V8l6-4 6 4v12"
-                    rows={3}
-                    className="w-full resize-none rounded-lg border border-white/10 bg-transparent px-2.5 py-1.5 font-mono text-xs text-slate-200 focus:outline-none"
-                  />
-                </div>
-                <div className="grid h-16 w-16 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.03]" title="Live preview">
-                  {previewPathOk ? (
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="h-8 w-8 text-slate-200"
-                    >
-                      <path d={newPath.trim()} />
-                    </svg>
-                  ) : (
-                    <span className="text-2xs text-subtle">preview</span>
-                  )}
-                </div>
-              </div>
-              {formError && <p className="mt-2 text-xs text-red-300">{formError}</p>}
-              <div className="mt-2 flex justify-end gap-2">
-                <button
-                  onClick={() => setShowAdd(false)}
-                  className="rounded-lg px-2.5 py-1 text-xs text-muted hover:bg-white/5"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={submitCustom}
-                  disabled={saving}
-                  className="rounded-lg border border-accent-500/50 bg-accent-500/15 px-2.5 py-1 text-xs text-accent-200 hover:bg-accent-500/25 disabled:opacity-50"
-                >
-                  {saving ? 'Saving…' : 'Save icon'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {customNames.length > 0 ? (
-            <div className="mb-3 grid grid-cols-8 gap-1.5">
-              {customNames.map((name) =>
-                iconCell(
-                  name,
-                  <button
-                    aria-label={`Delete custom icon ${name}`}
-                    title={`Delete ${name}`}
-                    onClick={() => removeCustom(name)}
-                    className="absolute -right-1 -top-1 rounded-full border border-white/10 bg-surface-900 p-1 text-subtle opacity-0 hover:text-red-400 focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
-                  >
-                    <Trash2 size={10} />
-                  </button>
-                )
-              )}
-            </div>
-          ) : (
-            !showAdd && <p className="helper mb-3">No custom icons yet.</p>
-          )}
-
-          {/* Curated / full library */}
-          <p className="mb-1 label-xs">
-            {fullReady ? 'All icons' : 'Curated'}
-          </p>
-          <div className="grid grid-cols-8 gap-1.5">{gridNames.map((name) => iconCell(name))}</div>
-          {gridNames.length === 0 && customNames.length === 0 && (
-            <p className="py-6 text-center text-xs text-subtle">No icons match “{query}”.</p>
-          )}
-
-          {!fullReady && (
-            <button
-              onClick={() => {
-                setLoadingFull(true);
-                loadFullLibrary().then(() => {
-                  setFullReady(true);
-                  setLoadingFull(false);
-                });
-              }}
-              disabled={loadingFull}
-              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-white/15 px-3 py-2 text-xs text-slate-400 hover:border-white/30 hover:text-slate-300 disabled:opacity-50"
-            >
-              <Library size={13} />
-              {loadingFull ? 'Loading full library…' : 'Load full library… (~2,000 more icons)'}
-            </button>
-          )}
-        </div>
-
-        {!query && (
-          <p className="helper mt-2">
-            {fullReady
-              ? `Browsing the full set — ${allIconNames().length.toLocaleString()} icons.`
-              : 'Showing the curated industrial set — load the full library to browse everything.'}
-          </p>
+        {hasOverride && (
+          <Button
+            variant="secondary"
+            title="Go back to the automatic icon for this node"
+            onClick={() => {
+              setIconOverride(node.brokerId, node.path, null);
+              onPicked?.(null);
+              onClose();
+            }}
+          >
+            <RotateCcw size={13} aria-hidden="true" /> Automatic
+          </Button>
         )}
       </div>
-    </Modal>
+
+      <section aria-labelledby="icons-custom">
+        <div className="mb-2 flex items-center justify-between">
+          <h3 id="icons-custom" className="text-sm font-medium text-fg">
+            Custom
+          </h3>
+          <Button
+            size="sm"
+            variant="secondary"
+            aria-expanded={showAdd}
+            onClick={() => {
+              setShowAdd((v) => !v);
+              setFormError('');
+            }}
+          >
+            <Plus size={12} aria-hidden="true" /> Add custom icon
+          </Button>
+        </div>
+
+        {showAdd && (
+          <div className="mb-3 space-y-3 border-l-2 border-line pl-4">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1 space-y-3">
+                <Field label="Icon name">
+                  <Input className="mono" aria-label="Custom icon name" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="my-reactor" />
+                </Field>
+                <Field label="SVG path data" help="The d attribute of a path in a 24 × 24 view box.">
+                  <Textarea className="mono resize-none text-xs" aria-label="SVG path data" value={newPath} onChange={(e) => setNewPath(e.target.value)} placeholder="M4 20h16M6 20V8l6-4 6 4v12" rows={3} />
+                </Field>
+              </div>
+              <div className="mt-5 grid h-16 w-16 shrink-0 place-items-center rounded-md border border-line bg-app" title="Live preview">
+                {previewPathOk ? (
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-8 w-8 text-fg" aria-hidden="true">
+                    <path d={newPath.trim()} />
+                  </svg>
+                ) : (
+                  <span className="text-2xs text-subtle">Preview</span>
+                )}
+              </div>
+            </div>
+            {formError && (
+              <Banner variant="error">{formError}</Banner>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={submitCustom} loading={saving}>
+                Save icon
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {customNames.length > 0 ? (
+          <IconGrid
+            names={customNames}
+            current={current}
+            ink={ink}
+            label="Custom icons"
+            onPick={pick}
+            renderExtra={(name) => (
+              <button
+                type="button"
+                aria-label={`Delete custom icon ${name}`}
+                title={`Delete ${name}`}
+                onClick={() => removeCustom(name)}
+                className="absolute -right-1 -top-1 rounded-full border border-line-strong bg-overlay p-1 text-subtle opacity-0 hover:text-bad focus:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+              >
+                <Trash2 size={10} aria-hidden="true" />
+              </button>
+            )}
+          />
+        ) : (
+          !showAdd && <p className="text-xs text-subtle">No custom icons yet.</p>
+        )}
+      </section>
+
+      <section aria-labelledby="icons-library">
+        <h3 id="icons-library" className="mb-2 text-sm font-medium text-fg">
+          {fullReady ? 'All icons' : 'Curated industrial set'}
+        </h3>
+        {gridNames.length > 0 && <IconGrid names={gridNames} current={current} ink={ink} label={fullReady ? 'All icons' : 'Curated icons'} onPick={pick} />}
+        {gridNames.length === 0 && customNames.length === 0 && <p className="py-6 text-center text-sm text-muted">No icons match “{query}”.</p>}
+
+        {!fullReady && (
+          <Button
+            variant="secondary"
+            className="mt-3 w-full"
+            loading={loadingFull}
+            onClick={() => {
+              setLoadingFull(true);
+              loadFullLibrary().then(() => {
+                setFullReady(true);
+                setLoadingFull(false);
+              });
+            }}
+          >
+            <Library size={13} aria-hidden="true" /> Load the full library (about 2,000 more icons)
+          </Button>
+        )}
+        {!query && (
+          <p className="mt-2 text-xs text-subtle">
+            {fullReady ? `Browsing the full set: ${allIconNames().length.toLocaleString()} icons.` : 'Showing the curated industrial set. Load the full library to browse everything.'} Arrow keys move between icons.
+          </p>
+        )}
+      </section>
+    </Dialog>
   );
 }

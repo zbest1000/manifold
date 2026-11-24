@@ -1,23 +1,27 @@
-import { useCallback, useState } from 'react';
-import { Workflow, Plus, Eye, Power } from 'lucide-react';
-import clsx from 'clsx';
+import { useCallback, useMemo, useState } from 'react';
+import { Plus, Power, Play, Pencil, Trash2, ArrowRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Field, Select, Badge, Checkbox, IconButton, Table, THead, Th, Tr, Td, Banner, useConfirm } from '@/components/ui';
+import { nextSort, sortRows } from '@/lib/sortRows';
+import { Button, Input, Field, Select, Checkbox, IconButton, StatusDot, StatusText, Banner, Dialog, Mono, Table, TableSort, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { useEngineMetrics, useTvqSample } from './hooks';
-import { BrokerSelect, ListState } from './shared';
+import { BrokerSelect, Count, ListState, TabToolbar } from './shared';
 import TransformRow from './TransformRow';
-import { Pencil, Trash2 } from 'lucide-react';
-import { TRANSFORM_DEFAULTS, blankRoute, brokerName, cloneRoute, hasTvqNumeric, routeSaveable, routeTargetLabel } from './helpers';
+import { TRANSFORM_META, blankRoute, brokerName, cloneRoute, hasTvqNumeric, moveItem, newTransform, routeFlow, routeSaveable, routeState, stripTransformIds, withTransformIds } from './helpers';
 
+/** Routes: source filter, transform chain, target; one row per route with its state and counters. */
 export default function RoutesTab({ brokers }) {
   const [metrics, setMetrics] = useState({});
-  const [draft, setDraft] = useState(null); // null = closed editor
+  const [draft, setDraft] = useState(null); // null = editor closed
+  const [attempted, setAttempted] = useState(false); // errors for untouched fields appear only after a submit
+  const [formError, setFormError] = useState(null);
   const [preview, setPreview] = useState(null);
-  const [confirm, confirmDialog] = useConfirm();
+  const [previewing, setPreviewing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
+  const [confirm, confirmDialog] = useConfirm();
   const readOnly = useReadOnly();
   const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
 
@@ -27,34 +31,67 @@ export default function RoutesTab({ brokers }) {
       setMetrics(routes.metrics || {});
       return { routes: routes.routes || [], historians: hist.historians || [] };
     },
-    { interval: 15000 } // config only — numbers stream in below
+    { interval: 15000 } // config only: the counters stream in below
   );
   useEngineMetrics(useCallback((m) => setMetrics((prev) => m.pipelines || prev), []));
 
-  const routes = data?.routes || [];
+  const routes = useMemo(() => data?.routes || [], [data]);
   const historians = data?.historians || [];
+  const rows = useMemo(() => sortRows(routes, sort, { name: (r) => r.name || r.source.filter, in: (r) => metrics[r.id]?.matched || 0, out: (r) => metrics[r.id]?.published || 0, errors: (r) => metrics[r.id]?.errors || 0, state: (r) => routeState(r, metrics[r.id]).key }), [routes, sort, metrics]);
+  const running = routes.filter((r) => routeState(r, metrics[r.id]).key === 'running').length;
+
+  const openEditor = (route) => {
+    setAttempted(false);
+    setFormError(null);
+    setPreview(null);
+    setDraft(withTransformIds(route));
+  };
+  const closeEditor = () => {
+    setDraft(null);
+    setPreview(null);
+    setFormError(null);
+  };
+
+  const toHistorian = draft?.target.type === 'historian';
+  const tvqTopic = useTvqSample({ brokerId: draft?.source.brokerId, filter: draft?.source.filter, enabled: Boolean(toHistorian) });
+  const offerTvq = Boolean(tvqTopic) && !hasTvqNumeric(draft?.transforms);
+
+  const problems = {};
+  if (draft) {
+    if (!draft.source.filter.trim()) problems.filter = 'Enter the topic filter this route listens to, for example raw/plant1/#.';
+    if (toHistorian && !draft.target.historianId) problems.historian = historians.length ? 'Choose the historian to write to.' : 'No historian exists yet. Add one on the Historians tab first.';
+    if (!draft.source.brokerId) problems.broker = 'Connect an MQTT broker first.';
+  }
+  const shown = attempted ? problems : {};
 
   const save = async () => {
-    if (saving) return;
+    if (saving || readOnly) return;
+    setAttempted(true);
+    if (Object.keys(problems).length || !routeSaveable(draft)) return;
     setSaving(true);
+    setFormError(null);
     try {
-      await api.savePipeline(draft);
-      setDraft(null);
-      setPreview(null);
+      await api.savePipeline(stripTransformIds(draft));
+      closeEditor();
       reload();
       toast.success('Route saved');
     } catch (e) {
-      toast.error(e.message);
+      setFormError(e.message); // the editor stays open with everything typed
     } finally {
       setSaving(false);
     }
   };
 
   const runPreview = async () => {
+    setPreviewing(true);
     try {
-      setPreview(await api.previewPipeline(draft));
+      setPreview(await api.previewPipeline(stripTransformIds(draft)));
+      setFormError(null);
     } catch (e) {
-      toast.error(e.message);
+      setPreview(null);
+      setFormError(e.message);
+    } finally {
+      setPreviewing(false);
     }
   };
 
@@ -70,7 +107,7 @@ export default function RoutesTab({ brokers }) {
   const remove = async (route) => {
     const ok = await confirm({
       title: `Delete route "${route.name || route.source.filter}"?`,
-      message: 'It stops routing immediately.',
+      message: `Messages on ${route.source.filter} stop being forwarded immediately. Data already delivered is not removed.`,
       confirmLabel: 'Delete route',
       danger: true
     });
@@ -78,20 +115,14 @@ export default function RoutesTab({ brokers }) {
     try {
       await api.deletePipeline(route.id);
       reload();
+      toast.success('Route deleted');
     } catch (e) {
       toast.error(e.message);
     }
   };
 
-  const edit = (route) => {
-    setPreview(null);
-    setDraft(cloneRoute(route));
-  };
-
-  const newRoute = () => setDraft(blankRoute(brokers));
-  const toHistorian = draft?.target.type === 'historian';
-  const tvqTopic = useTvqSample({ brokerId: draft?.source.brokerId, filter: draft?.source.filter, enabled: Boolean(toHistorian) });
-  const offerTvq = Boolean(tvqTopic) && !hasTvqNumeric(draft?.transforms);
+  const setTransforms = (transforms) => setDraft((d) => ({ ...d, transforms }));
+  const newRoute = () => openEditor(blankRoute(brokers));
 
   return (
     <>
@@ -101,211 +132,285 @@ export default function RoutesTab({ brokers }) {
         reload={reload}
         count={routes.length}
         label="pipeline routes"
-        empty={
-          draft
-            ? null
-            : {
-                icon: Workflow,
-                title: 'No pipeline routes yet',
-                hint: 'A route consumes a topic filter, runs it through transforms (re-path, reshape, scale, flatten), and publishes to a broker or writes to a historian.',
-                action: (
-                  <Button onClick={newRoute} {...ro}>
-                    <Plus size={15} aria-hidden="true" /> Create the first route
-                  </Button>
-                )
-              }
-        }
+        empty={{
+          title: 'No routes yet',
+          hint: 'A route listens to a topic filter, runs each message through a chain of transforms (re-path, reshape, scale, flatten) and publishes the result to a broker or writes it to a historian.',
+          action: (
+            <Button onClick={newRoute} {...ro}>
+              <Plus size={14} aria-hidden="true" /> Create the first route
+            </Button>
+          )
+        }}
       >
-        <Table caption="Pipeline routes">
-          <THead>
-            <Th>Route</Th>
-            <Th>Flow</Th>
-            <Th align="right">Traffic</Th>
-            <Th srOnly align="right">Actions</Th>
-          </THead>
-          <tbody>
-            {routes.map((route) => {
-              const m = metrics[route.id] || {};
-              const name = route.name || route.source.filter;
-              return (
-                <Tr key={route.id} highlight={draft?.id === route.id}>
-                  <Td header>
-                    <span className="block max-w-[14rem] truncate text-slate-100">{name}</span>
-                    <Badge status={route.enabled ? 'connected' : 'disconnected'} className="mt-1">
-                      {route.enabled ? 'running' : 'paused'}
-                    </Badge>
-                  </Td>
-                  <Td className="max-w-[24rem]">
-                    <p className="truncate font-mono text-xs text-muted" title={`${route.source.filter} → ${routeTargetLabel(route, brokers, historians)}`}>
-                      {brokerName(brokers, route.source.brokerId)} · {route.source.filter} → {routeTargetLabel(route, brokers, historians)}
-                      {route.transforms?.length ? ` · ${route.transforms.map((t) => t.type).join(' → ')}` : ''}
-                    </p>
-                    {m.lastError && <p className="mt-1 truncate text-xs text-rose-300">{m.lastError}</p>}
-                  </Td>
-                  <Td align="right" className="whitespace-nowrap font-mono text-xs text-muted">
-                    <span title="matched / delivered / errors / loop-blocked">
-                      {m.matched || 0} in · {m.published || 0} out · <span className={m.errors ? 'text-rose-300' : ''}>{m.errors || 0} err</span>
-                      {m.loopBlocked ? <span className="text-amber-300"> · {m.loopBlocked} loop</span> : null}
-                    </span>
-                  </Td>
-                  <Td align="right">
-                    <span className="inline-flex items-center justify-end gap-1">
-                      <IconButton icon={Power} label={route.enabled ? `Pause route ${name}` : `Resume route ${name}`} size={14} onClick={() => toggle(route)} {...ro} />
-                      <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} route ${name}`} size={14} onClick={() => edit(route)} />
-                      <IconButton icon={Trash2} label={`Delete route ${name}`} size={14} className="hover:bg-rose-500/10 hover:text-rose-300" onClick={() => remove(route)} {...ro} />
-                    </span>
-                  </Td>
-                </Tr>
-              );
-            })}
-          </tbody>
-        </Table>
+        <TabToolbar summary={`${running} of ${routes.length} running`}>
+          <Button onClick={newRoute} {...ro}>
+            <Plus size={14} aria-hidden="true" /> New route
+          </Button>
+        </TabToolbar>
+        <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
+          <Table caption="Pipeline routes" className="min-w-[62rem]">
+            <THead>
+              <Th sortKey="name">Route</Th>
+              <Th sortKey="state">State</Th>
+              <Th sortKey="in" align="right">In</Th>
+              <Th sortKey="out" align="right">Out</Th>
+              <Th align="right">Blocked</Th>
+              <Th sortKey="errors" align="right">Errors</Th>
+              <Th srOnly align="right">Actions</Th>
+            </THead>
+            <tbody>
+              {rows.map((route) => {
+                const m = metrics[route.id] || {};
+                const st = routeState(route, m);
+                const name = route.name || route.source.filter;
+                const flow = routeFlow(route, brokers, historians);
+                const summary = `${brokerName(brokers, route.source.brokerId)}: ${flow.source} → ${flow.transforms.length ? `${flow.transforms.join(', ')} → ` : ''}${flow.target}`;
+                return (
+                  <Tr key={route.id} highlight={draft?.id === route.id}>
+                    <Td header className="max-w-[30rem]">
+                      <span className="flex items-center gap-2">
+                        <StatusDot tone={st.tone} className="md:hidden" />
+                        <span className="truncate font-medium text-fg">{name}</span>
+                      </span>
+                      <span className="mono flex items-center gap-1.5 text-xs text-muted" title={summary}>
+                        <span className="min-w-0 truncate">{flow.source}</span>
+                        <ArrowRight size={11} aria-hidden="true" className="shrink-0 text-faint" />
+                        {flow.transforms.length > 0 && (
+                          <>
+                            <span className="shrink-0 font-sans text-subtle">{flow.transforms.length === 1 ? flow.transforms[0] : `${flow.transforms.length} transforms`}</span>
+                            <ArrowRight size={11} aria-hidden="true" className="shrink-0 text-faint" />
+                          </>
+                        )}
+                        <span className="min-w-0 truncate">{flow.target}</span>
+                      </span>
+                    </Td>
+                    <Td className="max-w-[16rem]">
+                      <StatusText tone={st.tone}>{st.label}</StatusText>
+                      {m.lastError && st.key !== 'paused' && (
+                        <span className="mono block truncate text-xs text-subtle" title={m.lastError}>
+                          {m.lastError}
+                        </span>
+                      )}
+                    </Td>
+                    <Td align="right" className="mono">
+                      <Count value={m.matched} />
+                    </Td>
+                    <Td align="right" className="mono">
+                      <Count value={m.published} />
+                    </Td>
+                    <Td align="right" className="mono">
+                      <Count value={m.loopBlocked} tone="warn" />
+                    </Td>
+                    <Td align="right" className="mono">
+                      <Count value={m.errors} tone="bad" />
+                    </Td>
+                    <Td align="right" className="w-32">
+                      <span className="inline-flex items-center justify-end gap-0.5">
+                        <IconButton icon={route.enabled ? Power : Play} label={route.enabled ? `Pause route ${name}` : `Resume route ${name}`} size={14} onClick={() => toggle(route)} {...ro} />
+                        <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} route ${name}`} size={14} onClick={() => openEditor(cloneRoute(route))} />
+                        <IconButton icon={Trash2} label={`Delete route ${name}`} size={14} className="hover:bg-bad/10 hover:text-bad" onClick={() => remove(route)} {...ro} />
+                      </span>
+                    </Td>
+                  </Tr>
+                );
+              })}
+            </tbody>
+          </Table>
+        </TableSort>
       </ListState>
 
-      {!draft && routes.length > 0 && (
-        <Button variant="outline" onClick={newRoute} {...ro}>
-          <Plus size={14} aria-hidden="true" /> New route
-        </Button>
-      )}
-
       {draft && (
-        <Card className="p-4">
-          <h2 className="mb-3 text-sm font-semibold text-slate-100">{draft.id ? 'Edit route' : 'New route'}</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Field label="Name">
-              <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="normalize line1" />
-            </Field>
-            <BrokerSelect label="Source broker" brokers={brokers} value={draft.source.brokerId} onChange={(v) => setDraft({ ...draft, source: { ...draft.source, brokerId: v } })} />
-            <Field label="Source filter" className="sm:col-span-2">
-              <Input value={draft.source.filter} onChange={(e) => setDraft({ ...draft, source: { ...draft.source, filter: e.target.value } })} placeholder="raw/plant1/#" />
-            </Field>
-          </div>
-
-          <h3 className="label-xs mb-1.5 mt-4">Transforms (in order)</h3>
-          <div className="space-y-2">
-            {draft.transforms.map((t, i) => (
-              <TransformRow
-                key={i}
-                t={t}
-                index={i}
-                onChange={(next) => setDraft({ ...draft, transforms: draft.transforms.map((x, j) => (j === i ? next : x)) })}
-                onRemove={() => setDraft({ ...draft, transforms: draft.transforms.filter((_, j) => j !== i) })}
-              />
-            ))}
-            <Select
-              aria-label="Add a transform"
-              value=""
-              wrapperClassName="block w-56 max-w-full" className="py-1.5 text-xs"
-              onChange={(e) => e.target.value && setDraft({ ...draft, transforms: [...draft.transforms, { ...TRANSFORM_DEFAULTS[e.target.value] }] })}
-            >
-              <option value="">+ add transform…</option>
-              {Object.keys(TRANSFORM_DEFAULTS).map((k) => (
-                <option key={k} value={k}>
-                  {k}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <h3 className="label-xs mb-1.5 mt-4">Target</h3>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Select
-              label="Type"
-              value={draft.target.type}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  target: e.target.value === 'mqtt' ? { type: 'mqtt', brokerId: brokers[0]?.id || '', retain: false } : { type: 'historian', historianId: historians[0]?.id || '' }
-                })
-              }
-            >
-              <option value="mqtt">Publish to broker</option>
-              <option value="historian">Write to historian</option>
-            </Select>
-            {draft.target.type === 'mqtt' ? (
-              <>
-                <BrokerSelect label="Broker" brokers={brokers} value={draft.target.brokerId} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, brokerId: v } })} />
-                <div className="flex items-end pb-2">
-                  <Checkbox label="Retain" checked={draft.target.retain} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, retain: v } })} />
-                </div>
-              </>
-            ) : (
-              <Select label="Historian" value={draft.target.historianId} onChange={(e) => setDraft({ ...draft, target: { ...draft.target, historianId: e.target.value } })}>
-                {historians.length === 0 && <option value="">configure one in the Historians tab</option>}
-                {historians.map((h) => (
-                  <option key={h.id} value={h.id}>
-                    {h.name || h.url} ({h.type})
-                  </option>
-                ))}
-              </Select>
+        <Dialog
+          title={draft.id ? (readOnly ? 'View route' : 'Edit route') : 'New route'}
+          description="Each message matching the source filter passes through the transforms in order, then goes to the target."
+          size="xl"
+          onClose={closeEditor}
+          onSubmit={save}
+          footer={
+            <>
+              <Button variant="secondary" onClick={closeEditor}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={saving} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
+                {draft.id ? 'Save changes' : 'Save route'}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-6">
+            {formError && (
+              <Banner variant="error" title="Could not save the route">
+                {formError}
+              </Banner>
             )}
-          </div>
 
-          {offerTvq && (
-            <Banner
-              variant="warn"
-              title="This topic carries a value/time/quality envelope"
-              className="mt-3"
-              action={
-                <Button size="sm" variant="outline" onClick={() => setDraft({ ...draft, transforms: [...draft.transforms, { type: 'numeric', field: 'v' }] })}>
-                  <Plus size={12} aria-hidden="true" /> Add numeric transform on v
-                </Button>
-              }
-            >
-              <span className="mono">{tvqTopic}</span> looks like <span className="mono">{'{ v, t, q }'}</span>. A historian stores a JSON object as <b>text</b>, not a number,
-              so the history could not be trended. A <span className="mono">numeric</span> transform on field <span className="mono">v</span> writes the value itself (a message whose v is not a
-              number is dropped).
-            </Banner>
-          )}
+            <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <legend className="mb-2 text-sm font-medium text-fg">Source</legend>
+              <Field label="Name" className="sm:col-span-2">
+                <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Normalize line 1" data-autofocus />
+              </Field>
+              <BrokerSelect label="Source broker" brokers={brokers} value={draft.source.brokerId} onChange={(v) => setDraft({ ...draft, source: { ...draft.source, brokerId: v } })} error={shown.broker} />
+              <Field label="Source filter" error={shown.filter} help="MQTT wildcards: + for one level, # for the rest.">
+                <Input
+                  className="mono"
+                  aria-invalid={shown.filter ? 'true' : undefined}
+                  value={draft.source.filter}
+                  onChange={(e) => setDraft({ ...draft, source: { ...draft.source, filter: e.target.value } })}
+                  placeholder="raw/plant1/#"
+                />
+              </Field>
+            </fieldset>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={runPreview} disabled={!draft.source.filter}>
-              <Eye size={14} aria-hidden="true" /> Dry-run preview
-            </Button>
-            <Button onClick={save} disabled={!routeSaveable(draft) || saving || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
-              {draft.id ? 'Save changes' : 'Save route'}
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setDraft(null);
-                setPreview(null);
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-
-          {preview && (
-            <div className="mt-3 rounded-xl border border-white/10 bg-surface-950/60 p-3" role="region" aria-label="Dry-run preview">
-              <p className="mb-2 text-xs text-muted">
-                Matches <span className="font-semibold text-slate-200">{preview.matchCount?.toLocaleString?.() ?? 0}</span> observed topics
-                {preview.error && <span className="text-rose-300"> · {preview.error}</span>}
-              </p>
-              <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-xs">
-                {(preview.rows || []).map((r, i) => (
-                  <div key={i} className={clsx('rounded-lg px-2 py-1', r.loop ? 'bg-rose-500/10' : 'bg-black/20')}>
-                    <span className="break-all text-muted">{r.inTopic}</span>
-                    <span className="mx-1 text-faint" aria-label="becomes">
-                      →
-                    </span>
-                    {r.dropped ? (
-                      <span className="text-amber-300">dropped by transform</span>
-                    ) : (
-                      <span className={clsx('break-all', r.loop ? 'text-rose-300' : 'text-emerald-300')}>
-                        {r.outTopic}
-                        {r.loop ? ' (would loop — blocked)' : ''}
-                      </span>
-                    )}
-                    {!r.dropped && <div className="truncate text-subtle">{JSON.stringify(r.outPayload)}</div>}
-                  </div>
-                ))}
+            <fieldset>
+              <legend className="mb-1 text-sm font-medium text-fg">Transforms</legend>
+              <p className="mb-2 text-xs text-subtle">Applied in order, top to bottom. With none, the message is forwarded unchanged.</p>
+              {draft.transforms.length > 0 && (
+                <ol className="divide-y divide-line rounded-md border border-line bg-app" aria-label="Transform chain">
+                  {draft.transforms.map((t, i) => (
+                    <TransformRow
+                      key={t._uid}
+                      t={t}
+                      index={i}
+                      count={draft.transforms.length}
+                      readOnly={readOnly}
+                      onChange={(next) => setTransforms(draft.transforms.map((x, j) => (j === i ? next : x)))}
+                      onRemove={() => setTransforms(draft.transforms.filter((_, j) => j !== i))}
+                      onMove={(from, to) => setTransforms(moveItem(draft.transforms, from, to))}
+                    />
+                  ))}
+                </ol>
+              )}
+              <div className="mt-2 w-60 max-w-full">
+                <Select aria-label="Add a transform" value="" disabled={readOnly} onChange={(e) => e.target.value && setTransforms([...draft.transforms, newTransform(e.target.value)])}>
+                  <option value="">Add a transform…</option>
+                  {Object.entries(TRANSFORM_META).map(([k, meta]) => (
+                    <option key={k} value={k}>
+                      {meta.label}
+                    </option>
+                  ))}
+                </Select>
               </div>
-            </div>
-          )}
-        </Card>
+            </fieldset>
+
+            <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <legend className="mb-2 text-sm font-medium text-fg">Target</legend>
+              <Select
+                label="Type"
+                value={draft.target.type}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    target: e.target.value === 'mqtt' ? { type: 'mqtt', brokerId: brokers[0]?.id || '', retain: false } : { type: 'historian', historianId: historians[0]?.id || '' }
+                  })
+                }
+              >
+                <option value="mqtt">Publish to a broker</option>
+                <option value="historian">Write to a historian</option>
+              </Select>
+              {draft.target.type === 'mqtt' ? (
+                <>
+                  <BrokerSelect label="Broker" brokers={brokers} value={draft.target.brokerId} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, brokerId: v } })} />
+                  <Checkbox className="sm:col-span-2" label="Publish as retained messages" checked={draft.target.retain} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, retain: v } })} />
+                </>
+              ) : (
+                <Select label="Historian" value={draft.target.historianId} error={shown.historian} onChange={(e) => setDraft({ ...draft, target: { ...draft.target, historianId: e.target.value } })}>
+                  {historians.length === 0 && <option value="">Add one on the Historians tab</option>}
+                  {historians.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.name || h.url} ({h.type})
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </fieldset>
+
+            {offerTvq && (
+              <Banner
+                variant="warn"
+                title="This topic carries a value/time/quality envelope"
+                action={
+                  <Button size="sm" variant="secondary" onClick={() => setTransforms([...draft.transforms, { ...newTransform('numeric'), field: 'v' }])}>
+                    <Plus size={12} aria-hidden="true" /> Add numeric transform on v
+                  </Button>
+                }
+              >
+                <Mono>{tvqTopic}</Mono> looks like <Mono>{'{ v, t, q }'}</Mono>. A historian stores a JSON object as <b className="font-medium text-fg">text</b>, not a number, so the history could not be trended. A
+                numeric transform on field <Mono>v</Mono> writes the value itself (a message whose v is not a number is dropped).
+              </Banner>
+            )}
+
+            <section aria-labelledby="route-preview-heading" className="border-t border-line pt-4">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 id="route-preview-heading" className="text-sm font-medium text-fg">
+                    Dry run
+                  </h3>
+                  <p className="text-xs text-subtle">Runs the current settings on recent messages. Nothing is published.</p>
+                </div>
+                <Button variant="secondary" onClick={runPreview} loading={previewing} disabled={!draft.source.filter.trim()}>
+                  Run dry run
+                </Button>
+              </div>
+              {preview && <PreviewTable preview={preview} />}
+            </section>
+          </div>
+        </Dialog>
       )}
       {confirmDialog}
     </>
+  );
+}
+
+const compact = (v) => (v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v));
+
+/** Input and output of the chain side by side, one row per observed topic. */
+function PreviewTable({ preview }) {
+  const rows = preview.rows || [];
+  return (
+    <div role="region" aria-label="Dry-run preview">
+      <p className="mb-2 text-xs text-muted">
+        <span className="tabular-nums text-fg">{(preview.matchCount ?? 0).toLocaleString()}</span> observed topics match
+        {preview.error && <span className="text-bad"> · {preview.error}</span>}
+        {rows.length > 0 && rows.length < (preview.matchCount ?? 0) && ` · showing ${rows.length}`}
+      </p>
+      {rows.length > 0 && (
+        <Table caption="Dry-run: input and output per topic" wrapperClassName="max-h-64 overflow-y-auto" className="min-w-[40rem]">
+          <THead>
+            <Th>Input</Th>
+            <Th>Output</Th>
+            <Th>Result</Th>
+          </THead>
+          <tbody>
+            {rows.map((r, i) => (
+              <Tr key={i}>
+                <Td className="max-w-[18rem] align-top">
+                  <span className="mono block truncate text-xs text-fg" title={r.inTopic}>
+                    {r.inTopic}
+                  </span>
+                  <span className="mono block truncate text-xs text-subtle" title={compact(r.inPayload)}>
+                    {compact(r.inPayload)}
+                  </span>
+                </Td>
+                <Td className="max-w-[18rem] align-top">
+                  {r.dropped ? (
+                    <span className="text-xs text-subtle">No output</span>
+                  ) : (
+                    <>
+                      <span className="mono block truncate text-xs text-fg" title={r.outTopic}>
+                        {r.outTopic}
+                      </span>
+                      <span className="mono block truncate text-xs text-subtle" title={compact(r.outPayload)}>
+                        {compact(r.outPayload)}
+                      </span>
+                    </>
+                  )}
+                </Td>
+                <Td className="align-top">{r.loop ? <StatusText tone="bad">Would loop, blocked</StatusText> : r.dropped ? <StatusText tone="warn">Dropped by a transform</StatusText> : <StatusText tone="good">Delivered</StatusText>}</Td>
+              </Tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </div>
   );
 }

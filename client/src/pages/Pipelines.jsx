@@ -1,10 +1,8 @@
 import { useSearchParams } from 'react-router-dom';
-import { Workflow, Boxes, Database, CircleDot, FileCheck2 } from 'lucide-react';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
-import ViewTab from '@/components/ViewTab';
-import { Banner, HelpButton, PageBody } from '@/components/ui';
 import ReadOnlyNote from '@/components/ReadOnlyNote';
+import { Banner, HelpButton, PageBody, TabPanel, Tabs } from '@/components/ui';
 import PipelinesHelp from './pipelines/PipelinesHelp';
 import RoutesTab from './pipelines/RoutesTab';
 import ModelsTab from './pipelines/ModelsTab';
@@ -13,20 +11,28 @@ import RecorderTab from './pipelines/RecorderTab';
 import ContractsTab from './pipelines/ContractsTab';
 
 /**
- * Pipelines — Manifold's DataOps surface. Five tabs over the same live stream:
- *   Routes      source → transforms → target, with trie-backed dry-run
- *   Models      multi-source attributes merged into one object at a UNS path
- *   Historians  InfluxDB / Timebase / TimescaleDB connections pipelines+recorder write into
- *   Recorder    time-series capture to disk or a historian, plus replay
- *   Contracts   locked payload schemas with drift violations
+ * Pipelines: the DataOps surface. Five tabs over the same live stream, each a list page with one
+ * primary action and a form dialog:
+ *   Routes      source → transform chain → target, with a dry run
+ *   Models      several raw topics merged into one object at a UNS path
+ *   Historians  time-series databases that routes and recordings write into
+ *   Recorder    capture to a file or a historian, with replay
+ *   Contracts   locked payload shapes, with drift
  * Each tab lives in pages/pipelines/.
  */
-const TABS = ['routes', 'models', 'historians', 'recorder', 'contracts'];
+const TABS = [
+  { id: 'routes', label: 'Routes' },
+  { id: 'models', label: 'Models' },
+  { id: 'historians', label: 'Historians' },
+  { id: 'recorder', label: 'Recorder' },
+  { id: 'contracts', label: 'Contracts' }
+];
+const IDS = TABS.map((t) => t.id);
 
 export default function Pipelines() {
   // The tab lives in the URL (?tab=historians) so a refresh, back/forward and shared links keep it.
   const [params, setParams] = useSearchParams();
-  const tab = TABS.includes(params.get('tab')) ? params.get('tab') : 'routes';
+  const tab = IDS.includes(params.get('tab')) ? params.get('tab') : 'routes';
   const setTab = (t) => setParams(t === 'routes' ? {} : { tab: t }, { replace: true });
   const allBrokers = useStore((s) => s.brokers);
   const brokers = allBrokers.filter((b) => b.status === 'connected');
@@ -35,34 +41,30 @@ export default function Pipelines() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="Pipelines"
-        subtitle="Route, reshape, contextualize, and record the live stream"
+        subtitle="Route, reshape and record the live message stream"
         actions={
-          <>
-            <div role="group" aria-label="Pipeline sections" className="flex max-w-full overflow-x-auto rounded-xl border border-white/10">
-              <ViewTab active={tab === 'routes'} onClick={() => setTab('routes')} icon={Workflow} label="Routes" />
-              <ViewTab active={tab === 'models'} onClick={() => setTab('models')} icon={Boxes} label="Models" />
-              <ViewTab active={tab === 'historians'} onClick={() => setTab('historians')} icon={Database} label="Historians" />
-              <ViewTab active={tab === 'recorder'} onClick={() => setTab('recorder')} icon={CircleDot} label="Recorder" />
-              <ViewTab active={tab === 'contracts'} onClick={() => setTab('contracts')} icon={FileCheck2} label="Contracts" />
-            </div>
-            <HelpButton title="How Pipelines work">
-              <PipelinesHelp />
-            </HelpButton>
-          </>
+          <HelpButton title="How Pipelines work">
+            <PipelinesHelp />
+          </HelpButton>
         }
       />
+      <div className="shrink-0 px-4 pt-2 sm:px-6">
+        <Tabs tabs={TABS} value={tab} onChange={setTab} label="Pipeline sections" idPrefix="pipelines" />
+      </div>
       <PageBody>
-        <ReadOnlyNote />
+        <ReadOnlyNote className="" />
         {brokers.length === 0 && (
           <Banner variant="warn" title="No connected brokers">
             Sources and targets need at least one live MQTT connection. Connect one on the MQTT Brokers page.
           </Banner>
         )}
-        {tab === 'routes' && <RoutesTab brokers={brokers} />}
-        {tab === 'models' && <ModelsTab brokers={brokers} />}
-        {tab === 'historians' && <HistoriansTab />}
-        {tab === 'recorder' && <RecorderTab brokers={brokers} />}
-        {tab === 'contracts' && <ContractsTab brokers={brokers} />}
+        <TabPanel idPrefix="pipelines" id={tab} className="space-y-4">
+          {tab === 'routes' && <RoutesTab brokers={brokers} />}
+          {tab === 'models' && <ModelsTab brokers={brokers} />}
+          {tab === 'historians' && <HistoriansTab />}
+          {tab === 'recorder' && <RecorderTab brokers={brokers} />}
+          {tab === 'contracts' && <ContractsTab brokers={brokers} />}
+        </TabPanel>
       </PageBody>
     </div>
   );

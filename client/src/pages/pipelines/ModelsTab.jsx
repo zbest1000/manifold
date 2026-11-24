@@ -1,38 +1,68 @@
 import { useState } from 'react';
-import { Boxes, Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Field, Select, Badge, IconButton, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { BrokerSelect, ListState, RowButtons, useRo } from './shared';
+import { Button, Input, Field, Select, Checkbox, Banner, IconButton, Dialog, StatusText, Path, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
+import { READ_ONLY_REASON } from '@/store/selectors';
+import { BrokerSelect, Count, ListState, RowButtons, TabToolbar, useRo } from './shared';
 import { blankModel, brokerName, cleanModel, cloneModel, modelSaveable } from './helpers';
 
+/** Models: several raw topics merged into one object published at a clean UNS path. */
 export default function ModelsTab({ brokers }) {
   const [draft, setDraft] = useState(null);
+  const [attempted, setAttempted] = useState(false);
+  const [formError, setFormError] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
   const [saving, setSaving] = useState(false);
   const ro = useRo();
+  const readOnly = Boolean(ro.disabled);
   const { data, error, loading, reload } = usePolled(() => api.listModels(), { interval: 5000 });
   const models = data?.models || [];
   const status = data?.status || {};
 
+  const open = (m) => {
+    setAttempted(false);
+    setFormError(null);
+    setDraft(m);
+  };
+  const close = () => {
+    setDraft(null);
+    setFormError(null);
+  };
+
+  const problems = {};
+  if (draft) {
+    if (!draft.target.topic.trim()) problems.topic = 'Enter the topic the merged object is published to, for example site/area/line/pump7.';
+    if (!draft.attributes.some((a) => a.name && a.source.topic)) problems.attributes = 'Add at least one attribute with a name and a source topic.';
+  }
+  const shown = attempted ? problems : {};
+
   const save = async () => {
-    if (saving) return;
+    if (saving || readOnly) return;
+    setAttempted(true);
+    if (Object.keys(problems).length || !modelSaveable(draft)) return;
     setSaving(true);
+    setFormError(null);
     try {
       await api.saveModel(cleanModel(draft));
-      setDraft(null);
+      close();
       reload();
       toast.success('Model saved');
     } catch (e) {
-      toast.error(e.message);
+      setFormError(e.message);
     } finally {
       setSaving(false);
     }
   };
 
   const remove = async (m) => {
-    const ok = await confirm({ title: `Delete model "${m.name || m.target.topic}"?`, message: 'It stops publishing its merged object immediately.', confirmLabel: 'Delete model', danger: true });
+    const ok = await confirm({
+      title: `Delete model "${m.name || m.target.topic}"?`,
+      message: `It stops publishing the merged object to ${m.target.topic}. The last retained message on the broker is not cleared.`,
+      confirmLabel: 'Delete model',
+      danger: true
+    });
     if (!ok) return;
     try {
       await api.deleteModel(m.id);
@@ -44,7 +74,8 @@ export default function ModelsTab({ brokers }) {
   };
 
   const patchAttr = (i, fn) => setDraft({ ...draft, attributes: draft.attributes.map((x, j) => (j === i ? fn(x) : x)) });
-  const newModel = () => setDraft(blankModel(brokers));
+  const newModel = () => open(blankModel(brokers));
+  const live = models.filter((m) => m.enabled && !status[m.id]?.lastError).length;
 
   return (
     <>
@@ -54,52 +85,62 @@ export default function ModelsTab({ brokers }) {
         reload={reload}
         count={models.length}
         label="models"
-        empty={
-          draft
-            ? null
-            : {
-                icon: Boxes,
-                title: 'No models yet',
-                hint: 'A model binds attributes from many raw topics (even across brokers) and publishes them as one merged object at a clean UNS path — ten raw topics become one Pump-7.',
-                action: (
-                  <Button onClick={newModel} {...ro}>
-                    <Plus size={15} aria-hidden="true" /> Create the first model
-                  </Button>
-                )
-              }
-        }
+        empty={{
+          title: 'No models yet',
+          hint: 'A model binds attributes from many raw topics, even across brokers, and publishes them as one merged object at a clean UNS path. Ten raw topics become one Pump-7.',
+          action: (
+            <Button onClick={newModel} {...ro}>
+              <Plus size={14} aria-hidden="true" /> Create the first model
+            </Button>
+          )
+        }}
       >
-        <Table caption="Models">
+        <TabToolbar summary={`${live} of ${models.length} publishing`}>
+          <Button onClick={newModel} {...ro}>
+            <Plus size={14} aria-hidden="true" /> New model
+          </Button>
+        </TabToolbar>
+        <Table caption="Models" className="min-w-[52rem]">
           <THead>
             <Th>Model</Th>
-            <Th>Target</Th>
-            <Th align="right">Status</Th>
+            <Th>State</Th>
+            <Th>Publishes</Th>
+            <Th align="right">Bound</Th>
+            <Th align="right">Published</Th>
+            <Th align="right">Errors</Th>
             <Th srOnly align="right">Actions</Th>
           </THead>
           <tbody>
             {models.map((m) => {
               const s = status[m.id] || {};
               const name = m.name || m.target.topic;
+              const failing = m.enabled && s.lastError;
               return (
                 <Tr key={m.id} highlight={draft?.id === m.id}>
-                  <Td header>
-                    <span className="block max-w-[14rem] truncate text-slate-100">{name}</span>
-                    <Badge status={m.enabled ? 'connected' : 'disconnected'} className="mt-1">
-                      {m.publishMode}
-                    </Badge>
+                  <Td header className="max-w-[22rem]">
+                    <span className="block truncate font-medium text-fg">{name}</span>
+                    <Path value={`${brokerName(brokers, m.target.brokerId)}: ${m.target.topic}`} className="text-muted" />
                   </Td>
-                  <Td className="max-w-[24rem]">
-                    <p className="truncate font-mono text-xs text-muted">
-                      {m.attributes.length} attribute(s) → {brokerName(brokers, m.target.brokerId)} · {m.target.topic}
-                    </p>
-                    {s.lastError && <p className="mt-1 text-xs text-rose-300">{s.lastError}</p>}
+                  <Td className="max-w-[16rem]">
+                    <StatusText tone={!m.enabled ? 'neutral' : failing ? 'bad' : 'good'}>{!m.enabled ? 'Paused' : failing ? 'Failing' : 'Publishing'}</StatusText>
+                    {s.lastError && (
+                      <span className="mono block truncate text-xs text-subtle" title={s.lastError}>
+                        {s.lastError}
+                      </span>
+                    )}
                   </Td>
-                  <Td align="right" className="whitespace-nowrap font-mono text-xs text-muted">
-                    {s.boundAttributes ?? 0}/{m.attributes.length} bound · {s.publishes || 0} pub
-                    {s.errors ? <span className="text-rose-300"> · {s.errors} err</span> : null}
+                  <Td className="text-xs text-muted">{m.publishMode === 'interval' ? `Every ${Number(m.intervalMs).toLocaleString()} ms` : 'On change'}</Td>
+                  <Td align="right" className="mono tabular-nums">
+                    {s.boundAttributes ?? 0} / {m.attributes.length}
                   </Td>
-                  <Td align="right">
-                    <RowButtons what={`model ${name}`} onEdit={() => setDraft(cloneModel(m))} onDelete={() => remove(m)} />
+                  <Td align="right" className="mono">
+                    <Count value={s.publishes} />
+                  </Td>
+                  <Td align="right" className="mono">
+                    <Count value={s.errors} tone="bad" />
+                  </Td>
+                  <Td align="right" className="w-24">
+                    <RowButtons what={`model ${name}`} onEdit={() => open(cloneModel(m))} onDelete={() => remove(m)} />
                   </Td>
                 </Tr>
               );
@@ -108,74 +149,103 @@ export default function ModelsTab({ brokers }) {
         </Table>
       </ListState>
 
-      {!draft && models.length > 0 && (
-        <Button variant="outline" onClick={newModel} {...ro}>
-          <Plus size={14} aria-hidden="true" /> New model
-        </Button>
-      )}
       {draft && (
-        <Card className="p-4">
-          <h2 className="mb-3 text-sm font-semibold text-slate-100">{draft.id ? 'Edit model' : 'New model'}</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Field label="Name">
-              <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Pump-7" />
-            </Field>
-            <BrokerSelect label="Target broker" brokers={brokers} value={draft.target.brokerId} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, brokerId: v } })} />
-            <Field label="Target topic (UNS path)">
-              <Input value={draft.target.topic} onChange={(e) => setDraft({ ...draft, target: { ...draft.target, topic: e.target.value } })} placeholder="site/area/line/pump7" />
-            </Field>
-            <Select label="Publish" value={draft.publishMode} onChange={(e) => setDraft({ ...draft, publishMode: e.target.value })}>
-              <option value="on-change">on change (debounced)</option>
-              <option value="interval">on interval</option>
-            </Select>
-            {draft.publishMode === 'interval' && (
-              <Field label="Interval (ms)">
-                <Input type="number" value={draft.intervalMs} onChange={(e) => setDraft({ ...draft, intervalMs: e.target.value })} />
-              </Field>
+        <Dialog
+          title={draft.id ? (readOnly ? 'View model' : 'Edit model') : 'New model'}
+          description="Merges the attributes below into one object and publishes it to the target topic."
+          size="xl"
+          onClose={close}
+          onSubmit={save}
+          footer={
+            <>
+              <Button variant="secondary" onClick={close}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={saving} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
+                {draft.id ? 'Save changes' : 'Save model'}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-6">
+            {formError && (
+              <Banner variant="error" title="Could not save the model">
+                {formError}
+              </Banner>
             )}
-          </div>
-          <h3 className="label-xs mb-1.5 mt-4">Attributes</h3>
-          <div className="space-y-2">
-            {draft.attributes.map((a, i) => (
-              <div key={i} className="flex flex-wrap items-center gap-2 rounded-lg bg-black/20 px-2 py-1.5">
-                <Input aria-label={`Attribute ${i + 1} name`} value={a.name} onChange={(e) => patchAttr(i, (x) => ({ ...x, name: e.target.value }))} placeholder="rpm" className="w-28" />
-                <BrokerSelect aria-label={`Attribute ${i + 1} broker`} brokers={brokers} value={a.source.brokerId} wrapperClassName="w-44 max-w-full" onChange={(v) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, brokerId: v } }))} />
+            <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <legend className="mb-2 text-sm font-medium text-fg">Target</legend>
+              <Field label="Name">
+                <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Pump-7" data-autofocus />
+              </Field>
+              <BrokerSelect label="Target broker" brokers={brokers} value={draft.target.brokerId} onChange={(v) => setDraft({ ...draft, target: { ...draft.target, brokerId: v } })} />
+              <Field label="Target topic (UNS path)" error={shown.topic} className="sm:col-span-2">
                 <Input
-                  aria-label={`Attribute ${i + 1} source topic`}
-                  value={a.source.topic}
-                  onChange={(e) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, topic: e.target.value } }))}
-                  placeholder="raw/pump7/rpm"
-                  className="min-w-56 flex-1"
+                  className="mono"
+                  aria-invalid={shown.topic ? 'true' : undefined}
+                  value={draft.target.topic}
+                  onChange={(e) => setDraft({ ...draft, target: { ...draft.target, topic: e.target.value } })}
+                  placeholder="site/area/line/pump7"
                 />
-                <Input
-                  aria-label={`Attribute ${i + 1} source field (optional)`}
-                  value={a.source.field}
-                  onChange={(e) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, field: e.target.value } }))}
-                  placeholder="field (opt)"
-                  className="w-28"
-                />
-                <IconButton
-                  icon={Trash2}
-                  label={`Remove attribute ${i + 1}`}
-                  size={14}
-                  className="hover:bg-rose-500/10 hover:text-rose-300"
-                  onClick={() => setDraft({ ...draft, attributes: draft.attributes.filter((_, j) => j !== i) })}
-                />
+              </Field>
+              <Select label="Publish" value={draft.publishMode} onChange={(e) => setDraft({ ...draft, publishMode: e.target.value })}>
+                <option value="on-change">When a value changes (debounced)</option>
+                <option value="interval">On a fixed interval</option>
+              </Select>
+              {draft.publishMode === 'interval' && (
+                <Field label="Interval (ms)">
+                  <Input className="mono" type="number" value={draft.intervalMs} onChange={(e) => setDraft({ ...draft, intervalMs: e.target.value })} />
+                </Field>
+              )}
+              <Checkbox className="sm:col-span-2" label="Enabled" checked={draft.enabled !== false} onChange={(v) => setDraft({ ...draft, enabled: v })} />
+            </fieldset>
+
+            <fieldset>
+              <legend className="mb-1 text-sm font-medium text-fg">Attributes</legend>
+              <p className="mb-2 text-xs text-subtle">Each attribute becomes one field of the published object, read from a source topic.</p>
+              <div className="rounded-md border border-line bg-app">
+              <div aria-hidden="true" className="hidden gap-2 px-3 pt-2 text-xs text-muted sm:flex">
+                <span className="w-28">Name</span>
+                <span className="w-44">Source broker</span>
+                <span className="min-w-56 flex-1">Source topic</span>
+                <span className="w-32">Field</span>
+                <span className="w-8" />
               </div>
-            ))}
-            <Button size="sm" variant="ghost" onClick={() => setDraft({ ...draft, attributes: [...draft.attributes, { name: '', source: { brokerId: brokers[0]?.id || '', topic: '', field: '' } }] })}>
-              <Plus size={12} aria-hidden="true" /> Add attribute
-            </Button>
+              <ul className="divide-y divide-line" aria-label="Attributes">
+                {draft.attributes.map((a, i) => (
+                  <li key={i} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+                    <Input aria-label={`Attribute ${i + 1} name`} value={a.name} onChange={(e) => patchAttr(i, (x) => ({ ...x, name: e.target.value }))} placeholder="rpm" className="mono w-28" />
+                    <BrokerSelect aria-label={`Attribute ${i + 1} broker`} brokers={brokers} value={a.source.brokerId} wrapperClassName="w-44 max-w-full" onChange={(v) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, brokerId: v } }))} />
+                    <Input
+                      aria-label={`Attribute ${i + 1} source topic`}
+                      value={a.source.topic}
+                      onChange={(e) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, topic: e.target.value } }))}
+                      placeholder="raw/pump7/rpm"
+                      className="mono min-w-56 flex-1"
+                    />
+                    <Input
+                      aria-label={`Attribute ${i + 1} source field (optional)`}
+                      value={a.source.field}
+                      onChange={(e) => patchAttr(i, (x) => ({ ...x, source: { ...x.source, field: e.target.value } }))}
+                      placeholder="field (optional)"
+                      className="mono w-32"
+                    />
+                    <IconButton icon={Trash2} label={`Remove attribute ${i + 1}`} size={14} className="hover:bg-bad/10 hover:text-bad" onClick={() => setDraft({ ...draft, attributes: draft.attributes.filter((_, j) => j !== i) })} />
+                  </li>
+                ))}
+              </ul>
+              </div>
+              {shown.attributes && (
+                <p role="alert" className="mt-1.5 text-xs text-bad">
+                  {shown.attributes}
+                </p>
+              )}
+              <Button size="sm" variant="secondary" className="mt-2" onClick={() => setDraft({ ...draft, attributes: [...draft.attributes, { name: '', source: { brokerId: brokers[0]?.id || '', topic: '', field: '' } }] })}>
+                <Plus size={12} aria-hidden="true" /> Add attribute
+              </Button>
+            </fieldset>
           </div>
-          <div className="mt-4 flex gap-2">
-            <Button onClick={save} disabled={!modelSaveable(draft) || saving || Boolean(ro.disabled)} title={ro.title}>
-              {draft.id ? 'Save changes' : 'Save model'}
-            </Button>
-            <Button variant="ghost" onClick={() => setDraft(null)}>
-              Cancel
-            </Button>
-          </div>
-        </Card>
+        </Dialog>
       )}
       {confirmDialog}
     </>

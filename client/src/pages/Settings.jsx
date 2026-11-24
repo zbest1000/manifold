@@ -1,133 +1,82 @@
-import { Palette, Terminal, Info, Check } from 'lucide-react';
-import clsx from 'clsx';
-import { useStore } from '@/store/store';
-import { STYLE_LIST, LAYOUT_LIST } from '@/graph/graphStyles';
-import { Card, Badge, PageBody } from '@/components/ui';
+import { useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { api } from '@/lib/api';
+import { usePolled } from '@/lib/usePolled';
+import { Banner, ButtonLink, PageBody, TabPanel, Tabs } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
-import AlertRulesCard from './settings/AlertRulesCard';
-import ConfigCard from './settings/ConfigCard';
-import AuditCard from './settings/AuditCard';
-import SessionCard from './settings/SessionCard';
 import ReadOnlyNote from '@/components/ReadOnlyNote';
+import Session from './settings/Session';
+import { ThemeSection, GraphSection } from './settings/Appearance';
+import { McpSection, AboutSection } from './settings/Integrations';
+import AlertRules from './settings/AlertRules';
+import Configuration from './settings/Configuration';
+import AuditTrail from './settings/AuditTrail';
+import { ruleStates } from './settings/helpers';
 
-const MCP_SNIPPET = `{
-  "mcpServers": {
-    "manifold": {
-      "command": "node",
-      "args": ["/absolute/path/to/mcp/index.js"],
-      "env": { "MANIFOLD_API_URL": "http://localhost:5000" }
-    }
-  }
-}`;
+const TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'alerts', label: 'Alert rules' },
+  { id: 'configuration', label: 'Configuration' },
+  { id: 'audit', label: 'Audit trail' }
+];
+const IDS = TABS.map((t) => t.id);
+
+/** Tells the General tab's reader when alerts are firing, since the rules live on their own tab. */
+function FiringNotice() {
+  const { data } = usePolled(async () => {
+    const [r, e] = await Promise.all([api.listAlertRules(), api.alertEvents(200)]);
+    return { rules: r.rules || [], events: e.events || [] };
+  });
+  const firing = useMemo(() => {
+    if (!data) return 0;
+    const states = ruleStates(data.rules, data.events);
+    return data.rules.filter((r) => states[r.id]?.key === 'firing').length;
+  }, [data]);
+  if (!firing) return null;
+  return (
+    <Banner
+      variant="error"
+      title={`${firing} alert ${firing === 1 ? 'rule is' : 'rules are'} firing`}
+      className="mb-4"
+      action={
+        <ButtonLink to="/settings?tab=alerts" size="sm" variant="secondary">
+          View alert rules
+        </ButtonLink>
+      }
+    />
+  );
+}
 
 export default function Settings() {
-  const graphStyle = useStore((s) => s.graphStyle);
-  const graphLayout = useStore((s) => s.graphLayout);
-  const setGraphStyle = useStore((s) => s.setGraphStyle);
-  const setGraphLayout = useStore((s) => s.setGraphLayout);
-  const connected = useStore((s) => s.connected);
+  // The tab lives in the URL (?tab=alerts) so a refresh, back/forward and shared links keep it.
+  const [params, setParams] = useSearchParams();
+  const tab = IDS.includes(params.get('tab')) ? params.get('tab') : 'general';
+  const setTab = (t) => setParams(t === 'general' ? {} : { tab: t }, { replace: true });
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Settings" subtitle="Graph appearance and integrations" />
-
-      <PageBody className="space-y-6">
+      <PageHeader title="Settings" subtitle="Session, appearance, alert rules and configuration" />
+      <div className="shrink-0 px-4 pt-2 sm:px-6">
+        <Tabs tabs={TABS} value={tab} onChange={setTab} label="Settings sections" idPrefix="settings" />
+      </div>
+      <PageBody>
         <ReadOnlyNote className="" />
-        <SessionCard />
-        <Card className="p-4 sm:p-5">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-100">
-            <Palette size={16} className="text-accent-400" aria-hidden="true" /> Default graph style
-          </h2>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {STYLE_LIST.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                aria-pressed={s.id === graphStyle}
-                onClick={() => setGraphStyle(s.id)}
-                className={clsx(
-                  'group overflow-hidden rounded-xl border text-left transition',
-                  s.id === graphStyle ? 'border-accent-500/70 ring-1 ring-accent-500/40' : 'border-white/10 hover:border-white/25'
-                )}
-              >
-                <div className="h-16" style={{ background: s.background }}>
-                  <svg viewBox="0 0 120 64" className="h-full w-full" aria-hidden="true">
-                    <line x1="30" y1="40" x2="60" y2="22" stroke={s.link.color} />
-                    <line x1="60" y1="22" x2="90" y2="40" stroke={s.link.color} />
-                    <line x1="60" y1="22" x2="60" y2="50" stroke={s.link.color} />
-                    <circle cx="30" cy="40" r="5" fill={s.palette[0]} stroke={s.node.stroke} strokeWidth={s.node.strokeWidth || 0} />
-                    <circle cx="60" cy="22" r="8" fill={s.palette[1] || s.palette[0]} stroke={s.node.stroke} strokeWidth={s.node.strokeWidth || 0} />
-                    <circle cx="90" cy="40" r="5" fill={s.palette[2] || s.palette[0]} stroke={s.node.stroke} strokeWidth={s.node.strokeWidth || 0} />
-                    <circle cx="60" cy="50" r="4" fill={s.palette[3] || s.palette[0]} stroke={s.node.stroke} strokeWidth={s.node.strokeWidth || 0} />
-                  </svg>
-                </div>
-                <div className="flex items-center justify-between px-3 py-2">
-                  <div>
-                    <p className="text-sm font-medium text-slate-200">{s.name}</p>
-                    <p className="helper">{s.description}</p>
-                  </div>
-                  {s.id === graphStyle && <Check size={15} className="shrink-0 text-accent-400" />}
-                </div>
-              </button>
-            ))}
-          </div>
-
-          <h3 className="label-xs mb-2 mt-6">Layout</h3>
-          <div className="flex flex-wrap gap-2">
-            {LAYOUT_LIST.map((l) => (
-              <button
-                key={l.id}
-                type="button"
-                aria-pressed={l.id === graphLayout}
-                onClick={() => setGraphLayout(l.id)}
-                className={clsx(
-                  'rounded-lg border px-3 py-1.5 text-sm font-medium transition',
-                  l.id === graphLayout ? 'border-accent-500/70 bg-accent-500/10 text-accent-300' : 'border-white/10 text-slate-300 hover:border-white/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-400'
-                )}
-              >
-                {l.name}
-              </button>
-            ))}
-          </div>
-        </Card>
-
-        <AlertRulesCard />
-
-        <ConfigCard />
-
-        <AuditCard />
-
-        <Card className="p-4 sm:p-5">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-100">
-            <Terminal size={16} className="text-accent-400" aria-hidden="true" /> MCP integration
-          </h2>
-          <p className="mb-3 text-sm text-muted">
-            Manifold ships an MCP server so AI assistants and agents can discover brokers, browse topics,
-            read payloads, and walk OPC UA address spaces through the same backend. Add this to your MCP client
-            config:
-          </p>
-          <pre tabIndex={0} role="region" aria-label="MCP client configuration" className="mono overflow-x-auto rounded-xl border border-white/10 bg-surface-950/70 p-4 text-xs leading-relaxed text-slate-300">
-            {MCP_SNIPPET}
-          </pre>
-        </Card>
-
-        <Card className="p-4 sm:p-5">
-          <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-100">
-            <Info size={16} className="text-accent-400" aria-hidden="true" /> System
-          </h2>
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="text-muted">Realtime link</span>
-              <Badge status={connected ? 'connected' : 'disconnected'}>{connected ? 'connected' : 'offline'}</Badge>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted">Client</span>
-              <span className="mono text-slate-300">Manifold 2.0</span>
-            </div>
-          </div>
-        </Card>
+        <TabPanel idPrefix="settings" id={tab}>
+          {tab === 'general' && (
+            <>
+              <FiringNotice />
+              <Session />
+              <ThemeSection />
+              <GraphSection />
+              <McpSection />
+              <AboutSection />
+            </>
+          )}
+          {tab === 'alerts' && <AlertRules />}
+          {tab === 'configuration' && <Configuration />}
+          {tab === 'audit' && <AuditTrail />}
+        </TabPanel>
       </PageBody>
     </div>
   );
 }
-

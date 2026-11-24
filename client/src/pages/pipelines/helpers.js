@@ -204,3 +204,88 @@ export function recordingBody(form, brokers) {
 export const recordingStatusLabel = (rec) => (rec.status.full ? 'full' : rec.enabled ? 'recording' : 'paused');
 
 export const formatKb = (bytes) => `${(bytes / 1024).toFixed(1)} KB`;
+
+/* ------------------------------------------------------------------ */
+/* Presentation helpers (added with the design-system rebuild)         */
+/* ------------------------------------------------------------------ */
+
+/** Plain-language name and one-line explanation for each transform type. */
+export const TRANSFORM_META = {
+  repath: { label: 'Re-path', hint: 'Change the output topic. {n} is segment n, {n-} is everything from segment n, {topic} is the whole topic.' },
+  pick: { label: 'Pick fields', hint: 'Keep only the listed fields of the payload.' },
+  rename: { label: 'Rename fields', hint: 'Rename payload fields, written as old:new pairs.' },
+  set: { label: 'Set values', hint: 'Add or overwrite fields with fixed values.' },
+  scale: { label: 'Scale', hint: 'value × factor + offset, on the whole payload or on one field.' },
+  numeric: { label: 'To number', hint: 'Turn the payload, or one field of it, into a plain number. A message that is not a number is dropped.' },
+  sparkplugFlatten: { label: 'Flatten Sparkplug', hint: 'Turn the metrics array into one { name: value } object.' },
+  envelope: { label: 'Wrap as TVQ', hint: 'Wrap the value as { v, t, q }: value, source time and quality.' }
+};
+
+export const transformLabel = (t) => TRANSFORM_META[t?.type]?.label || t?.type || 'Transform';
+
+/** Move list[from] to index `to` (no-op when out of range). Returns a new list. */
+export function moveItem(list, from, to) {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list;
+  const next = list.slice();
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+/** Pieces of the one-line route summary: source filter, transform names, target. */
+export function routeFlow(route, brokers, historians) {
+  const target = route.target?.type === 'historian' ? routeTargetLabel(route, brokers, historians) : `${brokerName(brokers, route.target?.brokerId)}${route.target?.retain ? ' (retained)' : ''}`;
+  return {
+    source: route.source?.filter || '',
+    transforms: (route.transforms || []).map(transformLabel),
+    target
+  };
+}
+
+/** State of a route for the list: running / paused / failing / loop-blocked. */
+export function routeState(route, m = {}) {
+  if (!route.enabled) return { key: 'paused', label: 'Paused', tone: 'neutral' };
+  if (m.errors > 0 && m.lastError) return { key: 'failing', label: 'Failing', tone: 'bad' };
+  if (m.loopBlocked > 0) return { key: 'blocked', label: 'Loop blocked', tone: 'warn' };
+  return { key: 'running', label: 'Running', tone: 'good' };
+}
+
+/** Health of a historian's store-and-forward outbox: tone, label and the reason in words. */
+export function outboxHealth(o) {
+  if (!o) return { tone: 'neutral', label: 'No traffic yet', detail: null };
+  const s = outboxSummary(o);
+  if (s.deadLettered) {
+    return { tone: 'bad', label: 'Rejecting points', detail: `${s.deadLettered.toLocaleString()} rejected by the historian${s.deadLetterKb ? `, ${s.deadLetterKb} KB kept in the dead-letter file` : ''}` };
+  }
+  if (s.dropped) return { tone: 'bad', label: 'Dropping points', detail: `${s.dropped.toLocaleString()} dropped because the offline buffer is full` };
+  if (s.lastError) return { tone: 'warn', label: s.spilledKb || o.queued > 0 ? 'Buffering' : 'Retrying', detail: s.lastError };
+  if (s.spilledKb || o.queued > 0) return { tone: 'warn', label: 'Buffering', detail: s.spilledKb ? `${s.spilledKb} KB held on disk` : `${o.queued.toLocaleString()} points waiting to be sent` };
+  return { tone: 'good', label: 'Healthy', detail: null };
+}
+
+/** "12.3 KB" / "4.1 MB" for byte counts. */
+export function formatBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Everything that still writes to this historian, as plain names, from raw lists. */
+export function historianUsers(id, { routes = [], recordings = [], bindings = [] }) {
+  return [
+    ...routes.filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `Route "${r.name || r.source?.filter}"`),
+    ...recordings.filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `Recording "${r.name || r.filter}"`),
+    ...bindings.filter((b) => b.target?.historian?.historianId === id).map((b) => `Tag binding "${b.name || b.id}"`)
+  ];
+}
+
+/** Editor-only stable keys for transforms (so reordering keeps each row's input state); stripped before saving. */
+let uidCounter = 0;
+const nextUid = () => `t${(uidCounter += 1)}`;
+export const withTransformIds = (route) => ({ ...route, transforms: (route.transforms || []).map((t) => ({ ...t, _uid: t._uid || nextUid() })) });
+export const newTransform = (type) => ({ ...TRANSFORM_DEFAULTS[type], _uid: nextUid() });
+export const stripTransformIds = (route) => ({
+  ...route,
+  transforms: (route.transforms || []).map((t) => Object.fromEntries(Object.entries(t).filter(([k]) => k !== '_uid')))
+});

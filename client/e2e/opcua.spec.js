@@ -3,14 +3,15 @@ import { api } from './support.js';
 
 /**
  * OPC UA, failure paths only: no OPC UA server is available to the suite (node-opcua's server is not a
- * dependency), so what is covered is validation before anything is sent, Enter to submit, and what a
- * refused connection leaves behind.
+ * dependency), so what is covered is validation before anything is sent (and not before the first
+ * attempt), Enter to submit, and what a refused connection leaves behind.
  */
 test('the connect form validates before sending, submits with Enter, and a refused connection leaves no ghost row', async ({ page }) => {
   await page.goto('/opcua');
   await page.getByRole('button', { name: 'Connect a server' }).first().click();
-  const form = page.getByRole('form', { name: 'New OPC UA connection' });
+  const form = page.getByRole('dialog', { name: 'New OPC UA connection' });
   const url = form.getByLabel('Endpoint URL');
+  await expect(form.getByRole('alert')).toHaveCount(0); // a fresh form flags nothing
 
   await url.fill('http://plc:4840');
   await form.getByRole('button', { name: 'Connect', exact: true }).click();

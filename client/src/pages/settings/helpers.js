@@ -105,7 +105,23 @@ export function importSummary(cfg) {
     .join(', ');
 }
 
-/** Colour class for an audit entry's status. */
-export const auditStatusClass = (e) => (e.status >= 400 ? 'text-rose-300' : 'text-emerald-300');
+/** Tone of an audit entry's status: failed calls read bad, successful ones good. */
+export const auditTone = (e) => (e.status >= 400 ? 'bad' : 'good');
 
-export const alertStatusClass = (status) => (status === 'firing' ? 'text-red-300' : status === 'resolved' ? 'text-emerald-300' : 'text-sky-300');
+/** Tone of an alert event's status. */
+export const alertTone = (status) => (status === 'firing' ? 'bad' : status === 'resolved' ? 'good' : 'info');
+
+/**
+ * Where each rule stands now, from the newest event per rule: 'firing' when its latest event is a firing,
+ * 'ok' otherwise. (The server does not expose a rule's live state, so this is derived from the event feed.)
+ */
+export function ruleStates(rules, events) {
+  const latest = new Map();
+  for (const e of events || []) if (!latest.has(e.ruleId)) latest.set(e.ruleId, e); // events are newest first
+  const out = {};
+  for (const r of rules || []) {
+    const e = latest.get(r.id);
+    out[r.id] = r.enabled === false ? { key: 'disabled', label: 'Disabled', tone: 'neutral' } : e?.status === 'firing' ? { key: 'firing', label: 'Firing', tone: 'bad', since: e.ts } : { key: 'ok', label: 'Idle', tone: 'good', last: e?.ts };
+  }
+  return out;
+}

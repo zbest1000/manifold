@@ -63,12 +63,14 @@ test('a viewer cannot change anything and is told why on every page', async ({ p
   await page.goto(`${be.url}/pipelines`);
   await expect(page.getByRole('status').filter({ hasText: 'Read-only session' }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: /Create the first route|New route/ })).toBeDisabled();
-  await page.getByRole('button', { name: 'Models' }).click();
+  await page.getByRole('tab', { name: 'Models' }).click();
   await expect(page.getByRole('button', { name: /Create the first model|New model/ })).toBeDisabled();
-  await page.getByRole('button', { name: 'Historians' }).click();
+  await page.getByRole('tab', { name: 'Historians' }).click();
   await expect(page.getByRole('button', { name: /Add a historian|Add historian/ })).toBeDisabled();
-  await page.getByRole('button', { name: 'Recorder' }).click();
-  await expect(page.getByRole('button', { name: 'Start recording' })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Recorder' }).click();
+  await expect(page.getByRole('button', { name: 'New recording' }).first()).toBeDisabled();
+  await page.getByRole('tab', { name: 'Contracts' }).click();
+  await expect(page.getByRole('button', { name: 'Lock a payload contract' }).first()).toBeDisabled();
 
   // Tags, OPC UA, Discovery, CESMII, i3X, Settings
   await page.goto(`${be.url}/tags`);
@@ -84,8 +86,11 @@ test('a viewer cannot change anything and is told why on every page', async ({ p
   await page.goto(`${be.url}/settings`);
   await expect(page.getByRole('heading', { name: 'Session' })).toBeVisible();
   await expect(page.getByText('Viewer (read-only)')).toBeVisible();
+  await page.getByRole('tab', { name: 'Alert rules' }).click();
   await expect(page.getByRole('button', { name: 'Add rule' })).toHaveAttribute('title', /Read-only session/);
+  await page.getByRole('tab', { name: 'Configuration' }).click();
   await expect(page.getByText('Import config')).toBeVisible();
+  await expect(page.locator('input[type=file][accept=".json"]')).toBeDisabled();
 
   // and the server really says no (the UI is a courtesy, not the guard)
   const res = await request.post(`${be.url}/api/devices`, { headers: { Authorization: `Bearer ${be.viewer}` }, data: { name: 'x', protocol: 'modbus-tcp', host: '127.0.0.1' } });
@@ -102,6 +107,7 @@ test('Settings > Session: sign out returns to the unlock screen so a viewer can 
   await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible();
   await expect(page.getByText('Administrator')).toBeVisible();
   // (this backend has no broker, so the button stays disabled for a different reason: no read-only explanation)
+  await page.getByRole('tab', { name: 'Alert rules' }).click();
   await expect(page.getByRole('button', { name: 'Add rule' })).not.toHaveAttribute('title', /Read-only session/);
 });
 

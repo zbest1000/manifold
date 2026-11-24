@@ -1,24 +1,31 @@
 import { useState } from 'react';
-import { FileCheck2 } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Field, Badge, Banner, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { BrokerSelect, ListState, RowButtons, useRo } from './shared';
+import { Button, Input, Field, Banner, Dialog, StatusText, Timestamp, Path, Panel, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
+import { READ_ONLY_REASON } from '@/store/selectors';
+import { BrokerSelect, Count, ListState, RowButtons, TabToolbar, useRo } from './shared';
 import { brokerName } from './helpers';
 
-const PROBLEM_COLOR = { 'type-changed': 'text-amber-300', 'missing-field': 'text-rose-300' };
+const PROBLEM_TONE = { 'type-changed': 'text-warn', 'missing-field': 'text-bad' };
+const PROBLEM_LABEL = { 'type-changed': 'Type changed', 'missing-field': 'Missing field' };
 
+/** Contracts: a locked payload shape per topic, with drift reported as violations. */
 export default function ContractsTab({ brokers }) {
-  const [form, setForm] = useState({ brokerId: '', topic: '', name: '' });
-  const [inferredFor, setInferred] = useState(null); // { forKey, topic, schema }
+  const [form, setForm] = useState(null); // null = dialog closed
+  const [attempted, setAttempted] = useState(false);
+  const [inferError, setInferError] = useState(null);
+  const [inferredFor, setInferred] = useState(null); // { forKey, schema }
+  const [inferring, setInferring] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const [busy, setBusy] = useState(false);
   const ro = useRo();
-  // The inferred schema belongs to the broker+topic it was inferred from; editing either hides it, so
-  // "Lock contract" can never lock one topic's schema under another topic's filter.
-  const inferred = inferredFor && inferredFor.forKey === `${form.brokerId || brokers[0]?.id}|${form.topic}` ? inferredFor : null;
+  const readOnly = Boolean(ro.disabled);
+  // The inferred schema belongs to the broker and topic it was inferred from; editing either hides it,
+  // so "Lock contract" can never lock one topic's schema under another topic's filter.
+  const brokerOf = (f) => f.brokerId || brokers[0]?.id;
+  const inferred = form && inferredFor && inferredFor.forKey === `${brokerOf(form)}|${form.topic}` ? inferredFor : null;
 
   const { data, error, loading, reload } = usePolled(
     async () => {
@@ -30,35 +37,55 @@ export default function ContractsTab({ brokers }) {
   const contracts = data?.contracts || [];
   const counters = data?.counters || {};
   const violations = data?.violations || [];
+  const drifting = contracts.filter((c) => counters[c.id]?.violations).length;
+
+  const openNew = () => {
+    setAttempted(false);
+    setInferError(null);
+    setInferred(null);
+    setForm({ brokerId: brokers[0]?.id || '', topic: '', name: '' });
+  };
 
   const infer = async () => {
+    setAttempted(true);
+    if (!form.topic.trim()) return;
+    setInferring(true);
+    setInferError(null);
     try {
-      const brokerId = form.brokerId || brokers[0]?.id;
+      const brokerId = brokerOf(form);
       setInferred({ ...(await api.inferContract(brokerId, form.topic)), forKey: `${brokerId}|${form.topic}` });
     } catch (e) {
       setInferred(null);
-      toast.error(e.message);
+      setInferError(e.message);
+    } finally {
+      setInferring(false);
     }
   };
 
   const lock = async () => {
-    if (busy) return;
+    if (busy || readOnly) return;
+    if (!inferred) return infer();
     setBusy(true);
     try {
-      await api.saveContract({ name: form.name || null, brokerId: form.brokerId || brokers[0]?.id, filter: form.topic, schema: inferred.schema });
+      await api.saveContract({ name: form.name || null, brokerId: brokerOf(form), filter: form.topic, schema: inferred.schema });
+      setForm(null);
       setInferred(null);
-      setForm((f) => ({ ...f, topic: '', name: '' }));
       reload();
       toast.success('Contract locked');
     } catch (e) {
-      toast.error(e.message);
+      setInferError(e.message);
     } finally {
       setBusy(false);
     }
   };
 
   const remove = async (c) => {
-    const ok = await confirm({ title: `Delete the contract for "${c.filter || c.id}"?`, message: 'Drift on this topic will no longer be reported.', confirmLabel: 'Delete contract', danger: true });
+    const ok = await confirm({
+      title: `Delete the contract for "${c.filter || c.id}"?`,
+      message: 'Messages on this topic are no longer checked, so drift is not reported. The data itself is not affected.',
+      confirmLabel: 'Delete contract',
+      danger: true
+    });
     if (!ok) return;
     try {
       await api.deleteContract(c.id);
@@ -69,6 +96,8 @@ export default function ContractsTab({ brokers }) {
     }
   };
 
+  const topicError = attempted && form && !form.topic.trim() ? 'Enter the topic to infer a schema from.' : undefined;
+
   return (
     <>
       <ListState
@@ -78,15 +107,27 @@ export default function ContractsTab({ brokers }) {
         count={contracts.length}
         label="contracts"
         empty={{
-          icon: FileCheck2,
           title: 'No payload contracts yet',
-          hint: 'Lock the shape of a topic’s payload and Manifold flags drift when a message stops matching. Infer a schema below to get started.'
+          hint: 'Lock the shape of a topic’s payload and Manifold flags drift when a message stops matching it, for example after a firmware update renames a field.',
+          action: (
+            <Button onClick={openNew} {...ro}>
+              <Plus size={14} aria-hidden="true" /> Lock a payload contract
+            </Button>
+          )
         }}
       >
-        <Table caption="Payload contracts">
+        <TabToolbar summary={drifting ? `${contracts.length} contracts, ${drifting} drifting` : `${contracts.length} ${contracts.length === 1 ? 'contract' : 'contracts'}, all conforming`}>
+          <Button onClick={openNew} {...ro}>
+            <Plus size={14} aria-hidden="true" /> Lock a payload contract
+          </Button>
+        </TabToolbar>
+        <Table caption="Payload contracts" className="min-w-[48rem]">
           <THead>
             <Th>Contract</Th>
-            <Th>Scope</Th>
+            <Th>State</Th>
+            <Th align="right">Checked</Th>
+            <Th align="right">Violations</Th>
+            <Th align="right">Locked</Th>
             <Th srOnly align="right">Actions</Th>
           </THead>
           <tbody>
@@ -95,18 +136,23 @@ export default function ContractsTab({ brokers }) {
               const name = c.name || c.filter;
               return (
                 <Tr key={c.id}>
-                  <Td header>
-                    <span className="block max-w-[14rem] truncate text-slate-100">{name}</span>
-                    <Badge status={k.violations ? 'error' : 'connected'} className="mt-1">
-                      {k.violations ? `${k.violations} violations` : 'conforming'}
-                    </Badge>
+                  <Td header className="max-w-[24rem]">
+                    <span className="block truncate font-medium text-fg">{name}</span>
+                    <Path value={`${brokerName(brokers, c.brokerId)}: ${c.filter}`} className="text-muted" />
                   </Td>
-                  <Td className="max-w-[26rem]">
-                    <p className="truncate font-mono text-xs text-muted">
-                      {brokerName(brokers, c.brokerId)} · {c.filter} · {k.checked || 0} checked · locked {c.lockedAt ? formatDistanceToNow(new Date(c.lockedAt), { addSuffix: true }) : ''}
-                    </p>
+                  <Td>
+                    <StatusText tone={k.violations ? 'bad' : 'good'}>{k.violations ? 'Drifting' : 'Conforming'}</StatusText>
                   </Td>
-                  <Td align="right">
+                  <Td align="right" className="mono">
+                    <Count value={k.checked} />
+                  </Td>
+                  <Td align="right" className="mono">
+                    <Count value={k.violations} tone="bad" />
+                  </Td>
+                  <Td align="right" className="text-xs text-muted">
+                    {c.lockedAt ? <Timestamp value={c.lockedAt} /> : '—'}
+                  </Td>
+                  <Td align="right" className="w-20">
                     <RowButtons what={`contract ${name}`} onDelete={() => remove(c)} />
                   </Td>
                 </Tr>
@@ -116,55 +162,96 @@ export default function ContractsTab({ brokers }) {
         </Table>
       </ListState>
 
-      <Card className="p-4">
-        <h2 className="mb-3 text-sm font-semibold text-slate-100">Lock a payload contract</h2>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <BrokerSelect label="Broker" brokers={brokers} value={form.brokerId || brokers[0]?.id || ''} onChange={(v) => setForm({ ...form, brokerId: v })} />
-          <Field label="Topic (or filter after inferring)" className="sm:col-span-2">
-            <Input value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="plant/line1/filler/temperature" />
-          </Field>
-          <Field label="Name">
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="filler temp shape" />
-          </Field>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button variant="outline" onClick={infer} disabled={!form.topic}>
-            Infer schema from latest payload
-          </Button>
-          {inferred && <Button onClick={lock} disabled={busy || Boolean(ro.disabled)} title={ro.title}>Lock contract</Button>}
-        </div>
-        {inferred && (
-          <pre tabIndex={0} role="region" aria-label="Inferred schema" className="mono mt-3 max-h-48 overflow-auto rounded-xl border border-white/10 bg-surface-950/60 p-3 text-xs text-slate-300">
-            {JSON.stringify(inferred.schema, null, 2)}
-          </pre>
-        )}
-      </Card>
-
-      <section aria-labelledby="violations-heading">
-        <h2 id="violations-heading" className="label-xs mb-2">
-          Recent violations
-        </h2>
-        {!error && violations.length === 0 && <p className="helper">No drift detected.</p>}
-        {error && violations.length === 0 && <Banner variant="warn">Violations could not be loaded.</Banner>}
-        <ul className="space-y-1">
-          {violations.map((v, i) => (
-            <li key={i} className="rounded-lg bg-black/20 px-3 py-1.5 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-x-3">
-                <span className="break-all font-mono text-slate-300">{v.topic}</span>
-                <span className="text-subtle">{formatDistanceToNow(v.ts, { addSuffix: true })}</span>
-              </div>
-              <div className="mt-0.5 text-muted">
-                {v.problems.map((p, j) => (
-                  <span key={j} className="mr-2">
-                    <span className={PROBLEM_COLOR[p.kind] || 'text-sky-300'}>{p.kind}</span> <span className="font-mono">{p.path}</span>
-                    {p.expected && ` (expected ${p.expected}${p.got ? `, got ${p.got}` : ''})`}
-                  </span>
+      {(contracts.length > 0 || violations.length > 0) && (
+        <Panel title="Recent violations" count={violations.length || undefined} flush>
+          {error && violations.length === 0 ? (
+            <div className="p-4">
+              <Banner variant="warn">Violations could not be loaded.</Banner>
+            </div>
+          ) : violations.length === 0 ? (
+            <p className="px-4 py-3 text-sm text-muted">No drift detected.</p>
+          ) : (
+            <Table caption="Recent contract violations" wrapperClassName="max-h-72 overflow-y-auto rounded-none border-0" className="min-w-[40rem]">
+              <THead>
+                <Th>Topic</Th>
+                <Th>What changed</Th>
+                <Th align="right">When</Th>
+              </THead>
+              <tbody>
+                {violations.map((v, i) => (
+                  <Tr key={i}>
+                    <Td className="max-w-[18rem] align-top">
+                      <Path value={v.topic} />
+                    </Td>
+                    <Td className="align-top text-xs">
+                      {v.problems.map((p, j) => (
+                        <span key={j} className="mr-3 inline-block">
+                          <span className={PROBLEM_TONE[p.kind] || 'text-info'}>{PROBLEM_LABEL[p.kind] || p.kind}</span> <span className="mono">{p.path}</span>
+                          {p.expected && <span className="text-subtle"> (expected {p.expected}{p.got ? `, got ${p.got}` : ''})</span>}
+                        </span>
+                      ))}
+                    </Td>
+                    <Td align="right" className="align-top text-xs text-muted">
+                      <Timestamp value={v.ts} />
+                    </Td>
+                  </Tr>
                 ))}
+              </tbody>
+            </Table>
+          )}
+        </Panel>
+      )}
+
+      {form && (
+        <Dialog
+          title="Lock a payload contract"
+          description="Infers the payload shape from the latest message on a topic, then locks it."
+          size="lg"
+          onClose={() => setForm(null)}
+          onSubmit={lock}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setForm(null)}>
+                Cancel
+              </Button>
+              {inferred ? (
+                <Button type="submit" loading={busy} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
+                  Lock contract
+                </Button>
+              ) : (
+                <Button type="submit" loading={inferring}>
+                  Infer schema from latest payload
+                </Button>
+              )}
+            </>
+          }
+        >
+          <div className="space-y-4">
+            {inferError && (
+              <Banner variant="error" title="Could not complete that">
+                {inferError}
+              </Banner>
+            )}
+            <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <BrokerSelect label="Broker" brokers={brokers} value={form.brokerId || brokers[0]?.id || ''} onChange={(v) => setForm({ ...form, brokerId: v })} />
+              <Field label="Name">
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Filler temperature shape" />
+              </Field>
+              <Field label="Topic (or filter after inferring)" className="sm:col-span-2" error={topicError} help="Changing the topic discards the inferred schema.">
+                <Input className="mono" aria-invalid={topicError ? 'true' : undefined} value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} placeholder="plant/line1/filler/temperature" data-autofocus />
+              </Field>
+            </div>
+            {inferred && (
+              <div>
+                <p className="mb-1 text-sm font-medium text-fg">Inferred schema</p>
+                <pre tabIndex={0} role="region" aria-label="Inferred schema" className="mono max-h-56 overflow-auto rounded-md border border-line bg-app p-3 text-xs text-muted">
+                  {JSON.stringify(inferred.schema, null, 2)}
+                </pre>
               </div>
-            </li>
-          ))}
-        </ul>
-      </section>
+            )}
+          </div>
+        </Dialog>
+      )}
       {confirmDialog}
     </>
   );

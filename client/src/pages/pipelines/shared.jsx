@@ -1,5 +1,5 @@
 import { Pencil, Trash2 } from 'lucide-react';
-import { Select, Banner, LoadingState, Card, EmptyState, IconButton } from '@/components/ui';
+import { Select, Banner, LoadingState, EmptyState, IconButton, Tooltip } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 
 /** Spread onto a mutating control: disabled with the reason as its tooltip for a viewer session. */
@@ -12,11 +12,11 @@ export function useRo() {
 export function RowButtons({ what, onEdit, onDelete, children }) {
   const readOnly = useReadOnly();
   return (
-    <span className="inline-flex items-center justify-end gap-1">
+    <span className="inline-flex items-center justify-end gap-0.5">
       {children}
       {onEdit && <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} ${what}`} size={14} onClick={onEdit} />}
       {onDelete && (
-        <IconButton icon={Trash2} label={`Delete ${what}`} size={14} className="hover:bg-rose-500/10 hover:text-rose-300" onClick={onDelete} {...(readOnly ? { disabled: true, title: READ_ONLY_REASON } : {})} />
+        <IconButton icon={Trash2} label={`Delete ${what}`} size={14} className="hover:bg-bad/10 hover:text-bad" onClick={onDelete} {...(readOnly ? { disabled: true, title: READ_ONLY_REASON } : {})} />
       )}
     </span>
   );
@@ -52,11 +52,39 @@ export function ListState({ loading, error, reload, count, label, empty, childre
         </Banner>
       )}
       {count === 0 && !error && empty && (
-        <Card>
+        <div className="rounded-lg border border-line bg-panel">
           <EmptyState {...empty} />
-        </Card>
+        </div>
       )}
       {count > 0 && children}
     </>
   );
+}
+
+/** The row above a tab's table: a one-line summary on the left, the tab's single primary action on the right. */
+export function TabToolbar({ summary, children }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <p className="text-sm text-muted">{summary}</p>
+      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+    </div>
+  );
+}
+
+/** A column header with a plain-language explanation on hover and focus (dotted underline marks it). */
+export function HeadHint({ hint, children }) {
+  return (
+    <Tooltip label={hint} side="bottom">
+      <button type="button" className="cursor-help border-b border-dotted border-line-stronger font-medium">
+        {children}
+      </button>
+    </Tooltip>
+  );
+}
+
+/** A right-aligned, tabular count; zero reads quietly, `tone` colours a non-zero value. */
+export function Count({ value, tone }) {
+  const n = Number(value) || 0;
+  const cls = n === 0 ? 'text-subtle' : tone === 'bad' ? 'text-bad' : tone === 'warn' ? 'text-warn' : 'text-fg';
+  return <span className={`tabular-nums ${cls}`}>{n.toLocaleString()}</span>;
 }
