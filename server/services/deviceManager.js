@@ -136,6 +136,7 @@ class DeviceManager extends EventEmitter {
     this.states = new Map(); // deviceId -> { state, phase, reason, since }
     this.errors = new Map(); // deviceId -> last configuration/guard error
     this._dirty = new Map(); // deviceId -> Set(tagKey) pending socket flush
+    this._reliable = new Set(); // deviceIds whose pending flush carries a quality change
     this._flushTimer = null;
     this.started = false;
     // deviceId -> { device: effective device, errors }, rebuilt on profile-store revision.
@@ -640,6 +641,10 @@ class DeviceManager extends EventEmitter {
     let dirty = this._dirty.get(deviceId);
     for (const s of batch.samples) {
       const tRead = s.tRead || batch.tRead || Date.now();
+      // A quality transition is sent once by the runtime; if the UI misses it
+      // the row shows a stale Good forever, so it must not ride a droppable emit.
+      const before = store.get(s.key);
+      if (this.io && (!before || before.q !== s.q)) this._reliable.add(deviceId);
       store.set(s.key, { v: s.v, type: s.type, q: s.q, qReason: s.qReason, tRead });
       if (this.io) {
         if (!dirty) this._dirty.set(deviceId, (dirty = new Set()));
@@ -667,15 +672,18 @@ class DeviceManager extends EventEmitter {
   /** Coalesced, volatile UI updates: at most one batch per device per window. */
   _flushValues() {
     this._flushTimer = null;
-    const target = this.io.volatile || this.io;
     for (const [deviceId, keys] of this._dirty) {
       const store = this.values.get(deviceId);
       if (!store) continue;
       const values = {};
       for (const key of keys) values[key] = store.get(key);
+      // Routine value churn may be dropped for a lagging client; a batch that
+      // carries a quality change is delivered reliably.
+      const target = this._reliable.has(deviceId) ? this.io : this.io.volatile || this.io;
       target.emit('device-values', { deviceId, values });
     }
     this._dirty.clear();
+    this._reliable.clear();
   }
 
   _onState(evt) {

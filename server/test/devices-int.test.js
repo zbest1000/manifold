@@ -340,3 +340,27 @@ test('retained _meta and _status are retried when the broker was not ready', asy
     bindings.stop();
   }
 });
+
+test('a quality change reaches the UI on a reliable emit; routine values may be dropped', async () => {
+  const sent = [];
+  const io = {
+    emit: (name, payload) => sent.push({ name, payload, volatile: false }),
+    volatile: { emit: (name, payload) => sent.push({ name, payload, volatile: true }) }
+  };
+  const devices = new DeviceManager({ profiles: memoryProfiles(), io, guard: async () => {} });
+  const values = () => sent.filter((e) => e.name === 'device-values');
+  try {
+    devices._onSamples({ deviceId: 'd1', samples: [{ key: 'a', v: 1, q: 192 }] });
+    devices._flushValues();
+    assert.strictEqual(values().at(-1).volatile, false); // first sight of a tag
+    devices._onSamples({ deviceId: 'd1', samples: [{ key: 'a', v: 2, q: 192 }] });
+    devices._flushValues();
+    assert.strictEqual(values().at(-1).volatile, true); // same quality: droppable
+    devices._onSamples({ deviceId: 'd1', samples: [{ key: 'a', v: 2, q: 0, qReason: 'disconnected' }] });
+    devices._flushValues();
+    assert.strictEqual(values().at(-1).volatile, false); // Good -> Bad must arrive
+    assert.strictEqual(values().at(-1).payload.values.a.q, 0);
+  } finally {
+    await devices.stop();
+  }
+});
