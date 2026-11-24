@@ -6,6 +6,13 @@
   color-scheme: dark;
   --toast-bg: #1e293b;
   --toast-color: #f1f5f9;
+  /* Text tokens, all >= 4.5:1 (WCAG AA) on every dark surface in the app
+     (surface-950 #0a0f1c .. surface-800 #1e293b). */
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8; /* 5.7:1 on surface-800 */
+  --text-subtle: #8b9ab0; /* 5.1:1 on surface-800 */
+  --text-faint: #8493a9; /* decorative separators / placeholders, still >= 4.5:1 on surface-900 */
 }
 
 html,
@@ -75,4 +82,97 @@ body {
 :focus-visible {
   outline: 2px solid #38bdf8;
   outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Semantic text utilities. Prefer these over text-slate-500/600 + an   */
+/* arbitrary pixel size. Minimums: helper text 12px, micro-labels 11px. */
+/* ------------------------------------------------------------------ */
+@layer components {
+  .helper {
+    color: var(--text-subtle);
+    font-size: 0.75rem; /* 12px */
+    line-height: 1.1rem;
+  }
+  .label-xs {
+    color: var(--text-muted);
+    font-size: 0.6875rem; /* 11px: smallest size allowed, uppercase labels only */
+    line-height: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Contrast safety net for markup we have not migrated yet.             */
+/* The whole app is a dark UI (the only light surface, the UNS paper    */
+/* canvas, is painted on a <canvas>), so Tailwind's slate-500/600 text  */
+/* colours (4.0:1 and 2.5:1 on the page background) are lifted to        */
+/* AA-compliant equivalents. Backgrounds, borders and rings that use     */
+/* the same palette are untouched: only `color` and placeholder colour.  */
+/* Elements that sit on a light fill opt out by being inside .on-light.  */
+/* ------------------------------------------------------------------ */
+.text-slate-500:where(:not(.on-light *)),
+.hover\:text-slate-500:hover:where(:not(.on-light *)),
+.group:hover .group-hover\:text-slate-500:where(:not(.on-light *)) {
+  color: var(--text-subtle);
+}
+.text-slate-600:where(:not(.on-light *)),
+.hover\:text-slate-600:hover:where(:not(.on-light *)) {
+  color: var(--text-faint);
+}
+.placeholder\:text-slate-500:where(:not(.on-light *))::placeholder,
+.placeholder\:text-slate-600:where(:not(.on-light *))::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+/* 10px text is below the readable floor; lift it to the 11px micro-label size. */
+.text-\[10px\],
+.text-\[9px\] {
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+/* Off-canvas drawers (mobile nav, log panel) slide in from their edge. */
+@keyframes drawer-in-left {
+  from { transform: translateX(-100%); }
+  to { transform: none; }
+}
+@keyframes drawer-in-right {
+  from { transform: translateX(100%); }
+  to { transform: none; }
+}
+.drawer-in-left { animation: drawer-in-left 0.18s ease-out; }
+.drawer-in-right { animation: drawer-in-right 0.18s ease-out; }
+
+/* Keyboard users: skip link and reduced motion. */
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 200;
+  border-radius: 0.75rem;
+  background: #0369a1;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  transition: top 0.15s;
+}
+.skip-link:focus {
+  top: 0.75rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

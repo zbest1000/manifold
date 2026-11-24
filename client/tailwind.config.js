@@ -14,6 +14,10 @@ export default {
           900: '#0f172a',
           950: '#0a0f1c'
         },
+        // Semantic text colours (see :root in index.css), all AA on the dark surfaces.
+        muted: 'var(--text-muted)',
+        subtle: 'var(--text-subtle)',
+        faint: 'var(--text-faint)',
         accent: {
           400: '#38bdf8',
           500: '#0ea5e9',

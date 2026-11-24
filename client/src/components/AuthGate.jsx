@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Lock, KeyRound } from 'lucide-react';
 import { getAuthToken, setAuthToken, api } from '@/lib/api';
 import { reconnectSocket } from '@/lib/socket';
@@ -15,6 +15,10 @@ export default function AuthGate({ children }) {
   const [state, setState] = useState('checking'); // checking | locked | open
   const [token, setToken] = useState('');
   const [error, setError] = useState(null);
+  const tokenRef = useRef(null);
+  useEffect(() => {
+    if (state === 'locked') tokenRef.current?.focus();
+  }, [state]);
 
   const setAuthRole = useStore((s) => s.setAuthRole);
 
@@ -78,8 +82,10 @@ export default function AuthGate({ children }) {
         </p>
         <form onSubmit={unlock} className="space-y-3">
           <Input
+            ref={tokenRef}
             type="password"
-            autoFocus
+            aria-label="Access token"
+            autoComplete="current-password"
             placeholder="Access token"
             value={token}
             onChange={(e) => setToken(e.target.value)}

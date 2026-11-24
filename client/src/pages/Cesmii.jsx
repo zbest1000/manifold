@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Factory, Plug, LogOut, Search, LineChart, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
-import { Card, Button, Badge, Input, Field, EmptyState } from '@/components/ui';
+import { usePolled } from '@/lib/usePolled';
+import { Card, Button, Badge, Input, Field, EmptyState, Banner, LoadingState, Skeleton, PageBody, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { Sparkline as ChartSparkline, fmtNum } from '@/components/charts';
 import PageHeader from '@/components/PageHeader';
 
@@ -15,29 +16,33 @@ function isoDaysAgo(days) {
 }
 
 export default function Cesmii() {
-  const [status, setStatus] = useState(null);
+  const { data: loadedStatus, error: statusError, loading: statusLoading, reload: reloadStatus } = usePolled(() => api.cesmiiStatus());
+  const [localStatus, setStatus] = useState(null); // set by connect/disconnect; otherwise the loaded status applies
+  const status = localStatus ?? loadedStatus;
   const [form, setForm] = useState(BLANK);
   const [busy, setBusy] = useState(false);
-  const [equipment, setEquipment] = useState([]);
-  const [attributes, setAttributes] = useState([]);
   const [filter, setFilter] = useState('');
   const [selected, setSelected] = useState(null);
   const [samples, setSamples] = useState(null);
+  const [historyError, setHistoryError] = useState(null);
   const [range, setRange] = useState({ startTime: isoDaysAgo(7), endTime: isoDaysAgo(0), maxSamples: 100 });
+  const [confirm, confirmDialog] = useConfirm();
 
-  const refreshStatus = () => api.cesmiiStatus().then(setStatus).catch(() => {});
+  const connected = Boolean(status?.configured && status?.authenticated);
 
-  useEffect(() => {
-    refreshStatus();
-  }, []);
-
-  const connected = status?.configured && status?.authenticated;
-
-  useEffect(() => {
-    if (!connected) return;
-    api.cesmiiEquipment().then((r) => setEquipment(r.equipment)).catch((e) => toast.error(e.message));
-    api.cesmiiAttributes().then((r) => setAttributes(r.attributes)).catch((e) => toast.error(e.message));
-  }, [connected]);
+  // Equipment and attributes load once authenticated (and again on Retry).
+  const lists = usePolled(
+    async () => {
+      if (!connected) return null;
+      const [eq, at] = await Promise.all([api.cesmiiEquipment(), api.cesmiiAttributes()]);
+      return { equipment: eq.equipment, attributes: at.attributes };
+    },
+    { deps: [connected] }
+  );
+  const equipment = connected ? lists.data?.equipment || [] : [];
+  const attributes = connected ? lists.data?.attributes || [] : [];
+  const listError = connected ? lists.error : null;
+  const loadLists = lists.reload;
 
   const connect = async () => {
     setBusy(true);
@@ -53,10 +58,15 @@ export default function Cesmii() {
   };
 
   const disconnect = async () => {
+    const ok = await confirm({
+      title: 'Disconnect from CESMII SMIP?',
+      message: 'The session credentials held by the server are discarded; you will need to enter them again to reconnect.',
+      confirmLabel: 'Disconnect',
+      danger: true
+    });
+    if (!ok) return;
     try {
       setStatus(await api.cesmiiReset());
-      setEquipment([]);
-      setAttributes([]);
       setSelected(null);
       setSamples(null);
     } catch (e) {
@@ -67,11 +77,12 @@ export default function Cesmii() {
   const loadHistory = async (attr) => {
     setSelected(attr);
     setSamples(null);
+    setHistoryError(null);
     try {
       const r = await api.cesmiiHistory({ ids: [attr.id], ...range });
       setSamples(r.samples);
     } catch (e) {
-      toast.error(e.message);
+      setHistoryError(e);
     }
   };
 
@@ -88,37 +99,42 @@ export default function Cesmii() {
         subtitle="Query equipment, attributes and time-series from the Smart Manufacturing Innovation Platform"
         actions={
           connected ? (
-            <div className="flex items-center gap-2">
+            <>
               <Badge status="connected">authenticated</Badge>
               <Button variant="outline" onClick={disconnect}>
-                <LogOut size={15} /> Disconnect
+                <LogOut size={15} aria-hidden="true" /> Disconnect
               </Button>
-            </div>
+            </>
           ) : (
             <Badge>not connected</Badge>
           )
         }
       />
 
-      <div className="flex-1 overflow-y-auto p-6">
-        {!connected ? (
+      <PageBody>
+        {statusError && !status && (
+          <Banner variant="error" title="Could not read the SMIP connection status" onRetry={reloadStatus}>
+            {statusError.message}
+          </Banner>
+        )}
+        {statusLoading && !status && !statusError && <LoadingState label="connection status" rows={2} />}
+
+        {!connected && (status || statusError) && (
           <div className="mx-auto max-w-2xl">
-            <Card className="p-6">
+            <Card className="p-4 sm:p-6">
               <div className="mb-4 flex items-center gap-3">
-                <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-orange-400 to-amber-600 shadow-lg">
-                  <Factory size={20} className="text-white" />
+                <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-orange-400 to-amber-600 shadow-lg">
+                  <Factory size={20} className="text-white" aria-hidden="true" />
                 </div>
                 <div>
                   <h2 className="text-sm font-semibold text-slate-100">Connect a SMIP instance</h2>
-                  <p className="text-xs text-slate-500">Credentials are used server-side for the JWT handshake and are not stored on disk.</p>
+                  <p className="helper">Credentials are used server-side for the JWT handshake and are not stored on disk.</p>
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="sm:col-span-2">
-                  <Field label="GraphQL endpoint">
-                    <Input value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })} placeholder="https://demo.cesmii.net/graphql" />
-                  </Field>
-                </div>
+                <Field label="GraphQL endpoint" className="sm:col-span-2">
+                  <Input value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })} placeholder="https://demo.cesmii.net/graphql" />
+                </Field>
                 <Field label="Authenticator">
                   <Input value={form.authenticator} onChange={(e) => setForm({ ...form, authenticator: e.target.value })} />
                 </Field>
@@ -126,108 +142,154 @@ export default function Cesmii() {
                   <Input value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} />
                 </Field>
                 <Field label="User name">
-                  <Input value={form.userName} onChange={(e) => setForm({ ...form, userName: e.target.value })} />
+                  <Input value={form.userName} onChange={(e) => setForm({ ...form, userName: e.target.value })} autoComplete="off" />
                 </Field>
                 <Field label="Secret / API key">
-                  <Input type="password" value={form.secret} onChange={(e) => setForm({ ...form, secret: e.target.value })} />
+                  <Input type="password" value={form.secret} onChange={(e) => setForm({ ...form, secret: e.target.value })} autoComplete="new-password" />
                 </Field>
               </div>
               <div className="mt-5 flex justify-end">
                 <Button onClick={connect} disabled={busy || !form.endpoint}>
-                  <Plug size={15} /> {busy ? 'Authenticating…' : 'Connect'}
+                  <Plug size={15} aria-hidden="true" /> {busy ? 'Authenticating…' : 'Connect to SMIP'}
                 </Button>
               </div>
             </Card>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <Card className="p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-200">Equipment ({equipment.length})</h2>
-              </div>
-              <div className="max-h-72 space-y-1 overflow-y-auto">
-                {equipment.length === 0 ? (
-                  <p className="py-6 text-center text-xs text-slate-500">No equipment returned.</p>
-                ) : (
-                  equipment.map((e) => (
-                    <div key={e.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                      <span className="truncate text-sm text-slate-200">{e.displayName}</span>
-                      <span className="mono text-[11px] text-slate-500">#{e.id}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </Card>
-
-            <Card className="p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <Search size={15} className="text-slate-500" />
-                <input
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  placeholder={`Filter ${attributes.length} attributes…`}
-                  className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none"
-                />
-              </div>
-              <div className="max-h-72 space-y-1 overflow-y-auto">
-                {filteredAttributes.map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={() => loadHistory(a)}
-                    className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition ${
-                      selected?.id === a.id
-                        ? 'border-accent-500/60 bg-accent-500/10'
-                        : 'border-white/5 bg-white/[0.02] hover:border-white/15'
-                    }`}
-                  >
-                    <span className="truncate text-sm text-slate-200">{a.displayName}</span>
-                    <LineChart size={13} className="shrink-0 text-slate-500" />
-                  </button>
-                ))}
-              </div>
-            </Card>
-
-            <Card className="p-4">
-              <h2 className="mb-3 text-sm font-semibold text-slate-200">
-                {selected ? selected.displayName : 'Time series'}
-              </h2>
-              <div className="mb-3 grid grid-cols-1 gap-2">
-                <Field label="Start">
-                  <Input value={range.startTime} onChange={(e) => setRange({ ...range, startTime: e.target.value })} />
-                </Field>
-                <Field label="End">
-                  <Input value={range.endTime} onChange={(e) => setRange({ ...range, endTime: e.target.value })} />
-                </Field>
-                {selected && (
-                  <Button size="sm" variant="subtle" onClick={() => loadHistory(selected)}>
-                    <RefreshCw size={13} /> Reload
-                  </Button>
-                )}
-              </div>
-
-              {!selected ? (
-                <EmptyState icon={LineChart} title="Pick an attribute" hint="Select an attribute to load its history." />
-              ) : samples === null ? (
-                <p className="py-6 text-center text-xs text-slate-500">Loading…</p>
-              ) : samples.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-500">No samples in this range.</p>
-              ) : (
-                <>
-                  <Sparkline samples={samples} />
-                  <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-                    {samples.slice(-40).reverse().map((s, i) => (
-                      <div key={i} className="flex items-center justify-between rounded px-2 py-1 text-xs hover:bg-white/5">
-                        <span className="text-slate-500">{s.ts}</span>
-                        <span className="mono text-slate-200">{s.floatvalue ?? s.stringvalue}</span>
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </Card>
-          </div>
         )}
-      </div>
+
+        {connected && (
+          <>
+            {listError && (
+              <Banner variant="error" title="Could not load equipment and attributes" onRetry={loadLists}>
+                {listError.message}
+              </Banner>
+            )}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <Card className="p-4">
+                <h2 className="mb-3 text-sm font-semibold text-slate-100">Equipment ({equipment.length})</h2>
+                {equipment.length === 0 ? (
+                  <p className="helper py-6 text-center">{listError ? 'Equipment could not be loaded.' : 'No equipment returned.'}</p>
+                ) : (
+                  <Table caption="Equipment" wrapperClassName="max-h-72 overflow-y-auto rounded-xl" className="min-w-0">
+                    <THead>
+                      <Th>Name</Th>
+                      <Th align="right">ID</Th>
+                    </THead>
+                    <tbody>
+                      {equipment.map((e) => (
+                        <Tr key={e.id}>
+                          <Td header className="py-2 text-slate-200">
+                            {e.displayName}
+                          </Td>
+                          <Td align="right" className="mono py-2 text-xs text-muted">
+                            #{e.id}
+                          </Td>
+                        </Tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                )}
+              </Card>
+
+              <Card className="p-4">
+                <div className="mb-3 flex items-center gap-2 rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2">
+                  <Search size={15} className="text-subtle" aria-hidden="true" />
+                  <input
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    aria-label="Filter attributes"
+                    placeholder={`Filter ${attributes.length} attributes…`}
+                    className="w-full bg-transparent text-sm text-slate-200 placeholder:text-faint focus:outline-none"
+                  />
+                </div>
+                {filteredAttributes.length === 0 ? (
+                  <p className="helper py-6 text-center">{attributes.length === 0 ? 'No attributes returned.' : 'No attributes match the filter.'}</p>
+                ) : (
+                  <Table caption="Attributes — choose one to load its history" wrapperClassName="max-h-72 overflow-y-auto rounded-xl" className="min-w-0">
+                    <THead>
+                      <Th>Attribute</Th>
+                    </THead>
+                    <tbody>
+                      {filteredAttributes.map((a) => (
+                        <Tr key={a.id} highlight={selected?.id === a.id}>
+                          <Td header className="p-0">
+                            <button
+                              type="button"
+                              onClick={() => loadHistory(a)}
+                              aria-pressed={selected?.id === a.id}
+                              className="flex w-full items-center justify-between gap-2 px-4 py-2 text-left text-slate-200 hover:text-white"
+                            >
+                              <span className="truncate">{a.displayName}</span>
+                              <LineChart size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                            </button>
+                          </Td>
+                        </Tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                )}
+              </Card>
+
+              <Card className="p-4">
+                <h2 className="mb-3 text-sm font-semibold text-slate-100">{selected ? selected.displayName : 'Time series'}</h2>
+                <div className="mb-3 grid grid-cols-1 gap-2">
+                  <Field label="Start">
+                    <Input value={range.startTime} onChange={(e) => setRange({ ...range, startTime: e.target.value })} />
+                  </Field>
+                  <Field label="End">
+                    <Input value={range.endTime} onChange={(e) => setRange({ ...range, endTime: e.target.value })} />
+                  </Field>
+                  {selected && (
+                    <Button size="sm" variant="subtle" onClick={() => loadHistory(selected)}>
+                      <RefreshCw size={13} aria-hidden="true" /> Reload
+                    </Button>
+                  )}
+                </div>
+
+                {!selected ? (
+                  <EmptyState icon={LineChart} title="Pick an attribute" hint="Select an attribute to load its history." className="min-h-0 py-4" />
+                ) : historyError ? (
+                  <Banner variant="error" title="Could not load history" onRetry={() => loadHistory(selected)}>
+                    {historyError.message}
+                  </Banner>
+                ) : samples === null ? (
+                  <div role="status" aria-busy="true" className="space-y-2">
+                    <span className="sr-only">Loading history…</span>
+                    <Skeleton className="h-16 w-full" />
+                    <Skeleton className="h-4 w-2/3" />
+                  </div>
+                ) : samples.length === 0 ? (
+                  <p className="helper py-6 text-center">No samples in this range.</p>
+                ) : (
+                  <>
+                    <Sparkline samples={samples} />
+                    <Table caption="Most recent samples" wrapperClassName="mt-2 max-h-40 overflow-y-auto rounded-xl" className="min-w-0">
+                      <THead>
+                        <Th>Time</Th>
+                        <Th align="right">Value</Th>
+                      </THead>
+                      <tbody>
+                        {samples
+                          .slice(-40)
+                          .reverse()
+                          .map((s, i) => (
+                            <Tr key={i}>
+                              <Td className="py-1.5 text-xs text-muted">{s.ts}</Td>
+                              <Td align="right" className="mono py-1.5 text-xs text-slate-200">
+                                {s.floatvalue ?? s.stringvalue}
+                              </Td>
+                            </Tr>
+                          ))}
+                      </tbody>
+                    </Table>
+                  </>
+                )}
+              </Card>
+            </div>
+          </>
+        )}
+      </PageBody>
+      {confirmDialog}
     </div>
   );
 }
@@ -238,7 +300,7 @@ function Sparkline({ samples }) {
   return (
     <div className="rounded-lg border border-white/5 bg-surface-950/50 p-2">
       <ChartSparkline values={values} height={64} />
-      <div className="mono mt-1 flex justify-between text-2xs text-slate-500">
+      <div className="mono mt-1 flex justify-between text-xs text-muted">
         <span>min {fmtNum(Math.min(...values))}</span>
         <span>max {fmtNum(Math.max(...values))}</span>
       </div>

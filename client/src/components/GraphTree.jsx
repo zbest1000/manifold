@@ -95,16 +95,18 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-white/5 px-3 py-2 text-[11px] text-slate-500">{total.toLocaleString()} rows</div>
+      <div className="border-b border-white/5 px-3 py-2 text-xs text-subtle">{total.toLocaleString()} rows</div>
       <div
         onScroll={(e) => {
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
         }}
+        role="tree"
+        aria-label="Nodes"
         className="relative flex-1 overflow-auto"
       >
         {total === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-slate-500">Nothing to show.</p>
+          <p className="px-4 py-8 text-center text-xs text-subtle">Nothing to show.</p>
         ) : (
           <div style={{ height: total * ROW_H, position: 'relative' }}>
             {slice.map((row, i) => {
@@ -114,7 +116,22 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
               return (
                 <div
                   key={n.id}
+                  role="treeitem"
+                  tabIndex={0}
+                  aria-selected={n.id === selectedId}
+                  aria-level={depth + 1}
+                  aria-expanded={expandable ? open : undefined}
                   onClick={() => onSelect(n)}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelect(n);
+                    } else if (expandable && ((e.key === 'ArrowRight' && !open) || (e.key === 'ArrowLeft' && open))) {
+                      e.preventDefault();
+                      toggle(n);
+                    }
+                  }}
                   className={clsx(
                     'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-white/5',
                     n.id === selectedId && 'bg-accent-500/15'
@@ -122,11 +139,14 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                   style={{ top: (start + i) * ROW_H, height: ROW_H, paddingLeft: `${depth * 14 + 8}px` }}
                 >
                   <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={open ? `Collapse ${n.label}` : `Expand ${n.label}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (expandable) toggle(n);
                     }}
-                    className={clsx('shrink-0 text-slate-500', !expandable && 'invisible')}
+                    className={clsx('shrink-0 text-subtle', !expandable && 'invisible')}
                   >
                     {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
