@@ -38,9 +38,16 @@ function raw(payload) {
 function readable(payload) {
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     const keys = Object.keys(payload);
-    if ('value' in payload && keys.every((k) => ['value', 'unit', 'u', 'quality', 'q', 'timestamp', 't', 'ts'].includes(k))) {
+    // A value envelope: Manifold's own {v,t,q,u} (plus label/reason/name) or the long-hand {value,…}.
+    const ENVELOPE = ['v', 'value', 'unit', 'u', 'quality', 'q', 'timestamp', 't', 'ts', 'label', 'reason', 'name', 'src', 'ctx'];
+    if (('v' in payload || 'value' in payload) && keys.every((k) => ENVELOPE.includes(k))) {
+      const value = 'v' in payload ? payload.v : payload.value;
       const unit = payload.unit ?? payload.u;
-      return `${num(payload.value)}${unit ? ` ${unit}` : ''}`;
+      const quality = payload.q ?? payload.quality;
+      const shown = value === null || value === undefined ? '—' : typeof value === 'object' ? raw(value) : num(value);
+      const text = `${shown}${payload.label ? ` (${payload.label})` : ''}${unit ? ` ${unit}` : ''}`;
+      // OPC-style quality: 192 good, 64 uncertain, 0 bad. Only non-good is worth the space.
+      return quality === 0 ? `${text} · bad` : quality === 64 ? `${text} · uncertain` : text;
     }
     if (keys.length === 1) return `${keys[0]}: ${num(payload[keys[0]])}`;
   }
