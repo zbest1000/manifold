@@ -25,13 +25,21 @@
  * level. `#` match COUNTS are O(1) via `subtreeCount` maintained on insert —
  * counts are always exact even when samples/roots are truncated. Sample
  * collection walks at most `sampleLimit` leaves (DFS, namespace order).
+ *
+ * Activity: every node caches `maxTs`, the newest activity at or below it,
+ * fed by `insert(topic, slot, ts)` and `touch(leaf, ts)` (both O(depth), with
+ * an early exit once an ancestor is already as new). `lastActivity(path)` is
+ * then an O(depth) lookup instead of a subtree walk. `maxTs` is monotonic: it
+ * is not lowered when a topic is removed.
  */
 
 class TrieNode {
-  constructor() {
+  constructor(parent = null) {
     this.children = null; // Map(segment -> TrieNode), lazily created
     this.slot = -1; // >= 0 iff a topic terminates here
     this.subtreeCount = 0; // number of terminal topics at-or-below this node
+    this.parent = parent; // for O(depth) upward propagation (touch / remove)
+    this.maxTs = 0; // newest activity ts at-or-below this node
   }
 }
 
@@ -40,28 +48,70 @@ class TopicTrie {
     this.root = new TrieNode();
   }
 
-  /** Insert an observed topic. O(segments). Idempotent per (topic, slot). */
-  insert(topic, slot) {
+  /**
+   * Insert an observed topic. O(segments). Idempotent per (topic, slot).
+   * `ts` (optional) seeds the activity cache. Returns the terminal node, the
+   * handle `touch` takes.
+   */
+  insert(topic, slot, ts = 0) {
     // Keep empty segments: "a//b".split('/') -> ['a','','b'] is correct MQTT.
     const segments = topic.split('/');
     let node = this.root;
-    const path = [node];
     for (const seg of segments) {
       if (!node.children) node.children = new Map();
       let child = node.children.get(seg);
       if (!child) {
-        child = new TrieNode();
+        child = new TrieNode(node);
         node.children.set(seg, child);
       }
       node = child;
-      path.push(node);
     }
-    if (node.slot >= 0) {
-      node.slot = slot; // re-observation of a known topic: refresh slot, no recount
-      return;
+    if (node.slot < 0) {
+      for (let n = node; n !== null; n = n.parent) n.subtreeCount++;
     }
-    node.slot = slot;
-    for (const n of path) n.subtreeCount++;
+    node.slot = slot; // re-observation of a known topic: refresh slot, no recount
+    if (ts) this.touch(node, ts);
+    return node;
+  }
+
+  /** Record activity at `ts` on a node (normally a terminal). O(depth). */
+  touch(node, ts) {
+    for (let n = node; n !== null && n.maxTs < ts; n = n.parent) n.maxTs = ts;
+  }
+
+  /** Remove a topic; prunes branches left without topics. O(depth). */
+  remove(topic) {
+    const segments = topic.split('/');
+    let node = this.root;
+    for (const seg of segments) {
+      node = node.children?.get(seg);
+      if (!node) return false;
+    }
+    if (node.slot < 0) return false;
+    node.slot = -1;
+    for (let n = node; n !== null; n = n.parent) n.subtreeCount--;
+    // Prune bottom-up: a node with subtreeCount 0 holds no topic below it.
+    let i = segments.length - 1;
+    while (node.parent !== null && node.subtreeCount === 0) {
+      const parent = node.parent;
+      parent.children.delete(segments[i--]);
+      if (parent.children.size === 0) parent.children = null;
+      node.parent = null;
+      node = parent;
+    }
+    return true;
+  }
+
+  /** Newest activity ts under `path` ('' = everything); 0 if never observed. O(depth). */
+  lastActivity(path = '') {
+    let node = this.root;
+    if (path) {
+      for (const seg of String(path).split('/')) {
+        node = node.children?.get(seg);
+        if (!node) return 0;
+      }
+    }
+    return node.maxTs;
   }
 
   /**

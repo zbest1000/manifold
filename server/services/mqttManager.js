@@ -18,10 +18,75 @@ const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 // burst of a huge broker doesn't emit millions of individual events.
 const MAX_TOPICS = 2_000_000; // per-broker topic cap (guards server memory)
 const GLOBAL_RECENT = 5000; // recent messages kept across all topics, per broker
+// Trim the ring in amortized chunks: splice(0, 1) on every push past the cap
+// memmoves ~5000 slots per forwarded message and dominated the flush.
+const RING_TRIM_AT = GLOBAL_RECENT + (GLOBAL_RECENT >> 2);
 const FLUSH_MS = 100; // coalesce + forward on this cadence
 const FORWARD_CAP = 5000; // max topics forwarded per flush (sample beyond this)
+// MQTT 5 property side map: one entry per topic whose latest publish carried
+// surfaced properties. Bounded so a v5 broker with millions of propertied
+// topics cannot grow it past the store's own footprint; new topics past the
+// cap are counted (metrics.droppedProps), existing entries keep updating.
+const MAX_MSG_PROPS = Number(process.env.MANIFOLD_MAX_MSG_PROPS) || 200_000;
+// publish-success is a UI log line, not a delivery receipt (publish() resolves
+// for that): leading edge immediately, then at most one summary per window.
+const PUBLISH_SUMMARY_MS = 1000;
+// Subscribe failures other than a SUBACK refusal (timeouts, a busy client)
+// are retried with exponential backoff, a bounded number of times.
+const SUBSCRIBE_RETRIES = 3;
+const SUBSCRIBE_RETRY_BASE_MS = 1000;
+// Idle-topic eviction: frees store slots of topics silent for longer than the
+// TTL. Off by default (0); the sweep is incremental (SWEEP_SLOTS per tick) and
+// runs on its own timer, never on the message path.
+const TOPIC_IDLE_TTL_MS = Number(process.env.MANIFOLD_TOPIC_IDLE_TTL_MS) || 0;
+const SWEEP_MS = 60_000;
+const SWEEP_SLOTS = 100_000;
 
 const PROTOCOLS = ['mqtt', 'mqtts', 'ws', 'wss'];
+
+// True when `text` could be a JSON document: its first non-whitespace char is
+// one that can start a JSON value ({ [ " - digit t f n). Anything else is
+// guaranteed to make JSON.parse throw.
+function mayBeJson(text) {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 32 || c === 9 || c === 10 || c === 13) continue;
+    return c === 123 || c === 91 || c === 34 || c === 45 || (c >= 48 && c <= 57) || c === 116 || c === 102 || c === 110;
+  }
+  return false; // empty / whitespace-only: JSON.parse throws
+}
+
+// TVQ envelope ({ v, t, q }, as written by Manifold's own `envelope` transform
+// and tag bindings): returns { t, q } with whichever of source timestamp (ms)
+// and quality are valid, or null when the payload is not an envelope. At most
+// three keys, `v` required, so ordinary JSON objects that merely contain a `v`
+// are not mistaken for one.
+function tvqOf(p) {
+  if (p === null || typeof p !== 'object' || Array.isArray(p) || !('v' in p)) return null;
+  let keys = 0;
+  for (const k in p) {
+    if (++keys > 3 || (k !== 'v' && k !== 't' && k !== 'q')) return null;
+  }
+  let t;
+  if (typeof p.t === 'number' && Number.isFinite(p.t) && p.t > 0) t = p.t;
+  else if (typeof p.t === 'string') {
+    const ms = Date.parse(p.t);
+    if (Number.isFinite(ms)) t = ms;
+  }
+  const q = typeof p.q === 'number' && Number.isFinite(p.q) && p.q >= 0 ? p.q : undefined;
+  if (t === undefined && q === undefined) return null;
+  return { t, q };
+}
+
+// Sparkplug metric quality: the `Quality` property (Ignition and most edge
+// stacks; OPC-style 0-255 codes) when declared, else undefined.
+function sparkplugQuality(props) {
+  if (!props) return undefined;
+  const raw = props.Quality ?? props.quality;
+  if (raw === undefined || raw === null) return undefined;
+  const q = Number(raw);
+  return Number.isFinite(q) ? q : undefined;
+}
 
 // The MQTT 5 per-message properties worth surfacing to the explorer. Returns
 // null when none are present so the caller attaches nothing (and the topic's
@@ -57,25 +122,67 @@ class MqttManager extends EventEmitter {
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
+    this.maxMsgProps = MAX_MSG_PROPS;
+    this.subscribeRetries = SUBSCRIBE_RETRIES;
+    this.subscribeRetryBaseMs = SUBSCRIBE_RETRY_BASE_MS;
+    this.retryTimers = new Set();
+    this.publishSummary = new Map(); // brokerId -> { count, topic, leadAt } for the current window
+    this.topicIdleTtlMs = TOPIC_IDLE_TTL_MS;
+    this.sweepCursor = new Map(); // brokerId -> next slot for the incremental idle sweep
 
     // unref so these background timers never keep the process alive on their own
     // (the HTTP server holds the event loop open in normal operation)
     this.cleanupTimer = setInterval(() => this.cleanupOldMessages(), 300000);
     this.statsTimer = setInterval(() => this.emitStats(), STATS_INTERVAL_MS);
     this.batchTimer = setInterval(() => this.flushBatches(), FLUSH_MS);
+    this.publishTimer = setInterval(() => this.flushPublishSummary(), PUBLISH_SUMMARY_MS);
+    this.sweepTimer = setInterval(() => this.sweepIdleTopics(), SWEEP_MS);
     this.cleanupTimer.unref?.();
     this.statsTimer.unref?.();
     this.batchTimer.unref?.();
+    this.publishTimer.unref?.();
+    this.sweepTimer.unref?.();
   }
 
   connectToBroker(config = {}) {
-    if (!config.host) {
-      throw new Error('host is required');
-    }
-
     const brokerId = config.id || uuidv4();
     if (this.clients.has(brokerId)) {
       throw new Error(`Broker ${brokerId} is already connected`);
+    }
+    const { brokerUrl, options, info } = this._prepareBroker(brokerId, config);
+    const client = this._mqttConnect(brokerUrl, options);
+
+    this.connections.set(brokerId, info);
+    this.clients.set(brokerId, client);
+    // Sparkplug topics (classified once per slot) are additionally queued
+    // un-coalesced: NDATA/DDATA carry only changed metrics, so latest-wins
+    // would lose data. See topicStore.js.
+    this.stores.set(brokerId, new TopicStore(MAX_TOPICS, undefined, { queueClassifier: (t) => this.isSparkplugTopic(t) }));
+    this.topicMeta.set(brokerId, []);
+    this.sparkplug.set(brokerId, new SparkplugRegistry());
+    this.sys.set(brokerId, new Set());
+    this.recent.set(brokerId, []);
+    this.msgProps.set(brokerId, new Map());
+    this.rowCache.set(brokerId, new Map());
+    this.subscriptions.set(brokerId, new Set());
+    this.setupClientEventHandlers(client, brokerId);
+
+    this.io.emit('mqtt-connection-attempt', { brokerId, connection: this.publicInfo(info) });
+    return { brokerId, status: 'connecting' };
+  }
+
+  // Validate a broker config and build everything a connect needs, without
+  // side effects — so updateBroker can reject a bad edit before touching the
+  // live connection.
+  _prepareBroker(brokerId, config) {
+    if (!config.host) {
+      throw new Error('host is required');
+    }
+    if (config.port !== undefined && config.port !== null && config.port !== '') {
+      const p = Number(config.port);
+      if (!Number.isInteger(p) || p < 1 || p > 65535) {
+        throw new Error('port must be an integer between 1 and 65535');
+      }
     }
 
     const protocol = config.protocol || (Number(config.port) === 8883 ? 'mqtts' : 'mqtt');
@@ -126,8 +233,6 @@ class MqttManager extends EventEmitter {
       if (config.key) options.key = config.key;
     }
 
-    const client = this._mqttConnect(brokerUrl, options);
-
     const info = {
       id: brokerId,
       name: config.name || `${config.host}:${port}`,
@@ -160,24 +265,12 @@ class MqttManager extends EventEmitter {
         bytesReceived: 0,
         bytesSent: 0,
         topicCount: 0,
-        errors: 0
+        errors: 0,
+        sparkplugCoalesced: 0, // Sparkplug messages that overflowed the per-flush queue (latest-wins)
+        droppedProps: 0 // MQTT 5 property entries refused past MAX_MSG_PROPS
       }
     };
-
-    this.connections.set(brokerId, info);
-    this.clients.set(brokerId, client);
-    this.stores.set(brokerId, new TopicStore(MAX_TOPICS));
-    this.topicMeta.set(brokerId, []);
-    this.sparkplug.set(brokerId, new SparkplugRegistry());
-    this.sys.set(brokerId, new Set());
-    this.recent.set(brokerId, []);
-    this.msgProps.set(brokerId, new Map());
-    this.rowCache.set(brokerId, new Map());
-    this.subscriptions.set(brokerId, new Set());
-    this.setupClientEventHandlers(client, brokerId);
-
-    this.io.emit('mqtt-connection-attempt', { brokerId, connection: this.publicInfo(info) });
-    return { brokerId, status: 'connecting' };
+    return { brokerUrl, options, info };
   }
 
   // Seam over mqtt.connect (mqtt v5 exports non-configurable getters, so the
@@ -188,8 +281,12 @@ class MqttManager extends EventEmitter {
 
   setupClientEventHandlers(client, brokerId) {
     const info = this.connections.get(brokerId);
+    // Terminal error (gave up after maxReconnect): survives 'close'. Any other
+    // error is transient — mqtt.js reconnects — so 'close' moves it to offline.
+    let gaveUp = false;
 
     client.on('connect', () => {
+      gaveUp = false;
       info.status = 'connected';
       info.connectedAt = new Date();
       info.lastError = null;
@@ -211,16 +308,19 @@ class MqttManager extends EventEmitter {
     });
 
     client.on('error', (error) => {
-      info.status = 'error';
+      // An error on a session that is still up (e.g. a rejected publish) is
+      // recorded but does not change the connection status.
+      if (!client.connected && info.status !== 'disconnected') info.status = 'error';
       info.lastError = error.message;
       info.metrics.errors++;
       this.io.emit('mqtt-error', { brokerId, error: error.message });
     });
 
     client.on('close', () => {
-      // Keep an explicit 'error' (e.g. gave-up-after-max-retries) rather than
-      // downgrading it to 'offline'.
-      if (info.status !== 'disconnected' && info.status !== 'error') {
+      // Keep a terminal 'error' (gave up after max retries) rather than
+      // downgrading it to 'offline'; a transient error becomes 'offline'
+      // (lastError keeps the reason) until the reconnect cycle moves it on.
+      if (info.status !== 'disconnected' && !gaveUp) {
         info.status = 'offline';
         this.io.emit('mqtt-offline', { brokerId });
       }
@@ -229,6 +329,7 @@ class MqttManager extends EventEmitter {
     client.on('reconnect', () => {
       info.reconnectCount = (info.reconnectCount || 0) + 1;
       if (info.maxReconnect && info.reconnectCount > info.maxReconnect) {
+        gaveUp = true;
         info.status = 'error';
         info.lastError = `Gave up after ${info.maxReconnect} reconnect attempt(s)`;
         info.metrics.errors++;
@@ -255,17 +356,20 @@ class MqttManager extends EventEmitter {
     info.metrics.messagesReceived++;
     info.metrics.bytesReceived += message.length;
 
-    store.ingest(topic, message, packet.qos, packet.retain);
+    // A topic refused by the store cap gets no side-table entries either.
+    if (!store.ingest(topic, message, packet.qos, packet.retain)) return;
     info.metrics.topicCount = store.topicCount();
     // MQTT 5 per-message properties ride in a side map keyed by topic — one
     // falsy branch per message keeps the v4 hot path allocation-free. A later
-    // publish without the surfaced keys clears the topic's stale entry.
+    // publish without the surfaced keys clears the topic's stale entry. Bounded
+    // (MAX_MSG_PROPS) and cleared on eviction / broker removal.
     if (packet.properties) {
       const props = pickPacketProperties(packet.properties);
       const map = this.msgProps.get(brokerId);
       if (map) {
-        if (props) map.set(topic, props);
-        else map.delete(topic);
+        if (!props) map.delete(topic);
+        else if (map.size < this.maxMsgProps || map.has(topic)) map.set(topic, props);
+        else info.metrics.droppedProps++;
       }
     }
     // One char-code check per message; $SYS traffic is low-rate and tracking the
@@ -289,10 +393,21 @@ class MqttManager extends EventEmitter {
       payload = `[payload truncated: ${row.fullSize} bytes]`;
     } else {
       const text = message.toString('utf8');
-      try {
-        payload = JSON.parse(text);
-        payloadFormat = 'json';
-      } catch {
+      let parsed = false;
+      // Only attempt JSON.parse when the payload can start a JSON value: a
+      // failed parse throws (and captures a stack), which for binary payloads
+      // such as Sparkplug protobuf — now decoded once per MESSAGE, not per
+      // topic per flush — dominated the flush. Same results either way.
+      if (mayBeJson(text)) {
+        try {
+          payload = JSON.parse(text);
+          payloadFormat = 'json';
+          parsed = true;
+        } catch {
+          // not JSON after all
+        }
+      }
+      if (!parsed) {
         payload = text;
         if (text.includes('�')) {
           payloadFormat = 'binary';
@@ -332,6 +447,17 @@ class MqttManager extends EventEmitter {
     const props = this.msgProps.get(brokerId)?.get(row.topic);
     if (props) messageObj.properties = props;
 
+    // Source time and quality, when the payload carries them. `timestamp`
+    // stays arrival time; consumers prefer `sourceTimestamp` / `quality` when
+    // present (absent means: arrival time, quality Good).
+    if (payloadFormat === 'json') {
+      const tvq = tvqOf(payload);
+      if (tvq) {
+        if (tvq.t !== undefined) messageObj.sourceTimestamp = tvq.t;
+        if (tvq.q !== undefined) messageObj.quality = tvq.q;
+      }
+    }
+
     if (meta.spark) {
       // STATE messages are plain JSON/text host-status certificates, not
       // protobuf — decoding them as Sparkplug payloads would just flag noise.
@@ -339,8 +465,17 @@ class MqttManager extends EventEmitter {
         messageObj.type = 'sparkplug';
       } else {
         try {
-          messageObj.sparkplug = this.sparkplugDecoder.decode(message);
+          const sp = this.sparkplugDecoder.decode(message);
+          messageObj.sparkplug = sp;
           messageObj.type = 'sparkplug';
+          if (sp.timestamp instanceof Date) messageObj.sourceTimestamp = sp.timestamp.getTime();
+          // Per-metric source time and declared quality, as plain numbers.
+          for (const m of sp.metrics) {
+            if (!m) continue;
+            if (m.timestamp instanceof Date) m.sourceTimestamp = m.timestamp.getTime();
+            const q = sparkplugQuality(m.properties);
+            if (q !== undefined) m.quality = q;
+          }
         } catch (error) {
           messageObj.sparkplugError = error.message;
         }
@@ -349,30 +484,107 @@ class MqttManager extends EventEmitter {
     return messageObj;
   }
 
+  // Fold one Sparkplug message into the device topology (identity from the
+  // topic, metrics from the decoded payload) and resolve alias-only DATA
+  // metric names (learned from BIRTH) onto the object BEFORE the tap, so
+  // pipelines / sparkplugFlatten see real names.
+  _foldSparkplug(registry, messageObj, ts) {
+    // Raw payload rides along for STATE host certificates, whose online/offline
+    // verdict lives in the (non-protobuf) payload body.
+    registry.update(messageObj.topic, messageObj.sparkplug || null, ts, messageObj.payload);
+    if (messageObj.sparkplug && Array.isArray(messageObj.sparkplug.metrics)) {
+      registry.resolveMetricNames(messageObj.topic, messageObj.sparkplug.metrics);
+    }
+  }
+
+  // Message tap for the DataOps engines (pipelines, recorder, contracts,
+  // models, bindings). EventEmitter.emit is synchronous, so a throwing engine
+  // listener would otherwise propagate out of the flush interval and crash the
+  // whole process — one bad broker message must not take down the control plane.
+  _tap(brokerId, messageObj) {
+    try {
+      this.emit('message', messageObj);
+    } catch (error) {
+      this.tapErrors = (this.tapErrors || 0) + 1;
+      console.warn(`mqtt message tap threw for ${brokerId} "${messageObj.topic}": ${error.message}`);
+    }
+  }
+
   // Coalesce: for every topic touched since the last flush, build ONE message
   // (its latest value) and forward that. A topic hammered a million times in the
   // flush window produces a single forwarded update, so socket + client load is
   // bounded by the number of *topics* touched, not the publish rate. Beyond
   // FORWARD_CAP topics per flush we forward a sample (server still counts all).
+  //
+  // Sparkplug is the exception: NDATA/DDATA carry only the metrics that
+  // changed, and BIRTH/DEATH/seq semantics need every message, so Sparkplug
+  // topics are queued un-coalesced by the store (bounded per flush; overflow
+  // degrades to latest-wins and is counted). Each queued message is decoded
+  // and delivered in arrival order to the registry and the tap; the UI batch
+  // still gets only the latest per topic.
   flushBroker(brokerId) {
     const store = this.stores.get(brokerId);
     if (!store) return;
 
+    const queued = store.drainQueued();
     const rows = store.drain();
-    if (rows.length === 0) return;
+    if (rows.length === 0 && queued.length === 0) return;
 
     const ring = this.recent.get(brokerId);
     const registry = this.sparkplug.get(brokerId);
+    const info = this.connections.get(brokerId);
     const batch = [];
     let forwarded = 0;
 
     const tap = this.listenerCount('message') > 0;
+
+    // 1. Un-coalesced Sparkplug, in arrival order. The last object built per
+    // slot is that topic's latest value and is reused for the UI batch below.
+    let latestQueued = null;
+    if (queued.length) {
+      latestQueued = new Map();
+      for (const qrow of queued) {
+        const messageObj = this.buildMessage(brokerId, qrow);
+        if (tap) messageObj.topicParts = messageObj.topic.split('/');
+        if (registry) this._foldSparkplug(registry, messageObj, qrow.ts);
+        if (tap) this._tap(brokerId, messageObj);
+        latestQueued.set(qrow.slot, messageObj);
+      }
+    }
+    if (info) info.metrics.sparkplugCoalesced = store.sparkOverflow;
+
+    // Activity cache for branch-silent rules: O(depth) per touched topic, and
+    // only once the (lazy) trie exists.
+    const trieEntry = this.tries.get(brokerId);
+    const leaves = trieEntry ? trieEntry.leaves : null;
+
+    // Stores built without a queue classifier (tests, tools) keep the old
+    // coalesced Sparkplug path.
+    const legacySpark = store.queueClassifier === null;
     let lastActivityTs = 0;
     for (const row of rows) {
       if (row.ts > lastActivityTs) lastActivityTs = row.ts;
+      if (leaves !== null) {
+        const leaf = leaves[row.slot];
+        if (leaf !== undefined) trieEntry.trie.touch(leaf, row.ts);
+      }
 
       const needForward = forwarded < FORWARD_CAP;
-      const needSpark = registry && this.isSparkplugTopic(row.topic);
+
+      if (latestQueued !== null && store.queued[row.slot] === 1) {
+        // Already folded and tapped above, message by message.
+        if (!needForward) continue;
+        const messageObj = latestQueued.get(row.slot) || this.buildMessage(brokerId, row);
+        batch.push(messageObj);
+        forwarded++;
+        if (ring) {
+          ring.push(messageObj);
+          if (ring.length > RING_TRIM_AT) ring.splice(0, ring.length - GLOBAL_RECENT);
+        }
+        continue;
+      }
+
+      const needSpark = legacySpark && registry && this.isSparkplugTopic(row.topic);
       // If nothing will consume this row's built object — no tap listener, past
       // the forward cap, and not Sparkplug — skip the JSON.parse / protobuf
       // decode entirely. A wide fan-out burst (tens of thousands of distinct
@@ -382,45 +594,19 @@ class MqttManager extends EventEmitter {
       const messageObj = this.buildMessage(brokerId, row);
       // Split once here; every tap engine matches on segments.
       if (tap) messageObj.topicParts = messageObj.topic.split('/');
-
-      // Fold Sparkplug traffic into the device topology (identity from the topic,
-      // metrics from the decoded payload). Reuses the decode already done above.
-      if (needSpark) {
-        // Raw payload rides along for STATE host certificates, whose
-        // online/offline verdict lives in the (non-protobuf) payload body.
-        registry.update(messageObj.topic, messageObj.sparkplug || null, row.ts, messageObj.payload);
-        // Resolve alias-only DATA metric names (learned from BIRTH) onto the
-        // object BEFORE the tap, so pipelines / sparkplugFlatten downstream see
-        // real names instead of collapsing every metric into the empty-name key.
-        if (messageObj.sparkplug && Array.isArray(messageObj.sparkplug.metrics)) {
-          registry.resolveMetricNames(messageObj.topic, messageObj.sparkplug.metrics);
-        }
-      }
-
-      // Message tap for the DataOps engines (pipelines, recorder, contracts,
-      // models). EventEmitter.emit is synchronous, so a throwing engine listener
-      // would otherwise propagate out of the flush interval and crash the whole
-      // process — one bad broker message must not take down the control plane.
-      if (tap) {
-        try {
-          this.emit('message', messageObj);
-        } catch (error) {
-          this.tapErrors = (this.tapErrors || 0) + 1;
-          console.warn(`mqtt message tap threw for ${brokerId} "${messageObj.topic}": ${error.message}`);
-        }
-      }
+      if (needSpark) this._foldSparkplug(registry, messageObj, row.ts);
+      if (tap) this._tap(brokerId, messageObj);
 
       if (needForward) {
         batch.push(messageObj);
         forwarded++;
         if (ring) {
           ring.push(messageObj);
-          if (ring.length > GLOBAL_RECENT) ring.splice(0, ring.length - GLOBAL_RECENT);
+          if (ring.length > RING_TRIM_AT) ring.splice(0, ring.length - GLOBAL_RECENT);
         }
       }
     }
 
-    const info = this.connections.get(brokerId);
     if (info && lastActivityTs) info.lastActivity = new Date(lastActivityTs);
 
     // Serializing the batch for zero sockets is pure waste (headless deploys,
@@ -440,6 +626,10 @@ class MqttManager extends EventEmitter {
   }
 
   subscribe(brokerId, topic, qos = 0) {
+    this._subscribe(brokerId, topic, qos, 0);
+  }
+
+  _subscribe(brokerId, topic, qos, attempt) {
     const client = this.requireClient(brokerId);
     client.subscribe(topic, { qos }, (error, granted) => {
       // A broker can accept the packet but refuse the grant (SUBACK 0x80).
@@ -467,7 +657,25 @@ class MqttManager extends EventEmitter {
         return;
       }
       if (error) {
-        this.io.emit('subscription-error', { brokerId, topic, error: error.message });
+        // Not a refusal: a timeout, a busy or reconnecting client. Retry with
+        // exponential backoff, bounded; surface only the final failure. A
+        // retry is dropped if the client was replaced or went down meanwhile
+        // (autoSubscribe re-subscribes on the next connect).
+        if (attempt < this.subscribeRetries) {
+          const timer = setTimeout(() => {
+            this.retryTimers.delete(timer);
+            if (this.clients.get(brokerId) !== client || this.connections.get(brokerId)?.status !== 'connected') return;
+            try {
+              this._subscribe(brokerId, topic, qos, attempt + 1);
+            } catch {
+              // went away between the check and the call — nothing to retry
+            }
+          }, this.subscribeRetryBaseMs * 2 ** attempt);
+          timer.unref?.();
+          this.retryTimers.add(timer);
+          return;
+        }
+        this.io.emit('subscription-error', { brokerId, topic, error: error.message, attempts: attempt + 1 });
         return;
       }
       this.subscriptions.get(brokerId)?.add(topic);
@@ -511,10 +719,52 @@ class MqttManager extends EventEmitter {
         info.metrics.messagesSent++;
         info.metrics.bytesSent += body.length;
         info.lastActivity = new Date();
-        this.io.emit('publish-success', { brokerId, topic, timestamp: new Date().toISOString() });
+        this._notePublished(brokerId, topic);
         resolve({ brokerId, topic, size: body.length });
       });
     });
+  }
+
+  // publish-success rate bound. Pipelines and bindings publish one message per
+  // output, so a per-publish emit to every socket scales with throughput. The
+  // client only logs it (`{ brokerId, topic }`), so: the first publish in a
+  // window is emitted at once (an interactive publish still logs instantly),
+  // the rest are folded into one volatile summary per broker per window with
+  // the same shape plus `count` (publishes covered) — at most two emits per
+  // broker per PUBLISH_SUMMARY_MS.
+  _notePublished(brokerId, topic) {
+    let s = this.publishSummary.get(brokerId);
+    if (!s) {
+      s = { count: 0, topic: null, lead: false };
+      this.publishSummary.set(brokerId, s);
+    }
+    if (!s.lead) {
+      s.lead = true;
+      this.io.emit('publish-success', { brokerId, topic, count: 1, timestamp: new Date().toISOString() });
+      return;
+    }
+    s.count++;
+    s.topic = topic;
+  }
+
+  flushPublishSummary() {
+    for (const [brokerId, s] of this.publishSummary) {
+      if (s.count === 0) {
+        // Idle window: re-arm the leading edge; forget brokers that went quiet.
+        if (s.lead) s.lead = false;
+        else this.publishSummary.delete(brokerId);
+        continue;
+      }
+      (this.io.volatile || this.io).emit('publish-success', {
+        brokerId,
+        topic: s.topic,
+        count: s.count,
+        timestamp: new Date().toISOString()
+      });
+      s.count = 0;
+      s.topic = null;
+      // lead stays set: a busy broker keeps to one summary per window.
+    }
   }
 
   // Update a saved broker's config in place: validate first (a bad body must
@@ -522,11 +772,10 @@ class MqttManager extends EventEmitter {
   // start a fresh connect under the SAME id — subscriptions re-apply through
   // autoSubscribe on connect, exactly like a newly added broker.
   updateBroker(brokerId, config = {}) {
-    if (!config.host) {
-      throw new Error('host is required');
-    }
+    const next = { ...config, id: brokerId };
+    this._prepareBroker(brokerId, next); // throws on an invalid edit; nothing touched yet
     if (this.connections.has(brokerId)) this.disconnectFromBroker(brokerId);
-    return this.connectToBroker({ ...config, id: brokerId });
+    return this.connectToBroker(next);
   }
 
   disconnectFromBroker(brokerId) {
@@ -552,6 +801,8 @@ class MqttManager extends EventEmitter {
     this.msgProps.delete(brokerId);
     this.rowCache.delete(brokerId);
     this.subscriptions.delete(brokerId);
+    this.publishSummary.delete(brokerId);
+    this.sweepCursor.delete(brokerId);
     this.io.emit('mqtt-disconnected', { brokerId });
     return { brokerId, status: 'disconnected' };
   }
@@ -585,10 +836,18 @@ class MqttManager extends EventEmitter {
     if (this.connections.size === 0) return;
     const stats = [];
     this.connections.forEach((info, brokerId) => {
+      const store = this.stores.get(brokerId);
       stats.push({
         brokerId,
         status: info.status,
-        metrics: { ...info.metrics, droppedTopics: this.stores.get(brokerId)?.dropped || 0 },
+        metrics: {
+          ...info.metrics,
+          droppedTopics: store?.dropped || 0,
+          // Latched true once the topic cap refused a topic (cleared only if
+          // idle eviction makes room): new topics are invisible everywhere.
+          topicCapReached: Boolean(store?.capReached),
+          evictedTopics: store?.evicted || 0
+        },
         lastActivity: info.lastActivity
       });
     });
@@ -650,7 +909,7 @@ class MqttManager extends EventEmitter {
       cache?.set(row.slot, { count: row.count, obj });
       return obj;
     });
-    return { topics, total: store.topicCount(), dropped: store.dropped };
+    return { topics, total: store.topicCount(), dropped: store.dropped, capReached: store.capReached };
   }
 
   getMessages(brokerId, topic, limit = 50) {
@@ -757,16 +1016,70 @@ class MqttManager extends EventEmitter {
     const store = this.stores.get(brokerId);
     if (!store) return null;
     let entry = this.tries.get(brokerId);
+    if (entry && store.reuseOverflow) {
+      // Reuse log overflowed while nobody read the trie: rebuild from scratch.
+      this.tries.delete(brokerId);
+      entry = null;
+    }
     if (!entry) {
-      entry = { trie: new TopicTrie(), indexedThrough: 0 };
+      // leaves: slot -> terminal node, so the flush can feed the per-node
+      // activity cache (branch-silent) without re-splitting topics.
+      entry = { trie: new TopicTrie(), indexedThrough: 0, leaves: [] };
       this.tries.set(brokerId, entry);
+      store.reuseOverflow = false;
+      store.trackReuse = true;
+      store.takeReused(); // the full scan below covers every live slot
     }
     for (let slot = entry.indexedThrough; slot < store.n; slot++) {
       const topic = store.topicAt(slot);
-      if (topic !== undefined) entry.trie.insert(topic, slot);
+      if (topic !== undefined) entry.leaves[slot] = entry.trie.insert(topic, slot, store.ts[slot]);
     }
     entry.indexedThrough = store.n;
+    // Slots freed by eviction and reassigned to new topics since the last call.
+    for (const slot of store.takeReused()) {
+      const topic = store.topicAt(slot);
+      if (topic !== undefined && slot < entry.indexedThrough) entry.leaves[slot] = entry.trie.insert(topic, slot, store.ts[slot]);
+    }
     return entry.trie;
+  }
+
+  /**
+   * Evict topics idle longer than `ttlMs`: frees their store slots and drops
+   * every slot- or topic-keyed side entry (trie, type cache, read cache, MQTT 5
+   * props, $SYS set). Scans at most `maxScan` slots from the broker's sweep
+   * cursor, so a periodic caller sweeps a huge store incrementally. Returns the
+   * number evicted. The Sparkplug registry keeps its own (bounded) topology.
+   */
+  evictIdleTopics(brokerId, { ttlMs = this.topicIdleTtlMs, maxScan = SWEEP_SLOTS, now = Date.now() } = {}) {
+    const store = this.stores.get(brokerId);
+    if (!store || !(ttlMs > 0)) return 0;
+    const { evicted, cursor } = store.evictIdle(now - ttlMs, { cursor: this.sweepCursor.get(brokerId) || 0, maxScan });
+    this.sweepCursor.set(brokerId, cursor);
+    if (!evicted.length) return 0;
+    const entry = this.tries.get(brokerId);
+    const meta = this.topicMeta.get(brokerId);
+    const cache = this.rowCache.get(brokerId);
+    const props = this.msgProps.get(brokerId);
+    const sys = this.sys.get(brokerId);
+    for (const { topic, slot } of evicted) {
+      if (entry) {
+        entry.trie.remove(topic);
+        entry.leaves[slot] = undefined;
+      }
+      if (meta) meta[slot] = undefined;
+      cache?.delete(slot);
+      props?.delete(topic);
+      sys?.delete(topic);
+    }
+    const info = this.connections.get(brokerId);
+    if (info) info.metrics.topicCount = store.topicCount();
+    return evicted.length;
+  }
+
+  /** Timer body: one incremental idle sweep per broker, when a TTL is configured. */
+  sweepIdleTopics() {
+    if (!(this.topicIdleTtlMs > 0)) return;
+    for (const brokerId of this.stores.keys()) this.evictIdleTopics(brokerId);
   }
 
   /**
@@ -904,32 +1217,27 @@ class MqttManager extends EventEmitter {
     return { prefix, nodes, total: store.topicCount(), truncated };
   }
 
-  /** Newest message ts anywhere under `path` ('' = whole namespace). O(subtree). */
+  /**
+   * Newest message ts anywhere under `path` ('' = whole namespace); 0 if the
+   * branch was never observed. O(depth): reads the trie's per-node activity
+   * cache, which each flush feeds for the topics it drained (so it trails
+   * live ingest by at most one flush interval). Used by branch-silent alerts.
+   */
   branchLastActivity(brokerId, path = '') {
-    const store = this.stores.get(brokerId);
     const trie = this.getTrie(brokerId);
-    if (!store || !trie) return null;
-    let node = trie.root;
-    if (path) {
-      for (const seg of String(path).split('/')) {
-        node = node.children?.get(seg);
-        if (!node) return 0; // branch never observed
-      }
-    }
-    let max = 0;
-    const stack = [node];
-    while (stack.length) {
-      const n = stack.pop();
-      if (n.slot >= 0 && store.ts[n.slot] > max) max = store.ts[n.slot];
-      if (n.children) for (const c of n.children.values()) stack.push(c);
-    }
-    return max;
+    if (!trie) return null;
+    return trie.lastActivity(path);
   }
 
   shutdown() {
     clearInterval(this.cleanupTimer);
     clearInterval(this.statsTimer);
     clearInterval(this.batchTimer);
+    clearInterval(this.publishTimer);
+    clearInterval(this.sweepTimer);
+    for (const t of this.retryTimers) clearTimeout(t);
+    this.retryTimers.clear();
+    this.publishSummary.clear();
     this.clients.forEach((client) => client.end(true));
     this.clients.clear();
     this.connections.clear();
