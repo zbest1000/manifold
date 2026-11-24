@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A new design system and a rebuilt interface.** Semantic colour tokens for a **light, dark and system theme**
+  (the choice is stored in the browser and applied before the first paint), IBM Plex type, and shared primitives
+  in `client/src/components/ui`. Every page was rebuilt on it: Overview (needs attention, sources, data flow,
+  connections, latest values), MQTT Brokers, **Devices** (a sortable, filterable table with a detail drawer
+  (Overview, Tags, Probe) and a full-page form with Connection, Protocol options, Polling, Tags and Advanced
+  sections), Profiles, Discovery, **Tags** (a two-tab workspace and the Mappings table), Pipelines (five tabs, a
+  route editor with a reorderable transform chain and a dry run), OPC UA, CESMII SMIP, i3X, Settings (General with
+  Session, Theme, Topic graph and MCP; Alert rules; Configuration; Audit trail), the unlock screen, and Topics,
+  UNS, Flows, Trends and Health with canvases themed from the same tokens. See `docs/design/ui-design-system.md`
+  and the wiki's *User interface* page (themes, shortcuts, deep links, what accessibility testing covers).
+- **The mapping editor** replaces the three-step wizard: one sheet with Mapping, What, Where, Tags, Context,
+  Payload and Delivery sections and a live server preview (topics, payload, `_meta`, changes, collisions). The UI
+  says *mapping* for what the API calls a binding.
+- **Selective mapping and tag context (server and editor).** Per-entry `enabled`; `source.select` rules (include and
+  exclude globs on key and property, poll groups, types, has-a-property) so tags added to a device later are
+  picked up; `source.overrides` and per-tag overrides of name, displayName, description, unit, range, dataType,
+  scale, offset, precision, states, statesMode, limits, deadband and context; `target.context` with placeholders
+  (`{device}`, `{deviceId}`, `{protocol}`, `{host}`, `{param:x}`), `target.contextMode` (`meta`, `payload`,
+  `none`), `target.fields`, `target.metaFields`; `GET /api/tags/bindings/schema`, `POST /api/tags/bindings/suggest`;
+  preview additions (`previewTags`, per-field origins, selection rows) and `option-ignored` warnings. A mapping
+  that uses none of it publishes byte for byte what it did before.
+- **Canvas rendering overhaul.** One shared kit (`client/src/graph/canvasKit.js`) for DPR-correct sizing, one camera
+  transform for drawing and picking, a frame scheduler that idles at about one frame per second and stops while
+  hidden, label level of detail, WebGL context-loss recovery; canvas themes derived from the tokens and switched in
+  place; a validated ten-colour data palette; graph styles Standard, Schematic and Monochrome; deep links
+  `/uns?broker=&path=` and `/topics?broker=&topic=` that select and centre reliably.
+- **Read-only sessions** show disabled controls with the reason and a short note instead of 403s; Settings has a
+  Session card with **Sign out / use a different token**.
+- **`POST /api/devices/bulk`** creates up to 200 devices all-or-nothing; the profile bulk table and Discovery's
+  **Add all** use it. The device form's **Advanced** section edits Modbus unmapped register ranges and per-device
+  process isolation. Recordings can be paused and resumed.
+- **UI test suite and linting.** Playwright projects desktop, hidpi (device pixel ratio 2) and mobile; every route is
+  loaded in both themes at 1440 and 390 px and fails on serious or critical axe findings, horizontal overflow and
+  console errors; functional specs for devices, profiles, outage and recovery, mapping, pipelines, settings, auth and
+  OPC UA. ESLint runs for server, client and mcp in CI.
+
 - **Functional QA pass over Tags, Devices, Discovery, Pipelines, OPC UA, CESMII, i3X and Settings.**
   `POST /api/devices/bulk` creates devices all-or-nothing (every row validated first, per-row errors
   on failure) and both bulk dialogs use it; device names are unique; a device the driver could never
@@ -114,7 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a binding is created while its source is already online); Sparkplug
   targets use the real tag type and get DDEATH / DBIRTH on loss and recovery;
   `rbe.heartbeatMs` republishes unchanged tags.
-- **Accessible tag tree and a three-step bind wizard** (target, naming, options):
+- **Accessible tag tree and a three-step bind wizard** (target, naming, options; **superseded by the mapping editor above**):
   an asset-path picker over the live UNS tree, the layout choice, units, deadband
   type, heartbeat, the historian target, profile bindings, and a topic and
   payload preview computed by the server. The tree has a filter box and keyboard
@@ -182,6 +218,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none of the new options publish byte-for-byte what they did before.
 
 ### Changed
+
+- **Device live values** reach the browser as **one `device-values` Socket.IO event per 250 ms flush** carrying every
+  touched device (`{ batch: [{ deviceId, values }] }`), delivered reliably when the flush contains a quality change.
+  Per-device volatile emits delivered only the first device's values.
+- **Saving is stricter.** Device names are unique and may not contain control or bidi characters; a device the
+  driver could never run (bad options, S7 without rack and slot) is refused at save time; pipeline source filters and
+  `repath` targets, model targets and recorder filters are validated as MQTT topics; a historian that a route,
+  recording or mapping uses cannot be deleted (409 naming them).
+- **Viewers** may also call mapping preview, name suggestions and CESMII history (read-only POSTs).
+- The MCP `binding_save` tool accepts `device` and `device-profile` sources and the new selection and context options.
+- A failed retained `_meta` or `_status` publish is retried on a 15 s timer; a plain mapping with a direct historian
+  target records the Bad sample on source loss; Sparkplug-source mappings use the timestamp plausibility window.
 
 **Operator-visible behaviour changes**
 
@@ -253,6 +301,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Canvas defects: canvases sized in px stopped their flex container from shrinking; the UNS ran at 60 frames per
+  second forever; the Topics graph re-heated its layout on every click; WebGL had no context-loss handling and drew a
+  2,000-child branch as a giant disc; the 3D camera sat inside the layout; charts drew outages as straight lines and
+  clipped y labels; deep-link centring drifted as topics streamed in.
+- A tag going Bad could be dropped by a lagging client and leave a stale Good in the UI (the flush now goes reliable).
+- A stale inferred contract could be locked under another topic; the OPC UA form left a ghost "connecting" row after a
+  refused connection; Discovery offered to connect brokers that were already connected; importing the same config file
+  twice did nothing.
+
 - Config export no longer blanks device tag keys: arrays named `tags` and
   `ownTags` keep their `key` identifiers, while a secret inside a tag or a key
   anywhere else is still masked.
@@ -297,6 +354,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Viewer sessions can use mapping preview, name suggestions and CESMII history (read-only POSTs); the allowlist is
+  `VIEWER_READ_ONLY_POSTS` in `server/services/authConfig.js`. The UI shows read-only sessions as disabled controls.
 - Egress guard: alert webhooks (with redirect re-validation and connect-time
   address pinning), device targets and every Discovery scan candidate now pass
   it. It deliberately does **not** cover MQTT broker hosts, OPC UA endpoints or
@@ -333,27 +392,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quality codes, batch limits and tokens are unconfirmed for the direct historian
   target and for pipeline writes.
 - **A pipeline historian target on an envelope topic stores the envelope as JSON
-  text.** Add a `numeric` transform with `field: "v"`. A binding's direct
-  historian target is not affected.
-- **`_meta` can be missing after a start.** If the broker is not connected when
-  the server first reconciles bindings, the `_meta` publish fails (the binding's
-  last error says so) and is retried only at the next binding, device or profile
-  save. Saving the binding republishes it. `_status` and values are not affected.
+  text.** Add a `numeric` transform with `field: "v"` (the route editor offers it
+  in one click). A mapping's direct historian target is not affected.
 - **Retained cleanup is best effort.** Edits made while the server is down are
   not cleaned up (the owned-topic set is rebuilt at start), a clear sent while
   the target broker is disconnected is dropped, and retained value topics of a
-  Sparkplug-source binding are not known in advance.
+  Sparkplug-source mapping are not known in advance.
 - **MQTT, OPC UA and historian endpoints are outside the egress guard**, by
   decision (see Security above).
 - **The device egress check is check-only**: a hostname is re-resolved when the
   driver connects, so a small DNS-rebinding window remains (literal IPs have
   none).
-- A Sparkplug **host-application STATE** session keeps its old connection when
-  its broker profile is edited until it is stopped and started again.
-- The MCP `binding_save` tool lists only `opcua` and `sparkplug` source types;
-  create device and profile bindings through the UI or REST.
-- `isolate` (a process per device) and the Modbus `options.unmapped` ranges are
-  not editable in the UI.
+- **MQTT-topic selections on the Tags page compile to pipeline routes**, not mappings:
+  no asset path, `_status`, `_meta` or direct historian target for that path.
+- **Concurrent edits are last-write-wins.** Two tabs editing the same item overwrite each other.
+- **Field order inside a payload cannot be changed in the editor** (the API honours the order of `target.fields`).
+- A Sparkplug **host-application STATE** session picks up an edited broker profile
+  only when it is started again.
+- WebGL and 3D were only run on a software renderer; accessibility is checked
+  automatically (axe, both themes) but not audited by hand or with a screen reader.
+- Three shared components (`JsonView`, `GraphLegend`, unused `ViewTab`) still use the
+  legacy class names that the Tailwind compatibility layer maps to tokens.
+- See `docs/REVIEW-2026-11.md` for the full list, including defects seen while
+  capturing the documentation screenshots (an overflowing large float in the device
+  drawer, Sparkplug payloads as base64 in the Overview's Latest values).
 
 ## [1.0.0] - 2026-07-15
 

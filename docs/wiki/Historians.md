@@ -9,7 +9,22 @@ recorder never write to a database directly: everything passes through a
 
 ![Historians tab with store-and-forward status](images/historians.png)
 
-> *Each historian card shows its live store-and-forward state: written, queued, spilled, dropped.*
+> *Each historian row shows its live store-and-forward state in plain words, with the counters beside it.*
+
+**The Historians tab.** One row per historian: the name and type, the endpoint (`url`, dataset, org and bucket, or
+database), whether credentials are stored on the server (the secret itself is never shown again), a **State** and
+the counters **Written** (accepted by the historian), **Queued** (waiting in memory), **Spilled** (held on disk
+while the historian is unreachable), **Dead-lettered** (refused for good, kept in a dead-letter file) and **Skipped**
+(had no usable value, so nothing was sent). The state reads *Healthy*, *No traffic yet*, *Buffering* (points are
+waiting or on disk), *Retrying* (the last write failed; the error is shown), *Dropping points* (the offline buffer is full
+and the drop policy is discarding) or *Rejecting points* (the historian refused some for good). **Test** writes one real
+point (`manifold/connection-test`) and answers *Test write succeeded* or *Test write failed* with the reason; the
+pencil edits (a stored secret is kept when you leave its field empty); **Add historian** opens the form (**Type**, **Name**,
+the connection fields of that type, and **When the offline buffer is full**: *newest* or *oldest*).
+
+**Deleting a historian that is in use is refused.** If a pipeline route, a recording or a mapping's direct historian
+target still writes to it, deleting answers with a *"<name>" is still in use* dialog that names them (the API returns
+409); remove or repoint them first.
 
 ## How store-and-forward protects your data
 
@@ -31,17 +46,16 @@ flowchart LR
   be drained they are appended **behind** it on disk. This matters for
   Timebase, which may ignore a point older than a tag's newest one.
 - Every bound is explicit and visible — queue depth, spill bytes, and drop
-  counts on the card and in `/metrics`. Nothing is dropped silently.
+  counts on the Historians tab and in `/metrics`. Nothing is dropped silently.
 - A batch the historian **permanently rejects** (HTTP 4xx other than 408/429
   and the credential errors 401/403; Postgres data or integrity errors) does
   not block the queue. It is split (bounded extra requests) to isolate the bad
   points, which go to a **dead-letter file** (capped at 5 MiB, counted in the
-  historian's stats as `deadLettered`, which is not yet a Prometheus series
-  or a card field); the rest is delivered. Credential errors (401/403) do the
+  historian's stats as `deadLettered` and shown in the **Dead-lettered** column; it is not a Prometheus series); the rest is delivered. Credential errors (401/403) do the
   opposite: the backlog waits for you to fix the token, it is not discarded.
 - The memory queue holds 5,000 points; beyond that the oldest queued points
   spill. Writes are asynchronous and serialized per historian.
-- Use the **Test write** button after configuring — it writes one real point
+- Use the **Test** button after configuring — it writes one real point
   and reports the outcome.
 
 ### Where the spill lives
@@ -79,7 +93,7 @@ Under `MANIFOLD_DATA_DIR/outbox/`, per historian:
 >
 > ⚠️ The InfluxDB writer stores **no quality**. By decision it is not offered
 > for [device data](Mapping-to-the-UNS#historians-timebase-is-the-reference):
-> a binding's direct historian target refuses it at save time, and the wizard
+> a mapping's direct historian target refuses it at save time, and the editor
 > lists it as unavailable. A pipeline can still write device topics to InfluxDB;
 > you then lose quality.
 
@@ -129,37 +143,47 @@ binding stores the number itself.
 - **Pipelines** with a historian target — see [Pipelines and Models](Pipelines-and-Models).
   A pipeline carries the source timestamp and quality of the message when the
   payload has them (TVQ envelope, Sparkplug), rather than stamping arrival time.
-- **Device tags**: publish them to the UNS with a binding
+- **Device tags**: publish them to the UNS with a mapping
   ([Mapping to the UNS](Mapping-to-the-UNS)), then either let Timebase's own
-  collector subscribe, route the topics through a pipeline, or give the binding
-  a **direct historian target**: every sample it publishes is also enqueued to
+  collector subscribe, route the topics through a pipeline, or give the mapping
+  a **direct historian target** (Delivery section of the editor): every sample it publishes is also enqueued to
   the outbox here with its read timestamp, the value itself and its quality,
   under the resolved topic as the tag name. The target must be a **Timebase or
-  TimescaleDB** historian; a binding that names an InfluxDB historian is
+  TimescaleDB** historian; a mapping that names an InfluxDB historian is
   rejected at save time. See
   [Mapping to the UNS](Mapping-to-the-UNS#historians-timebase-is-the-reference)
   for what is stored, and the limits (use `envelope` or the object layout so
   quality changes reach history).
 - The **Recorder** capturing a topic filter straight into a historian.
 
-## Reading it back — the Trends page
+## Reading it back: the Trends page
 
-**Trends** charts what your historians stored, without leaving Manifold:
+**Trends** charts numeric series without leaving Manifold. Choose the **Source**:
+
+| Source | Reads from | Needs |
+|---|---|---|
+| **Live** | the connected broker's recent message stream, held in memory | a connected broker; no storage |
+| **Historian** | a configured InfluxDB or TimescaleDB historian (search its stored tags); a Timebase historian takes typed-in paths | a historian with data |
+| **Recording** | a local file recording (Pipelines → Recorder) | a recording with data; no external database |
 
 ```mermaid
 flowchart LR
-    T[Trends page] -->|pick historian + tags| Q[query API]
-    Q -->|InfluxDB| F[Flux aggregateWindow]
-    Q -->|TimescaleDB| B[time_bucket average]
-    F --> C[chart - up to 10 series]
-    B --> C
+    T[Trends page] -->|pick source + tags| Q[query]
+    Q -->|Live| R[recent message ring]
+    Q -->|Historian| H[downsampled in the database]
+    Q -->|Recording| F[downsampled from the file]
+    R --> C[chart - up to 10 series]
+    H --> C
+    F --> C
 ```
 
-- Pick a historian, search its stored tags, and chart **up to 10 series**
-  over a time range (last hour to last month, or custom).
-- Downsampling happens **in the database** — the range comes back as at most
-  ~1000 averaged points per series, so a month of 1 Hz data charts instantly.
-- The chart auto-refreshes every 30 s (paused while the tab is hidden).
+![Trends charting three temperatures from a recording](images/trends.png)
 
-> 💡 Trends is also how you verify a pipeline → historian route end to end:
-> if the tag appears in the Trends tag search, it landed.
+- Search topics in the box (or type a path and press `Enter`) and **Add tag**: up to **10 series** per chart. Pick the **Range**:
+  **15m, 1h, 6h, 24h, 7d**. **Normalize** overlays series with different scales on 0 to 1.
+- Historian and recording queries are downsampled **on the server**: at most 1000 points per series, so a week of 1 Hz data
+  charts instantly. Gaps from real outages are drawn as gaps, not bridged by straight lines; Bad-quality samples are marked.
+- **Auto refresh** (off by default) re-queries every 30 s while the tab is visible; **Refresh** does it now. The time axis
+  names its time zone.
+
+> 💡 Trends is also how you verify a pipeline to historian route end to end: if the tag appears in the tag search, it landed.

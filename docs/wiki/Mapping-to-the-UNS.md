@@ -4,12 +4,19 @@
 > that carry their quality and their units, so a consumer can tell "the value
 > is 0" from "the device is gone".
 
-A **binding** takes tags from a source (a device, a device profile, an OPC UA
-connection or a Sparkplug endpoint) and publishes them to the broker. Device
-tags come from the [Devices page](Devices-and-Drivers); you create the binding
-on the **Tags** page: choose the source, tick tags, and use **Add to UNS**.
-The wizard has three steps (**Target**, **Naming**, **Options**) and shows the
-topics and payloads the server would publish before you save.
+A **mapping** takes tags from a source (a device, a device profile, an OPC UA
+connection or a Sparkplug endpoint) and publishes them to the broker. **"Mapping" is
+the word the interface uses; the REST API, the stored configuration and the
+JSON on this page call the same object a *binding*** (`/api/tags/bindings`).
+This guide says "mapping" for what you do in the UI and keeps `binding` where it
+quotes the API.
+
+Device tags come from the [Devices page](Devices-and-Drivers). You create the
+mapping on the **Tags** page: choose the source, tick tags (or choose a rule), and use
+**Add to UNS**; the **mapping editor** opens as a single sheet and shows the topics
+and payloads the server would publish before you save.
+
+![The mapping editor with the details panel of one tag open and the server's preview on the right](images/mapping-editor.png)
 
 ```mermaid
 flowchart LR
@@ -22,8 +29,77 @@ flowchart LR
     TGT -->|sparkplug| SP[typed DDATA metric]
     RBE -->|yes, opt-in| H[(historian outbox)]
     ST[device state change] --> STAT["retained _status<br/>or DDEATH / DBIRTH"]
-    META["binding or tag edit"] --> M["retained _meta"]
+    META["mapping or tag edit"] --> M["retained _meta"]
 ```
+
+## The Tags page and the mapping editor
+
+**Tags page** (`/tags`). Two tabs:
+
+- **Map tags**: a **Source** selector (devices, device profiles, OPC UA connections,
+  Sparkplug, and MQTT topic trees), a tag tree for it with a **Filter loaded tags** box,
+  **Select shown (n)**, a refresh button, and a **mapped** marker on tags that already
+  belong to a mapping. On the right: **Selected tags**, **Every tag of this device**
+  (with **Map by rule**), **Mappings of this source** (each with its state and an edit
+  pencil) and a collapsed **Sparkplug primary host** panel. In the header: **Map a device
+  profile** and **Add to UNS**. With an MQTT topic source the button reads **Create
+  pipeline route** instead: MQTT-topic selections do not become mappings, they compile to a
+  [pipeline route](Pipelines-and-Models).
+- **Mappings**: every mapping in a sortable table (**State**, **Publishes to**, **Tags**,
+  **Published**, **Last publish**), an enable switch, **Edit mapping** and **Delete mapping**
+  per row, and an expandable row with the asset path (**Copy**, **Show in UNS**) and the
+  resolved topics. A profile mapping shows `all x N` for its N instances.
+
+![The Mappings tab with the Boiler house mapping expanded to show its resolved topics](images/mappings.png)
+
+**The editor.** One modal sheet with a tab strip that scrolls to each section (a red dot
+marks a section with a problem): **Mapping, What, Where, Tags, Context, Payload,
+Delivery**. A live **Preview** column is always on the right (from wide screens).
+`Ctrl+S` saves; `Esc` or **Cancel** asks before discarding what you entered. A viewer
+session can open the editor but not save. The Context section is not shown for an
+MQTT-topic source.
+
+| Section | Controls | What it decides |
+|---|---|---|
+| **Mapping** | **Name**; **Target broker**; **Publish as**: *UNS topics* or *Sparkplug B device* | Where the output goes and in which form |
+| **What** | **How tags are chosen**: *Pick tags* or *All tags by rule*. Rules: **Include (key or property)**, **Exclude**, poll-group and type checkboxes, **Property** (*Any tag*, *Only tags with a UNS name (property)*, *Only tags without a property*), with live match counts. For a profile mapping, the **Device profile** | Which tags are mapped. By rule, tags added to the device later are picked up when they match |
+| **Where** | The **asset path**, with a picker that browses the branches already in the UNS or accepts a new path; for a profile an **Asset path template** with insertable `{device}`, `{deviceId}` and parameter chips and an own-path override per instance; for Sparkplug **Group**, **Edge node**, **Device**; **Layout**: *Topic per tag* or *Object per asset* | The topic of every tag |
+| **Tags** | A table: **Publish** switch, **Source tag**, **Published name**, **Name from**, **Unit**, **Description**, and a **Details of &lt;tag&gt;** button. A filter (*All*, *Published*, *Off*). Paste a column from a spreadsheet into names, units or descriptions. Select rows (shift-click for a range) and use **More actions...**: set unit, set description, set deadband, set a context key, find and replace in names, names to camelCase or snake_case, strip a prefix, copy settings from a tag, reset to device values | What each tag is called and how it is described |
+| **Context** | **Asset context**: key, value and type rows; **Placeholders** (`{device}`, `{deviceId}`, `{protocol}`, `{host}`, profile parameters); a size meter; **Add suggested**; **Resolved by the server** | Site, line, equipment id and the like, for consumers |
+| **Payload** | **Format**: *Envelope* or *Plain value*; **Fields of each payload** (`v` value, `t` timestamp, `q` quality, `u` unit, `name`, `src`, `ctx`); **Context**: *Only in _meta*, *In every payload*, *Nowhere*; **What _meta lists per tag**; switches for `_status` and `_meta` | What a message and the retained documents contain |
+| **Delivery** | **QoS**; **Sampling interval (ms)** (OPC UA); **Retain values** (off by default); **Maximum object size (bytes)**; report by exception (**Deadband** *Absolute* or *Percent*, **Heartbeat (ms)**); **Also write every published sample to a historian** (Timebase or TimescaleDB only) | How often and how reliably |
+
+**The per-tag details panel** opens from the sliders button on a row (**Details of
+&lt;tag&gt;**). It has **Previous tag** and **Next tag**, **Reset all to device**, and these groups:
+
+- *Metadata*: **Display name**, **Unit**, **Description**, **Range** (engineering units, after scaling).
+- *Value*: **Publish as** (*Device type* or `number`, `integer`, `boolean`, `string`), **Scale**,
+  **Offset**, **Decimals**, **Report by exception** (*Mapping default*, *Every change*,
+  *Absolute*, *Percent*), **States** (raw value to label, with a choice of how states are
+  published), **Limits** (low low, low, high, high high; published as metadata, Manifold
+  raises no alarms).
+- *Tag context*: key/value pairs for this tag only.
+- A line states the value pipeline for the tag, for example `published = raw x 0.1, 1 dp`.
+
+Every field shows where its value comes from: **device** (the tag definition on the
+Devices page), **mapping** (your override) or nothing (the default), with a reset
+arrow beside an override. A field you leave empty keeps following the device.
+
+![The Context section of the editor: asset context rows, placeholders, size meter and the context as the server resolved it](images/mapping-editor-context.png)
+
+The editor in the light theme:
+
+![The mapping editor in the light theme](images/mapping-editor-light.png)
+
+**The preview** (right column) is the server's answer, not a guess: a status line
+(**Checked by the server**), counts (**Value topics**, **Largest payload**, **Full
+publish**), and four tabs: **Topics** (the topic tree, with `_status` and `_meta` marked
+*retained*), **Payload** (the example payload of the focused tag, built from the latest
+known value), **_meta** (the retained document that would be published) and **Changes**
+(for an edit: what moves, with the old topic struck through). Warnings and collisions
+appear as banners with **Go to tag**. The preview calls
+`POST /api/tags/bindings/preview`; nothing is stored or published until you save, and a
+viewer can use it.
 
 ## Path is not address
 
@@ -39,17 +115,17 @@ A tag has a device **address** (`DB10.DBD4`, `40012`,
   with no placeholders: `acme/dallas/packaging/line4/filler`. Segments are
   separated by `/`; none may be empty (no leading, trailing or doubled `/`),
   contain `+`, `#` or braces, or start with `$` (reserved for broker topics); at
-  most 512 characters. The wizard's **asset-path picker** browses the branches
+  most 512 characters. The editor's **asset-path picker** (Where) browses the branches
   already in the UNS (lazily, one level per request) and also accepts a new
   path. A trailing `/` is dropped.
 - **Name**: the published name of a tag is, in this order, the `name` on the
   binding entry, the tag's **property** (the "UNS name" field in the device tag
   table), or its key. Whitespace, `/`, `+` and `#` in a name become `_`. The
-  wizard never proposes a raw address as a name.
+  editor never proposes a raw address as a name.
 - **Path template** (`target.pathTemplate`, legacy): `acme/dallas/{name}`, where
   `{name}` is the tag name; a template without `{name}` gets `/<name>` appended.
   Stored bindings and the demo seed still use it and it keeps working; the
-  wizard writes `assetPath` for new bindings and keeps the form a binding was
+  editor writes `assetPath` for new mappings and keeps the form a binding was
   stored with when you edit it.
 
 | Destination | Topic of tag `speed` |
@@ -59,7 +135,7 @@ A tag has a device **address** (`DB10.DBD4`, `40012`,
 | `pathTemplate: acme/dallas/line4/filler` (no `{name}`) | `acme/dallas/line4/filler/speed` |
 
 The namespace lint flags a leaf that looks like a raw address (`DB10.DBD4`,
-`40012`, `ns=2;s=...`, `Program:...`), and the wizard and the API warn about
+`40012`, `ns=2;s=...`, `Program:...`), and the editor and the API warn about
 such names when you save (see [Preview and warnings](#preview-and-warnings)).
 
 ### One definition for many identical devices: profile bindings
@@ -102,7 +178,7 @@ the envelope does not pretend otherwise; for OPC UA the source timestamp is used
 when the server supplies one). `u` is the tag's engineering unit and is **left
 out when the tag has none**.
 
-**Use `envelope`** (the wizard's default) for anything a consumer might act on.
+**Use `envelope`** (the editor's default) for anything a consumer might act on.
 With `plain` there is no way to say "bad": when a device drops out, the last
 value stays on the topic and only `_status` changes.
 
@@ -176,7 +252,7 @@ unchanged); `reason` explains an offline state (`connecting`,
 published at QoS 1, **retained**, whenever the source reports a state, and also
 **as soon as a binding is created or edited while its source is already
 online**, so the topic exists without waiting for the next transition. Turn it
-off per binding with `statusTopic: false` (a checkbox in the wizard). A
+off per binding with `statusTopic: false` (the `_status` switch under Payload). A
 legacy-template binding publishes it at the template with `{name}` replaced by
 `_status` (or `/_status` appended). Two things to know:
 
@@ -213,11 +289,10 @@ They travel three ways:
   }
   ```
 
-  **Known issue:** if the broker is not yet connected when the server starts,
-  the first `_meta` publish fails (the binding's last error says
-  `_meta: Broker ... is not connected`) and is retried only at the next binding,
-  device or profile save, so the document can be missing until then. Saving the
-  binding again publishes it.
+  If the broker is not connected when the server starts, the first `_meta` or `_status`
+  publish fails (the binding's last error says `Broker ... is not connected`); retained
+  documents that could not be published are retried on a 15 s timer, so they appear once
+  the broker is up without anyone saving the mapping again.
 
   Keys are the published names. `type`, `unit`, `description` and `range` appear
   only when set. `source` names the device (`deviceId`) or OPC UA connection
@@ -256,7 +331,7 @@ They travel three ways:
 
 ## Retain, and what is cleaned up
 
-The wizard leaves **retain off** for values, on purpose: a retained value
+The editor leaves **Retain values** off, on purpose: a retained value
 outlives the device that produced it. Turn it on only for slow-changing values a
 late subscriber needs immediately, and then use `envelope` (or the object
 layout) plus a heartbeat so the value is never silently stale. `_status` and
@@ -305,7 +380,7 @@ An entry of `source.tags` may be an object with `enabled`:
 ]
 ```
 
-A disabled entry stays in the stored binding (the wizard shows it unticked and
+A disabled entry stays in the stored binding (the editor shows it with its Publish switch off and
 remembers its name and settings) but it is **not monitored, not published, not
 counted, not listed in `_meta`, and not retained**. Turning a retained tag off
 clears its retained topic, as a rename does. A disabled entry may even name a
@@ -644,7 +719,7 @@ address (`DB10.DBD4`, `40012`, `MW10`, `%IX0.1`, `Program:...`) gets
 units are never guessed. A suggestion that clashes with an earlier one carries
 `duplicateOf`. Device, device-profile and OPC UA sources are supported.
 
-`GET /api/tags/bindings/schema` returns the option catalogue the wizard renders
+`GET /api/tags/bindings/schema` returns the option catalogue the editor renders
 from: field options and defaults, override keys with types and limits, select
 rules, placeholders per source type, context limits, `statesMode` values and the
 value pipeline.
@@ -652,8 +727,8 @@ value pipeline.
 ## Preview and warnings
 
 `POST /api/tags/bindings/preview` takes a binding draft (the same body as a save)
-and changes nothing: no storing, no publishing. The wizard calls it on the Naming
-step and shows the result; viewers may call it. It returns, for up to 50 tags
+and changes nothing: no storing, no publishing. The editor calls it as you change the draft
+and shows the result in the Preview column; viewers may call it. It returns, for up to 50 tags
 (or the first 50 objects):
 
 | Field | Meaning |
@@ -669,8 +744,10 @@ step and shows the result; viewers may call it. It returns, for up to 50 tags
 | `contexts[]`, `fields`, `contextMode` | the resolved asset context per unit, the field lists in use, the context mode |
 | `sizes` | mqtt only: `exampleBytes` (the shown payloads), `worstCasePayloadBytes`, `worstCaseCycleBytes` (every payload of one full publish of all units) |
 
+`previewTags` in the body raises the number of rows returned (up to 2,000).
+
 An invalid draft returns `200` with `{ "valid": false, "error": "...", "details": ... }`
-so the wizard can show the reason inline. A save (`POST /api/tags/bindings`)
+so the editor can show the reason inline. A save (`POST /api/tags/bindings`)
 returns the stored binding plus `warnings`; a validation failure is a `400`.
 
 Warnings (at most 50, **never blocking**):
@@ -688,6 +765,7 @@ Warnings (at most 50, **never blocking**):
 | `no-tags` | a unit publishes nothing (all entries disabled, or rules match nothing) |
 | `duplicate-name` | two tags of one unit publish under the same name |
 | `sparkplug-context-collision` | a context key equals a standard Sparkplug property |
+| `option-ignored` | an option cannot take effect: context mode `payload` on a plain topic-per-tag payload, or `metaFields` on a Sparkplug target |
 
 Collisions are checked against other bindings only. A pipeline, a client, or a
 topic that merely exists in the namespace is not compared, and the preview does
@@ -728,7 +806,7 @@ There are **three delivery paths**:
    Timebase's collector brings its own store-and-forward. Use this first. With
    the Sparkplug target, Timebase sees typed metrics and DDEATH; with `plain`, it
    sees values only.
-2. **Direct historian target on the binding.** In the wizard's Options step (or
+2. **Direct historian target on the binding.** In the editor's Delivery section (**Also write every published sample to a historian**, or
    `target.historian: { "historianId": "<id>" }`), every sample the binding
    publishes is also enqueued to the store-and-forward [outbox](Historians), so
    history survives a broker or historian outage. What is stored: the resolved
@@ -771,6 +849,153 @@ There are **three delivery paths**:
 > identical timestamp/value is discarded), which would make outbox retries safe
 > to resend. That is also untested here. The checks to run are in
 > [Verifying on real hardware](Verifying-on-Real-Hardware#timebase-direct-write).
+
+## Worked examples: the exact messages
+
+Everything below was produced by running the code (November 2026): a Modbus simulator with one
+device, **Example pump PLC**, a real Manifold backend and an in-process broker, six mappings
+saved through the API, and a subscriber on `docs/#`. Timestamps are real epoch milliseconds from
+that run; the device id is shortened to `...`. The device has these tags (key, address, type,
+property, unit); the simulator holds raw values 215, 1450, a float 12.5 and a coil that is set:
+
+| key | address | type | property | unit |
+|---|---|---|---|---|
+| `temp` | `holding:0` | `int16` | `water_temperature` | degC (tenths of a degree raw) |
+| `rpm` | `holding:1` | `uint16` | `fan_speed` | rpm |
+| `flow` | `holding:2` | `float32` | `flow` | L/min |
+| `run` | `coil:0` | `bool` | `running` | |
+| `spare_raw` | `holding:6` | `uint32` | (none) | |
+
+### 1. Envelope per tag with scale, decimals, states, limits and context in `_meta`
+
+In the editor: Payload, **Format** *Envelope*, **Context** *Only in _meta*; Tags, `temp` details: **Scale**
+`0.1`, **Decimals** `1`, **Range** 0 to 100, **Limits** low `10` high `80`; `rpm`: **Publish as** *integer*; `run`:
+**States** `true` = `Running`, `false` = `Stopped`; Context: `site` = `Hamburg`, `line` = `Line 2`,
+`device` = `{device}`. As JSON:
+
+```json
+{ "name": "ex1",
+  "source": { "type": "device", "deviceId": "...", "tags": [
+    { "address": "temp", "name": "water_temperature", "scale": 0.1, "precision": 1,
+      "limits": { "lo": 10, "hi": 80 }, "range": { "min": 0, "max": 100 } },
+    { "address": "rpm", "name": "fan_speed", "dataType": "integer" },
+    { "address": "run", "name": "running", "states": { "true": "Running", "false": "Stopped" } } ] },
+  "target": { "mode": "mqtt", "brokerId": "b", "assetPath": "docs/ex1/pump-1",
+    "format": "envelope", "layout": "topic-per-tag",
+    "context": { "site": "Hamburg", "line": "Line 2", "device": "{device}" }, "contextMode": "meta" } }
+```
+
+Published (raw 215 became 21.5; the raw address never appears in a payload):
+
+```text
+docs/ex1/pump-1/water_temperature   {"v":21.5,"t":1795540707783,"q":192,"u":"°C"}
+docs/ex1/pump-1/fan_speed           {"v":1450,"t":1795540707783,"q":192,"u":"rpm"}
+docs/ex1/pump-1/running             {"v":true,"label":"Running","t":1795540707782,"q":192}
+docs/ex1/pump-1/_status             {"online":true,"since":1795540705281,"reason":"connected"}
+```
+
+and the retained `docs/ex1/pump-1/_meta` (key order as published; `source` is the one place the
+tag address appears):
+
+```json
+{"context":{"site":"Hamburg","line":"Line 2","device":"Example pump PLC"},
+ "properties":{
+  "water_temperature":{"type":"int16","unit":"°C","description":"Water temperature (raw tenths)",
+    "range":{"min":0,"max":100},"scale":0.1,"offset":0,"precision":1,"limits":{"lo":10,"hi":80},
+    "source":{"deviceId":"...","address":"temp"}},
+  "fan_speed":{"type":"uint16","unit":"rpm","dataType":"integer","source":{"deviceId":"...","address":"rpm"}},
+  "running":{"type":"bool","states":{"true":"Running","false":"Stopped"},"statesMode":"label-field",
+    "source":{"deviceId":"...","address":"run"}}},
+ "updatedAt":1795540707765}
+```
+
+### 2. Context in every payload, chosen fields, states that replace the value
+
+**Payload** *Envelope*, **Context** *In every payload*, **Fields of each payload** `v`, `t`, `u`, `ctx` (no `q`);
+`running` with **states** *replace*:
+
+```text
+docs/ex2/pump-1/water_temperature   {"v":21.5,"t":1795540707783,"u":"°C","ctx":{"site":"Hamburg"}}
+docs/ex2/pump-1/running             {"v":"Running","t":1795540707782,"ctx":{"site":"Hamburg"}}
+```
+
+Dropping `q` is allowed but the server warns (`no-quality`): a consumer then cannot tell a dead value
+from a live one. With the *replace* mode the label is the value (a String), so the `_meta` entry
+says `"statesMode":"replace"`.
+
+### 3. Plain value
+
+**Format** *Plain value*: the topic carries the bare value, no unit, no quality.
+
+```text
+docs/ex3/pump-1/water_temperature   21.5
+docs/ex3/pump-1/flow                12.5
+```
+
+The unit still travels in the retained `docs/ex3/pump-1/_meta`.
+
+### 4. One object per asset
+
+**Layout** *Object per asset* (envelope, always with quality), published to the asset path itself:
+
+```text
+docs/ex4/pump-1   {"t":1795540707783,"values":{"running":{"v":true,"q":192},"water_temperature":{"v":21.5,"q":192,"u":"°C"},"fan_speed":{"v":1450,"q":192,"u":"rpm"}}}
+```
+
+### 5. Mapping by rule
+
+`tags: "all"` with **Include** `*temp*`, `fan*`, `flow` and **Exclude** `*raw*`, plain format, `_status` and `_meta`
+off. The globs match the tag key **or** its property, case-insensitively. Nothing was renamed or scaled,
+so the topics use the properties and the value is the raw 215:
+
+```text
+docs/ex5/pump-1/water_temperature   215
+docs/ex5/pump-1/fan_speed           1450
+docs/ex5/pump-1/flow                12.5
+```
+
+`running` and `spare_raw` matched no include pattern. If a tag called `temp_outlet` is added to the
+device tomorrow, it matches `*temp*` and starts publishing on the next profile-store revision,
+without anyone opening the mapping.
+
+### 6. Rules plus a per-tag override
+
+`tags: "all"`, **Property** *Only tags with a UNS name (property)* (this drops `spare_raw`), and in
+the tag list `rpm` switched off and `temp` renamed `inlet_temperature` with scale `0.1` and unit `degC`:
+
+```text
+docs/ex6/pump-1/inlet_temperature   21.5
+docs/ex6/pump-1/running             true
+docs/ex6/pump-1/flow                12.5
+```
+
+`fan_speed` is absent because `rpm` was deselected (`enabled: false`).
+
+### What the server refuses, warns about, or explains
+
+- A **Scale** of `0` is refused: `tag "temp".scale must be a non-zero finite number`. In the editor this shows
+  on the field; through the preview API it comes back as `{ "valid": false, "error": "..." }` with
+  HTTP 200 so the editor can show it inline.
+- A value that cannot be scaled or cast publishes quality 0 and a reason, never a wrong value (see
+  [Per-tag overrides](#per-tag-overrides)).
+- Context on a plain payload cannot be carried. The preview and the save say so with an
+  `option-ignored` warning: *context cannot ride a plain payload (it is a bare value); use the envelope
+  format or the object layout, or keep context in _meta*.
+- With **What _meta lists per tag** reduced to *Unit* only (`metaFields: ["unit"]`) and context *Nowhere*, the preview's
+  `_meta` tab shows `{"properties":{"water_temperature":{"unit":"°C"}},"updatedAt":...}`.
+- `POST /api/tags/bindings/suggest` on this device proposes `water_temperature`, `fan_speed`, `flow`,
+  `running` (basis `property`) and `spareRaw` (basis `key`, because the tag has no property). A tag whose
+  key is a raw address gets no suggestion (`suggestedName: null`, reason `raw-address`).
+
+### Editing, and what is cleaned up
+
+Rename the asset path, switch a mapping off, delete it, or turn `_meta` off, and Manifold publishes an empty
+retained message to each retained topic that left the set (see [Retain, and what is
+cleaned up](#retain-and-what-is-cleaned-up)): `_status`, `_meta`, and value topics when **Retain values** is on.
+Two limits apply and are not hidden by the editor: an edit made while the Manifold server is **down** is not cleaned
+up when it starts again, and a clear sent while the broker is disconnected is dropped. A mapping that selects tags by
+rule publishes the retained topics of the tags it matches **now**; when a rule stops matching a tag, that tag's
+retained topic is cleared the same way.
 
 ## Quick reference: bindings as JSON
 

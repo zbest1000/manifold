@@ -49,21 +49,66 @@ The **key and address are not the UNS name.** The address is where the value
 lives in the device (`DB10.DBD4`, `40012`). What the topic is called is decided
 when you map the tag; see [Mapping to the UNS](Mapping-to-the-UNS).
 
-Devices are created on the **Devices** page (tabs **Devices** and
-**Profiles**). One form serves all three protocols: it is built from the
-driver's own description (protocol fields such as unit ID, rack and slot or
-route path, presets, options, the PLC-side prerequisites text, shown in full
-because it can carry a security warning). **Test connection** connects with the
-unsaved settings and reports the identity and negotiated limits, or the error.
-Each device card shows state, the cycle time of each poll group, overruns,
-quarantined tags and the last error. Tags are entered in a table: paste rows
-from a spreadsheet or import a CSV (header names are matched in any order:
-`key, address, type, pollGroup, scale, offset, unit, property, description,
-length, bit, byteOrder, wordOrder`); each row is validated by the driver as you
-type. For EtherNet/IP, **Import from controller** opens the controller's own tag
-list (controller scope, programs, UDT members, External Access) and appends the
-tags you tick, with generated keys and suggested property names. EtherNet/IP
-tags may omit the type: it is resolved from the controller.
+## The Devices page
+
+![The Devices table: five of six devices online, one connecting, with poll-cycle meters and the experimental badges](images/devices.png)
+
+**Devices** (`/devices`) has two tabs, **Devices** and **Profiles**. The header offers a refresh
+button, **From profile** (create a device from a profile, see below) and the primary **Add device**.
+Under the tabs, a banner appears when a driver host is **restarting** or **parked**.
+
+**The table.** One row per device: **Device** (name, `host:port`, and the unit, rack/slot or route
+path), **State**, **Protocol** (with an *Experimental* badge for S7 and EtherNet/IP and a "from
+&lt;profile&gt;" line for profile instances), **Tags**, **Poll cycle** (a meter of the average cycle
+time against the interval, for example `1 ms / 1.0 s`), **Quarantined**, **Last error** (with how
+long ago), a **Polling enabled** switch and row actions (edit, map to the UNS, delete). Filter by
+name, host or state, by protocol, and with the chips **All**, **Online**, **Problems**, **Disabled**.
+The subtitle states the position ("5 of 6 online - 1 with problems").
+
+**The detail drawer.** Click a device name to open a drawer with the state and the time it
+began, and three tabs:
+
+- **Overview**: Summary, **Poll groups** (interval, cycle-time meter, last cycle, overruns,
+  status), **Counters and device exceptions** (Connects, Requests, Timeouts, and each protocol
+  exception by name and code), **Errors**, and the list of **Quarantined tags** with the
+  device's reason.
+- **Tags**: the live table: tag key and address, **Value**, **Unit**, **Quality** (Good,
+  Uncertain, Bad), **Age** and **Reason**. Filter by key, address or reason; **All** and
+  **Problems**. Values refresh from the `device-values` stream (see
+  [Operations](Operations#upgrade-notes-behaviour-changes-an-operator-must-know)).
+- **Probe**: read raw registers or bytes at one address and see every decoding (below).
+
+The drawer's footer has the **Polling enabled** switch, **Delete**, **Map to UNS** (opens the
+[Tags page](Mapping-to-the-UNS#the-tags-page-and-the-mapping-editor) on this device) and
+**Edit device**. **Import from controller** also appears here for EtherNet/IP.
+
+![The detail drawer of the Boiler house PLC on its Tags tab with live values and quality](images/device-detail.png)
+
+**The form** (**Add device**, or **Edit device**) is a full page with a sticky section strip
+**Connection, Protocol options, Polling, Tags, Advanced** and a footer with **Cancel** and
+**Create device** / **Save changes**. Errors show inline after the first save attempt.
+
+| Section | What is in it |
+|---|---|
+| **Connection** | **Name**, **Protocol** (fixed once created), the *Experimental* note ("Verified only against a simulator...") for S7 and EtherNet/IP, a disclosure **On the &lt;protocol&gt; side** with what to enable on the PLC before the first connect (open by default while creating), **Host**, **Port**, the protocol's own fields (Modbus **Unit ID**; S7 **Presets** *S7-300 / S7-400* (rack 0, slot 2) and *S7-1200 / S7-1500* (rack 0, slot 1), **Rack**, **Slot**, and advanced **Local TSAP** and **Remote TSAP**; EtherNet/IP **Slot** and route path), **Enabled**, and **Test connection** ("Opens one connection with these settings. Nothing is saved."), which answers with *Connected in N ms* and the identity or with *Could not connect* and the reason |
+| **Protocol options** | Defaults for every tag, such as Modbus **Byte order**, **Word order**, **Address base**, **Max registers per read**, **Max gap to bridge**; a tag can override them in its own row |
+| **Polling** | **Poll groups** (id and interval, at least 100 ms) and the **Limits** (request deadline, connect timeout, delay between requests) |
+| **Device profile** | Shown when the device is a profile instance: the parameter values (see below) |
+| **Tags** | The tag table: **Add tag**, **Import / paste** (a CSV or a block copied from a spreadsheet; header names are matched in any order: `key, address, type, pollGroup, scale, offset, unit, property, description, length, bit, byteOrder, wordOrder`), **Import from controller** (EtherNet/IP), **Export CSV**, **Probe**, **Advanced columns**, a filter and paging for long lists. Each row is validated by the driver as you type. Pasting a multi-cell block into any cell fills rows from there |
+| **Advanced** | **Unmapped register ranges** (Modbus: *Table*, *From offset*, *To offset*; the planner never reads across them) and **Run this device in its own driver process** (`isolate`) |
+
+![The device form for the S7 device: connection settings with the CPU presets and the experimental note](images/device-form.png)
+
+Tags are `key` (what you call it here: 1 to 128 characters of `A-Z a-z 0-9 _ . - : [ ]`), an
+`address`, a `type` and optional decode settings, unit, description and a UNS `property` name.
+For EtherNet/IP, **Import from controller** opens a tree of the controller's own tag list
+(controller scope, programs, UDT members, External Access; arrow keys and Enter drive it) and
+appends the tags you tick, with generated keys and suggested property names. EtherNet/IP tags
+may omit the type: it is resolved from the controller.
+
+**Probe** reads one address, with a count (and unit id for Modbus), and shows the raw bytes
+decoded under every plausible type and, for Modbus, all four byte and word orders. Use it to find
+the right word order before you create the tags. Probing is a read and cannot write.
 
 ### Where the polling runs
 
@@ -255,21 +300,28 @@ references the profile (`profileId`) and supplies the parameter values
 - A device that belongs to a profile shows the profile's tags as read-only
   ("from the profile") next to its own tags.
 
-On the **Profiles** tab: **New profile**, **Create from device** (copies a
-device's own tags, poll groups and options into a new profile for you to
-parametrize), **New device** from a profile, and **Create several devices**
-(**bulk create**).
+![The Profiles tab: one profile with its two instances](images/device-profiles.png)
 
-**Bulk create.** Paste a table copied from a spreadsheet, or load a CSV. The
-first row is the header: `name`, `host`, optional `port` and `enabled`, then one
-column per profile parameter; a column named like a protocol field (`unitId`,
-`rack`, `slot` ...) sets that field. Each row is checked before anything is sent
-(missing name or host, bad port, missing parameter, repeated name). The browser
-then creates the devices **one request per row, in order**
-(`POST /api/devices/profiles/<id>/instantiate`), and shows each row as created,
-failed (with the server's message) or not sent. It is **not atomic**: a failure
-part-way leaves the earlier rows created, and running it again retries only the
-failed rows.
+On the **Profiles** tab (a table with the profile, protocol, tags, parameters and the devices that
+use it, each device a link): **New profile**, **Create from device** (copies a device's own tags,
+poll groups and options into a new profile for you to add `{param}` placeholders to), per row **New
+device** (a dialog with the connection, the **Parameter values** and a **Preview: the tags this
+device will have**, with placeholders substituted exactly as the server will), **Create several
+devices from "&lt;profile&gt;"**, edit and delete. The header button **From profile** on the
+Devices tab opens the same "New device from a profile" flow after asking which profile.
+
+**Bulk create is all-or-nothing.** Paste a table copied from a spreadsheet or load a CSV
+(**Insert example** fills in a header and a sample row for the profile; **Load CSV file** reads one from disk). The first row is the header: `name`,
+`host`, optional `port` and `enabled`, then one column per profile parameter; a column named like
+a protocol field (`unitId`, `rack`, `slot` ...) sets that field. Each row is checked in the
+browser first (missing name or host, bad port, missing parameter, repeated name); while any row
+is marked *Problem* the **Create N devices** button is disabled. The rows are then sent in **one
+request** (`POST /api/devices/bulk`, at most 200 rows). The server validates every row (driver
+rules, unique names, parameters) and creates the devices only if **all** are valid; otherwise
+**nothing is created**, the dialog says *Nothing was created*, and each row shows its own
+message (a name that another device already uses, or "not created because another row was
+rejected"). Fix the rows and run it again. Once it succeeds the button is disabled so a second
+click cannot create duplicates.
 
 ```csv
 name,host,port,site,base
@@ -281,6 +333,8 @@ Map the whole set to the UNS with one profile binding; see
 [Mapping to the UNS](Mapping-to-the-UNS#one-definition-for-many-identical-devices-profile-bindings).
 
 ## Finding devices on the network (Discovery)
+
+![The Discovery page with its scan options, including the opt-in PLC and meter protocols](images/discovery.png)
 
 The **Discovery** page's CIDR scan can also look for PLCs and meters. It is
 **opt-in**: tick **Modbus TCP**, **Siemens S7** and/or **EtherNet/IP** under
@@ -304,8 +358,8 @@ reported** (an open port is not a finding by itself). A result shows what
 answered and a suggested device (name, protocol, host, port). **Add as device**
 opens the Devices page with that device pre-filled; nothing is created until
 you save it. **Add all** shows a review list (devices at a `host:port` that
-already exists start unticked) and creates the ticked ones one by one when you
-confirm.
+already exists start unticked) and creates the ticked ones **all-or-nothing** (the same
+bulk request as above) when you confirm.
 
 **Why it is opt-in, and what it does not protect.** The probes cannot write, but
 scanning an OT network is still intrusive: it opens connections to every address
@@ -321,13 +375,27 @@ hand instead.
 
 ## Polling health
 
-Open a device card and read three things.
+Open a device (the table and the drawer's **Overview** tab) and read three things.
 
 **State.** *Online*, *Connecting*, *Backoff: reason* (the connection failed or
 was lost; Manifold retries forever with a growing, jittered delay from 1 s up
 to 60 s, so a power-cycled PLC comes back without anyone touching Manifold),
-*Stopped* (disabled, or the target was refused by the egress guard), or
-*Driver parked*.
+*Stopped* (the target was refused by the egress guard, with the reason), *Disabled* (the
+**Polling enabled** switch is off), or *Driver parked*. The table's State column and the
+Overview use exactly these words; *Starting* appears while a driver host is being launched.
+What each means:
+
+| State | Meaning | What to do |
+|---|---|---|
+| **Online** | Connected and polling | nothing |
+| **Connecting** | First connection attempt in progress; the reason shows once it fails | wait a few seconds, then read **Last error** |
+| **Backoff: reason** | The connection failed or was lost; retrying with a growing delay | fix the cause named in the reason (host, port, firewall, PLC-side setting) |
+| **Stopped** | Not started, usually because the egress guard refused the target | read the reason; see [Troubleshooting](Troubleshooting#devices) |
+| **Disabled** | You switched polling off | switch it on |
+| **Driver parked** | The protocol's host process crashed repeatedly and was parked | read the banner; it is retried when the device set is saved again |
+
+A **Poll cycle** meter above 80 percent of the interval turns amber, and the group's status
+reads *Overrunning* or *Slowed to &lt;interval&gt;* (see below).
 
 **Cycle time and overruns.** Each poll group shows how long its last cycles
 took against its interval. An **overrun** is a cycle that is still running
@@ -342,7 +410,7 @@ blocks) or accept the longer interval.
 Modbus block spanning a register the device does not have (exception 02), the
 runtime splits the request in half repeatedly to find the culprit. The tags
 that cannot be read are **quarantined**: published as Bad (reason
-`quarantined`), listed on the card **with the reason the device gave** (for
+`quarantined`), listed in the drawer **with the reason the device gave** (for
 example "PUT/GET not permitted, optimized block access enabled, or protection
 level too high" from an S7 CPU, or "illegal data address" from a Modbus
 device) and since when, and retried once a minute, while the rest keep polling.
@@ -410,7 +478,9 @@ refused. See [Operations](Operations#network-safety-egress-guard).
 
 - **Modbus TCP** is tested against a fault-injecting simulator (late replies,
   wrong transaction ids, dropped sockets, truncated frames, exceptions).
-  Interoperability with specific devices has not been surveyed.
+  Interoperability with specific devices has not been surveyed: **no driver, Modbus
+  included, has been run against a real PLC**; the simulators were written together with
+  the drivers, so they show agreement, not correctness against firmware.
 - **S7**: [`server/drivers/s7/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/s7/NOTES.md)
   lists 14 items to confirm with a packet capture on a real CPU before the
   driver leaves experimental: PDU accounting, items per request, return codes

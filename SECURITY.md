@@ -34,7 +34,11 @@ instance beyond your own machine:
   turns auth on, so set an admin token as well. In `MANIFOLD_TOKENS` an unknown
   role is rejected (it is never treated as admin); if every entry is rejected,
   auth stays on and all requests are refused. Viewers can call only a short
-  allowlist of read-only POSTs and cannot see alert webhook URLs.
+  allowlist of read-only POSTs (historian queries, pipeline and mapping previews, name
+  suggestions, subscription resolve, schema inference, device tag validation, i3X reads,
+  CESMII history; the list is `VIEWER_READ_ONLY_POSTS` in `server/services/authConfig.js`),
+  cannot see alert webhook URLs, and cannot read the audit trail. The console disables
+  every mutating control for a viewer session and says why.
 - **`/metrics` needs a token** whenever auth is on (a viewer token is enough for
   Prometheus). `MANIFOLD_METRICS_PUBLIC=1` opts out; `/health` stays open.
 - **Keep network targets scoped.** Outbound connections (the discovery scanner
@@ -66,6 +70,11 @@ instance beyond your own machine:
   the PLC. Where a hard guarantee is needed, use a firewall rule or data diode in
   front of the PLC. The S7 and EtherNet/IP drivers are **experimental**:
   verified only against simulators.
+- **The console keeps the access token in the browser.** The unlock screen stores it in
+  `localStorage` (`tc.authToken`) of that browser profile, so use a trusted device and
+  **Settings → General → Session → Sign out / use a different token** to remove it. Any
+  script running in the page origin could read it; the server sends `helmet` security
+  headers and locks CORS to `CLIENT_URL`.
 - **Protect the data directory.** `profiles.json` stores broker passwords and
   admin API keys (owner-readable `0600`), and so do its rotating backups
   (`profiles.json.bak.*`); restrict the host and the directory. The audit log

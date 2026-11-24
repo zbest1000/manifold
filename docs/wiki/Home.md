@@ -4,9 +4,9 @@
 
 [![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
 
-![Live UNS topology](images/uns-topology.png)
+![Live UNS topology with the boiler-1 asset selected](images/uns-topology.png)
 
-> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated.*
+> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots in this wiki come from the real app running against simulated devices and a simulated plant; the light theme has its own captures in [User interface](User-Interface).*
 
 ---
 
@@ -14,16 +14,19 @@
 
 | | Guide | You will learn |
 |---|---|---|
-| 🏁 | **[Getting Started](Getting-Started)** | Install, run (source or Docker image), and connect your first broker in five minutes |
+| 🏁 | **[Getting Started](Getting-Started)** | Install, run (source or Docker image), connect a broker, add a device, map its tags, and see them in the UNS |
+| 🎨 | **[User interface](User-Interface)** | Layout, light and dark themes, keyboard shortcuts, what accessibility testing covers, deep links, phones |
 | 🔌 | **[Broker Setup](Broker-Setup)** | Intake QoS, transports and MQTT 5, shared subscriptions, the EMQX ACL recipe, admin APIs for consumer lineage |
 | 🗄️ | **[Historians](Historians)** | InfluxDB, TimescaleDB, Timebase — store-and-forward in, Trends charts back out |
 | 🔀 | **[Pipelines and Models](Pipelines-and-Models)** | Route, reshape, and contextualize the live stream |
 | 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | Poll Modbus TCP, S7 and EtherNet/IP PLCs: addressing, byte order, PLC-side prerequisites, profiles and bulk creation, finding devices, polling health, the read-only guarantee |
-| 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | Device tags to topics: asset paths, one topic per tag or one object per asset, quality, `_status` and `_meta`, deadband and heartbeat, profile bindings, preview, the direct historian target |
+| 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | The mapping editor section by section, selecting tags by pick or by rule, per-tag settings, context, exact payloads from worked examples, quality, `_status` and `_meta`, deadband and heartbeat, profile mappings, preview, the direct historian target |
 | ✅ | **[Verifying on real hardware](Verifying-on-Real-Hardware)** | The ordered checklist for an engineer with a real Modbus, S7 or EtherNet/IP device or a Timebase historian |
 | 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse tags, publish them into the UNS, run a Sparkplug primary host |
-| 🛡️ | **[Operations](Operations)** | Fail-closed auth and named tokens, the egress guard and its limits, audit, profile durability, the System health page, config as code, alerts |
-| 🩺 | **[Troubleshooting](Troubleshooting)** | Symptom → cause → fix |
+| 🛡️ | **[Operations](Operations)** | Fail-closed auth, roles and the viewer experience, session switching, the egress guard and its limits, audit, profile durability, the Health page and every metric, config as code, alerts, upgrade notes |
+| 🩺 | **[Troubleshooting](Troubleshooting)** | Symptom → cause → fix, including devices, the mapping editor, canvases and themes |
+
+![The 3D topic graph](images/topics-3d.png)
 
 ## 📐 How it fits together
 

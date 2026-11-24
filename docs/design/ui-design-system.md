@@ -1,6 +1,6 @@
 # Manifold UI design system
 
-Status: foundation implemented (tokens, themes, primitives, shell, compatibility layer). Reference pages: `client/src/pages/Overview.jsx` (dashboard) and `client/src/pages/Brokers.jsx` (list + form dialog). Every other page still runs on the compatibility layer and should be migrated with the guide at the end of this document.
+Status: implemented and applied to every page (November 2026). Reference pages: `client/src/pages/Overview.jsx` (dashboard), `client/src/pages/Brokers.jsx` (list + form dialog), `client/src/pages/Devices.jsx` (table + detail drawer + full-page form) and `client/src/pages/Tags.jsx` with `client/src/pages/tags/editor/` (workspace + full-height editor). The compatibility layer in section 11 is still in the Tailwind config because three shared components still use legacy class names; section 13 lists them with the other open items.
 
 Files:
 
@@ -120,7 +120,7 @@ Other pairs: accent-fg on accent is 8.6:1 dark and 5.5:1 light. White on danger 
 * `public/theme-init.js` runs synchronously in `<head>` and sets `<html data-theme="dark|light">`, the `dark` class and `color-scheme` before first paint, so there is no flash. It is a same-origin file, not inline, so it keeps working if a strict CSP is enabled.
 * `src/lib/theme.js` (`useTheme()`) keeps the attribute current when the preference changes, when the OS theme changes under `system`, and when another tab changes it.
 * The switch is in the sidebar footer: a three-button group (system, light, dark). When the sidebar is collapsed it is one button that cycles.
-* Graph canvases (Topics, UNS) keep their own style pickers. A dark canvas inside the light theme is intended. The floating chips over a canvas get a solid panel background in light so their text stays readable.
+* Canvases follow the app theme. `src/graph/canvasTokens.js` reads the same custom properties once per theme change and every canvas theme object (UNS, Topics graph styles, charts) is derived from that snapshot, so a canvas background is the page surface and a "bad" node is the same red as a "bad" badge (section 14). A theme switch repaints in place, keeping the camera and selection. There is no separate light/dark toggle on the UNS map.
 * E2E: `e2e/routes.spec.js` runs every route in dark and in light, setting the preference through `localStorage` exactly as a user would. Playwright's `colorScheme` defaults to dark for the rest of the suite.
 
 ## 5. Type
@@ -228,11 +228,15 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 
 **Detail or drawer.** `Drawer` for inspecting a row without leaving the list (`KeyValue` on top, then sections with 13px headings, actions in the footer). Use a full page only when the object has its own sub-navigation (tabs).
 
-**Wizard.** A `Dialog size="lg"`. A step indicator in the header area (numbered text such as "1 Target · 2 Naming · 3 Options", current step `text-fg`, others `text-subtle`, done steps with a check), the body as a `role="region"` named after the step, and a footer with Back (secondary), then Next or Create (primary). Validate on Next and show errors inline in `Field error`, never as toasts.
+**Wizard (pattern retained; no page uses it today).** The Tags wizard was replaced by the single-sheet mapping editor (see the full-height editor pattern below); the pattern is kept for a future multi-step flow. A `Dialog size="lg"`. A step indicator in the header area (numbered text such as "1 Target · 2 Naming · 3 Options", current step `text-fg`, others `text-subtle`, done steps with a check), the body as a `role="region"` named after the step, and a footer with Back (secondary), then Next or Create (primary). Validate on Next and show errors inline in `Field error`, never as toasts.
 
 **Dashboard** (reference: `Overview.jsx`). Top to bottom: (1) **Needs attention**: a `Panel` list of what is wrong, worst first, each row linking to where it is fixed; when nothing is wrong it collapses to one line with a green dot. (2) Small sections with a 13px heading, each holding a `StatGroup` of `Stat`s with `to` links. (3) Two columns from `xl`: the connection table (problems first) and the latest values (`Path` and readable value with unit, raw payload in the tooltip). Don't use icon tiles, hero numbers or charts that only decorate.
 
-**Canvas page with floating toolbars** (Topics, UNS). The canvas fills the page body under the header. Floating controls are `bg-panel` (solid), `border-line`, 6px radius, `shadow-overlay`, inset 16px from the edges. Group them by job (view, display, export) with `ToolbarDivider` and use `SegmentedControl` for modes. Each canvas keeps its own style picker; it does not follow the app theme.
+**Canvas page** (Topics, UNS, Flows, Trends). One toolbar row under the header (`role="toolbar"`): a `SegmentedControl` for the view (Topics: Graph, 3D, Tree; UNS: Topology, Tree), then the controls of the current view, then toggles (`ToolToggle`). The canvas fills the rest of the body; nothing floats over its top edge. Floating chips that remain (the rate chip, the map key, zoom controls) are `FloatingBar`s: `bg-panel` (solid), `border-line`, 6px radius, `shadow-overlay`, inset 16px. Details open in a docked `SidePanel`, not over the canvas. The canvas follows the app theme; its style preset (Standard, Schematic, Monochrome) and layout are chosen under Settings.
+
+**Detail drawer plus full-page form** (reference: `Devices.jsx`). A sortable, filterable table; clicking a row opens a `Drawer` with tabs (Overview, Tags, Probe); Edit opens a full-page form with a sticky section nav (Connection, Protocol options, Polling, Tags, Advanced) and a footer with Cancel and Save. Validation is shown inline after the first save attempt, never as toasts.
+
+**Full-height editor** (reference: `tags/editor/MappingEditor.jsx`). A modal that fills the viewport: sticky section tabs that scroll to anchors (Mapping, What, Where, Tags, Context, Payload, Delivery, with a problem dot per section), the working sheet in one scrolling column, a live server preview in a docked column from `xl`, and a footer with Cancel and Save (Ctrl+S). Unsaved work asks before it is discarded (Esc, Cancel).
 
 ## 9. Data display rules
 
@@ -254,7 +258,7 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 * Contrast: AA for all text in both themes (section 3.4). `prefers-contrast: more` and `prefers-reduced-motion` are honoured.
 * Accessible names and roles that tests and users rely on were kept (headings, "Open navigation menu", row headers, region names).
 
-## 11. Compatibility layer: what un-migrated pages get
+## 11. Compatibility layer: what legacy class names get
 
 Done in `tailwind.config.js` and the "Compatibility layer" block of `index.css`, with no page edits:
 
@@ -365,12 +369,66 @@ Do one page at a time. Replace patterns top-down using the table, then check the
 | Poll-cycle bar (`h-1.5 rounded-full bg-white/10` + inner `bg-emerald-500`) | `<Meter value={avgMs} max={intervalMs} warnAt={0.8} badAt={1} label="Poll cycle" />` |
 | Icon bubble empty state | `<EmptyState title hint action>` |
 
-## 13. Known gaps on un-migrated pages
+## 13. Migration status and open items
 
-The compatibility layer makes them coherent in both themes (verified at 1440 and 390, dark and light). These issues remain until each page is migrated:
+**Every page is migrated** (verified November 2026). Search used: `grep -rnE "(slate-|sky-[0-9]|rose-[0-9]|amber-[0-9]|emerald-[0-9]|surface-[0-9]|white/|black/|accent-[1-7]00|backdrop-blur)" client/src/pages client/src/components client/src/graph --include=*.jsx --include=*.js`, excluding `components/ui/` (which defines the compatibility behaviour).
 
-* **Topics / UNS:** the canvas keeps its own (dark) style in the light theme by design. Toolbars are hand-rolled clusters with "Display / View / Export" captions; migrate them to `Toolbar` + `SegmentedControl`. The UNS canvas labels ("UNIFIED NAMESPACE") are drawn in `graph/` in uppercase.
-* **Devices:** cards use pill-ish chips ("Connects 1", "Requests 1905") and an inline poll bar; migrate to `KeyValue` / `Meter`, and consider a table layout. Several primary buttons appear in one header (Refresh / From profile / Add device), where only Add device should be primary.
-* **System:** nested cards with dashed sparkline placeholders and icons before every heading. Should become `Panel` + `StatGroup`.
-* **Flows / Settings / Tags / Trends / Pipelines / OPC UA / I3x / Cesmii / Discovery:** icons before panel headings; hand-rolled tabs and segments using accent tints (Flows tabs, Pipelines tabs, Trends sources); inline info boxes that should be `Banner`; more than one primary button per view (Discovery: "Start scan", "Scan", "Start a network scan"); Trends subtitle is lowercase copy; the Settings graph-style picker shows the canvas palettes (correct, they are data).
-* **Charts** (`charts.jsx`, `TrendChart.jsx`): series colours and axis grey are hard-coded for dark. The axis labels (`#7c8aa0`) are about 3.5:1 on white; give the chart a theme-aware axis colour when charts are next touched.
+| Page / area | Status |
+| --- | --- |
+| Overview, MQTT Brokers, Devices (table, drawer, form, Profiles, bulk, browse import), Discovery | on the design system, no legacy idioms |
+| Tags (workspace, Mappings tab, mapping editor), Pipelines (all five tabs), OPC UA, CESMII SMIP, i3X, Settings (all four tabs), unlock screen, UNS icon picker | on the design system, no legacy idioms |
+| Topics, UNS, Flows, Trends, Health (System) and their canvases and charts | on the design system; canvases themed from tokens (section 14) |
+| `components/JsonView.jsx` | **leftover**: 12 legacy classes (`text-slate-500`, `text-amber-300`, `text-emerald-300`, `text-sky-300`, `hover:bg-white/5`, `border-white/5`). Used by the i3X page and the OPC UA node panel. It looks right in both themes only through the compatibility layer |
+| `components/GraphLegend.jsx` | **leftover**: 3 legacy classes (`border-white/10`, `bg-surface-900/80`, `text-slate-400`). Used by the i3X page and the Topics graph |
+| `components/ViewTab.jsx` | **leftover and unused**: nothing imports it. Safe to delete |
+| `components/ui.jsx` and `components/ui/*` | the primitives; the only intended mentions of the old names |
+
+Because of the three leftovers, the compatibility layer (section 11) stays in `tailwind.config.js` and `index.css`. Fixing them (and deleting `ViewTab.jsx`) is what allows removing it.
+
+### Candidates to promote to `components/ui`
+
+Primitives built locally by pages that other pages already need or would reuse. None is promoted yet; each has one home today.
+
+| Component | File | What it is | Reuse |
+| --- | --- | --- | --- |
+| `SidePanel`, `PanelSection`, `FloatingBar`, `BarDivider`, `ToolToggle`, `PressedGroup`, `CanvasNote` | `client/src/components/CanvasChrome.jsx` | Docked detail panel and floating toolbar chrome for canvas pages | Topics, UNS, Flows, i3X |
+| `EditorSection`, `SubHeading`, `ErrorText`, `MiniSwitch`, `OriginLabel`, `OverrideField`, `NumberInput`, `PatternInput`, `KeyValueEditor`, `TokenChip` | `client/src/pages/tags/editor/parts.jsx` | Editor-sheet parts: a titled anchor section, a field that shows where its value comes from (device, mapping, default) with a reset, a glob list input, a key/value editor with limits, an insertable placeholder chip | mapping editor only; `KeyValueEditor` and `OverrideField` would suit the device and profile tag forms |
+| `FormField`, `FormSection`, `DescriptorField`, `DescriptorFields`, `PresetButtons`, `ExperimentalBadge`, `FromProfileBadge`, `cellCls` | `client/src/pages/devices/FormControls.jsx` | Forms rendered from a driver descriptor, presets as a segmented control, the Experimental badge | Devices, Profiles; the badge is also wanted by Discovery |
+| `RowStatus`, `runSummary` | `client/src/pages/devices/RowStatus.jsx` | Per-row result and status text for bulk creation | Devices bulk, Discovery "add all" |
+| `EffectiveTagsTable`, `LiveTagsTable`, `TagTable`, `BrowseTree` | `client/src/pages/devices/` | A windowed, keyboard-driven tag grid (paste, shift-select), a virtualised live table, a lazy tree | Devices; the mapping editor has its own `editor/TagTable.jsx` with the same ideas |
+| `useRo`, `RowButtons`, `BrokerSelect`, `ListState`, `TabToolbar`, `HeadHint`, `Count` | `client/src/pages/pipelines/shared.jsx` | The list-tab pattern: read-only props, row action buttons, loading/empty/error states, a tab toolbar | Pipelines tabs; `ListState` duplicates what Devices and Brokers assemble by hand |
+| `Section` | `client/src/pages/settings/Section.jsx` | A two-column settings row (label and help left, control right) | Settings |
+| `AssetPicker` | `client/src/pages/tags/AssetPicker.jsx` | Lazy tree picker over the UNS branches | Tags; would suit Pipelines target topics |
+
+`ReadOnlyNote` and `useReadOnly` (`components/ReadOnlyNote.jsx`) are already shared by every page that mutates.
+
+## 14. Canvas rendering: tokens, the data palette and the style presets
+
+**How a canvas reads tokens.** A canvas cannot use `rgb(var(--token))`. `client/src/graph/canvasTokens.js` reads these 20 custom properties from the computed style of `<html>` once per theme change, converts them to hex and caches a frozen snapshot (`getCanvasTokens()`, `useCanvasTokens()`): `bg panel raised overlay border border-strong border-stronger text text-muted text-subtle text-faint accent accent-text accent-fg good warn bad info aux control-off`. It refreshes on `<html data-theme|class|style>` mutations, `prefers-contrast`, `prefers-color-scheme` and `storage`. `FALLBACK_TOKENS` (first render, unit tests) mirrors `index.css`; `test/canvasTheme.test.js` fails if they drift. The faces are `FONT` (IBM Plex Sans Variable) and `MONO` (IBM Plex Mono), exported by the same module. Three theme objects are derived from the snapshot:
+
+| Theme object | File | Used by | Highlights |
+| --- | --- | --- | --- |
+| `buildUnsTheme(tokens)` | `client/src/graph/unsTheme.js` | UNS map | background `bg`; dot grid a step from the surface; edges `border-stronger`, live edges and rates `good`; overdue values `warn`, dead values `bad`; selection `accent`; level rings from `levelPalette` |
+| `resolveGraphStyle(id, tokens)` | `client/src/graph/graphStyles.js` | Topics 2D, WebGL and 3D | background `bg`; link colour a mix of `bg` and `border-stronger`; flow `good`; selected ring `accent`; labels `text-muted` with a `bg` halo; node palette below |
+| `buildChartTheme(tokens)` | `client/src/components/chartTheme.js` | uPlot charts | surface `panel`; axis `text-subtle`; grid a mix of `panel` and `border-strong`; gaps `text-faint`; series from the data palette; 12px Plex |
+
+**The data palette** (`client/src/graph/dataPalette.js`) is what DATA gets on every canvas; chrome colours come from the tokens. Ten categorical series per theme, one hue family per slot in both (blue, orange, violet, gold, teal, pink, sky, magenta, green, red), with the state-like hues last so ordinary charts of 1 to 7 series never show a "good green" or "bad red" line:
+
+| Slot | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| dark | `#81b7fc` | `#c56c0c` | `#9e7cf1` | `#bca422` | `#169b86` | `#d887ae` | `#9cdffe` | `#b55fba` | `#77b868` | `#fcc4bf` |
+| light | `#0256a9` | `#b4620c` | `#8460d2` | `#4d4206` | `#0c4d42` | `#843b61` | `#14799c` | `#69126f` | `#4d8c3e` | `#b02a2d` |
+
+Constraints, asserted in `test/canvasTheme.test.js`: every slot at least 3:1 against the canvas (WCAG 1.4.11); adjacent slots at least 7.5 CIEDE2000 apart for normal vision and simulated protanopia, deuteranopia and tritanopia; any two slots at least 7.5 apart in each of those views. Slots 5 to 9 are drawn dashed in charts (`SERIES_DASH`: solid for 0 to 4, then `[6,3]`, `[2,3]`, `[8,3,2,3]`, `[4,4]`, `[1,2]`), so identity never depends on hue alone. ISA-95 ring colours by depth (`levelPalette`): root `text-muted`, then series 0, 2, 4, 1, 6, and `text-subtle` for the deepest level; Sparkplug namespaces use series 7 and `$SYS` series 3.
+
+**The three graph style presets** (Settings, Topic graph; stored as `tc.graphStyle`; the retired ids `constellation`, `aurora`, `neon`, `blueprint`, `circuit`, `slate` still resolve to the nearest one):
+
+| Preset | Drawing language | Node colours (broker, server, branch, telemetry, data, command, config, alarm, Sparkplug) |
+| --- | --- | --- |
+| `standard` (default) | filled discs coloured by node group | `text`, `text`, `text-faint`, series 0, `text-muted`, series 1, series 2, series 5, series 7 |
+| `schematic` | square nodes on a fine grid (28 px, `border-strong` at 55 to 60 % alpha) for reading structure | same palette as `standard` |
+| `mono` (Monochrome) | neutral nodes; colour only for selection, search and flow | greys only (`text`, `text-subtle`, `text-muted`) |
+
+All presets: link width 1, node radius 4 to 20, label font 400 12px, labels shown from zoom 0.75, `protocol` colours `{ mqtt: series 0, opcua: series 2, i3x: series 4 }`. Layout presets (`organic`, `spacious`, `tight`, `radial`, `tree`, `cluster`; stored as `tc.graphLayout`) are independent of the style.
+
+**Resolved values** (from `FALLBACK` in `canvasTokens.js`). Dark: `bg #0f0f10`, `panel #161617`, `text #ececee`, `accent #2cc5cf`, `good #3fc184`, `warn #e3a33a`, `bad #f06a63`, `info #6aa6f8`, `aux #b39af5`. Light: `bg #f6f6f7`, `panel #ffffff`, `text #17171a`, `accent #00747d`, `good #137a48`, `warn #975a00`, `bad #c4282e`, `info #1f5fc2`, `aux #6b47c9`.

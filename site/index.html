@@ -197,8 +197,8 @@
           <span><b>Connect</b> i3X</span>
         </div>
         <figure class="shot">
-          <img src="assets/uns-topology.png" alt="Live UNS topology graph built from observed MQTT traffic" loading="eager" />
-          <figcaption>The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated.</figcaption>
+          <img src="assets/uns-topology.png" alt="The UNS topology of a demo plant with the boiler-1 asset selected and its detail panel open, in the dark theme" loading="eager" />
+          <figcaption>The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots show the real app running against simulated devices and a simulated plant.</figcaption>
         </figure>
       </div>
     </div>
@@ -225,12 +225,13 @@
           <div class="card">
             <div class="ic">🕸️</div>
             <h3>Unified Namespace</h3>
-            <p>A live ISA-95 topology built from the traffic itself.</p>
+            <p>A live ISA-95 topology built from the traffic itself, in a light, dark or system theme.</p>
             <ul>
               <li>Values on leaves, per-branch message rates, animated edges</li>
               <li>Namespace lint score with structural findings</li>
               <li>Per-topic staleness calibrated to each topic's cadence</li>
               <li>~130 curated industrial icons + custom SVGs</li>
+              <li>Canvases follow the theme; deep links such as <code>/uns?broker=&amp;path=</code></li>
             </ul>
           </div>
           <div class="card">
@@ -250,9 +251,10 @@
             <p>Browse device tags and publish them into the UNS.</p>
             <ul>
               <li>Unified tag browser: devices, OPC UA, Sparkplug registry, MQTT trie</li>
-              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP (S7 and EtherNet/IP experimental; not yet verified on real hardware)</li>
-              <li>Device profiles with parameters, bulk creation, opt-in device discovery</li>
-              <li>Bindings publish under an ISA-95 asset path as values, TVQ with units, one object per asset, or a Sparkplug B device</li>
+              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP. S7 and EtherNet/IP are experimental, and <b>no driver has been run against real hardware yet</b> (simulators only)</li>
+              <li>Devices as a table with a detail drawer, profiles with parameters, all-or-nothing bulk creation, opt-in device discovery</li>
+              <li>A single-sheet <b>mapping editor</b>: publish under an ISA-95 asset path as values, TVQ with units, one object per asset, or a Sparkplug B device, with a live server preview</li>
+              <li>Choose tags by list or by rule, set per-tag name, unit, scale, states and limits, and add asset context</li>
               <li>Absolute or percent deadband, heartbeat, quality mapping, <code>_status</code> and <code>_meta</code> documents, read-only toward devices</li>
               <li>Optional Sparkplug primary-host <code>STATE</code></li>
             </ul>
@@ -262,7 +264,7 @@
             <h3>Operations</h3>
             <p>Run it like the control plane it is.</p>
             <ul>
-              <li>Fail-closed auth, named revocable tokens, read-only role</li>
+              <li>Fail-closed auth, named revocable tokens, a read-only role with a clear read-only UI</li>
               <li>Egress guard against SSRF / internal scanning</li>
               <li>Audit log, config-as-code export/import</li>
               <li>System health page over Prometheus <code>/metrics</code></li>
@@ -275,7 +277,7 @@
             <ul>
               <li>75 tools: MQTT, UNS, DataOps, OPC UA, CESMII, i3X</li>
               <li>Discover brokers, browse topics, read live payloads</li>
-              <li>Drive pipelines and bindings programmatically</li>
+              <li>Drive pipelines and mappings (bindings) programmatically</li>
               <li>Honors the same auth token as the API</li>
             </ul>
           </div>
@@ -296,12 +298,12 @@
             <figcaption><b>3D topic graph.</b> Real three.js instancing, smooth at tens of thousands of nodes.</figcaption>
           </figure>
           <figure>
-            <img src="assets/overview.png" alt="Overview health cards" loading="lazy" />
-            <figcaption><b>Live platform health.</b> Pipelines, historians, bindings, and alerts — pushed over the socket.</figcaption>
+            <img src="assets/overview.png" alt="Overview: sources, data flow, connections and latest values for a demo plant" loading="lazy" />
+            <figcaption><b>Live platform health.</b> What is connected and what needs attention, pushed over the socket.</figcaption>
           </figure>
           <figure>
-            <img src="assets/historians.png" alt="Historians configuration" loading="lazy" />
-            <figcaption><b>Historians with store-and-forward.</b> InfluxDB, TimescaleDB, and Timebase, with disk spill.</figcaption>
+            <img src="assets/historians.png" alt="The Historians tab with a Timebase and an InfluxDB historian and their store-and-forward counters" loading="lazy" />
+            <figcaption><b>Historians with store-and-forward.</b> InfluxDB, TimescaleDB, and Timebase (Timebase REST details are not yet verified), with disk spill.</figcaption>
           </figure>
         </div>
       </div>

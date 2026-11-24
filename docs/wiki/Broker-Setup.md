@@ -8,7 +8,7 @@
 Manifold subscribes to `#` at **QoS 1** by default: if the connection hiccups,
 the broker retransmits anything Manifold didn't acknowledge, so pipelines and
 historians don't silently lose samples. It's configurable per broker
-(connection form → *Subscribe QoS*). `$SYS/#` always uses QoS 0 — losing one
+(the broker's **Connection settings** → **Subscribe QoS (intake durability)**). `$SYS/#` always uses QoS 0 — losing one
 diagnostics sample is meaningless.
 
 When a broker **refuses** the wildcard grant, Manifold reacts instead of going
@@ -85,7 +85,7 @@ flowchart LR
     R --> D[Dormant filters flagged<br/>dead wiring found]
 ```
 
-Configure under **Brokers → Admin API**:
+Configure under **Flows → Consumers** (the **Broker admin connection** region):
 
 | Broker | API | Extras |
 |---|---|---|
@@ -129,5 +129,5 @@ splitting intake across multiple Manifold instances on a very busy broker.
 > use one on the instance that is supposed to render the complete UNS.
 
 Broker connections **edit in place**: change the host, transport, version, or
-intake filter on the broker card and Manifold reconnects with the new
+intake filter in the broker's edit dialog (the pencil on its row) and Manifold reconnects with the new
 settings — no delete/re-add, no lost history.

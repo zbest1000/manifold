@@ -9,12 +9,24 @@ Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, CESMII 
 **[Website](https://zbest1000.github.io/manifold/)** · **[Docs / Wiki](../../wiki)** · **[Architecture](ARCHITECTURE.md)** · **[Changelog](CHANGELOG.md)**
 
 <p align="center">
-  <img src="docs/wiki/images/uns-topology.png" alt="Live UNS topology" width="850">
+  <img src="docs/wiki/images/overview.png" alt="Manifold Overview page in the dark theme: sources, data flow, connections and latest values for a demo plant with six devices, one of them unreachable" width="850">
 </p>
 
-Manifold connects to brokers and servers, streams their data in real time, and renders it as a live UNS topology, interactive topic/address-space graphs, and producer → topic → consumer lineage. A DataOps layer routes and reshapes the stream: pipelines, contextualization models, historian delivery with store-and-forward, recording/replay, schema contracts, and tag bindings with a Sparkplug B publisher. Device drivers poll PLCs directly and feed the same bindings. They never write to a device. An included MCP server exposes the same backend to AI agents.
+<p align="center">
+  <img src="docs/wiki/images/uns-topology.png" alt="The UNS topology with the boiler-1 asset selected and its detail panel open" width="420">
+  <img src="docs/wiki/images/mapping-editor.png" alt="The mapping editor: tag table with the per-tag details panel open and the server's preview on the right" width="420">
+</p>
+
+<sub>Screenshots are from the real application running against simulated devices and a simulated plant namespace (demo data, not a customer site).</sub>
+
+Manifold connects to brokers and servers, streams their data in real time, and renders it as a live UNS topology, interactive topic/address-space graphs, and producer → topic → consumer lineage. A DataOps layer routes and reshapes the stream: pipelines, contextualization models, historian delivery with store-and-forward, recording/replay, schema contracts, and tag mappings with a Sparkplug B publisher. Device drivers poll PLCs directly and feed the same bindings. They never write to a device. An included MCP server exposes the same backend to AI agents.
 
 ## Features
+
+**Interface**
+- One design system across every page (IBM Plex type, semantic colour tokens), with **light, dark and system** themes: the switch is in the sidebar and under Settings, and the topology, graph and chart canvases follow it in place. See [User interface](docs/wiki/User-Interface.md).
+- Accessibility is tested, not just intended: the Playwright suite loads every route in both themes at desktop and phone width and fails on serious or critical axe findings, horizontal overflow and console errors. That is automated checking only; it is not a certified conformance audit.
+- Read-only (viewer) sessions see disabled controls with the reason instead of errors. Deep links: `/uns?broker=<id>&path=<asset path>` and `/topics?broker=<id>&topic=<topic>`.
 
 **Explore**
 - MQTT topic tree, 2D/3D graphs, and a WebGL renderer for very large namespaces (60k+ topics). JSON, text, binary, and Sparkplug B payloads decoded. The 3D view is real three.js instancing (50k nodes); force layout runs in a Web Worker.
@@ -40,15 +52,16 @@ Manifold connects to brokers and servers, streams their data in real time, and r
 
 **Devices** (southbound drivers, **read-only by construction**)
 - **Modbus TCP**, **Siemens S7** (S7comm; **experimental**) and **EtherNet/IP** Logix (**experimental**). Experimental means verified only against in-process simulators, not real hardware; the per-driver checklists are in [`server/drivers/s7/NOTES.md`](server/drivers/s7/NOTES.md) and [`server/drivers/eip/NOTES.md`](server/drivers/eip/NOTES.md).
-- Devices, poll groups and tags are edited on the Devices page (generic forms with presets and experimental badges, spreadsheet paste and CSV import, inline address validation, a connection test, polling health with the device's own reason for every quarantined tag, and a **probe** that shows raw registers decoded under all four Modbus byte/word orders). Modbus addresses accept `holding:100` or Modicon `40001` / `400001` with explicit 0/1-based handling. EtherNet/IP tags can be imported from the controller's own tag list.
+- Devices are a sortable table with a detail drawer (Overview, live Tags, Probe) and a full-page add/edit form: protocol presets and experimental badges, spreadsheet paste and CSV import, inline address validation, a connection test, polling health with the device's own reason for every quarantined tag, an **Advanced** section (Modbus unmapped register ranges, one driver process per device) and a **probe** that shows raw registers decoded under all four Modbus byte/word orders. Many devices at once: **From profile** and a bulk table that is created all-or-nothing. Modbus addresses accept `holding:100` or Modicon `40001` / `400001` with explicit 0/1-based handling. EtherNet/IP tags can be imported from the controller's own tag list.
 - **Device profiles**: define a meter, drive or PLC type once (tags with `{param}` placeholders, poll groups, options), then create devices from it one at a time or in bulk from a pasted table or CSV.
 - Each driver runs in a supervised child process: a crash, hang or protocol fault takes down only that process, which restarts with backoff and is parked if it crash-loops. Each device keeps one connection, reconnects forever with jittered backoff, skips (and counts) overrunning poll cycles instead of queueing them, and quarantines tags that fail permanently while the rest keep polling.
 - Read-only is enforced where bytes are built: each driver's single frame encoder has an allowlist (Modbus function codes 1-4; S7 setup, Read Var and SZL read; CIP read and connection services), and the tests assert that no write ever reaches a socket. It is a guarantee about Manifold, not about your network: none of these protocols authenticates the client.
 
 **Tags**
 - Unified tag browser (devices, OPC UA, Sparkplug registry, MQTT trie) with an accessible tree, filter and CSV import.
-- Bindings publish tags under an **ISA-95 asset path** as plain values, TVQ envelopes with units, **one JSON object per asset** (size-capped), or a Sparkplug B device (typed metrics: Int16, Float, Boolean, ...), with absolute or percent deadband, a heartbeat, and quality mapping. Quality is part of change detection; when a source goes offline every tag gets one Bad publish and a retained `<path>/_status` document (or DDEATH for Sparkplug), and a retained `<path>/_meta` document carries types, units, ranges and sources. A **profile binding** maps every instance of a device profile with one definition. Retained topics are cleared when a binding is renamed or deleted. The wizard previews what the server would publish, and warns about raw-address names and topic collisions. Read-only toward devices.
-- An opt-in **direct historian target** on a binding (Timebase or TimescaleDB; InfluxDB is refused because it stores no quality).
+- A **mapping** (the UI's word for what the API calls a binding) publishes tags under an **ISA-95 asset path** as plain values, TVQ envelopes with units, **one JSON object per asset** (size-capped), or a Sparkplug B device (typed metrics: Int16, Float, Boolean, ...), with absolute or percent deadband, a heartbeat, and quality mapping. Quality is part of change detection; when a source goes offline every tag gets one Bad publish and a retained `<path>/_status` document (or DDEATH for Sparkplug), and a retained `<path>/_meta` document carries types, units, ranges and sources. A **profile mapping** maps every instance of a device profile with one definition. Retained topics are cleared when a mapping is renamed or deleted. The single-sheet **mapping editor** (Mapping, What, Where, Tags, Context, Payload, Delivery) previews exactly what the server would publish and warns about raw-address names, topic collisions and options that cannot take effect. Read-only toward devices.
+- **Selective mapping and context**: pick tags from a list or select them by rule (include and exclude globs, poll groups, types, has-a-property) so tags added to the device later are picked up; per tag set name, unit, description, range, scale and offset, publish type, decimals, states, limits and deadband; add asset and tag context (`{device}`, `{protocol}`, ...) to `_meta` or to every payload; choose the fields of each payload.
+- An opt-in **direct historian target** on a mapping (Timebase or TimescaleDB; InfluxDB is refused because it stores no quality).
 - Optional Sparkplug primary-host session: Manifold publishes retained `STATE` so edge nodes see a host application.
 
 **Operations**
@@ -103,12 +116,15 @@ With a token set (`MANIFOLD_AUTH_TOKEN`, `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TO
 - **Unknown roles are rejected** (an entry such as `bob:secret:readonly` used to become an admin token). Rejected entries are logged at startup, and if tokens were configured but all were rejected, auth stays on and every request is 401.
 - **`/metrics` needs a bearer token** (any role) when auth is on. Give Prometheus a viewer token, or set `MANIFOLD_METRICS_PUBLIC=1`. `/health` stays open.
 - **Alert webhooks now pass the egress guard**, so a webhook to `localhost`, a link-local address, or (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) a private address is refused. Redirects are re-checked on every hop.
-- Viewers can call a short list of read-only POSTs (historian queries, pipeline preview, subscription resolve, schema inference, device tag validation, i3X reads) and no longer see alert webhook URLs.
+- Viewers can call a short list of read-only POSTs (historian queries, pipeline preview, subscription resolve, schema inference, device tag validation, mapping preview and name suggestions, i3X reads, CESMII history) and no longer see alert webhook URLs.
 - **Device targets** are guarded: loopback hosts need `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` and private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
-- Sparkplug messages are delivered **in order and un-coalesced** (a bounded queue; overflow is counted, not silent), and bindings **publish a Bad-quality envelope when a source goes offline** and a retained `_status` topic. The binding wizard no longer ticks **retain** by default.
+- Sparkplug messages are delivered **in order and un-coalesced** (a bounded queue; overflow is counted, not silent), and mappings **publish a Bad-quality envelope when a source goes offline** and a retained `_status` topic. The mapping editor leaves **Retain values** off by default.
 - The historian spill is now **segment files plus a cursor** under `outbox/` (a legacy `<id>.jsonl` is still read first and drained, no conversion needed), and permanently rejected points go to a dead-letter file.
 - `audit.jsonl` rotates by size and now records rejected requests (401/403/429).
 - Config export keeps device tag `key` fields (an earlier build blanked them) and an import applies immediately.
+- **UI redesign.** Every page was rebuilt on a new design system, the Tags wizard became the mapping editor, Devices became a table with a drawer and a full-page form, and the old per-canvas dark styles gave way to token-driven themes. Bookmarks to routes still work. The graph style presets are now Standard, Schematic and Monochrome (old ids map to the closest one).
+- Device live values reach the browser as **one `device-values` Socket.IO event per 250 ms flush** (`{ batch: [...] }`), delivered reliably when the flush carries a quality change; anything that listens to the old per-device events must be updated.
+- Saving a device now validates driver options (and S7 rack/slot), names must be unique, a historian that a route, recording or mapping still uses cannot be deleted (409), and pipeline, model and recorder topics are validated.
 - **Not verified on real hardware:** none of the three device drivers has been run against real PLCs, and the Timebase REST behaviour is unconfirmed. See [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md) and the [changelog's known issues](CHANGELOG.md).
 
 Connection profiles persist in `server/data/profiles.json` (mode 0600; directory configurable via `MANIFOLD_DATA_DIR`, restore disabled via `MANIFOLD_NO_RESTORE=1`). The file may contain broker credentials, so protect the host.
@@ -140,7 +156,17 @@ Every variable the server reads. All are optional.
 | `MANIFOLD_SPARKPLUG_QUEUE_BYTES` | `8388608` (8 MiB) | Payload-byte bound for the same queue |
 | `MANIFOLD_HISTORIAN_TIMEOUT_MS` | `15000` | Deadline on historian HTTP calls |
 
+The server also reads a `.env` file in its working directory (`dotenv`). Every `MANIFOLD_*`, `PORT` and `CLIENT_URL` variable that `grep -rn "process.env\." server/` finds outside tests is in the table above (checked November 2026). Test-only variables: `INTEGRATION`, `INTEGRATION_EMQX_HOST`/`_PORT`/`_WS_PORT`, `INTEGRATION_INFLUX_URL`/`_TOKEN`/`_ORG`/`_BUCKET`, `INTEGRATION_TSDB_HOST`/`_PORT` and `INTEGRATION_TIMEBASE_URL` select the real-service integration test; the Playwright suite uses `E2E_PORT` and `PW_CHROMIUM_PATH`.
+
 The MCP server (`mcp/`) reads `MANIFOLD_API_URL` and `MANIFOLD_AUTH_TOKEN`. The simulator tool reads `SIM_HOST`, `SIM_MODBUS_PORT`, `SIM_S7_PORT`, `SIM_EIP_PORT` (see [DOCKER.md](DOCKER.md#simulated-devices)).
+
+## Project status: what is verified
+
+- **Device drivers.** Modbus TCP, Siemens S7 and EtherNet/IP were exercised only against the in-process simulators in `server/test/support/`, which were written together with the drivers. **No driver has been run against real hardware.** S7 and EtherNet/IP carry an *Experimental* badge in the UI. The ordered checklist for an engineer with a real PLC is [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md).
+- **Timebase.** The Timebase REST API reference could not be read when the writer was built, so details of the direct historian path (ordering of old samples, the shape of a Bad sample without a value, resolution, quality codes, batch limits, tokens) are **unverified**. InfluxDB and TimescaleDB are exercised against real containers in CI.
+- **WebGL and 3D.** The WebGL and three.js canvases were only run on a software renderer (SwiftShader) in headless Chromium; their performance on real GPUs is untested.
+- **Accessibility.** Automated axe checks on every route (serious and critical findings fail CI), in both themes at 1440 and 390 px. No screen-reader or keyboard-only session was recorded as part of the test suite beyond the specific keyboard paths the specs drive.
+- **Known gaps** (full list in the [changelog](CHANGELOG.md) and [review](docs/REVIEW-2026-11.md)): MQTT-topic selections in the Tags page compile to pipeline routes, not mappings; two browser tabs editing the same item are last-write-wins; field order inside a payload is fixed; MQTT, OPC UA and historian endpoints are outside the egress guard by decision.
 
 ## MCP server
 
@@ -158,13 +184,15 @@ Point any MCP client at `mcp/index.js` with the backend running:
 }
 ```
 
-75 tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, CESMII, and i3X. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
+75 tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, CESMII, and i3X; `binding_save` accepts device, device-profile, OPC UA and Sparkplug sources, but there are no device or profile management tools yet. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
 
 ## Testing
 
 ```bash
 cd server && npm test    # node:test, includes real-broker integration
 cd client && npm test    # Vitest over the pure logic modules
+cd client && npm run build && npm run e2e   # Playwright against the built client and a real backend
+npm run lint             # ESLint for server, client and mcp
 ```
 
 CI additionally runs an integration job against real EMQX, InfluxDB, TimescaleDB, and Timebase containers. Details in [ARCHITECTURE.md](ARCHITECTURE.md#testing).

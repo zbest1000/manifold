@@ -32,13 +32,13 @@ on startup to:
 - three simulated devices from `device-sim`: *Demo pump (Modbus TCP)* at
   `device-sim:5020`, *Demo CPU (S7)* at `device-sim:10102` and *Demo Logix
   (EtherNet/IP)* at `device-sim:44818`, polled every second
-- two bindings for the Modbus device: *Demo pump to UNS* publishes its tags as
+- two mappings (the API and `profiles.json` call them bindings) for the Modbus device: *Demo pump to UNS* publishes its tags as
   TVQ envelopes under `demo/plant1/pump1/` (a legacy `pathTemplate`, plus a
   retained `demo/plant1/pump1/_status` and a 10 s heartbeat), and *Demo pump as
   one object* publishes all tags as one JSON object to `demo/plant1/pump1-object`
   (`assetPath` with `object-per-asset`, same heartbeat). The retained `_meta`
-  documents may be missing until a binding is saved again (known issue: they are
-  published only if the broker is connected when the app starts)
+  documents are published once the broker is connected; if the app starts before
+  the broker, the publish is retried on a 15 s timer
 
 The simulator continuously publishes a tree of plain JSON telemetry topics
 (`factory/…`, `building/…`, `energy/…`) plus valid Sparkplug B
@@ -50,7 +50,7 @@ The simulator continuously publishes a tree of plain JSON telemetry topics
 - **OPC UA** — browse the OPC-PLC address space, read and monitor nodes
 - **MQTT Brokers** — the connected broker with live message/topic counts
 - **Devices** — three devices online with cycle times, live tag values, and the probe
-- **Tags** — the *Demo pump to UNS* and *Demo pump as one object* bindings, publishing `demo/plant1/pump1/#` and `demo/plant1/pump1-object`
+- **Tags** (Mappings tab) — the *Demo pump to UNS* and *Demo pump as one object* mappings, publishing `demo/plant1/pump1/#` and `demo/plant1/pump1-object`
 
 ## Connecting things manually
 
@@ -81,7 +81,7 @@ devices; the comment in `docker-compose.yml` says so. (Loopback device targets
 are a separate opt-in, `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, used below for
 running outside Docker.)
 
-What each simulator serves (enter these on the Devices page):
+What each simulator serves (enter these on the Devices page, **Add device**, or use **Probe** and the tag table's paste and CSV import):
 
 | Protocol | Device settings | Address | Type | Value |
 |---|---|---|---|---|
@@ -196,7 +196,7 @@ docker compose down -v           # stop + wipe saved profiles (the app-data volu
 ## Notes
 
 - Saved connections persist in the `app-data` Docker volume. `down -v` clears
-  them and the next start re-seeds the demo connections, devices and binding.
+  them and the next start re-seeds the demo connections, devices and mappings.
   Seeding happens only when `profiles.json` does not exist yet, so an existing
   volume from an older version does not gain the demo devices until you run
   `docker compose down -v`.

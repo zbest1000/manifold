@@ -6,88 +6,77 @@ PR that closed them is noted inline.
 
 ## Open
 
+Re-checked against the code in November 2026, after the redesign (design system, every
+page rebuilt, the mapping editor, canvas rendering, the Playwright suite).
+
 ### Medium
 
-- [x] **Modal portal consistency.** *Done: every overlay uses the shared portaled
-  `Modal` (`components/ui.jsx`), including `UnsIconPicker`, `ErrorLog`, the topic
-  panels, the System metric modal, the Tags wizard and the Devices dialogs; no
-  `fixed inset-0` overlay remains outside the primitive (searched Nov 2026).* The
-  primitive renders through `document.body` (escaping any `backdrop-blur`
-  ancestor Card, which becomes the containing block for `position:fixed`), owns
-  Esc and backdrop-close, traps focus and restores it.
-
-- [ ] **No deep link from a binding to its node in the UNS.** The binding detail
-  (`pages/tags/BindingDetail.jsx`) shows the resolved topics and a copyable asset
-  path, but there is no "show in UNS" link, and the UNS page (`pages/Uns.jsx`)
-  does not read a selected path from the URL, so the link cannot be built without
-  changing both.
-
 - [ ] **Sparkplug primary-host control sits on the Tags page**
-  (`pages/tags/HostStatePanel.jsx`), beside bindings; it belongs on the broker.
-
-- [ ] **Device fields without a UI:** the `isolate` flag (own host process per
-  device) and the Modbus `options.unmapped` ranges are REST only.
-
-- [ ] **A connections hub.** The design (section 8) lists MQTT and OPC UA
-  connections next to devices under one "Add" picker; today they are separate
-  pages. Device nodes do not appear in the UNS topology either.
-
-- [ ] **Sorting and table semantics are partial.** Brokers, OPC UA connections and
-  Discovery results sort (`lib/sortRows.js`); the Devices, Profiles and bindings
-  tables do not.
-
-- [ ] **Binding preview has no lint delta**, only collisions and raw-address
-  warnings, and the MQTT-source bind path (pipeline routes) has none of the
-  asset-path, `_meta` or historian options.
-
-- [ ] **Not re-verified since the shell rewrite:** layout at 390 px on every page,
-  contrast ratios (the AA tokens were not measured here), bundle size (every page
-  is lazy, but both `lucide` and `lucide-react` are still dependencies), and the
-  page-level `.catch(() => ...)` handlers that still swallow errors (seven in
-  `client/src`).
-
-- [x] **UNS topology over-zooms when a deep mount is present.** *Done: the auto-fit now frames only broker trees (mounts are excluded whenever any broker node exists), via `fitTransform` in `graph/unsLayout.js`; covered by a unit test.* With the demo
-  OPC-UA mount (opc-plc, hundreds of nodes) grafted in, the "fit everything on
-  load" framing shrinks the whole forest to unreadable (k clamps near the 0.2
-  floor). The MQTT broker trees — the thing you usually want — become tiny.
-  Options: (a) exclude/soft-weight deep mounts from the initial fit, (b) fit to
-  the broker subtrees and let the user pan to mounts, or (c) collapse mounts to
-  their root by default. Needs a design call.
-
-- [x] **OPC-UA / i3X mounts default fully-expanded in UNS.** *Done: `seedExpansion` seeds mounts collapsed (root only) while brokers still open to level 1.* Compounds the
-  over-zoom above and makes the paper canvas very tall. Mounts probably want to
-  seed collapsed (root only), unlike broker namespaces which seed to level 1.
+  (`pages/tags/HostStatePanel.jsx`, a collapsed panel beside the mappings of a source);
+  it belongs on the broker.
+- [ ] **A connections hub.** The design (`docs/design/southbound-drivers.md`, section 8)
+  lists MQTT and OPC UA connections next to devices under one "Add" picker; today they are
+  separate pages. Device nodes do not appear in the UNS topology either.
+- [ ] **Mapping preview has no lint delta**, only collisions, raw-address and option
+  warnings; the MQTT-source path (pipeline routes) has none of the asset-path, `_meta`
+  or historian options.
+- [ ] **Three shared components still use legacy class names** (`components/JsonView.jsx`,
+  `components/GraphLegend.jsx`, and `components/ViewTab.jsx`, which nothing imports and can be
+  deleted). They are what keeps the Tailwind compatibility layer alive; see
+  `docs/design/ui-design-system.md`, section 13.
+- [ ] **Promote the locally built primitives** (side panel and floating bar chrome, editor
+  parts, descriptor forms, the list-tab helpers) into `components/ui`; the candidate list with
+  file paths is in the design system, section 13.
+- [ ] **Concurrent edits are last-write-wins.** Two browser tabs editing the same mapping,
+  device or route overwrite each other; there is no version check or conflict message.
+- [ ] **Field order in a payload is not user-reorderable.** The API honours the order of
+  `target.fields`; the mapping editor offers a fixed order.
 
 ### Low
 
-- [x] **System "Process health" sparklines are blank right after a restart.** *Done: `Sparkline` renders a dashed 1px baseline (and an aria-label "collecting samples") until the second sample lands.*
-  Expected (needs ≥2 samples, ~6s) but reads as broken on first paint. Consider a
-  1-px baseline placeholder until the first two samples land.
-
-- [x] **Replay scrubber polish (Topics/Trends).** *Done: the track is now a keyboard slider (arrows 5%, Home/End, Space/Enter), with start/end clock labels, quarter tick marks, aria-valuetext and labelled buttons (`components/ReplayScrubber.jsx`).* Functional but visually thin;
-  no keyboard control, no time labels on the track. Verify a11y + add tick marks.
-
-- [x] **Density/spacing audit tail (UNS, Topics, Flows, Trends, System, Overview).** *Done: page headers wrap (`ResponsiveHeader`), side panels stack below the canvas under `md`, helper text is at least 12px in slate-400, and no page overflows horizontally at 390px.* Original QA flagged general density on
-  UNS/Flows; revisit tile paddings and small-screen breakpoints once the bigger
-  items land.
+- [ ] **Sorting is partial.** Brokers, OPC UA connections, Discovery results, Devices, Pipelines
+  routes, mappings and the live tag table sort; the Historians, Recorder, Models and Contracts
+  lists do not.
+- [ ] **One bare `.catch(() => {})`** remains (`pages/OpcUa.jsx:133`, the list refresh after a
+  socket event).
+- [ ] **Main-chunk size was not re-measured** after the redesign (every page is a lazy chunk).
+- [ ] **Defects seen while capturing the documentation screenshots** (details and reproduction
+  in `docs/REVIEW-2026-11.md`, "New findings from the screenshot pass"): a very large float
+  overflows its cell in the device drawer's Tags tab (S1); Sparkplug topics show as base64
+  in the Overview's Latest values (S2); the Logs count includes verbose entries (S3); Flows
+  shows Online greater than Devices (S4); the Health page is titled "System" (S5).
+- [ ] **Verification gaps:** WebGL and 3D were only run on a software renderer; no screen-reader
+  or manual keyboard audit beyond what the specs drive.
 
 ## Done (recent)
 
-- [x] **Shell and accessibility pass (Nov 2026).** Off-canvas navigation drawer
-  below `md`, global `:focus-visible`, AA colour tokens, shared `Modal`, `Table`
-  and form primitives, lazy routes with a skeleton fallback, an ESLint config.
-- [x] **Tags page.** Accessible tree (arrows, Space, Enter), filter box,
-  select-all-in-folder, bound-tag indicator, a three-step bind wizard (target,
-  naming with the server's topic preview, options) with an asset-path picker,
-  layout choice (topic per tag or object per asset), units and deadband type,
-  heartbeat, direct historian target (Timebase and TimescaleDB only) and profile
-  bindings; save-time warnings are shown after saving.
-- [x] **Devices page.** Generic forms for Modbus, S7 and EtherNet/IP with
-  presets, experimental badges and the prerequisites text, controller import
-  (EtherNet/IP), probe, polling health, quarantine reasons, Profiles tab with
-  bulk creation. Discovery: "Find devices" and "Add as device".
-- [x] **UNS and Topics.** Dark UNS theme, the Sparkplug namespace labelled as
-  such, one topic counter and one ingest-rate hook, label level of detail.
+- [x] **The redesign (Nov 2026).** One design system (`docs/design/ui-design-system.md`):
+  semantic tokens, light, dark and system themes, IBM Plex, primitives in `components/ui`. Every
+  page was rebuilt on it: Overview, MQTT Brokers, Devices (sortable table, detail drawer, full-page
+  form, Profiles, bulk create, Discovery), Tags (a two-tab workspace and the single-sheet **mapping
+  editor** that replaced the three-step wizard), Pipelines (five tabs, route editor with dry run and
+  the TVQ hint), OPC UA, CESMII SMIP, i3X, Settings (Session card, theme, topic graph, alert rules,
+  configuration, audit trail), the unlock screen and the icon picker.
+- [x] **Canvas rendering overhaul.** `graph/canvasKit.js` (DPR-correct sizing, one camera transform
+  for drawing and picking, a frame scheduler that is idle at about 1 frame per second and stops when hidden,
+  label level of detail, WebGL context-loss recovery), canvas themes derived from tokens in both themes,
+  a validated data palette, deep links `/uns?broker=&path=` and `/topics?broker=&topic=` with a jump state
+  machine, graph styles Standard, Schematic and Monochrome.
+- [x] **Read-only UX.** Disabled controls with the reason, `ReadOnlyNote`, the Session card with **Sign out /
+  use a different token**.
+- [x] **Test and CI.** Playwright projects desktop, hidpi and mobile with axe in both themes,
+  functional specs for devices, profiles, outage, mapping, pipelines, settings, auth and OPC UA;
+  ESLint for client, server and mcp in CI.
+- [x] **Deep link from a mapping to its node in the UNS** (**Show in UNS**) and the **Advanced**
+  section of the device form (Modbus unmapped ranges, process isolation).
+- [x] **UNS topology over-zooms when a deep mount is present**, and **OPC-UA / i3X mounts default
+  fully expanded**: auto-fit frames only broker trees (`fitTransform` in `graph/unsLayout.js`) and
+  `seedExpansion` seeds mounts collapsed.
+- [x] **Modal portal consistency.** Every overlay uses the shared portaled `Modal`, `Dialog` or
+  `Drawer` (`components/ui/overlay.jsx`); no `fixed inset-0` overlay exists outside `components/ui/`
+  (searched Nov 2026).
+- [x] System "Process health" sparklines blank after a restart (dashed baseline until the second
+  sample), replay scrubber polish (keyboard slider, time labels, ticks), density and spacing audit tail.
 
 - [x] A shared Y axis flattened mixed-magnitude tags (temperature ~50 went flat
   next to speed ~1450). Added a Normalize toggle to Trends that rescales each

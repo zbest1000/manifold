@@ -3,6 +3,7 @@
 **Guides**
 
 - 🏁 [Getting Started](Getting-Started)
+- 🎨 [User interface](User-Interface)
 - 🔌 [Broker Setup](Broker-Setup)
 - 🗄️ [Historians](Historians)
 - 🔀 [Pipelines and Models](Pipelines-and-Models)
