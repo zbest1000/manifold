@@ -22,6 +22,7 @@
 
 import { api } from '@/lib/api';
 import { CURATED_ICONS, curatedIconNames } from './curatedIcons';
+import { namespaceIconName } from './unsLevels';
 
 export { curatedIconNames };
 
@@ -238,6 +239,8 @@ export function getIconOverride(brokerId, path) {
 export function resolveIconName(node) {
   const manual = overrides[`${node.brokerId}:${node.path}`];
   if (manual) return manual;
+  const ns = namespaceIconName(node);
+  if (ns) return ns;
   const lower = node.name.toLowerCase();
   for (const [kw, icon] of KEYWORD_ICONS) {
     if (lower.includes(kw)) return icon;

@@ -392,7 +392,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas ref={canvasRef} className="graph-canvas" role="img" aria-label="Large node graph. Use the Tree view for a keyboard-accessible list." />
       <canvas ref={labelCanvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
     </div>
   );

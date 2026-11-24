@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X } from 'lucide-react';
 import { api } from '@/lib/api';
-import PageHeader from '@/components/PageHeader';
-import { Card, Button, EmptyState } from '@/components/ui';
+import ResponsiveHeader from '@/components/ResponsiveHeader';
+import { Card, Button, EmptyState, Modal } from '@/components/ui';
 import { Sparkline, TimeSeriesChart } from '@/components/charts';
 
 /**
@@ -92,26 +91,35 @@ function StatTile({ label, value, unit, history, warn, sub }) {
   return (
     <>
       <div
+        role={canChart ? 'button' : undefined}
+        tabIndex={canChart ? 0 : undefined}
+        aria-label={canChart ? `${label}: ${value}${unit ? ` ${unit}` : ''}. Expand history chart` : undefined}
         onClick={() => canChart && setOpen(true)}
+        onKeyDown={(e) => {
+          if (canChart && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
         title={canChart ? 'Click to expand this metric' : undefined}
-        className={`group rounded-xl border px-3 py-2.5 transition ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'} ${canChart ? 'cursor-pointer hover:border-white/15 hover:bg-white/[0.05]' : ''}`}
+        className={`group rounded-xl border px-3 py-2.5 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70 ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'} ${canChart ? 'cursor-pointer hover:border-white/15 hover:bg-white/[0.05]' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             {/* Wrap the label instead of truncating — "Delivered"/"Bindings published"
                 were cut to "DELI…"/"BINDIN…" in the narrow tiles. */}
-            <p className="flex items-center gap-1 text-2xs font-medium uppercase tracking-wide text-slate-500" title={label}>
+            <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-slate-400" title={label}>
               {label}
               {canChart && <Maximize2 size={9} className="opacity-0 transition group-hover:opacity-100" />}
             </p>
             <p className={`mt-0.5 text-lg font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
               {value}
-              {unit && <span className="ml-1 text-xs font-normal text-slate-500">{unit}</span>}
+              {unit && <span className="ml-1 text-xs font-normal text-slate-400">{unit}</span>}
             </p>
-            {sub && <p className="truncate text-2xs text-slate-500">{sub}</p>}
+            {sub && <p className="truncate text-xs text-slate-400">{sub}</p>}
           </div>
-          <div className="w-24 shrink-0">
-            <Sparkline values={history} warn={warn} height={28} />
+          <div className="w-20 shrink-0">
+            <Sparkline values={history} warn={warn} height={28} label={label} />
           </div>
         </div>
       </div>
@@ -123,46 +131,30 @@ function StatTile({ label, value, unit, history, warn, sub }) {
 // Click-to-expand: a full uPlot time chart of a tile's rolling history, on a
 // synthesized time axis (samples are POLL_MS apart, newest = now).
 function MetricModal({ label, value, unit, history, warn, onClose }) {
-  useEffect(() => {
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
   const series = useMemo(() => {
     const now = Date.now();
     const n = history.length;
     const points = history.map((v, i) => [now - (n - 1 - i) * POLL_MS, v]);
     return [{ tag: `${label}${unit ? ` (${unit})` : ''}`, points }];
   }, [history, label, unit]);
-  // Portal to <body>: the tile lives inside a Card with backdrop-blur, which
-  // becomes the containing block for position:fixed descendants — so an in-tree
-  // modal would be trapped inside (and painted under) that card. Rendering at
-  // the document root escapes it.
-  return createPortal(
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/80 p-6" onClick={onClose}>
-      <div
-        className="w-full max-w-3xl rounded-2xl border border-white/10 bg-surface-900 p-5 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label={`${label} history`}
-      >
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">{label}</h3>
-            <p className={`mt-0.5 text-2xl font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
-              {value}
-              {unit && <span className="ml-1 text-sm font-normal text-slate-500">{unit}</span>}
-            </p>
-            <p className="mt-0.5 text-2xs text-slate-500">last ~{Math.round((history.length * POLL_MS) / 1000)}s · {history.length} samples</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
-            <X size={16} />
-          </button>
+  // The shared Modal portals to <body>, escaping the tile's backdrop-blur Card.
+  return (
+    <Modal title={`${label} history`} onClose={onClose} className="max-w-3xl p-5">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">{label}</h3>
+          <p className={`mt-0.5 text-2xl font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
+            {value}
+            {unit && <span className="ml-1 text-sm font-normal text-slate-400">{unit}</span>}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-400">last ~{Math.round((history.length * POLL_MS) / 1000)}s · {history.length} samples</p>
         </div>
-        <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? '#f59e0b' : '#38bdf8')} />
+        <button onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
+          <X size={16} />
+        </button>
       </div>
-    </div>,
-    document.body
+      <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? '#f59e0b' : '#38bdf8')} />
+    </Modal>
   );
 }
 
@@ -174,7 +166,7 @@ function Section({ icon: Icon, title, children, warn }) {
       </h2>
       {/* auto-fit so tiles never shrink below a label-readable width, whether the
           section is full-width or half-width */}
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))' }}>
         {children}
       </div>
     </Card>
@@ -247,12 +239,25 @@ export default function System() {
   if (!metrics) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="System" subtitle="Manifold's own health and Prometheus readings" />
-        <div className="flex-1 p-6">
+        <ResponsiveHeader title="System" subtitle="Manifold's own health and Prometheus readings" />
+        <div className="flex-1 p-4 sm:p-6">
           {error ? (
-            <EmptyState icon={AlertTriangle} title="Couldn't read /metrics" hint={error} />
+            <EmptyState
+              icon={AlertTriangle}
+              title="Couldn't read /metrics"
+              hint={`${error}. Check that the server is running and your access token is valid, then retry.`}
+              action={
+                <Button variant="outline" size="sm" onClick={poll}>
+                  <RefreshCw size={14} /> Retry
+                </Button>
+              }
+            />
           ) : (
-            <div className="grid h-full place-items-center text-sm text-slate-500">Loading health metrics…</div>
+            <div className="grid gap-4" aria-busy="true" aria-label="Loading health metrics">
+              {[0, 1, 2].map((i) => (
+                <Card key={i} className="h-28 animate-pulse p-4" />
+              ))}
+            </div>
           )}
         </div>
       </div>
@@ -268,12 +273,12 @@ export default function System() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
+      <ResponsiveHeader
         title="System"
         subtitle="Manifold's own health and Prometheus readings — /metrics, live"
         actions={
-          <div className="flex items-center gap-3">
-            {updatedAt && <span className="text-[11px] text-slate-500">updated {new Date(updatedAt).toLocaleTimeString()}</span>}
+          <div className="flex flex-wrap items-center gap-3">
+            {updatedAt && <span className="text-xs text-slate-400">updated {new Date(updatedAt).toLocaleTimeString()}</span>}
             <Button variant="outline" size="sm" onClick={poll}>
               <RefreshCw size={14} /> Refresh
             </Button>
@@ -281,8 +286,13 @@ export default function System() {
         }
       />
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-6">
-        {error && <p className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">Last poll failed: {error}</p>}
+      <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+        {error && (
+          <p role="alert" className="flex items-center justify-between gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+            <span>Last poll failed: {error}. Showing the previous readings.</span>
+            <button onClick={poll} className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 hover:bg-amber-500/20">Retry</button>
+          </p>
+        )}
 
         <Section icon={Activity} title="Process health" warn={loopWarn}>
           <GaugeTile metrics={metrics} hist={hist} name="manifold_process_uptime_seconds" label="Uptime" fmt={fmtUptime} />

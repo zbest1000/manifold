@@ -2,21 +2,28 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Radio, Cpu, Share2, Radar, ArrowRight, MessageSquare, Workflow, Database, Tag, BellRing } from 'lucide-react';
 import { useStore } from '@/store/store';
+import { useConnections, useDataTick, useTopicVersionSum } from '@/store/selectors';
+import { totalTopicCount } from '@/graph/topicCount';
 import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import { Card, Badge, Button } from '@/components/ui';
-import PageHeader from '@/components/PageHeader';
+import ResponsiveHeader from '@/components/ResponsiveHeader';
 import { formatDistanceToNow } from 'date-fns';
 
 const sum = (obj, field) => Object.values(obj || {}).reduce((acc, v) => acc + (Number(v?.[field]) || 0), 0);
 
 export default function Overview() {
-  const brokers = useStore((s) => s.brokers);
-  const opcua = useStore((s) => s.opcua);
-  const dataTick = useStore((s) => s.dataTick);
-  const topicVersion = useStore((s) => s.topicVersion);
+  const { brokers, opcua } = useConnections();
+  const setTopics = useStore((s) => s.setTopics);
+  const dataTick = useDataTick(true);
+  const connectedIds = brokers.filter((b) => b.status === 'connected').map((b) => b.id);
+  const connectedKey = connectedIds.join('|');
+  const topicVersion = useTopicVersionSum(brokers.map((b) => b.id));
+  const [seedError, setSeedError] = useState(null);
+  const [retry, setRetry] = useState(0);
   const [engine, setEngine] = useState(null); // pushed every 2s while anything is connected
   const [alerts, setAlerts] = useState(null); // { rules, recent } — config, polled slowly
+  const [alertsError, setAlertsError] = useState(null);
 
   useEffect(() => {
     socket.on('engine-metrics', setEngine);
@@ -28,39 +35,81 @@ export default function Overview() {
     const load = () =>
       Promise.all([api.listAlertRules(), api.alertEvents(50)])
         .then(([r, e]) => !stop && setAlerts({ rules: r.rules.length, recent: e.events.length, latest: e.events[0] || null }))
-        .catch(() => {});
+        .then(() => !stop && setAlertsError(null))
+        .catch((e) => !stop && setAlertsError(e?.message || 'Could not load alert rules'));
     load();
     const t = setInterval(() => document.visibilityState === 'visible' && load(), 30_000);
     return () => {
       stop = true;
       clearInterval(t);
     };
-  }, []);
+  }, [retry]);
+
+  // Seed the topic index from the server exactly like the Topics and UNS pages
+  // do, so all three count from the same source (the live socket alone only
+  // carries topics that publish while this page is open: that is why Overview
+  // used to say 8 while Topics said 325).
+  useEffect(() => {
+    let alive = true;
+    for (const id of connectedIds) {
+      api
+        .brokerTopics(id)
+        .then((res) => alive && setTopics(id, res.topics))
+        .catch((e) => alive && setSeedError(e?.message || 'Could not load topics'));
+    }
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectedKey, retry]);
 
   // Read high-frequency data from the non-reactive store snapshot; refreshes at
   // the throttled tick / structure change rather than on every message.
-  const { topicCount, recent } = useMemo(() => {
+  const { recent } = useMemo(() => {
     const state = useStore.getState();
-    let count = 0;
     let all = [];
-    for (const b of brokers) {
-      count += state.getTopics(b.id).length;
-      all = all.concat(state.getLiveMessages(b.id));
-    }
+    for (const b of brokers) all = all.concat(state.getLiveMessages(b.id));
     all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    return { topicCount: count, recent: all.slice(0, 12) };
+    return { recent: all.slice(0, 12) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brokers, dataTick, topicVersion]);
+  }, [brokers, dataTick]);
+  // Topic total: the larger of the client index and the server's exact count.
+  const topicCount = useMemo(
+    () => totalTopicCount(brokers, (id) => useStore.getState().getTopics(id).length),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [brokers, topicVersion]
+  );
 
   const stats = [
-    { label: 'MQTT Brokers', value: brokers.length, icon: Radio, to: '/brokers', accent: 'from-sky-400 to-sky-600' },
-    { label: 'OPC UA Servers', value: opcua.length, icon: Cpu, to: '/opcua', accent: 'from-violet-400 to-violet-600' },
-    { label: 'Topics Tracked', value: topicCount, icon: Share2, to: '/topics', accent: 'from-emerald-400 to-emerald-600' }
+    {
+      label: 'MQTT Brokers',
+      value: brokers.length,
+      sub: `${brokers.filter((b) => b.status === 'connected').length} connected`,
+      icon: Radio,
+      to: '/brokers',
+      accent: 'from-sky-400 to-sky-600'
+    },
+    {
+      label: 'OPC UA Servers',
+      value: opcua.length,
+      sub: `${opcua.filter((c) => c.status === 'connected').length} connected`,
+      icon: Cpu,
+      to: '/opcua',
+      accent: 'from-violet-400 to-violet-600'
+    },
+    {
+      label: 'Topics Tracked',
+      value: topicCount.toLocaleString(),
+      sub: 'across all brokers',
+      icon: Share2,
+      to: '/topics',
+      accent: 'from-emerald-400 to-emerald-600'
+    }
   ];
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
+      <ResponsiveHeader
         title="Overview"
         subtitle="Live snapshot of your MQTT and OPC UA connections"
         actions={
@@ -72,7 +121,22 @@ export default function Overview() {
         }
       />
 
-      <div className="flex-1 space-y-6 overflow-y-auto p-6">
+      <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
+        {(seedError || alertsError) && (
+          <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
+            <span>{seedError ? `Topic list unavailable: ${seedError}` : `Alerts unavailable: ${alertsError}`}</span>
+            <button
+              onClick={() => {
+                setSeedError(null);
+                setAlertsError(null);
+                setRetry((v) => v + 1);
+              }}
+              className="shrink-0 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20"
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {stats.map((s) => (
             <Link key={s.label} to={s.to}>
@@ -81,14 +145,23 @@ export default function Overview() {
                   <div className={`grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br ${s.accent} shadow-lg`}>
                     <s.icon size={20} className="text-white" />
                   </div>
-                  <ArrowRight size={16} className="text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
+                  <ArrowRight size={16} className="text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
                 </div>
-                <p className="mt-4 text-3xl font-semibold tracking-tight">{s.value}</p>
-                <p className="text-sm text-slate-500">{s.label}</p>
+                <p className="mt-4 text-3xl font-semibold tracking-tight" data-testid={`tile-${s.label}`}>{s.value}</p>
+                <p className="text-sm text-slate-300">{s.label}</p>
+                <p className="text-xs text-slate-400">{s.sub}</p>
               </Card>
             </Link>
           ))}
         </div>
+
+        {!engine && !alerts && brokers.length + opcua.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-busy="true" aria-label="Loading engine health">
+            {[0, 1, 2, 3].map((i) => (
+              <Card key={i} className="h-28 animate-pulse p-4" />
+            ))}
+          </div>
+        )}
 
         {(engine || alerts) && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -134,7 +207,7 @@ export default function Overview() {
               to="/settings"
               icon={BellRing}
               label="Alerts"
-              value={alerts?.recent ?? 0}
+              value={(alerts?.recent ?? 0) >= 50 ? '50+' : (alerts?.recent ?? 0)}
               unit={`recent events · ${alerts?.rules ?? 0} rules`}
               lines={[alerts?.latest && `latest: ${alerts.latest.detail || alerts.latest.ruleName || ''}`]}
               warn={(alerts?.recent ?? 0) > 0}
@@ -146,9 +219,17 @@ export default function Overview() {
           <Card className="p-5">
             <h2 className="mb-3 text-sm font-semibold text-slate-200">Connections</h2>
             {brokers.length === 0 && opcua.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-500">
-                No active connections. Add a broker or run discovery to get started.
-              </p>
+              <div className="space-y-3 py-8 text-center">
+                <p className="text-sm text-slate-400">No active connections yet.</p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  <Link to="/brokers">
+                    <Button size="sm">Add a broker</Button>
+                  </Link>
+                  <Link to="/discovery">
+                    <Button size="sm" variant="outline">Run discovery</Button>
+                  </Link>
+                </div>
+              </div>
             ) : (
               <div className="space-y-2">
                 {brokers.map((b) => (
@@ -166,14 +247,16 @@ export default function Overview() {
               <MessageSquare size={15} className="text-accent-400" /> Recent messages
             </h2>
             {recent.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-500">Live messages will appear here.</p>
+              <p className="py-8 text-center text-sm text-slate-400">
+                Live messages will appear here once a connected broker publishes. Check the broker&apos;s subscribe filter if nothing arrives.
+              </p>
             ) : (
               <div className="space-y-1.5">
                 {recent.map((m) => (
                   <div key={m.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5">
                     <span className="mono flex-1 truncate text-xs text-slate-300">{m.topic}</span>
                     <Badge className="shrink-0">{m.type}</Badge>
-                    <span className="shrink-0 text-[11px] text-slate-600">
+                    <span className="shrink-0 text-xs text-slate-400">
                       {formatDistanceToNow(new Date(m.timestamp), { addSuffix: true })}
                     </span>
                   </div>
@@ -196,13 +279,13 @@ function HealthCard({ to, icon: Icon, label, value, unit, lines = [], warn = fal
             <Icon size={15} className={warn ? 'text-amber-400' : 'text-slate-400'} />
             <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
           </div>
-          <ArrowRight size={14} className="text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
+          <ArrowRight size={14} className="text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
         </div>
         <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
-        <p className="text-xs text-slate-500">{unit}</p>
+        <p className="text-xs text-slate-400">{unit}</p>
         <div className="mt-1.5 space-y-0.5">
           {lines.filter(Boolean).map((l) => (
-            <p key={l} className="truncate text-[11px] text-slate-500">
+            <p key={l} className="truncate text-xs text-slate-400">
               {l}
             </p>
           ))}
@@ -220,7 +303,7 @@ function Row({ icon: Icon, name, sub, status }) {
       </div>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-slate-200">{name}</p>
-        <p className="mono truncate text-xs text-slate-500">{sub}</p>
+        <p className="mono truncate text-xs text-slate-400">{sub}</p>
       </div>
       <Badge status={status} />
     </div>

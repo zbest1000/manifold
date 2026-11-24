@@ -38,8 +38,9 @@ export default function ConsumerFlows({ broker }) {
     if (!broker?.id) return;
     try {
       setAdmin(await api.getBrokerAdmin(broker.id));
-    } catch {
+    } catch (e) {
       setAdmin({ configured: false });
+      setError(e?.message || 'Could not read the broker admin configuration');
     }
   }, [broker?.id]);
 
@@ -130,8 +131,8 @@ export default function ConsumerFlows({ broker }) {
       try {
         const res = await api.topicTree(broker.id, path, 300);
         setExpanded((prev) => new Map(prev).set(path, res.children || []));
-      } catch {
-        /* transient */
+      } catch (e) {
+        setError(e?.message || 'Could not expand this namespace');
       }
     },
     [broker?.id, expanded]
@@ -181,7 +182,7 @@ export default function ConsumerFlows({ broker }) {
                 <option value="hivemq">HiveMQ Enterprise (REST)</option>
               </select>
               {form.type === 'hivemq' && (
-                <p className="mt-1 text-[10px] leading-snug text-slate-500">
+                <p className="mt-1 text-xs leading-snug text-slate-400">
                   Base URL of the HiveMQ REST API (e.g. http://broker-host:8888). Leave key empty; put a bearer token in
                   the secret field if the API requires one.
                 </p>
@@ -207,14 +208,14 @@ export default function ConsumerFlows({ broker }) {
               {busy ? 'Connecting…' : 'Connect & resolve subscriptions'}
             </Button>
           </form>
-          <p className="mt-3 text-[11px] text-slate-500">The API secret is stored server-side only and never sent back to the browser.</p>
+          <p className="mt-3 text-xs text-slate-400">The API secret is stored server-side only and never sent back to the browser.</p>
         </Card>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full w-full">
+    <div className="flex h-full w-full flex-col md:flex-row">
       <div className="relative flex-1">
         {graph.nodes.length > 1 ? (
           <ForceGraph
@@ -236,19 +237,19 @@ export default function ConsumerFlows({ broker }) {
           </div>
         )}
         {graph.nodes.length > 1 && (
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-xs text-slate-400 backdrop-blur">
             filters show exact match counts · double-click an aggregate to drill into real topics · red = dormant filter
           </div>
         )}
         {data?.resolution && (
-          <div className="pointer-events-none absolute right-4 top-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
+          <div className="pointer-events-none absolute right-4 top-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-xs text-slate-400 backdrop-blur">
             resolved against {data.resolution.topicTotal.toLocaleString()} observed topics
             {data.resolution.dropped > 0 && ` · ${data.resolution.dropped.toLocaleString()} dropped at cap`}
           </div>
         )}
       </div>
 
-      <div className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-white/5 bg-surface-900/30 p-3">
+      <div className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
         <Card className="p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
@@ -263,7 +264,7 @@ export default function ConsumerFlows({ broker }) {
               </button>
             </span>
           </div>
-          <p className="mb-2 flex items-center gap-1.5 text-[11px] text-slate-500">
+          <p className="mb-2 flex items-center gap-1.5 text-xs text-slate-400">
             <KeyRound size={11} /> {admin.type?.toUpperCase()} · {admin.url}
           </p>
           {data && (
@@ -277,7 +278,7 @@ export default function ConsumerFlows({ broker }) {
               />
             </div>
           )}
-          {error && <p className="mt-2 text-[11px] text-rose-300">{error}</p>}
+          {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
         </Card>
 
         {selNode?.meta?.kind === 'client' && (
@@ -286,7 +287,7 @@ export default function ConsumerFlows({ broker }) {
               <span className="truncate text-sm font-semibold text-slate-100">{selNode.label}</span>
               <Badge status={selNode.meta.connected ? 'connected' : 'error'}>{selNode.meta.connected ? 'connected' : 'offline'}</Badge>
             </div>
-            <p className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">mqtt client</p>
+            <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">mqtt client</p>
             <div className="space-y-1 text-xs text-slate-400">
               {selNode.meta.username && <Row k="Username" v={selNode.meta.username} />}
               {selNode.meta.ip && <Row k="IP" v={selNode.meta.ip} />}
@@ -301,7 +302,7 @@ export default function ConsumerFlows({ broker }) {
                 .map((s) => {
                   const r = data?.resolution?.byFilter?.[s.topic];
                   return (
-                    <div key={s.topic} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1 font-mono text-[11px]">
+                    <div key={s.topic} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2 py-1 font-mono text-xs">
                       <span className="truncate text-slate-300">{s.topic}</span>
                       {r &&
                         (r.matchCount === 0 ? (
@@ -309,7 +310,7 @@ export default function ConsumerFlows({ broker }) {
                             <MoonStar size={10} /> dormant
                           </span>
                         ) : (
-                          <span className="shrink-0 text-slate-500">{r.matchCount.toLocaleString()}</span>
+                          <span className="shrink-0 text-slate-400">{r.matchCount.toLocaleString()}</span>
                         ))}
                     </div>
                   );
@@ -324,7 +325,7 @@ export default function ConsumerFlows({ broker }) {
         {selNode?.meta?.kind === 'filter' && (
           <Card className="p-3">
             <div className="mb-1 truncate font-mono text-sm font-semibold text-slate-100">{selNode.meta.topic}</div>
-            <p className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">
+            <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">
               subscription filter{selNode.meta.share ? ` · $share group "${selNode.meta.share}"` : ''}
             </p>
             {selNode.meta.dormant ? (
@@ -339,10 +340,10 @@ export default function ConsumerFlows({ broker }) {
             )}
             {selNode.meta.sample?.length > 0 && (
               <div className="mt-2">
-                <p className="mb-1 text-[11px] font-medium text-slate-400">
+                <p className="mb-1 text-xs font-medium text-slate-400">
                   Concrete topics{selNode.meta.sampleTruncated && ` (${selNode.meta.sample.length} of ${selNode.meta.matchCount?.toLocaleString()})`}
                 </p>
-                <div className="max-h-44 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-[11px] text-slate-300">
+                <div className="max-h-44 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-xs text-slate-300">
                   {selNode.meta.sample.map((s) => (
                     <div key={s.topic} className="truncate">
                       {s.topic}
@@ -373,7 +374,7 @@ function ClientTraffic({ client, rate }) {
       {rate ? (
         <Row k="Rate in / out" v={`${rate.inRate.toFixed(1)} / ${rate.outRate.toFixed(1)} msg/s`} />
       ) : (
-        <p className="text-[10px] text-slate-500">refresh again for live rates</p>
+        <p className="text-xs text-slate-400">refresh again for live rates</p>
       )}
     </>
   );
@@ -387,24 +388,24 @@ function TopicCard({ node, subscribersOfTopic }) {
   return (
     <Card className="p-3">
       <div className="mb-1 truncate font-mono text-sm font-semibold text-slate-100">{path}</div>
-      <p className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">{isAgg ? `namespace · ${node.meta.subtreeCount?.toLocaleString()} topics` : 'concrete topic'}</p>
+      <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">{isAgg ? `namespace · ${node.meta.subtreeCount?.toLocaleString()} topics` : 'concrete topic'}</p>
       {!isAgg && (
         <>
-          <p className="mb-1 text-[11px] font-medium text-slate-400">Received by {clients.length} client(s)</p>
-          <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-[11px] text-slate-300">
-            {clients.length ? clients.map((c) => <div key={c}>{c}</div>) : <span className="text-slate-500">no matching subscriptions</span>}
+          <p className="mb-1 text-xs font-medium text-slate-400">Received by {clients.length} client(s)</p>
+          <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-xs text-slate-300">
+            {clients.length ? clients.map((c) => <div key={c}>{c}</div>) : <span className="text-slate-400">no matching subscriptions</span>}
           </div>
-          {filters.length > 0 && <p className="mt-1 text-[10px] text-slate-500">via {filters.join(' · ')}</p>}
+          {filters.length > 0 && <p className="mt-1 text-xs text-slate-400">via {filters.join(' · ')}</p>}
           {sp ? (
-            <p className="mt-2 text-[11px] text-slate-400">
+            <p className="mt-2 text-xs text-slate-400">
               Publisher: Sparkplug <span className="font-mono text-slate-300">{sp[3]}{sp[4] ? ` / ${sp.slice(4).join('/')}` : ''}</span> (group {sp[1]}) — see Producers tab
             </p>
           ) : (
-            <p className="mt-2 text-[10px] leading-snug text-slate-500">MQTT does not identify publishers for non-Sparkplug topics.</p>
+            <p className="mt-2 text-xs leading-snug text-slate-400">MQTT does not identify publishers for non-Sparkplug topics.</p>
           )}
         </>
       )}
-      {isAgg && <p className="text-[11px] text-slate-500">Double-click the node to drill into this namespace.</p>}
+      {isAgg && <p className="text-xs text-slate-400">Double-click the node to drill into this namespace.</p>}
     </Card>
   );
 }
@@ -412,7 +413,7 @@ function TopicCard({ node, subscribersOfTopic }) {
 function Stat({ label, value, tone }) {
   return (
     <div className="rounded-lg bg-black/20 px-2 py-1.5">
-      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
       <div className={`text-sm font-semibold ${tone === 'rose' && value > 0 ? 'text-rose-300' : 'text-slate-100'}`}>{value ?? '—'}</div>
     </div>
   );
@@ -421,7 +422,7 @@ function Stat({ label, value, tone }) {
 function Row({ k, v }) {
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-slate-500">{k}</span>
+      <span className="text-slate-400">{k}</span>
       <span className="truncate text-slate-300">{v}</span>
     </div>
   );

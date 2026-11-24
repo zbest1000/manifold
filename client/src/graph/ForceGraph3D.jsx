@@ -497,7 +497,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas ref={canvasRef} className="graph-canvas" role="img" aria-label="3D node graph. Use the Tree view for a keyboard-accessible list." />
       {capped && (
         <div className="pointer-events-none absolute right-4 top-16 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur">
           3D view showing the first {MAX_3D_NODES.toLocaleString()} nodes — use the 2D graph or tree for the full set.

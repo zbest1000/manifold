@@ -5,7 +5,8 @@ import { useStore } from '@/store/store';
 import { buildSparkplugGraph } from '@/graph/buildGraph';
 import { topicMatches } from '@/lib/mqtt';
 import ForceGraph from '@/graph/ForceGraph';
-import { Card, Badge, EmptyState } from '@/components/ui';
+import { Link } from 'react-router-dom';
+import { Card, Badge, Button, EmptyState } from '@/components/ui';
 import { formatDistanceToNow } from 'date-fns';
 
 /**
@@ -25,6 +26,8 @@ export default function ProducerFlows({ broker }) {
   const [sys, setSys] = useState(null);
   const [pubsub, setPubsub] = useState(null); // for reverse "consumed by" lookups
   const [selected, setSelected] = useState(null);
+  const [pollError, setPollError] = useState(null);
+  const [pollTry, setPollTry] = useState(0);
   const graphRef = useRef(null);
 
   useEffect(() => {
@@ -36,8 +39,10 @@ export default function ProducerFlows({ broker }) {
         if (!alive) return;
         setTopology(sp);
         setSys(sy);
-      } catch {
-        /* broker may have gone away; keep last snapshot */
+        setPollError(null);
+      } catch (e) {
+        // Keep the last snapshot, but say so: a stale view must not look live.
+        if (alive) setPollError(e?.message || 'Could not read the Sparkplug topology');
       }
     };
     poll();
@@ -46,12 +51,12 @@ export default function ProducerFlows({ broker }) {
     api
       .brokerAdminPubSub(broker.id)
       .then((r) => alive && setPubsub(r))
-      .catch(() => {});
+      .catch(() => alive && setPubsub(null)); // optional: only powers "consumed by"
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [broker?.id]);
+  }, [broker?.id, pollTry]);
 
   // "Consumed by": which clients' filters match this endpoint's data topics?
   const consumersOf = (node) => {
@@ -79,8 +84,16 @@ export default function ProducerFlows({ broker }) {
   const hasSparkplug = topology && topology.summary?.edgeNodes > 0;
 
   return (
-    <div className="flex h-full w-full">
-      <div className="relative flex-1">
+    <div className="flex h-full w-full flex-col md:flex-row">
+      <div className="relative min-h-0 flex-1">
+        {pollError && (
+          <div role="alert" className="absolute inset-x-4 top-4 z-10 flex items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 backdrop-blur">
+            <span>Topology may be stale: {pollError}</span>
+            <button onClick={() => setPollTry((v) => v + 1)} className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 hover:bg-amber-500/20">
+              Retry
+            </button>
+          </div>
+        )}
         {hasSparkplug ? (
           <ForceGraph
             ref={graphRef}
@@ -96,11 +109,16 @@ export default function ProducerFlows({ broker }) {
               icon={Cpu}
               title="No Sparkplug devices seen yet"
               hint="This view maps real publishing endpoints from Sparkplug B BIRTH/DEATH certificates (spBv1.0/…). Connect to a broker carrying Sparkplug traffic and devices will appear here as they announce themselves."
+              action={
+                <Link to="/brokers">
+                  <Button size="sm" variant="outline">Open MQTT Brokers</Button>
+                </Link>
+              }
             />
           </div>
         )}
         {hasSparkplug && (
-          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+          <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-xs text-slate-400 backdrop-blur">
             <span className="inline-flex items-center gap-1.5">
               <CircleDot size={12} className="text-emerald-400" /> online
             </span>
@@ -112,7 +130,7 @@ export default function ProducerFlows({ broker }) {
         )}
       </div>
 
-      <div className="w-80 shrink-0 space-y-3 overflow-y-auto border-l border-white/5 bg-surface-900/30 p-3">
+      <div className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
         {/* Sparkplug topology summary */}
         <Card className="p-3">
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-200">
@@ -126,7 +144,7 @@ export default function ProducerFlows({ broker }) {
               <Stat label="Online" value={topology.summary.online} tone="emerald" />
             </div>
           ) : (
-            <p className="text-xs text-slate-500">Waiting for Sparkplug traffic…</p>
+            <p className="text-xs text-slate-400">Waiting for Sparkplug traffic…</p>
           )}
         </Card>
 
@@ -141,7 +159,7 @@ export default function ProducerFlows({ broker }) {
                 </Badge>
               )}
             </div>
-            <p className="mb-2 text-[11px] uppercase tracking-wide text-slate-500">{selectedNode.meta.kind}</p>
+            <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">{selectedNode.meta.kind}</p>
             <div className="space-y-1 text-xs text-slate-400">
               {selectedNode.meta.msgCount != null && <Row k="Messages" v={selectedNode.meta.msgCount.toLocaleString()} />}
               {selectedNode.meta.lastSeen && <Row k="Last seen" v={ago(selectedNode.meta.lastSeen)} />}
@@ -150,10 +168,10 @@ export default function ProducerFlows({ broker }) {
             </div>
             {selectedNode.meta.metrics?.length > 0 && (
               <div className="mt-2">
-                <p className="mb-1 text-[11px] font-medium text-slate-400">
+                <p className="mb-1 text-xs font-medium text-slate-400">
                   Publishes {selectedNode.meta.metrics.length} metric{selectedNode.meta.metrics.length === 1 ? '' : 's'}
                 </p>
-                <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-[11px] text-slate-300">
+                <div className="max-h-40 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-xs text-slate-300">
                   {selectedNode.meta.metrics.map((m) => (
                     <div key={m} className="truncate">
                       {m}
@@ -167,11 +185,11 @@ export default function ProducerFlows({ broker }) {
               if (consumers === null) return null;
               return (
                 <div className="mt-2">
-                  <p className="mb-1 text-[11px] font-medium text-slate-400">
+                  <p className="mb-1 text-xs font-medium text-slate-400">
                     Consumed by {consumers.length} client{consumers.length === 1 ? '' : 's'}
                   </p>
                   {consumers.length ? (
-                    <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-[11px] text-slate-300">
+                    <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-lg bg-black/20 p-2 font-mono text-xs text-slate-300">
                       {consumers.map((c) => (
                         <div key={c} className="truncate">
                           {c}
@@ -179,7 +197,7 @@ export default function ProducerFlows({ broker }) {
                       ))}
                     </div>
                   ) : (
-                    <p className="rounded-lg bg-black/20 p-2 text-[11px] text-slate-500">No subscription currently covers this endpoint&apos;s topics.</p>
+                    <p className="rounded-lg bg-black/20 p-2 text-xs text-slate-400">No subscription currently covers this endpoint&apos;s topics.</p>
                   )}
                 </div>
               );
@@ -203,7 +221,7 @@ export default function ProducerFlows({ broker }) {
               {sys.summary.version && <Stat label="Version" value={sys.summary.version} wide />}
             </div>
           ) : (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-400">
               This broker isn&apos;t publishing a <code className="text-slate-400">$SYS</code> tree (or hasn&apos;t yet). Broker health stats appear here when it does (Mosquitto, EMQX, …).
             </p>
           )}
@@ -214,7 +232,7 @@ export default function ProducerFlows({ broker }) {
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-amber-200">
             <Info size={15} /> Who subscribes to what?
           </div>
-          <p className="text-[11px] leading-relaxed text-slate-400">
+          <p className="text-xs leading-relaxed text-slate-400">
             MQTT decouples publishers and subscribers — the protocol (and <code>$SYS</code>) expose only <strong>aggregate</strong> client and subscription <em>counts</em>, not a per-client subscription map. This tab shows <strong>who publishes what</strong> (the Sparkplug device tree + every published topic). For <strong>who receives what</strong>, open the <strong>Consumers</strong> tab and connect a broker admin API — subscriptions are then resolved against the observed topics, all the way down to concrete leaves.
           </p>
         </Card>
@@ -226,7 +244,7 @@ export default function ProducerFlows({ broker }) {
 function Stat({ label, value, tone, icon: Icon, wide }) {
   return (
     <div className={`rounded-lg bg-black/20 px-2 py-1.5 ${wide ? 'col-span-2' : ''}`}>
-      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+      <div className="flex items-center gap-1 text-xs uppercase tracking-wide text-slate-400">
         {Icon && <Icon size={10} />} {label}
       </div>
       <div className={`truncate text-sm font-semibold ${tone === 'emerald' ? 'text-emerald-300' : 'text-slate-100'}`}>{value ?? '—'}</div>
@@ -237,7 +255,7 @@ function Stat({ label, value, tone, icon: Icon, wide }) {
 function Row({ k, v }) {
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-slate-500">{k}</span>
+      <span className="text-slate-400">{k}</span>
       <span className="truncate text-slate-300">{v}</span>
     </div>
   );

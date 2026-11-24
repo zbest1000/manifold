@@ -14,6 +14,7 @@ import { zoom, zoomIdentity } from 'd3-zoom';
 import { drag } from 'd3-drag';
 import { GRAPH_STYLES, LAYOUTS } from './graphStyles';
 import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { LOD_MIN_NODES, LOD_MIN_ZOOM, computeBranchSizes, orderByImportance, selectLabelIds } from './labelLod';
 
 /**
  * Canvas node graph: pan/zoom, drag, hover, selection, live message-flow
@@ -36,10 +37,13 @@ const ForceGraph = forwardRef(function ForceGraph(
     activitySource = null,
     activitySize = false,
     nodeValues = null,
+    nodeValuesRef = null, // ref whose .current is read each frame (keeps per-tick work out of React)
+    ariaLabel = null,
     valueZoom = 1.1,
     matchIds = null,
     focusId = null,
     minimap = false,
+    labelDensity = 0.5,
     colorByProtocol = false
   },
   ref
@@ -68,6 +72,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   const lastFrameRef = useRef(0);
   const drawRef = useRef(() => {});
   const bigRef = useRef(false);
+  const lodRef = useRef({ nodes: null, count: 0, order: [] }); // importance-ordered nodes for label LOD
   const gridRef = useRef(null);
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
@@ -203,8 +208,31 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = 1;
     }
 
-    const showLabels = t.k >= style.showLabelsAtZoom;
-    const showValues = nodeValues && t.k >= valueZoom;
+    // Label level-of-detail: in dense graphs only a prioritised, collision-free
+    // subset of labels is drawn (see labelLod.js); leaf labels wait for zoom.
+    const lod = nodes.length > LOD_MIN_NODES && !big;
+    const showLabels = lod ? t.k >= LOD_MIN_ZOOM : t.k >= style.showLabelsAtZoom;
+    let labelSet = null;
+    if (lod) {
+      const cache = lodRef.current;
+      if (cache.nodes !== nodes || cache.count !== nodes.length) {
+        cache.nodes = nodes;
+        cache.count = nodes.length;
+        cache.order = orderByImportance(nodes, computeBranchSizes(nodes, links));
+      }
+      const forced = new Set();
+      if (selectedId) forced.add(selectedId);
+      if (hover) forced.add(hover.id);
+      if (matching && matching.size <= 40) for (const id of matching) forced.add(id);
+      for (const [id, r] of rateRef.current) if (r >= 1) forced.add(id);
+      labelSet = selectLabelIds(
+        cache.order,
+        { k: t.k, tx: t.x, ty: t.y, w: width, h: height },
+        { leafZoom: valueZoom, maxLabels: 60 + Math.round(labelDensity * 240), forced, labelOf: (n) => n.label || '', radiusOf: (n) => nodeRadius(n, style) }
+      );
+    }
+    const nv = nodeValuesRef ? nodeValuesRef.current : nodeValues;
+    const showValues = nv && t.k >= valueZoom;
 
     for (const n of nodes) {
       if (big && !inView(n.x, n.y)) continue;
@@ -268,7 +296,7 @@ const ForceGraph = forwardRef(function ForceGraph(
 
       ctx.globalAlpha = 1;
 
-      if (showLabels && alpha > 0.3) {
+      if (showLabels && alpha > 0.3 && (!labelSet || labelSet.has(n.id))) {
         ctx.font = style.labelFont;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
@@ -281,7 +309,7 @@ const ForceGraph = forwardRef(function ForceGraph(
 
         // Value overlay + sparkline for leaf nodes above the zoom threshold
         if (showValues && alpha > 0.5) {
-          const v = nodeValues[n.id];
+          const v = nv[n.id];
           if (v) {
             if (v.text != null) {
               ctx.font = `600 11px 'JetBrains Mono', monospace`;
@@ -336,7 +364,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     ctx.restore();
 
     if (minimap) drawMinimap(ctx, nodes, transformRef.current, sizeRef.current, style, colorFor);
-  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor]);
+  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, labelDensity]);
 
   useEffect(() => {
     drawRef.current = draw;
@@ -572,6 +600,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     ref,
     () => ({
       fitTo,
+      redraw: () => drawRef.current(),
       pulseNode: (nodeId) => emitPulse(nodeId, true),
       exportPng: () => canvasRef.current?.toDataURL('image/png'),
       exportGraph: () => ({
@@ -728,7 +757,12 @@ const ForceGraph = forwardRef(function ForceGraph(
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas
+        ref={canvasRef}
+        className="graph-canvas"
+        role="img"
+        aria-label={ariaLabel || `Node graph with ${(data?.nodes || []).length.toLocaleString()} nodes${selectedId ? `, one selected` : ''}. Use the Tree view for a keyboard-accessible list.`}
+      />
     </div>
   );
 });

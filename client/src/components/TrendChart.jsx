@@ -43,11 +43,11 @@ function normalizeSeries(series) {
 }
 
 function State({ icon: Icon, tone = 'slate', children }) {
-  const color = tone === 'error' ? 'text-rose-400' : 'text-slate-500';
+  const color = tone === 'error' ? 'text-rose-400' : 'text-slate-400';
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
       <Icon size={22} className={tone === 'error' ? 'text-rose-400' : color} />
-      <p className={`max-w-md text-xs ${tone === 'error' ? 'text-rose-300' : 'text-slate-500'}`}>{children}</p>
+      <p className={`max-w-md text-xs ${tone === 'error' ? 'text-rose-300' : 'text-slate-400'}`}>{children}</p>
     </div>
   );
 }
@@ -77,11 +77,11 @@ export default function TrendChart({ series = [], loading = false, error = '', h
       {state === 'chart' && series.length > 1 && (
         <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5">
           {plotted.map((s, i) => (
-            <span key={s.tag || i} className="flex items-center gap-1.5 text-2xs text-slate-400">
+            <span key={s.tag || i} className="flex items-center gap-1.5 text-xs text-slate-400">
               <span className="h-2 w-2 rounded-full" style={{ background: seriesColor(i) }} />
               <span className="mono max-w-[220px] truncate">{s.tag}</span>
               {normalize && s.range && (
-                <span className="text-slate-500">
+                <span className="text-slate-400">
                   {fmtRange(s.range[0])}&ndash;{fmtRange(s.range[1])}
                 </span>
               )}
@@ -90,7 +90,7 @@ export default function TrendChart({ series = [], loading = false, error = '', h
         </div>
       )}
       {state === 'chart' && normalize && (
-        <p className="mt-1.5 text-2xs text-slate-500">Each series scaled to its own range (0&ndash;100%) so shapes compare directly; the legend shows real min&ndash;max.</p>
+        <p className="mt-1.5 text-xs text-slate-400">Each series scaled to its own range (0&ndash;100%) so shapes compare directly; the legend shows real min&ndash;max.</p>
       )}
     </div>
   );

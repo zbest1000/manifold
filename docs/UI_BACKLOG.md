@@ -13,12 +13,13 @@ PR that closed them is noted inline.
   `backdrop-blur` ancestor Card, which becomes the containing block for
   `position:fixed` and otherwise traps the modal under its neighbours) and owns
   Esc + backdrop-close. `HelpButton` migrated. **Still to migrate:**
-  `components/UnsIconPicker.jsx`, `components/ErrorLog.jsx`, and the two modals in
-  `pages/TopicGraph.jsx` (`HistoryChartModal`, expanded `TopicPanel`). None are
+  `components/UnsIconPicker.jsx` and `components/ErrorLog.jsx`. None are
   currently *visibly* broken (their ancestors aren't blur-Cards today), so this
   is preventive — migrate them to the primitive as they're touched.
+  **Done (Nov 2026):** `HistoryChartModal` and the expanded `TopicPanel`
+  (`pages/topics/`) and the System `MetricModal` now use the shared `Modal`.
 
-- [ ] **UNS topology over-zooms when a deep mount is present.** With the demo
+- [x] **UNS topology over-zooms when a deep mount is present.** *Done: the auto-fit now frames only broker trees (mounts are excluded whenever any broker node exists), via `fitTransform` in `graph/unsLayout.js`; covered by a unit test.* With the demo
   OPC-UA mount (opc-plc, hundreds of nodes) grafted in, the "fit everything on
   load" framing shrinks the whole forest to unreadable (k clamps near the 0.2
   floor). The MQTT broker trees — the thing you usually want — become tiny.
@@ -26,20 +27,20 @@ PR that closed them is noted inline.
   the broker subtrees and let the user pan to mounts, or (c) collapse mounts to
   their root by default. Needs a design call.
 
-- [ ] **OPC-UA / i3X mounts default fully-expanded in UNS.** Compounds the
+- [x] **OPC-UA / i3X mounts default fully-expanded in UNS.** *Done: `seedExpansion` seeds mounts collapsed (root only) while brokers still open to level 1.* Compounds the
   over-zoom above and makes the paper canvas very tall. Mounts probably want to
   seed collapsed (root only), unlike broker namespaces which seed to level 1.
 
 ### Low
 
-- [ ] **System "Process health" sparklines are blank right after a restart.**
+- [x] **System "Process health" sparklines are blank right after a restart.** *Done: `Sparkline` renders a dashed 1px baseline (and an aria-label "collecting samples") until the second sample lands.*
   Expected (needs ≥2 samples, ~6s) but reads as broken on first paint. Consider a
   1-px baseline placeholder until the first two samples land.
 
-- [ ] **Replay scrubber polish (Topics/Trends).** Functional but visually thin;
+- [x] **Replay scrubber polish (Topics/Trends).** *Done: the track is now a keyboard slider (arrows 5%, Home/End, Space/Enter), with start/end clock labels, quarter tick marks, aria-valuetext and labelled buttons (`components/ReplayScrubber.jsx`).* Functional but visually thin;
   no keyboard control, no time labels on the track. Verify a11y + add tick marks.
 
-- [ ] **Density/spacing audit tail.** Original QA flagged general density on
+- [x] **Density/spacing audit tail (UNS, Topics, Flows, Trends, System, Overview).** *Done: page headers wrap (`ResponsiveHeader`), side panels stack below the canvas under `md`, helper text is at least 12px in slate-400, and no page overflows horizontally at 390px.* Original QA flagged general density on
   UNS/Flows; revisit tile paddings and small-screen breakpoints once the bigger
   items land.
 

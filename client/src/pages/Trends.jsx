@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, X, Plus, Database, TrendingUp } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
-import PageHeader from '@/components/PageHeader';
+import ResponsiveHeader from '@/components/ResponsiveHeader';
 import TrendChart, { seriesColor } from '@/components/TrendChart';
 import { Card, Button, Input, Field, EmptyState, HelpButton } from '@/components/ui';
 
@@ -64,7 +65,8 @@ const RANGE_PRESETS = [
 const AUTO_REFRESH_MS = 30_000;
 
 export default function Trends() {
-  const connectedBrokers = useStore((s) => s.brokers).filter((b) => b.status === 'connected');
+  const allBrokers = useStore((s) => s.brokers);
+  const connectedBrokers = useMemo(() => allBrokers.filter((b) => b.status === 'connected'), [allBrokers]);
   const topicVersion = useStore((s) => s.topicVersion);
   const [sourceType, setSourceType] = useState('live'); // 'live' | 'historian' | 'recording'
   const [historians, setHistorians] = useState([]);
@@ -83,11 +85,16 @@ export default function Trends() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [normalize, setNormalize] = useState(false);
   const searchSeq = useRef(0);
+  const [sourcesError, setSourcesError] = useState('');
+  const [sourcesTry, setSourcesTry] = useState(0);
 
   useEffect(() => {
+    let alive = true;
+    setSourcesError('');
     api
       .listHistorians()
       .then((r) => {
+        if (!alive) return;
         const list = r.historians || [];
         setHistorians(list);
         // Prefer a historian with tag search (timebase queries fine but has
@@ -95,10 +102,11 @@ export default function Trends() {
         const first = list.find((h) => h.type !== 'timebase') || list[0];
         if (first) setHistId((prev) => prev || first.id);
       })
-      .catch(() => {});
+      .catch((e) => alive && setSourcesError(`Could not load historians: ${e?.message || 'request failed'}`));
     api
       .listRecordings()
       .then((r) => {
+        if (!alive) return;
         const files = (r.recordings || []).filter((rec) => rec.target?.type !== 'historian');
         setRecordings(files);
         if (files[0]) {
@@ -108,8 +116,11 @@ export default function Trends() {
           setSourceType((prev) => (prev === 'live' ? 'recording' : prev));
         }
       })
-      .catch(() => {});
-  }, []);
+      .catch((e) => alive && setSourcesError(`Could not load recordings: ${e?.message || 'request failed'}`));
+    return () => {
+      alive = false;
+    };
+  }, [sourcesTry]);
 
   // Default the live broker to the first connected one.
   useEffect(() => {
@@ -219,11 +230,11 @@ export default function Trends() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
+      <ResponsiveHeader
         title="Trends"
         subtitle="chart live from the message stream, a historian, or a local recording"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <HelpButton title="How Trends works" label="How Trends works">
               <p>Trends charts numeric values over time. Pick a source, add up to ten tags, and choose a range.</p>
               <p>Three sources:</p>
@@ -265,17 +276,35 @@ export default function Trends() {
         }
       />
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-6">
+      <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+        {sourcesError && (
+          <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
+            <span>{sourcesError}</span>
+            <button onClick={() => setSourcesTry((v) => v + 1)} className="shrink-0 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20">
+              Retry
+            </button>
+          </div>
+        )}
         {historians.length === 0 && recordings.length === 0 && connectedBrokers.length === 0 ? (
           <EmptyState
             icon={Database}
             title="Nothing to trend yet"
-            hint="Connect a broker to chart live values straight from the message stream — no storage needed — or add an InfluxDB/TimescaleDB historian or a file Recording for longer history."
+            hint="Connect a broker to chart live values straight from the message stream (no storage needed), or add an InfluxDB/TimescaleDB historian or a file Recording for longer history."
+            action={
+              <div className="flex gap-2">
+                <Link to="/brokers">
+                  <Button size="sm">Connect a broker</Button>
+                </Link>
+                <Link to="/pipelines">
+                  <Button size="sm" variant="outline">Set up a historian</Button>
+                </Link>
+              </div>
+            }
           />
         ) : (
           <>
             <Card className="p-4">
-              <div className="mb-4 flex gap-1 rounded-xl border border-white/10 p-1 w-fit">
+              <div className="mb-4 flex w-fit max-w-full flex-wrap gap-1 rounded-xl border border-white/10 p-1" role="group" aria-label="Data source">
                 {[
                   { key: 'live', label: 'Live', on: connectedBrokers.length > 0 },
                   { key: 'historian', label: 'Historian', on: historians.length > 0 },
@@ -285,6 +314,7 @@ export default function Trends() {
                     key={s.key}
                     type="button"
                     disabled={!s.on}
+                    aria-pressed={sourceType === s.key}
                     onClick={() => {
                       setSourceType(s.key);
                       setSuggestions([]);
@@ -342,7 +372,7 @@ export default function Trends() {
                           if (e.key === 'Escape') setSuggestOpen(false);
                         }}
                       />
-                      <Button variant="subtle" size="sm" onClick={() => addTag(query)} disabled={!query.trim() || tags.length >= MAX_TAGS}>
+                      <Button variant="subtle" size="sm" aria-label="Add tag" onClick={() => addTag(query)} disabled={!query.trim() || tags.length >= MAX_TAGS}>
                         <Plus size={14} /> Add
                       </Button>
                     </div>
@@ -367,11 +397,12 @@ export default function Trends() {
                 </Field>
 
                 <Field label="Range">
-                  <div className="flex overflow-hidden rounded-xl border border-white/10">
+                  <div className="flex overflow-hidden rounded-xl border border-white/10" role="group" aria-label="Time range">
                     {RANGE_PRESETS.map((p) => (
                       <button
                         key={p.label}
                         type="button"
+                        aria-pressed={rangeMs === p.ms}
                         onClick={() => setRangeMs(p.ms)}
                         className={clsx(
                           'px-3 py-2 text-xs font-medium transition',
@@ -397,8 +428,9 @@ export default function Trends() {
                       <button
                         type="button"
                         onClick={() => removeTag(tag)}
-                        className="rounded-full p-0.5 text-slate-500 transition hover:bg-white/10 hover:text-white"
+                        className="rounded-full p-0.5 text-slate-400 transition hover:bg-white/10 hover:text-white"
                         title="Remove tag"
+                        aria-label={`Remove tag ${tag}`}
                       >
                         <X size={12} />
                       </button>
@@ -445,6 +477,7 @@ export default function Trends() {
                         type="button"
                         onClick={() => setNormalize((v) => !v)}
                         title="Scale each series to its own range so a small-magnitude tag isn't flattened by a large one"
+                        aria-pressed={normalize}
                         className={clsx(
                           'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition',
                           normalize

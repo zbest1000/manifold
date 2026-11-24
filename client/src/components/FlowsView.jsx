@@ -16,7 +16,7 @@ export default function FlowsView({ broker }) {
   const [tab, setTab] = useState('producers');
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="flex items-center gap-1 border-b border-white/5 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-1 border-b border-white/5 px-3 py-2" role="group" aria-label="Flows perspective">
         <SubTab active={tab === 'producers'} onClick={() => setTab('producers')} icon={Radio} label="Producers" hint="who publishes what (Sparkplug + $SYS)" />
         <SubTab active={tab === 'consumers'} onClick={() => setTab('consumers')} icon={Users} label="Consumers" hint="who receives what (admin API, wildcards resolved)" />
       </div>
@@ -28,10 +28,12 @@ export default function FlowsView({ broker }) {
 function SubTab({ active, onClick, icon: Icon, label, hint }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       title={hint}
+      aria-pressed={active}
       className={clsx(
-        'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition',
+        'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
         active ? 'bg-accent-500/15 text-accent-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
       )}
     >

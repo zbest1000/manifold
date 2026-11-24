@@ -94,7 +94,7 @@ function UplotChart({ options, data, height, className }) {
  * Compact inline sparkline. `values` is a number[] (or []). Optional `warn`
  * flips the color to amber. No axes/legend/cursor — for stat tiles etc.
  */
-export function Sparkline({ values, height = 28, warn = false, area = true }) {
+export function Sparkline({ values, height = 28, warn = false, area = true, label = 'Trend' }) {
   const color = warn ? '#f59e0b' : ACCENT;
   const nums = (values || []).filter((v) => Number.isFinite(v));
   const flat = nums.length >= 2 && Math.min(...nums) === Math.max(...nums);
@@ -117,8 +117,20 @@ export function Sparkline({ values, height = 28, warn = false, area = true }) {
     }),
     [color, area, flat]
   );
-  if (nums.length < 2) return <div style={{ height, width: '100%' }} />;
-  return <UplotChart options={options} data={data} height={height} className="u-spark" />;
+  if (nums.length < 2) {
+    // Blank state: a 1px baseline instead of nothing, so a tile that is still
+    // collecting its first samples (needs 2) reads as waiting, not broken.
+    return (
+      <div role="img" aria-label={`${label}: collecting samples`} title="Collecting samples" style={{ height, width: '100%' }} className="flex items-end">
+        <div className="w-full border-b border-dashed" style={{ borderColor: withAlpha(color, 0.45) }} />
+      </div>
+    );
+  }
+  return (
+    <div role="img" aria-label={`${label}: ${nums.length} samples, latest ${fmtNum(nums[nums.length - 1])}, min ${fmtNum(Math.min(...nums))}, max ${fmtNum(Math.max(...nums))}`}>
+      <UplotChart options={options} data={data} height={height} className="u-spark" />
+    </div>
+  );
 }
 
 /**
@@ -160,12 +172,12 @@ export function TimeSeriesChart({ series = [], height = 260, colorFor, area, sho
       legend: { show: series.length > 0, live: true },
       scales: { x: { time: true }, y: { range: (_u, dmin, dmax) => paddedRange(dmin, dmax) } },
       axes: [
-        { stroke: AXIS, grid: { show: false }, ticks: { stroke: GRID, size: 4 }, font: '11px ui-sans-serif, system-ui', space: 60 },
+        { stroke: AXIS, grid: { show: false }, ticks: { stroke: GRID, size: 4 }, font: '12px ui-sans-serif, system-ui', space: 60 },
         {
           stroke: AXIS,
           grid: { show: showGrid, stroke: GRID, width: 1 },
           ticks: { show: false },
-          font: '11px ui-sans-serif, system-ui',
+          font: '12px ui-sans-serif, system-ui',
           size: 52,
           values: (_u, ticks) => ticks.map(fmtNum)
         }
@@ -190,8 +202,8 @@ export function TimeSeriesChart({ series = [], height = 260, colorFor, area, sho
 
   if (!data[0] || data[0].length < 2) {
     return (
-      <div style={{ height }} className="grid place-items-center text-xs text-slate-500">
-        Not enough data to chart yet.
+      <div style={{ height }} className="grid place-items-center text-xs text-slate-400" role="status">
+        Not enough data to chart yet. Samples arrive every few seconds.
       </div>
     );
   }
