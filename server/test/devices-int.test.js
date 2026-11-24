@@ -229,3 +229,59 @@ test('an S7 device flows through the same runtime, manager and binding path', as
     await plc.close?.();
   }
 });
+
+test('an EtherNet/IP device reads, browses the controller, and never writes', async () => {
+  const { EipSimulator } = require('./support/eipSimulator');
+  const plc = await new EipSimulator().start();
+  const profiles = memoryProfiles();
+  const mqtt = fakeBroker();
+  const devices = new DeviceManager({ profiles, guard: async () => {}, supervisorOptions: { backoff: { initialMs: 50, maxMs: 200 } } });
+  const bindings = new TagBindings({ mqttManager: mqtt, profiles, sparkplugPublisher: null });
+  bindings.registerSource('device', devices);
+  bindings.start();
+  await devices.start();
+  try {
+    const saved = await devices.save({
+      name: 'Line PLC',
+      protocol: 'ethernet-ip',
+      host: '127.0.0.1',
+      port: plc.port,
+      slot: 0,
+      limits: { requestDeadlineMs: 500, connectTimeoutMs: 1000 },
+      pollGroups: [{ id: 'default', intervalMs: 100 }],
+      tags: [
+        { key: 'count', address: 'DintTag' },
+        { key: 'ratio', address: 'RealTag' },
+        { key: 'motorSpeed', address: 'Motor.Speed' },
+        { key: 'local', address: 'Program:MainProgram.LocalDint' }
+      ]
+    });
+    profiles.upsertIn('bindings', 'b1', {
+      enabled: true,
+      source: { type: 'device', deviceId: saved.id, tags: ['count', 'ratio', 'motorSpeed'].map((k) => ({ address: k, name: k })) },
+      target: { mode: 'mqtt', brokerId: 'br', pathTemplate: 'acme/line1/plc/{name}', format: 'envelope' }
+    });
+    bindings.reconcile();
+    const values = (name) => mqtt.published.filter((p) => p.topic === `acme/line1/plc/${name}`).map((p) => p.payload);
+    await until(() => values('motorSpeed').length >= 1, 8000, 'first EtherNet/IP sample');
+    assert.strictEqual(values('count')[0].v, 123456);
+    assert.strictEqual(values('ratio')[0].v, 3.5);
+    assert.strictEqual(values('motorSpeed')[0].v, 1450.5);
+    assert.strictEqual(values('count')[0].q, 192);
+
+    // controller browse goes through the host process
+    const root = await devices.browse(saved.id);
+    assert.ok(root.some((n) => n.id === 'controller'));
+    const ctl = await devices.browse(saved.id, 'controller');
+    assert.ok(ctl.some((n) => n.name === 'DintTag' && n.kind === 'tag'));
+
+    // a non-browsable protocol says so instead of failing obscurely
+    assert.throws(() => devices.browse('missing'), DeviceValidationError);
+    assert.strictEqual(plc.stats.writesReceived, 0);
+  } finally {
+    bindings.stop();
+    await devices.stop();
+    await plc.stop?.();
+    await plc.close?.();
+  }
+});

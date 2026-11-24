@@ -90,6 +90,16 @@ router.post('/:id/probe', async (req, res) => {
   }
 });
 
+// GET /api/devices/:id/browse?node= — the controller's own tag list (browse-capable drivers)
+router.get('/:id/browse', async (req, res) => {
+  const { devices } = req.app.locals.services;
+  try {
+    res.json({ children: await devices.browse(req.params.id, req.query.node) });
+  } catch (error) {
+    fail(res, error);
+  }
+});
+
 // GET /api/devices/:id/values — latest value per tag
 router.get('/:id/values', (req, res) => {
   const { devices, profiles } = req.app.locals.services;

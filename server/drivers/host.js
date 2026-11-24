@@ -5,7 +5,7 @@
  * device of one protocol (or a single isolated device). It speaks JSON IPC to
  * server/services/driverSupervisor.js:
  *
- *   parent -> child: init, configure, probe, test, ping, shutdown
+ *   parent -> child: init, configure, probe, browse, test, ping, shutdown
  *   child -> parent: ready, samples, state, status, result, pong, device-error
  *
  * Anything uncaught is fatal on purpose: log, exit(1), the supervisor restarts us.
@@ -123,6 +123,16 @@ function fail(reqId, e) {
   send({ t: 'result', reqId, ok: false, error: e && e.message ? e.message : String(e) });
 }
 
+async function handleBrowse(msg) {
+  const r = running.get(msg.deviceId);
+  if (!r) return fail(msg.reqId, new Error(`unknown device '${msg.deviceId}'`));
+  try {
+    send({ t: 'result', reqId: msg.reqId, ok: true, data: await r.runtime.browse(msg.node) });
+  } catch (e) {
+    fail(msg.reqId, e);
+  }
+}
+
 async function handleProbe(msg) {
   const r = running.get(msg.deviceId);
   if (!r) return fail(msg.reqId, new Error(`unknown device '${msg.deviceId}'`));
@@ -195,6 +205,9 @@ process.on('message', (msg) => {
       break;
     case 'probe':
       handleProbe(msg);
+      break;
+    case 'browse':
+      handleBrowse(msg);
       break;
     case 'test':
       handleTest(msg);

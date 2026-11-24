@@ -148,8 +148,35 @@ class DeviceManager extends EventEmitter {
 
   // ---- configuration ---------------------------------------------------------
 
+  /** Driver descriptors in the one shape the UI renders forms from. */
   protocols() {
-    return Object.entries(this.drivers).map(([id, { mod }]) => ({ id, ...(mod.describe ? mod.describe() : {}) }));
+    const TYPES = { integer: 'number', number: 'number', select: 'select', boolean: 'boolean' };
+    const field = (f) => ({
+      ...f,
+      name: f.name ?? f.key,
+      label: f.label || f.name || f.key,
+      type: TYPES[f.type] || 'text' // tsap, string, ... render as text inputs
+    });
+    // A "presets" entry is not an input: it becomes descriptor.presets,
+    // one-click value sets such as the S7 rack/slot per CPU family.
+    const split = (fields = []) => ({
+      fields: fields.filter((f) => f.type !== 'presets').map(field),
+      presets: fields.filter((f) => f.type === 'presets').flatMap((f) => f.presets || [])
+    });
+    return Object.entries(this.drivers).map(([id, { mod }]) => {
+      const d = mod.describe ? mod.describe() : {};
+      return {
+        ...d,
+        id,
+        label: d.label || id,
+        experimental: Boolean(d.experimental),
+        capabilities: { browse: false, subscribe: false, maxInFlight: 1, ...(d.capabilities || {}) },
+        deviceFields: split(d.deviceFields).fields,
+        optionFields: split(d.optionFields).fields,
+        presets: split(d.deviceFields).presets,
+        tagTypes: d.tagTypes || []
+      };
+    });
   }
 
   /** Per-tag validation with the driver's pure validator. */
@@ -282,6 +309,15 @@ class DeviceManager extends EventEmitter {
   probe(id, args) {
     if (!this.profiles.getIn('devices', id)) throw new DeviceValidationError('device not found');
     return this.supervisor.probe(id, args || {});
+  }
+
+  /** Browse the controller's own tags (e.g. EtherNet/IP symbol list). */
+  browse(id, node) {
+    const device = this.profiles.getIn('devices', id);
+    if (!device) throw new DeviceValidationError('device not found');
+    const caps = this.protocols().find((p) => p.id === device.protocol)?.capabilities;
+    if (!caps?.browse) throw new DeviceValidationError(`${device.protocol} devices cannot be browsed; enter tags manually or import a CSV`);
+    return this.supervisor.browse(id, node || undefined, 20000);
   }
 
   getValues(id) {

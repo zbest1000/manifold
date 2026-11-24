@@ -619,6 +619,23 @@ class DeviceRuntime {
 
   // ---------------------------------------------------------------- probe / status
 
+  /** Browse the device's own tag namespace (drivers with capabilities.browse). */
+  async browse(node) {
+    if (typeof this.driver.browse !== 'function') throw new Error('this driver cannot browse');
+    if (this._phase !== 'online') throw new Error('device is offline');
+    const gen = this._gen;
+    const run = async () => {
+      if (!this._alive(gen)) throw new Error('device is offline');
+      return this._race(() => this.driver.browse(node), this.limits.requestDeadlineMs * 4 + 2000, 'browse');
+    };
+    const p = this._lock.then(run, run);
+    this._lock = p.then(
+      () => {},
+      () => {}
+    );
+    return p;
+  }
+
   async probe(args) {
     if (this._phase !== 'online') throw new Error('device is offline');
     const gen = this._gen;

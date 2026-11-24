@@ -42,6 +42,8 @@ function describe() {
     label: 'Siemens S7',
     defaultPort: 102,
     readOnly: true,
+    experimental: true, // verified against the in-process simulator only; see NOTES.md
+    capabilities: { browse: false, subscribe: false, maxInFlight: 1 },
     deviceFields: [
       { name: 'rack', label: 'Rack', type: 'integer', min: 0, max: 7, default: 0 },
       { name: 'slot', label: 'Slot', type: 'integer', min: 0, max: 31, default: 1 },

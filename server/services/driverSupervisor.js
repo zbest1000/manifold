@@ -414,6 +414,14 @@ class DriverSupervisor extends EventEmitter {
     return this._request(host, { t: 'probe', deviceId, args }, timeoutMs);
   }
 
+  /** Browse a running device's tag namespace (drivers with capabilities.browse). */
+  browse(deviceId, node, timeoutMs) {
+    const entry = this._devices.get(deviceId);
+    if (!entry) return Promise.reject(new Error(`unknown device '${deviceId}'`));
+    const host = this._hosts.get(entry.hostId);
+    return this._request(host, { t: 'browse', deviceId, node }, timeoutMs);
+  }
+
   async testConnection(device, timeoutMs) {
     if (this._closing) throw new Error('supervisor is shut down');
     if (!device || !this.drivers[device.protocol]) throw new Error('unknown protocol');

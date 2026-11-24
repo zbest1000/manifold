@@ -28,6 +28,8 @@ function describe() {
     protocol,
     label: 'EtherNet/IP (Logix)',
     experimental: true,
+    readOnly: true,
+    capabilities: { browse: true, subscribe: false, maxInFlight: 1 },
     defaultPort: 44818,
     deviceFields: [
       { key: 'slot', label: 'Controller slot', type: 'number', default: 0, min: 0, max: 255, help: 'Backplane slot of the controller (CompactLogix: 0).' },
