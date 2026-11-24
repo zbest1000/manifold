@@ -26,6 +26,7 @@ export default function PollGroupsEditor({ groups, onChange, usedIds = new Set()
             </FormField>
             <IconButton
               icon={Trash2}
+              side="left"
               label={usedIds.has(g.id) ? `Cannot remove ${g.id}: tags use it` : `Remove poll group ${g.id}`}
               disabled={groups.length <= 1 || usedIds.has(g.id)}
               onClick={() => onChange(groups.filter((_, j) => j !== i))}

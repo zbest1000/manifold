@@ -32,11 +32,24 @@ export function FormField({ label, help, error, className, children }) {
 const optValue = (o) => (typeof o === 'object' ? o.value : o);
 const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 
-/** Renders one protocol-descriptor field (number | select | text). */
+/** Renders one protocol-descriptor field (number | select | text | boolean). */
 export function DescriptorField({ field, value, onChange, error }) {
   const v = value ?? field.default ?? '';
+  const label = `${field.label || field.name}${field.optional ? ' (optional)' : ''}`;
+  if (field.type === 'boolean') {
+    return (
+      <FormField label={label} help={field.help} error={error}>
+        {(a) => (
+          <label className="flex h-[38px] items-center gap-2 text-sm text-slate-200">
+            <input {...a} type="checkbox" className="h-4 w-4 accent-sky-500" checked={Boolean(value ?? field.default)} onChange={(e) => onChange(e.target.checked)} />
+            {value ?? field.default ? 'On' : 'Off'}
+          </label>
+        )}
+      </FormField>
+    );
+  }
   return (
-    <FormField label={field.label || field.name} help={field.help} error={error}>
+    <FormField label={label} help={field.help} error={error}>
       {(a) =>
         field.type === 'select' ? (
           <select {...a} className={selectCls} value={String(v)} onChange={(e) => onChange(coerceSelect(field, e.target.value))}>
@@ -50,6 +63,9 @@ export function DescriptorField({ field, value, onChange, error }) {
           <Input
             {...a}
             type={field.type === 'number' ? 'number' : 'text'}
+            min={field.min}
+            max={field.max}
+            placeholder={field.placeholder ?? (field.optional ? 'not set' : undefined)}
             value={v}
             onChange={(e) => onChange(field.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value)}
           />
@@ -77,9 +93,26 @@ export function DescriptorFields({ fields, values, onChange, errors = {} }) {
   );
 }
 
-/** Defaults object from a descriptor field list. */
-export function fieldDefaults(fields) {
-  const out = {};
-  for (const f of fields || []) if (f.default !== undefined) out[f.name] = f.default;
-  return out;
+/** One-click value sets from the descriptor (e.g. S7 rack/slot per CPU family). */
+export function PresetButtons({ presets, isActive, onApply }) {
+  if (!presets?.length) return null;
+  return (
+    <div role="group" aria-label="Presets" className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-slate-400">Presets:</span>
+      {presets.map((p) => (
+        <button
+          key={p.label}
+          type="button"
+          aria-pressed={isActive(p)}
+          onClick={() => onApply(p)}
+          className={clsx(
+            'rounded-lg border px-2.5 py-1 text-xs font-medium transition',
+            isActive(p) ? 'border-accent-500/60 bg-accent-500/15 text-accent-200' : 'border-white/10 text-slate-200 hover:bg-white/5'
+          )}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
 }

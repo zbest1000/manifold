@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deviceBadge, cycleHealth, worstHealth, hostIssues, hostFor, qualityInfo, formatValue, formatMs } from '@/lib/deviceStatus';
+import { isStale, staleAfterMs, exceptionName, deviceBadge, cycleHealth, worstHealth, hostIssues, hostFor, qualityInfo, formatValue, formatMs } from '@/lib/deviceStatus';
 
 const dev = { enabled: true };
 
@@ -36,7 +36,8 @@ describe('cycleHealth', () => {
   });
   it('overrun when a cycle exceeds the interval or overruns were counted', () => {
     expect(cycleHealth({ intervalMs: 500, effectiveIntervalMs: 500, lastCycleMs: 700, avgCycleMs: 600, overruns: 0 }).level).toBe('overrun');
-    expect(cycleHealth({ intervalMs: 500, effectiveIntervalMs: 500, lastCycleMs: 100, avgCycleMs: 100, overruns: 3 }).level).toBe('overrun');
+    // a lifetime overrun count alone does not keep the warning up once cycles fit again
+    expect(cycleHealth({ intervalMs: 500, effectiveIntervalMs: 500, lastCycleMs: 100, avgCycleMs: 100, overruns: 3 })).toMatchObject({ level: 'ok', overruns: 3 });
   });
   it('is safe on missing data', () => {
     expect(cycleHealth(undefined).level).toBe('ok');
@@ -71,8 +72,34 @@ describe('hostFor', () => {
   it('uses an explicit hostId', () => {
     expect(hostFor({ hostId: 'a', protocol: 'modbus-tcp' }, hosts).state).toBe('running');
   });
+  it('uses deviceIds when hosts report them, with no protocol guess', () => {
+    const h = { a: { protocol: 's7', state: 'running', deviceIds: ['d1'] }, b: { protocol: 's7', state: 'parked', deviceIds: ['d2'] } };
+    expect(hostFor({ id: 'd1', protocol: 's7' }, h).state).toBe('running');
+    expect(hostFor({ id: 'd2', protocol: 's7' }, h).state).toBe('parked');
+    expect(hostFor({ id: 'd3', protocol: 's7' }, h)).toBeUndefined();
+  });
   it('falls back to the worst host of the protocol', () => {
     expect(hostFor({ protocol: 'modbus-tcp' }, hosts).state).toBe('parked');
     expect(hostFor({ protocol: 'enip' }, hosts)).toBeUndefined();
+  });
+});
+
+describe('stale values and exception names', () => {
+  it('stale after more than 3x the interval (min 3 s)', () => {
+    expect(staleAfterMs(1000)).toBe(3000);
+    expect(staleAfterMs(5000)).toBe(15000);
+    expect(isStale({ tRead: 1000 }, 1000, 3999)).toBe(false);
+    expect(isStale({ tRead: 1000 }, 1000, 4001)).toBe(true);
+    expect(isStale(undefined, 1000, 99999)).toBe(false);
+  });
+  it('names codes per protocol with a fallback', () => {
+    expect(exceptionName('modbus-tcp', 2)).toMatch(/data address/i);
+    expect(exceptionName('s7', 10)).toMatch(/DB missing/);
+    expect(exceptionName('ethernet-ip', 4)).toMatch(/not found/);
+    expect(exceptionName('s7', 99)).toBe('Code 99');
+  });
+  it('hostIssues names the affected devices', () => {
+    const i = hostIssues({ h: { protocol: 's7', state: 'parked', restarts: 3, deviceIds: ['d1'] } }, [{ id: 'd1', name: 'Filler' }]);
+    expect(i[0].text).toContain('Filler');
   });
 });

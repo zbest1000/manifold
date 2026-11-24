@@ -28,12 +28,19 @@ export function deviceBadge(device, status, live, host) {
   }
 }
 
-/** Driver host banner info: one entry per host that is parked or restarting. */
-export function hostIssues(hosts) {
+/**
+ * Driver host banner info: one entry per host that is parked or restarting.
+ * `devices` (optional) names the devices that live on the host via `deviceIds`.
+ */
+export function hostIssues(hosts, devices = []) {
+  const names = new Map((devices || []).map((d) => [d.id, d.name]));
   const out = [];
   for (const [id, h] of Object.entries(hosts || {})) {
-    if (h.state === 'parked') out.push({ id, level: 'error', text: `Driver host ${id} (${h.protocol}) is parked after ${h.restarts} restarts. Devices on it are not polling until it is restarted.` });
-    else if (h.state === 'backoff') out.push({ id, level: 'warn', text: `Driver host ${id} (${h.protocol}) is restarting (attempt ${h.restarts}).` });
+    if (h.state !== 'parked' && h.state !== 'backoff') continue;
+    const ids = Array.isArray(h.deviceIds) ? h.deviceIds : [];
+    const who = ids.length ? ` Affects: ${ids.map((d) => names.get(d) || d).join(', ')}.` : '';
+    if (h.state === 'parked') out.push({ id, level: 'error', deviceIds: ids, text: `Driver host ${id} (${h.protocol}) is parked after ${h.restarts} restarts. Its devices are not polling until it is restarted.${who}` });
+    else out.push({ id, level: 'warn', deviceIds: ids, text: `Driver host ${id} (${h.protocol}) is restarting (attempt ${h.restarts}).${who}` });
   }
   return out;
 }
@@ -54,7 +61,8 @@ export function cycleHealth(group) {
   const ratio = effective > 0 ? avg / effective : 0;
   let level = 'ok';
   if (effective > interval && interval > 0) level = 'slowed';
-  else if (overruns > 0 || (interval > 0 && last > interval)) level = 'overrun';
+  // `overruns` is a lifetime counter: it is shown, but only a cycle that is slow right now raises the level.
+  else if (interval > 0 && (last > interval || avg > interval)) level = 'overrun';
   return { level, ratio, interval, effective, last, avg, overruns };
 }
 
@@ -89,16 +97,34 @@ export function formatMs(ms) {
 }
 
 /**
- * Which driver host runs a device. The contract does not name the link, so use
- * `device.hostId` / `status.hostId` when present, else the host(s) of the same
- * protocol, preferring the worst state (parked > backoff > the rest).
+ * Which driver host runs a device: the host whose `deviceIds` lists it. Only when
+ * no host reports `deviceIds` at all (older server) fall back to the worst host
+ * of the same protocol.
  */
 export function hostFor(device, hosts) {
   if (!hosts) return undefined;
-  const direct = hosts[device.hostId] || hosts[device.status?.hostId];
+  const all = Object.values(hosts);
+  const direct = all.find((h) => Array.isArray(h.deviceIds) && h.deviceIds.includes(device.id)) || hosts[device.hostId] || hosts[device.status?.hostId];
   if (direct) return direct;
+  if (all.some((h) => Array.isArray(h.deviceIds))) return undefined;
   const rank = { parked: 3, backoff: 2, starting: 1 };
-  return Object.values(hosts)
-    .filter((h) => h.protocol === device.protocol)
-    .sort((a, b) => (rank[b.state] || 0) - (rank[a.state] || 0))[0];
+  return all.filter((h) => h.protocol === device.protocol).sort((a, b) => (rank[b.state] || 0) - (rank[a.state] || 0))[0];
+}
+
+/** A value is stale when nothing updated it for more than 3x the poll interval (min 3 s). */
+export function staleAfterMs(intervalMs) {
+  return Math.max(3000, 3 * (Number(intervalMs) || 1000));
+}
+export function isStale(sample, intervalMs, now = Date.now()) {
+  return Boolean(sample && sample.tRead && now - sample.tRead > staleAfterMs(intervalMs));
+}
+
+// Driver "exception" codes by protocol. The runtime keys device.status.exceptions by code only.
+const EXC_NAMES = {
+  'modbus-tcp': { 1: 'Illegal function', 2: 'Illegal data address (register does not exist)', 3: 'Illegal data value', 4: 'Device failure', 5: 'Acknowledge (busy, retry later)', 6: 'Device busy', 10: 'Gateway path unavailable', 11: 'Gateway target did not respond' },
+  s7: { 1: 'CPU hardware fault', 3: 'Access not allowed (PUT/GET or protection)', 5: 'Address out of range (DB too short)', 6: 'Data type not supported', 7: 'Data type inconsistent', 10: 'Object does not exist (DB missing)', PLAN_STALE: 'Plan exceeds negotiated PDU', INVALID_REQUEST: 'Invalid request' },
+  'ethernet-ip': { '-1': 'Read-only violation', 1: 'Connection failure', 2: 'Resource unavailable', 3: 'Invalid parameter', 4: 'Tag or path not found', 5: 'Path destination unknown', 8: 'Service not supported', 15: 'Privilege violation', 16: 'Device state conflict', 19: 'Not enough data', 20: 'Attribute not supported', 21: 'Too much data', 22: 'Object does not exist', 255: 'General error' }
+};
+export function exceptionName(protocol, code) {
+  return EXC_NAMES[protocol]?.[code] || `Code ${code}`;
 }

@@ -69,7 +69,13 @@ export default function Devices() {
 
   const protocols = data?.protocols || [];
   const labels = useMemo(() => Object.fromEntries(protocols.map((p) => [p.id, p.label])), [protocols]);
-  const issues = hostIssues(data?.hosts);
+  const issues = useMemo(() => hostIssues(data?.hosts, data?.devices), [data]);
+  const experimental = useMemo(() => new Set(protocols.filter((p) => p.experimental).map((p) => p.id)), [protocols]);
+  const editingLive = useMemo(() => {
+    if (!editing || editing === 'new') return null;
+    const cur = data?.devices.find((d) => d.id === editing.id);
+    return { ...(cur?.status || {}), ...(deviceStates[editing.id] || {}) };
+  }, [editing, data, deviceStates]);
 
   const toggle = useCallback(
     async (device) => {
@@ -158,7 +164,7 @@ export default function Devices() {
             <EmptyState
               icon={HardDrive}
               title="Add your first device"
-              hint="Connect a PLC, meter or gateway over Modbus TCP, test the connection, list its registers as tags, then map them into the UNS."
+              hint="Connect a PLC, meter or gateway over Modbus TCP, Siemens S7 or EtherNet/IP, test the connection, list its tags, then map them into the UNS."
               action={
                 <Button onClick={() => setEditing('new')} disabled={!canAdd}>
                   <Plus size={14} /> Add device
@@ -177,6 +183,7 @@ export default function Devices() {
                   live={deviceStates[d.id]}
                   host={hostFor(d, data.hosts)}
                   protocolLabel={labels[d.protocol] || d.protocol}
+                  experimental={experimental.has(d.protocol)}
                   busy={busyId === d.id}
                   onEdit={onEdit}
                   onDelete={onDelete}
@@ -192,6 +199,7 @@ export default function Devices() {
         <DeviceForm
           device={editing === 'new' ? null : editing}
           protocols={protocols}
+          live={editingLive}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);

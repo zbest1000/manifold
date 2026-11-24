@@ -73,9 +73,11 @@ export function useDeviceValues(deviceId) {
       .deviceValues(deviceId)
       .then((r) => {
         if (!alive) return;
-        // Socket pushes that arrived meanwhile are newer: keep them over the snapshot.
+        // Per tag, keep whichever of the snapshot and the socket-fed store is newer.
         const current = useStore.getState().deviceValues[deviceId] || {};
-        seed(deviceId, { ...(r.values || {}), ...current });
+        const merged = { ...(r.values || {}) };
+        for (const [k, v] of Object.entries(current)) if (!merged[k] || (v?.tRead || 0) >= (merged[k].tRead || 0)) merged[k] = v;
+        seed(deviceId, merged);
         setError('');
       })
       .catch((e) => alive && setError(e.message || 'Could not load live values'));
