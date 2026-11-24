@@ -9,7 +9,9 @@
  *     client (client/dist) and pre-wired to that broker.
  *
  * The backend port comes from E2E_PORT (picked in playwright.config.js); the
- * simulator port is handed to the tests as E2E_MODBUS_PORT (workers inherit it).
+ * simulator port is handed to the tests as E2E_MODBUS_PORT and the broker port as E2E_MQTT_PORT
+ * (workers inherit both). Tests that need their own device simulators (S7, EtherNet/IP, a Modbus
+ * unit they can switch off) start them in-process through e2e/support.js.
  */
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -142,6 +144,7 @@ export default async function globalSetup() {
   }
 
   process.env.E2E_MODBUS_PORT = String(modbus.port);
+  process.env.E2E_MQTT_PORT = String(mqttPort);
 
   return async () => {
     for (const cleanup of cleanups.reverse()) await cleanup().catch(() => {});

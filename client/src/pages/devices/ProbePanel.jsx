@@ -39,21 +39,25 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
     }
   };
 
+  const onEnter = (e) => {
+    if (e.key === 'Enter') run(e);
+  };
+
   const layout = spec.unitId ? 'sm:grid-cols-[minmax(0,1fr)_6rem_7rem_auto]' : spec.count ? 'sm:grid-cols-[minmax(0,1fr)_6rem_auto]' : 'sm:grid-cols-[minmax(0,1fr)_auto]';
   return (
     <div className="space-y-3">
-      <div role="group" aria-label="Probe request" onKeyDown={(e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') run(e); }} className={`grid grid-cols-2 items-end gap-3 ${layout}`}>
+      <div role="group" aria-label="Probe request" className={`grid grid-cols-2 items-end gap-3 ${layout}`}>
         <FormField label="Address" className="col-span-2 sm:col-span-1">
-          {(a) => <Input {...a} className="mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder={spec.placeholder} />}
+          {(a) => <Input {...a} onKeyDown={onEnter} className="mono" value={address} onChange={(e) => setAddress(e.target.value)} placeholder={spec.placeholder} />}
         </FormField>
         {spec.count && (
           <FormField label={spec.count.label}>
-            {(a) => <Input {...a} type="number" min={spec.count.min} max={spec.count.max} value={count} onChange={(e) => setCount(e.target.value)} placeholder={protocol === 's7' ? 'type size' : undefined} />}
+            {(a) => <Input {...a} onKeyDown={onEnter} type="number" min={spec.count.min} max={spec.count.max} value={count} onChange={(e) => setCount(e.target.value)} placeholder={protocol === 's7' ? 'type size' : undefined} />}
           </FormField>
         )}
         {spec.unitId && (
           <FormField label="Unit id">
-            {(a) => <Input {...a} type="number" min={0} max={255} value={unitId} onChange={(e) => setUnitId(e.target.value)} placeholder={defaultUnitId !== undefined ? String(defaultUnitId) : ''} />}
+            {(a) => <Input {...a} onKeyDown={onEnter} type="number" min={0} max={255} value={unitId} onChange={(e) => setUnitId(e.target.value)} placeholder={defaultUnitId !== undefined ? String(defaultUnitId) : ''} />}
           </FormField>
         )}
         <Button type="button" onClick={run} disabled={busy} className="col-span-2 sm:col-span-1">

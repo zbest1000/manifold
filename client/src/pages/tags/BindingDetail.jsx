@@ -48,20 +48,32 @@ function CopyButton({ text, label }) {
 
 /** Expanded row: source/target facts, copyable asset path, and the resolved topics (server preview of the stored binding). */
 export default function BindingDetail({ binding: b, status: s, src, historians, profiles }) {
-  const [view, setView] = useState({ state: 'loading', data: null, error: null });
+  // The stored result is stamped with the request it answers; anything else means "loading", except that
+  // the last good data stays on screen while a changed binding is re-resolved.
+  const [result, setResult] = useState({ requestKey: null, data: null, error: null });
+  const [nonce, setNonce] = useState(0);
   const key = JSON.stringify(b); // the table re-fetches bindings every few seconds; only reload on a real change
-  const load = useCallback(async () => {
-    setView((v) => (v.data ? v : { state: 'loading', data: null, error: null }));
-    try {
-      const { warnings: _w, ...draft } = JSON.parse(key);
-      setView({ state: 'ok', data: await previewBinding(draft), error: null });
-    } catch (e) {
-      setView({ state: 'error', data: null, error: e.message });
-    }
-  }, [key]);
+  const requestKey = `${nonce}|${key}`;
   useEffect(() => {
-    load();
-  }, [load]);
+    let stale = false;
+    const { warnings: _w, ...draft } = JSON.parse(key);
+    previewBinding(draft).then(
+      (data) => !stale && setResult({ requestKey, data, error: null }),
+      (e) => !stale && setResult({ requestKey, data: null, error: e.message })
+    );
+    return () => {
+      stale = true;
+    };
+  }, [key, requestKey]);
+  const load = useCallback(() => setNonce((n) => n + 1), []);
+  const view =
+    result.requestKey === requestKey
+      ? result.error !== null
+        ? { state: 'error', data: null, error: result.error }
+        : { state: 'ok', data: result.data, error: null }
+      : result.data
+        ? { state: 'ok', data: result.data, error: null }
+        : { state: 'loading', data: null, error: null };
 
   const asset = bindingAssetPath(b);
   const d = view.data;

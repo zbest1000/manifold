@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { Button, Input } from '@/components/ui';
@@ -11,6 +11,7 @@ export default function HostStatePanel({ brokers, hosts, onStatus }) {
   const [brokerId, setBrokerId] = useState('');
   const [hostId, setHostId] = useState('manifold_host');
   const [busy, setBusy] = useState(false);
+  const hostFieldId = useId();
   const active = Object.values(hosts);
 
   const toggle = async (bId, hId, enabled) => {
@@ -54,10 +55,10 @@ export default function HostStatePanel({ brokers, hosts, onStatus }) {
           </select>
         </label>
         <div className="flex items-end gap-1.5">
-          <label className="min-w-0 flex-1 text-xs text-slate-300">
-            Host ID
-            <Input value={hostId} onChange={(e) => setHostId(e.target.value)} placeholder="host id" className="mt-1" />
-          </label>
+          <div className="min-w-0 flex-1 text-xs text-slate-300">
+            <label htmlFor={hostFieldId}>Host ID</label>
+            <Input id={hostFieldId} value={hostId} onChange={(e) => setHostId(e.target.value)} placeholder="host id" className="mt-1" />
+          </div>
           <Button size="sm" disabled={busy || !hostId || brokers.length === 0} onClick={() => toggle(brokerId || brokers[0]?.id, hostId, true)}>
             Enable
           </Button>

@@ -3,7 +3,7 @@ import { Trash2, AlertCircle, AlertTriangle, Clock } from 'lucide-react';
 import clsx from 'clsx';
 import { IconButton } from '@/components/ui';
 import { cellCls } from './FormControls';
-import { summarizeNormalized } from './model';
+import { summarizeNormalized, lengthDefault } from './model';
 import { qualityInfo, formatValue, quarantineReasonText } from '@/lib/deviceStatus';
 
 const QUALITY_STYLE = { good: 'text-emerald-300', uncertain: 'text-amber-300', bad: 'text-rose-300' };
@@ -48,7 +48,7 @@ function TagRowImpl({ tag, index, protocol, types, typeOptional, typeInfo, place
     <input className={cellCls} aria-label={`${label}, row ${n}`} value={tag[col] ?? ''} onChange={(e) => onChange(tag._id, { [col]: e.target.value })} onPaste={(e) => onPaste(e, index, col)} {...props} />
   );
   // Keep the raw text while typing ("0." must stay "0."); cleanTag converts on send.
-  const num = (col, label) => cell(col, label, { inputMode: 'decimal', onChange: (e) => onChange(tag._id, { [col]: e.target.value === '' ? undefined : e.target.value }) });
+  const num = (col, label, props = {}) => cell(col, label, { inputMode: 'decimal', onChange: (e) => onChange(tag._id, { [col]: e.target.value === '' ? undefined : e.target.value }), ...props });
   const orderSel = (col, label) => (
     <select className={cellCls} aria-label={`${label}, row ${n}`} value={tag[col] ?? ''} onChange={(e) => onChange(tag._id, { [col]: e.target.value || undefined })}>
       {ORDER_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -56,7 +56,11 @@ function TagRowImpl({ tag, index, protocol, types, typeOptional, typeInfo, place
   );
   const lengthInfo = typeInfo?.[tag.type] || typeInfo?.[String(tag.type || '').toUpperCase()];
   const extra = {
-    length: () => num('length', 'Length', { placeholder: lengthInfo?.needsLength ? 'max chars' : '', title: lengthInfo?.lengthHelp, 'aria-required': lengthInfo?.needsLength ? true : undefined }),
+    // Optional: a blank length is not an error, the driver applies its own default (stated, not "required").
+    length: () => {
+      const dflt = lengthInfo?.needsLength ? lengthDefault(lengthInfo) : null;
+      return num('length', 'Length', dflt === null ? {} : { placeholder: `default ${dflt}`, title: `Maximum characters. Defaults to ${dflt} when blank.` });
+    },
     bit: () => num('bit', 'Bit'),
     byteOrder: () => orderSel('byteOrder', 'Byte order override'),
     wordOrder: () => orderSel('wordOrder', 'Word order override')

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown, Folder, FileText, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Modal, Button, Input } from '@/components/ui';
@@ -17,6 +17,7 @@ export default function AssetPicker({ brokerId, value, onPick, onClose }) {
   const [loading, setLoading] = useState(() => new Set());
   const [errors, setErrors] = useState({});
   const [draft, setDraft] = useState(normalizeAssetPath(value));
+  const pathId = useId();
   const [focusPath, setFocusPath] = useState('');
   const refs = useRef(new Map());
 
@@ -151,10 +152,10 @@ export default function AssetPicker({ brokerId, value, onPick, onClose }) {
         })}
       </div>
 
-      <label className="mt-3 block space-y-1.5">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Asset path</span>
-        <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="acme/dallas/line4/filler" className="font-mono" aria-invalid={Boolean(err) || undefined} />
-      </label>
+      <div className="mt-3 space-y-1.5">
+        <label htmlFor={pathId} className="block text-xs font-medium uppercase tracking-wide text-slate-400">Asset path</label>
+        <Input id={pathId} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="acme/dallas/line4/filler" className="font-mono" aria-invalid={Boolean(err) || undefined} />
+      </div>
       {err && <p role="alert" className="mt-1.5 text-xs text-rose-300">{err}</p>}
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>Cancel</Button>

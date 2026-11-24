@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { X, AlertTriangle, Check, ArrowLeft, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
@@ -37,25 +37,28 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
   // Profile source: every profile tag is a row; the stored binding overlays names and selection.
-  useEffect(() => {
-    if (!isProfile || !profile) return;
+  // Adjusted while rendering, once per profile object (remembered in state), instead of in an effect.
+  const [seededProfile, setSeededProfile] = useState(null);
+  if (isProfile && profile && seededProfile !== profile) {
+    setSeededProfile(profile);
     const r = profileRowsFor(profile, editing && editing.source.profileId === profile.id ? editing : null);
     setRows(r.rows);
     setSelected(r.selected);
-  }, [isProfile, profile, editing]);
+  }
 
-  // Editing a device binding: names/units come from the device's effective tags.
-  useEffect(() => {
-    if (!editing || srcType !== 'device' || !data.meta.map) return;
+  // Editing a device binding: names/units come from the device's effective tags (once they have loaded).
+  const [seededMeta, setSeededMeta] = useState(null);
+  if (editing && srcType === 'device' && data.meta.map && seededMeta !== data.meta.map) {
+    setSeededMeta(data.meta.map);
     if (editing.source.tags === 'all') setRows(rowsFromBinding(editing, data.meta.map));
     else {
-      setRows((rs) => rs.map((r) => {
+      setRows(rows.map((r) => {
         const meta = data.meta.map[r.address] || r.meta;
         const defaultName = meta.property || r.address;
         return { ...r, meta, defaultName, name: r.explicit ? r.name : defaultName };
       }));
     }
-  }, [editing, srcType, data.meta.map]);
+  }
 
   const effRows = useMemo(() => (isProfile ? rows.filter((r) => selected.has(r.key)) : rows), [isProfile, rows, selected]);
   const allTags = isProfile ? selected.size === rows.length : editing?.source?.tags === 'all';

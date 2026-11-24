@@ -9,22 +9,18 @@ export default function AlsoPublished({ form, set, statusT, metaT, data }) {
   return (
     <div className="space-y-2 rounded-xl border border-white/10 px-3 py-2.5">
       <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-300">Also published (retained)</h4>
-      <label className="flex items-start gap-2 text-sm text-slate-100">
-        <input type="checkbox" checked={form.statusTopic} onChange={(e) => set({ statusTopic: e.target.checked })} className="mt-1 accent-accent-500" />
-        <span>
-          <span className="font-mono text-xs break-all">{statusT || '<asset>/_status'}</span>
-          <span className={`${help} block`}>
-            Online or offline, since when and why, so consumers can see when the source is down.
-            {statuses.length > 1 ? ` One per instance (${statuses.length}).` : ''}
-          </span>
+      <label className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 text-sm text-slate-100">
+        <input type="checkbox" checked={form.statusTopic} onChange={(e) => set({ statusTopic: e.target.checked })} className="row-span-2 mt-1 accent-accent-500" />
+        <span className="font-mono text-xs break-all">{statusT || '<asset>/_status'}</span>
+        <span className={help}>
+          Online or offline, since when and why, so consumers can see when the source is down.
+          {statuses.length > 1 ? ` One per instance (${statuses.length}).` : ''}
         </span>
       </label>
-      <label className="flex items-start gap-2 text-sm text-slate-100">
-        <input type="checkbox" checked={form.metaTopic} onChange={(e) => set({ metaTopic: e.target.checked })} className="mt-1 accent-accent-500" />
-        <span>
-          <span className="font-mono text-xs break-all">{metaT || '<asset>/_meta'}</span>
-          <span className={`${help} block`}>Each tag's type, unit, range and where it comes from, for discovery tools.</span>
-        </span>
+      <label className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 text-sm text-slate-100">
+        <input type="checkbox" checked={form.metaTopic} onChange={(e) => set({ metaTopic: e.target.checked })} className="row-span-2 mt-1 accent-accent-500" />
+        <span className="font-mono text-xs break-all">{metaT || '<asset>/_meta'}</span>
+        <span className={help}>Each tag's type, unit, range and where it comes from, for discovery tools.</span>
       </label>
       {form.metaTopic && metas[0] && (
         <details className="text-xs">

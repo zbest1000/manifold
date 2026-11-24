@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import { cleanTag } from '@/lib/deviceTags';
@@ -11,48 +11,43 @@ const VALIDATE_DEBOUNCE_MS = 600;
  * Stale responses (the user kept typing) are discarded.
  */
 export function useTagValidation(protocol, options, tags) {
-  const [results, setResults] = useState({});
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
+  // `key` names the request the stored results/error answer; "pending" is derived: a request is in
+  // flight whenever the current request key has not been answered yet.
+  const [state, setState] = useState({ key: null, results: {}, error: '' });
   const [nonce, setNonce] = useState(0);
-  const seq = useRef(0);
 
   // Only what the server cares about participates in the dependency.
   const payload = JSON.stringify(
     tags.filter((t) => t.key && String(t.address ?? '').trim()).map(cleanTag).map(({ key, address, type, length, bit, byteOrder, wordOrder }) => ({ key, address, type, length, bit, byteOrder, wordOrder }))
   );
   const optionsJson = JSON.stringify(options || {});
+  const active = Boolean(protocol) && payload !== '[]';
+  const requestKey = `${nonce}|${protocol}|${optionsJson}|${payload}`;
 
   useEffect(() => {
-    const list = JSON.parse(payload);
-    if (!protocol || !list.length) {
-      setResults({});
-      setPending(false);
-      setError('');
-      return undefined;
-    }
-    setPending(true);
-    const mine = ++seq.current;
+    if (!active) return undefined;
+    let stale = false; // the user kept typing (or unmounted): discard this response
     const timer = setTimeout(async () => {
       try {
-        const res = await api.validateDeviceTags(protocol, JSON.parse(optionsJson), list);
-        if (mine !== seq.current) return;
-        const map = {};
-        for (const r of res.results || []) map[r.key] = r;
-        setResults(map);
-        setError('');
+        const res = await api.validateDeviceTags(protocol, JSON.parse(optionsJson), JSON.parse(payload));
+        if (stale) return;
+        const results = {};
+        for (const r of res.results || []) results[r.key] = r;
+        setState({ key: requestKey, results, error: '' });
       } catch (e) {
-        if (mine !== seq.current) return;
-        setError(e.message || 'Validation request failed');
-      } finally {
-        if (mine === seq.current) setPending(false);
+        if (stale) return;
+        setState((s) => ({ ...s, key: requestKey, error: e.message || 'Validation request failed' }));
       }
     }, VALIDATE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [protocol, payload, optionsJson, nonce]);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [active, protocol, payload, optionsJson, requestKey]);
 
   const retry = useCallback(() => setNonce((n) => n + 1), []);
-  return { results, pending, error, retry };
+  if (!active) return { results: {}, pending: false, error: '', retry };
+  return { results: state.results, pending: state.key !== requestKey, error: state.error, retry };
 }
 
 /**

@@ -18,8 +18,8 @@ export function useDevicesData() {
   const devicesVersion = useStore((s) => s.devicesVersion);
   const alive = useRef(true);
 
-  const load = useCallback(async () => {
-    const [d, p] = await Promise.allSettled([api.devices(), listProfiles()]);
+  // Promise chain (not async/await) so the setState calls sit in a callback, which is what lets effects call load().
+  const load = useCallback(() => Promise.allSettled([api.devices(), listProfiles()]).then(([d, p]) => {
     if (!alive.current) return;
     if (d.status === 'fulfilled') {
       setData({ devices: d.value.devices || [], hosts: d.value.hosts || {}, protocols: d.value.protocols || [] });
@@ -30,7 +30,7 @@ export function useDevicesData() {
       setProfilesError('');
     } else setProfilesError(p.reason?.message || 'Could not load profiles');
     setLoading(false);
-  }, []);
+  }), []);
 
   useEffect(() => {
     alive.current = true;

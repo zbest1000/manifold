@@ -12,6 +12,7 @@ import { parseBulkDevices, rowToInstance, bulkTemplate } from '@/lib/bulkDevices
  */
 export default function BulkInstantiateDialog({ profile, descriptor, onClose, onDone }) {
   const titleId = useId();
+  const textId = useId();
   const fileRef = useRef(null);
   const [text, setText] = useState('');
   const [results, setResults] = useState({}); // line -> { status, message }
@@ -68,10 +69,10 @@ export default function BulkInstantiateDialog({ profile, descriptor, onClose, on
           <Button type="button" size="sm" variant="outline" onClick={() => fileRef.current?.click()}><Upload size={14} /> Load CSV file</Button>
           <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" className="sr-only" tabIndex={-1} aria-label="CSV file" onChange={loadFile} />
         </div>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400">Devices (CSV or pasted table)</span>
-          <Textarea data-autofocus rows={6} className="mono text-xs" value={text} onChange={(e) => changeText(e.target.value)} placeholder={'name,host,port\nPump 1,192.168.1.21,502'} disabled={running} />
-        </label>
+        <div>
+          <label htmlFor={textId} className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400">Devices (CSV or pasted table)</label>
+          <Textarea id={textId} data-autofocus rows={6} className="mono text-xs" value={text} onChange={(e) => changeText(e.target.value)} placeholder={'name,host,port\nPump 1,192.168.1.21,502'} disabled={running} />
+        </div>
         {parsed?.problems.length > 0 && <ul role="alert" className="list-disc space-y-0.5 rounded-lg border border-amber-500/30 bg-amber-500/10 py-2 pl-7 pr-3 text-xs text-amber-100">{parsed.problems.map((p, i) => <li key={i}>{p}</li>)}</ul>}
         {rows.length > 0 && (
           <div className="max-w-full overflow-x-auto rounded-xl border border-white/10" tabIndex={0} role="region" aria-label="Devices to create (scrolls horizontally)">

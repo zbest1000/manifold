@@ -12,7 +12,7 @@ export function validateAssetPath(p, what = 'Asset path') {
   if (!v.trim()) return `${what} is required, for example acme/dallas/line4/filler.`;
   if (v.length > 512) return `${what} is longer than 512 characters.`;
   if (/[{}]/.test(v)) return `${what} cannot contain placeholders. Use Advanced for a template.`;
-  if (/[\u0000-\u001f]/.test(v)) return `${what} cannot contain control characters.`;
+  if ([...v].some((c) => c.charCodeAt(0) < 0x20)) return `${what} cannot contain control characters.`;
   for (const seg of v.split('/')) {
     if (seg === '') return `${what} "${v}" has an empty segment (leading, trailing or double slash).`;
     if (/[+#]/.test(seg)) return `${what} "${v}" contains an MQTT wildcard (+ or #).`;

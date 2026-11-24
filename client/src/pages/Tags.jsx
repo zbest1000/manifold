@@ -15,6 +15,9 @@ import { buildBoundIndex, groupSources, parseSourceParam, sourceKey } from './ta
 import { SELECT_CLS } from './tags/wizardModel';
 import toast from 'react-hot-toast';
 
+const NO_SELECTION = new Map();
+const clearSelection = () => NO_SELECTION;
+
 /**
  * Tags: browse device tags across the drivers Manifold speaks (OPC UA, Sparkplug,
  * MQTT topics, devices), select them, and bind them into the UNS.
@@ -30,8 +33,9 @@ export default function Tags() {
   const [sources, setSources] = useState([]);
   const [sourcesLoaded, setSourcesLoaded] = useState(false);
   const [sourcesError, setSourcesError] = useState(null);
-  const [source, setSource] = useState(null);
-  const [selection, setSelection] = useState(() => new Map()); // node id -> { id, address, name, meta }
+  // Selected nodes belong to one source: the map is stamped with its source key, so it reads as empty
+  // as soon as the source changes (no reset effect needed).
+  const [picked, setPicked] = useState({ key: '', nodes: NO_SELECTION }); // nodes: node id -> { id, address, name, meta }
   const [bindings, setBindings] = useState({ bindings: [], status: {}, sparkplug: null });
   const [bindingsLoaded, setBindingsLoaded] = useState(false);
   const [bindingsError, setBindingsError] = useState(null);
@@ -43,43 +47,56 @@ export default function Tags() {
   const [historians, setHistorians] = useState([]);
   const [warnings, setWarnings] = useState([]); // non-blocking warnings from the last save
   const [busyId, setBusyId] = useState(null);
-  const wanted = useRef(parseSourceParam(wantedParam));
 
-  const loadSources = useCallback(async () => {
-    try {
-      const list = await fetchSources();
-      setSources(list);
-      setSourcesError(null);
-      setSource((cur) => {
-        if (cur && list.some((s) => sourceKey(s) === sourceKey(cur))) return cur;
-        const w = wanted.current;
-        return (w && list.find((s) => s.type === w.type && s.id === w.id)) || list[0] || null;
-      });
-    } catch (e) {
-      setSourcesError(e.message);
-    } finally {
-      setSourcesLoaded(true);
-    }
-  }, []);
+  // The source in use is derived: the one the URL names (the picker writes its choice there, and a link
+  // to ?source= while the page is open re-targets it), else the first one.
+  const wanted = useMemo(() => parseSourceParam(wantedParam), [wantedParam]);
+  const source = useMemo(
+    () => (wanted && sources.find((s) => s.type === wanted.type && s.id === wanted.id)) || sources[0] || null,
+    [wanted, sources]
+  );
+  const currentKey = sourceKey(source);
+  const selection = picked.key === currentKey ? picked.nodes : NO_SELECTION;
+  const setSelection = useCallback(
+    (update) => setPicked((prev) => ({ key: currentKey, nodes: update(prev.key === currentKey ? prev.nodes : NO_SELECTION) })),
+    [currentKey]
+  );
 
-  const loadBindings = useCallback(async () => {
-    try {
-      setBindings(await fetchBindings());
-      setBindingsError(null);
-    } catch (e) {
-      setBindingsError(e.message);
-    } finally {
-      setBindingsLoaded(true);
-    }
-  }, []);
+  // The loaders chain promises (rather than async/await) so their setState calls sit in callbacks.
+  const loadSources = useCallback(
+    () =>
+      fetchSources()
+        .then((list) => {
+          setSources(list);
+          setSourcesError(null);
+        })
+        .catch((e) => setSourcesError(e.message))
+        .finally(() => setSourcesLoaded(true)),
+    []
+  );
+
+  const loadBindings = useCallback(
+    () =>
+      fetchBindings()
+        .then((b) => {
+          setBindings(b);
+          setBindingsError(null);
+        })
+        .catch((e) => setBindingsError(e.message))
+        .finally(() => setBindingsLoaded(true)),
+    []
+  );
 
   // Profiles and historians only decorate the page (entry point, table columns); failures stay quiet here and
   // surface, with a Retry, inside the wizard that actually needs them.
-  const loadExtras = useCallback(async () => {
-    const [p, h] = await Promise.allSettled([fetchProfiles(), fetchHistorians()]);
-    if (p.status === 'fulfilled') setProfiles(p.value);
-    if (h.status === 'fulfilled') setHistorians(h.value);
-  }, []);
+  const loadExtras = useCallback(
+    () =>
+      Promise.allSettled([fetchProfiles(), fetchHistorians()]).then(([p, h]) => {
+        if (p.status === 'fulfilled') setProfiles(p.value);
+        if (h.status === 'fulfilled') setHistorians(h.value);
+      }),
+    []
+  );
 
   useEffect(() => {
     loadSources();
@@ -91,27 +108,10 @@ export default function Tags() {
     return () => clearInterval(t);
   }, [loadSources, loadBindings, loadExtras]);
 
-  // A link to ?source= while the page is already open (same route) re-targets the picker.
-  useEffect(() => {
-    const w = parseSourceParam(wantedParam);
-    wanted.current = w;
-    if (!w) return;
-    const hit = sources.find((s) => s.type === w.type && s.id === w.id);
-    if (hit) {
-      setSource((cur) => {
-        if (cur && sourceKey(cur) === sourceKey(hit)) return cur;
-        setSelection(new Map());
-        return hit;
-      });
-    }
-  }, [wantedParam, sources]);
-
   const wantedMissing = Boolean(wantedParam) && sourcesLoaded && !sourcesError && !sources.some((s) => sourceKey(s) === wantedParam);
 
   const pickSource = (key) => {
     const s = sources.find((x) => sourceKey(x) === key) || null;
-    setSource(s);
-    setSelection(new Map());
     const next = new URLSearchParams(params);
     if (s) next.set('source', sourceKey(s));
     else next.delete('source');
@@ -120,29 +120,37 @@ export default function Tags() {
 
   const boundIndex = useMemo(() => buildBoundIndex(bindings.bindings), [bindings.bindings]);
 
-  const toggleTag = useCallback((node) => {
-    setSelection((prev) => {
-      const next = new Map(prev);
-      if (next.has(node.id)) next.delete(node.id);
-      else next.set(node.id, { id: node.id, address: node.address, name: node.name, meta: node.meta || {} });
-      return next;
-    });
-  }, []);
+  const toggleTag = useCallback(
+    (node) => {
+      setSelection((prev) => {
+        const next = new Map(prev);
+        if (next.has(node.id)) next.delete(node.id);
+        else next.set(node.id, { id: node.id, address: node.address, name: node.name, meta: node.meta || {} });
+        return next;
+      });
+    },
+    [setSelection]
+  );
 
-  // Returns how many nodes were not already selected (count is from the render the call was made in).
+  // Returns how many nodes were not already selected (count is from the last committed render).
   const selectionRef = useRef(selection);
-  selectionRef.current = selection;
-  const addMany = useCallback((nodes) => {
-    const fresh = nodes.filter((n) => !selectionRef.current.has(n.id));
-    setSelection((prev) => {
-      const next = new Map(prev);
-      for (const n of nodes) {
-        if (!next.has(n.id)) next.set(n.id, { id: n.id, address: n.address, name: n.name, meta: n.meta || {} });
-      }
-      return next;
-    });
-    return fresh.length;
-  }, []);
+  useEffect(() => {
+    selectionRef.current = selection;
+  });
+  const addMany = useCallback(
+    (nodes) => {
+      const fresh = nodes.filter((n) => !selectionRef.current.has(n.id));
+      setSelection((prev) => {
+        const next = new Map(prev);
+        for (const n of nodes) {
+          if (!next.has(n.id)) next.set(n.id, { id: n.id, address: n.address, name: n.name, meta: n.meta || {} });
+        }
+        return next;
+      });
+      return fresh.length;
+    },
+    [setSelection]
+  );
 
   const toggleEnabled = async (b) => {
     setBusyId(b.id);
@@ -298,7 +306,7 @@ export default function Tags() {
                   </h2>
                   <button
                     type="button"
-                    onClick={() => setSelection(new Map())}
+                    onClick={() => setSelection(clearSelection)}
                     disabled={noneSelected}
                     className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40"
                   >
@@ -370,7 +378,7 @@ export default function Tags() {
           onClose={() => setWizardOpen(false)}
           onDone={(saved) => {
             setWizardOpen(false);
-            setSelection(new Map());
+            setSelection(clearSelection);
             setWarnings(saved?.warnings || []);
             loadBindings();
           }}

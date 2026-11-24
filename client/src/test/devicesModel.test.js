@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  tagTypeNames, tagTypeInfo, typeNeedsLength, typeOptional, extraColumns, cleanFields, applyPreset, presetActive, summarizeNormalized, camelCase, suggestProperty, nodesToTags,
+  tagTypeNames, tagTypeInfo, typeNeedsLength, lengthDefault, typeOptional, extraColumns, cleanFields, applyPreset, presetActive, summarizeNormalized, camelCase, suggestProperty, nodesToTags,
   nodeDisabledReason, flattenTree, probeBody, toPayload, blankDevice, browseBlockedReason
 } from '@/pages/devices/model';
 
@@ -13,6 +13,8 @@ describe('descriptor helpers', () => {
     expect(tagTypeInfo(s7, 'STRING').needsLength).toBe(true);
     expect(typeNeedsLength(s7, 'string')).toBe(true);
     expect(typeNeedsLength(s7, 'REAL')).toBe(false);
+    expect(lengthDefault(tagTypeInfo(s7, 'STRING'))).toBe(254);
+    expect(lengthDefault(tagTypeInfo(s7, 'REAL'))).toBe(null);
     expect(typeNeedsLength(eip, 'DINT')).toBe(false);
   });
   it('normalizes tag types from strings or objects', () => {

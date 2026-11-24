@@ -4,21 +4,7 @@ import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 import jsxA11y from 'eslint-plugin-jsx-a11y';
 
-/**
- * Client lint setup (flat config).
- *
- * Findings are ERRORS everywhere except the files listed in `PENDING` (the
- * Devices and Tags pages, still being reworked by other teams): there the same rules are reported as
- * WARNINGS so `npm run lint` stays green while the debt stays visible. Remove a
- * path from `PENDING` once it is clean and its findings become errors.
- */
-const PENDING = [
-  'src/pages/Devices.jsx',
-  'src/pages/Tags.jsx',
-  'src/pages/devices/**',
-  'src/pages/tags/**'
-];
-
+/** Client lint setup (flat config). Every finding is an error. */
 const rules = {
   ...js.configs.recommended.rules,
   ...react.configs.flat.recommended.rules,
@@ -33,14 +19,6 @@ const rules = {
   // scrollable-region-focusable), so a labelled region is allowed to take tabIndex.
   'jsx-a11y/no-noninteractive-tabindex': ['error', { roles: ['tabpanel', 'region'], tags: [] }]
 };
-
-const isOff = (v) => v === 'off' || v === 0 || (Array.isArray(v) && (v[0] === 'off' || v[0] === 0));
-// Same rules, same options, but severity "warn" (rules that are off stay off).
-const asWarnings = Object.fromEntries(
-  Object.entries(rules)
-    .filter(([, v]) => !isOff(v))
-    .map(([k, v]) => [k, Array.isArray(v) ? ['warn', ...v.slice(1)] : 'warn'])
-);
 
 export default [
   { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'test-results/**', 'playwright-report/**'] },
@@ -71,6 +49,5 @@ export default [
     // Playwright fixtures receive a `use` callback that is not a React hook.
     files: ['e2e/**'],
     rules: { 'react-hooks/rules-of-hooks': 'off' }
-  },
-  { files: PENDING, rules: asWarnings }
+  }
 ];

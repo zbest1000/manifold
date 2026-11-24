@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { HardDrive, Plus, RefreshCw, OctagonAlert, Loader2, FilePlus2 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -15,6 +15,8 @@ import InstantiateDialog from './devices/InstantiateDialog';
 import { useDevicesData } from './devices/useDevicesData';
 import { blankDevice } from './devices/model';
 import { hostIssues, hostFor } from '@/lib/deviceStatus';
+
+const NO_PROTOCOLS = [];
 
 function ConfirmDelete({ device, busy, onCancel, onConfirm }) {
   const id = useId();
@@ -48,9 +50,8 @@ export default function Devices() {
   const location = useLocation();
   const navigate = useNavigate();
   const tab = params.get('tab') === 'profiles' ? 'profiles' : 'devices';
-  const handled = useRef({ device: null, draft: null });
 
-  const protocols = data?.protocols || [];
+  const protocols = data?.protocols ?? NO_PROTOCOLS;
   const labels = useMemo(() => Object.fromEntries(protocols.map((p) => [p.id, p.label])), [protocols]);
   const profileById = useMemo(() => Object.fromEntries((profiles || []).map((p) => [p.id, p])), [profiles]);
   const issues = useMemo(() => hostIssues(data?.hosts, data?.devices), [data]);
@@ -63,26 +64,33 @@ export default function Devices() {
   const setTab = (t) => setParams(t === 'profiles' ? { tab: 'profiles' } : {}, { replace: true });
 
   // Deep links: /devices?device=ID opens that device; a discovery draft arrives in router state.
-  useEffect(() => {
-    const id = params.get('device');
-    if (!id || !data || handled.current.device === id) return;
-    handled.current.device = id;
-    const d = data.devices.find((x) => x.id === id);
+  // The editor state is adjusted while rendering (once per link/draft, remembered in state); the
+  // URL clean-up and the toast are side effects and run afterwards.
+  const deepId = params.get('device');
+  const draft = location.state?.draft;
+  const [handledDevice, setHandledDevice] = useState(null);
+  const [handledDraft, setHandledDraft] = useState(null);
+  if (deepId && data && handledDevice !== deepId) {
+    setHandledDevice(deepId);
+    const d = data.devices.find((x) => x.id === deepId);
     if (d) setEditing(d);
-    else toast.error('That device no longer exists');
+  }
+  if (draft && data && protocols.length && handledDraft !== draft) {
+    setHandledDraft(draft);
+    const desc = protocols.find((p) => p.id === draft.protocol) || protocols[0];
+    setEditing({ ...blankDevice(desc), ...draft });
+    setNotice(location.state?.notice || 'Prefilled from discovery. Check the details, test the connection and create the device.');
+  }
+  useEffect(() => {
+    if (!deepId || !data || handledDevice !== deepId) return;
+    if (!data.devices.some((x) => x.id === deepId)) toast.error('That device no longer exists');
     const next = new URLSearchParams(params);
     next.delete('device');
     setParams(next, { replace: true });
-  }, [params, data, setParams]);
+  }, [deepId, handledDevice, data, params, setParams]);
   useEffect(() => {
-    const drafts = location.state?.draft;
-    if (!drafts || !data || !protocols.length || handled.current.draft === drafts) return;
-    handled.current.draft = drafts;
-    const desc = protocols.find((p) => p.id === drafts.protocol) || protocols[0];
-    setEditing({ ...blankDevice(desc), ...drafts });
-    setNotice(location.state?.notice || 'Prefilled from discovery. Check the details, test the connection and create the device.');
-    navigate(location.pathname + location.search, { replace: true, state: null });
-  }, [location, data, protocols, navigate]);
+    if (draft && handledDraft === draft) navigate(location.pathname + location.search, { replace: true, state: null });
+  }, [draft, handledDraft, location.pathname, location.search, navigate]);
 
   const toggle = useCallback(
     async (device) => {

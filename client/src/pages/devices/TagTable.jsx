@@ -26,7 +26,7 @@ const HEAD = [
   ['Description', 'min-w-[10rem]']
 ];
 const EXTRA_HEAD = {
-  length: ['Length', 'min-w-[5.5rem]'],
+  length: ['Length', 'min-w-[7.5rem]'],
   bit: ['Bit', 'min-w-[4rem]'],
   byteOrder: ['Byte order', 'min-w-[7.5rem]'],
   wordOrder: ['Word order', 'min-w-[7.5rem]']
@@ -43,6 +43,8 @@ export default function TagTable({ tags, setTags, descriptor, pollGroups, valida
   const [browsing, setBrowsing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const types = useMemo(() => tagTypeNames(descriptor), [descriptor]);
+  // Per-type details: drivers send them as tagTypes objects and/or a tagTypeInfo map.
+  const typeInfo = useMemo(() => ({ ...Object.fromEntries((descriptor?.tagTypes || []).filter((t) => typeof t === 'object' && t.name).map((t) => [t.name, t])), ...(descriptor?.tagTypeInfo || {}) }), [descriptor]);
   const typeOptional = isTypeOptional(descriptor);
   const placeholder = addressExample(descriptor);
   const cols = useMemo(() => extraColumns(descriptor), [descriptor]);
@@ -149,7 +151,7 @@ export default function TagTable({ tags, setTags, descriptor, pollGroups, valida
                 typeOptional={typeOptional}
                 placeholder={placeholder}
                 stale={showLive && isStale(values[t.key], intervalOf[t.pollGroup] || 1000, now)}
-                typeInfo={descriptor?.tagTypeInfo}
+                typeInfo={typeInfo}
                 quarantined={Boolean(quarantined?.has(t.key))}
                 quarantineReason={quarantineReasons?.[t.key]}
                 cols={cols}

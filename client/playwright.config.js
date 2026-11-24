@@ -39,7 +39,7 @@ export default defineConfig({
     reducedMotion: 'reduce'
   },
   projects: [
-    { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js'] },
+    { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js', 'devices-protocols.spec.js', 'profiles.spec.js', 'outage.spec.js', 'tags-binding.spec.js'] },
     { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js'] }
   ]
 });

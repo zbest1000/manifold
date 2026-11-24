@@ -27,6 +27,15 @@ export function typeNeedsLength(descriptor, name) {
   return Boolean(tagTypeInfo(descriptor, name)?.needsLength);
 }
 
+/**
+ * What the driver does when a length-taking tag leaves `length` blank: the number in its help text
+ * ("maximum characters (default 254)"; the S7 driver applies `tagDef.length ?? 254`), else null.
+ */
+export function lengthDefault(info) {
+  const m = /default\s+(\d+)/i.exec(String(info?.lengthHelp || ''));
+  return m ? Number(m[1]) : null;
+}
+
 /** First example in the driver's address help, for input placeholders. */
 export function addressExample(descriptor) {
   const help = String(descriptor?.addressHelp || '');
