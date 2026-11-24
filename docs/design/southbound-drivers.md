@@ -1,8 +1,49 @@
 # Design: southbound device drivers (Modbus TCP, S7, EtherNet/IP) and UNS mapping
 
-Status: **proposal** — nothing here is implemented yet.
+Status: **partly implemented** (checked against the code, November 2026).
+The rest of this document is the original proposal and is kept as written, so
+where it differs from the code, the table below and the notes after it win.
 Scope: read-only data collection from PLCs and field devices, and a mapping
 layer that lands their tags in the Unified Namespace with context.
+
+### Implementation status
+
+| Area | Status | Where, and how it differs from the proposal |
+|---|---|---|
+| Phase 0: defects P1 to P5 | **implemented** | Source lifecycle and re-sync on reconnect (P1), supervised OPC UA reconnect (P2), change detection on (value, quality) (P3), typed Sparkplug metrics (P4), Bad on source loss (P5). `services/tagBindings.js`, `services/opcuaManager.js`, `services/tagSources/` |
+| Tag-source contract | **implemented, narrower** | Bindings consume normalized `sample` / `source-state` events from registered adapters (OPC UA adapter, device manager). OPC UA does **not** implement the full Driver interface (`connect`/`plan`/`execute`); only the event contract is shared. There is no separate `sampleBus` or `deviceRegistry`: `deviceManager` plus the profile store fill those roles |
+| Driver contract (4.1) | **implemented, renamed** | Modules export `describe()`, `validateTag()` and `createDriver()`; the driver has `connect`, `plan`, `execute`, `bisect`, `probe`, `browse?`, `close`. `validateAddress` became `validateTag`; `execute` returns per-item results |
+| Supervisor and process model (4.2) | **implemented** | One host process per protocol, `isolate: true` for one per device, heartbeats both ways, exponential backoff (0.5 s to 30 s), crash-loop parking (more than 5 crashes in 60 s), host exits when its parent disconnects. Parking is surfaced on the Devices page; there is no `/metrics` series for it |
+| Runtime (4.3) | **implemented, mostly** | State machine with 1 s to 60 s jittered backoff and no cap, staggered first connects (25 ms per device, up to 500 ms), one in-flight request per connection, deadlines with a watchdog, socket destroyed on timeout, TCP keepalive and `TCP_NODELAY`, bisect and quarantine (retry every 60 s), per-unit breakers, adaptive slowdown (x2 up to x8 after 5 overrunning cycles). **Not implemented:** per-device metrics on `/metrics`; a ceiling on request rate (`interRequestDelayMs` is only a lower bound the user sets) |
+| Egress guard for devices | **implemented, check-only** | `assertAllowedDeviceTarget` at save, test and apply, with loopback behind `MANIFOLD_ALLOW_LOOPBACK_DEVICES`. Drivers open their own sockets, so hostnames keep a small DNS-rebinding window |
+| Device configuration (4.4) | **partly implemented** | Collection `devices` exists and is used (host, port, options, limits, pollGroups, tags, protocol fields, `isolate`). Collection `deviceProfiles` exists in the profile store but nothing reads or writes it: **device profiles, parameters and instances are planned**. CSV import and export of tags is in the UI; the JSON/YAML schema document is the config export, which currently has a defect (below) |
+| Modbus TCP (5.1) | **implemented** | Own client; explicit table, wire offset, byte and word order; Modicon 5 and 6 digit; probe with four decodings; planner with `maxGap` default 0 and declared `unmapped` ranges; exceptions 02 (bisect, then quarantine), 04/05/06 (retry), 0A (gateway) and 0B (unit-down breaker). **Not implemented:** a warning when the client deadline is shorter than a gateway's serial timeout |
+| S7 (5.2) | **implemented, experimental** | Own read-only S7comm client, rack/slot presets and TSAP override, negotiated PDU, at most 20 items per request, block merging, the type list in 5.2, SZL identity, the PUT/GET prerequisites text. **Not implemented:** the optional sentinel tag per DB (rule 9), symbol / TIA export import. The "function refused by CPU" translation exists in the driver but is not shown in the device status (see below) |
+| EtherNet/IP (5.3) | **implemented, experimental; differs from the proposal** | The spike rejected both candidate libraries (`drivers/eip/NOTES.md`), so this is our own read-only CIP client: Large then small Forward Open, Multiple Service Packet with per-item status, fragmented reads, symbol and template browse, External Access, BOOL arrays, orderly Forward Close. **Not implemented:** ListIdentity as a client call, PCCC, Micro800 and Omron specifics (only a `maxPacketBytes` knob), controller change detection (drift is caught by path errors and structure-handle mismatches), the keepalive timer (poll traffic keeps the connection alive) |
+| Read-only enforcement (7) | **implemented** | Allowlisted frame encoders in all three drivers; tests try every refused service and assert no bytes reach the socket |
+| Bindings v2 (6) | **partly implemented** | Done: quality-aware change detection (rule 3), `_status` topic (rule 4), absolute deadband and heartbeat (rule 5), typed Sparkplug metrics (rule 7), live topic preview in the wizard (part of rule 9), retain off by default (rule 12 for values). The target uses `pathTemplate` plus a tag name, not the proposal's `assetPath`/`layout`/`property` fields |
+| | **planned** | Percent deadband; `_meta` document and metadata in Sparkplug BIRTH properties (rule 6); `object-per-asset` layout (rule 10); profile-level mappings (rule 2); clearing retained messages when a mapping is renamed or deleted (rule 8); collision check and lint delta in the preview, and namespace lint flagging topics that look like device addresses (rules 1 and 9); a direct historian target on a mapping |
+| Historian delivery for device data | **partly implemented** | Timebase is the documented reference. Delivery path 1 (via the broker) needs no code. Path 2 is a pipeline from the binding's output topics to a historian; outbox ordering, dead-letter and Bad-quality writes are in place. InfluxDB is excluded by decision, not by code. The Timebase API facts listed under section 11 as unverified are still unverified |
+| Devices page (8) | **partly implemented** | Done: device list with state, cycle time, overruns, quarantine and last error; add/edit with protocol fields, presets, prerequisites and Test connection; tag table with paste, CSV, inline validation and probe; the Tags wizard maps device tags. **Planned:** a hub that lists MQTT and OPC UA connections too, a browse tree for EtherNet/IP in the UI (the REST endpoint exists), device nodes in the UNS topology |
+| Discovery of 502 / 102 / 44818 | **planned** | Discovery does not probe these ports |
+| Testing (9) | **partly implemented** | Done: pure-core tests, fault-injecting in-process simulators for all three protocols (the simulators are our own, not jsmodbus, snap7 or cpppo), runtime and supervisor tests, simulators in the Docker demo (`server/tools/simulators.js`). **Not done:** a shared contract suite run against every driver as one table, and, above all, **verification on real hardware** (decision 1 in section 11): S7 and EtherNet/IP remain experimental until it happens |
+| Delivery plan phases | | Phase 0, 1, 2 and 3 code exist (2 and 3 without hardware verification); phase 4 (profiles, `_meta`, object-per-asset) and 5 are not started |
+
+Where the code contradicts this document or the review, open items:
+
+- **Config export blanks device tag keys.** The shared secret-name rule matches
+  `key`, so `GET /api/system/config/export` writes `"key": null` for every device
+  tag (`services/secrets.js`, `routes/system.js`). The proposal's "round-trips
+  through a schema-validated document" does not hold for devices until this is
+  fixed.
+- **Refusal reasons do not reach the status.** Section 5.2 says a refusal is
+  translated into the operator's real cause. The driver does that for Probe, but
+  the runtime keeps only `key`, `v`, `type`, `q` and `qReason` per sample and the
+  numeric exception code per request, so a CPU with PUT/GET off leaves the device
+  Online, every tag Bad (`quarantined`), `lastError` null, and the cause visible
+  only through Probe. The same applies to Modbus exception text.
+- **Modbus exception 02 is quarantined, not "marked unmapped and stopped".**
+  Quarantined tags are retried every minute, forever.
 
 Evidence levels used in this document:
 

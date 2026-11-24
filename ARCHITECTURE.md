@@ -13,17 +13,24 @@ flowchart LR
         O[OPC UA servers]
         C[CESMII SMIP]
         I[i3X servers]
+        PLC[PLCs and devices<br/>Modbus TCP, S7, EtherNet/IP]
+    end
+
+    subgraph hosts [driver host processes - one per protocol]
+        DH[modbus / s7 / eip<br/>runtime + driver]
     end
 
     subgraph server [server/ - Node.js]
-        M[mqttManager<br/>ingest + coalesce]
-        OM[opcuaManager]
+        M[mqttManager<br/>ingest + coalesce<br/>Sparkplug queue]
+        OM[opcuaManager<br/>supervised reconnect]
+        SUP[driverSupervisor]
+        DM[deviceManager]
         T[TopicTrie]
         P[pipelineEngine]
         MD[modelEngine]
         R[recorder / replayer]
         SC[schemaContracts]
-        TB[tagBindings]
+        TB[tagBindings<br/>tag sources, RBE, quality]
         SP[sparkplugPublisher]
         OB[historianOutbox]
         H[historians<br/>influx / timescale / timebase]
@@ -41,15 +48,20 @@ flowchart LR
 
     B --> M
     O --> OM
+    PLC <-- read-only --> DH
+    DH -- IPC: samples, state --> SUP --> DM
     M --> T
     M -- message tap --> P & R & SC & TB & AL
-    OM -- monitored values --> TB
+    OM -- OpcuaSource: samples + state --> TB
+    DM -- samples + state --> TB
     P --> OB
     R --> OB
     OB --> H --> HIST
     TB --> SP --> B
+    TB -- mqtt publish, _status --> B
     P -- publish --> B
     M -- Socket.IO --> UI
+    DM -- Socket.IO --> UI
     MCP -- REST --> server
     MX --> PROM
 ```
@@ -57,23 +69,34 @@ flowchart LR
 The backend owns all live state. The client is a real-time view over
 Socket.IO plus REST for configuration. The MCP server is a stateless bridge
 over the same REST API, so a browser user and an MCP agent see identical
-data.
+data. Device drivers are the one part that does not run in the server
+process: each protocol's driver runs in a supervised child process, and the
+server only ever sees its IPC messages (see
+[Southbound device drivers](#southbound-device-drivers)).
 
 ## Repository layout
 
 ```
-server/   Express + Socket.IO backend; all protocol drivers and engines
+server/   Express + Socket.IO backend; protocol managers and engines
+  drivers/    southbound device drivers (modbus, s7, eip), the shared runtime
+              (runtime/deviceRuntime.js) and the child-process entry (host.js)
+  services/   managers, engines, tagSources/ (tag-source adapters)
+  tools/      runnable simulators for the demo stack (simulators.js)
+  test/       node:test suites; test/support/ holds the device simulators
 client/   React 18 + Vite + Tailwind; canvas renderers, Zustand store
 mcp/      MCP server (stdio), forwards to the backend REST API
 native/   Rust/napi hot-path experiment, kept as a reproducible benchmark
-docker/   Demo stack: app, mosquitto, OPC PLC simulator, traffic generator
+docker/   Demo stack: app, mosquitto, OPC PLC simulator, traffic generator,
+          simulated Modbus / S7 / EtherNet/IP devices (docker-compose.yml)
+docs/     design notes, review, and the wiki sources (docs/wiki/)
 ```
 
 ## Message hot path
 
 The server is built to survive high publish rates. The design rule: per-message
 work is minimal and allocation-free; everything expensive is deferred to a
-coalced flush that is bounded by *topics touched*, not messages received.
+coalesced flush that is bounded by *topics touched*, not messages received.
+Sparkplug is the one deliberate exception, described below.
 
 ```mermaid
 sequenceDiagram
@@ -87,8 +110,9 @@ sequenceDiagram
     handleMessage->>TopicStore: ingest - store latest payload, mark dirty
     Note over handleMessage,TopicStore: no JSON parse, no uuid,<br/>no message object allocation
     Flush->>TopicStore: drain dirty rows
-    Flush->>Flush: buildMessage once per touched topic<br/>(parse, type cache, Sparkplug decode)
+    Flush->>Flush: buildMessage once per touched topic<br/>(parse, type cache)
     Flush->>Consumers: one batch: socket emit + engine tap
+    Note over TopicStore,Flush: Sparkplug topics additionally keep every payload<br/>in a bounded queue, drained in arrival order
 ```
 
 Key mechanics:
@@ -96,12 +120,31 @@ Key mechanics:
 - **TopicStore** (`server/services/topicStore.js`) is a struct-of-arrays: one
   `Map(topic → slot)` plus parallel typed arrays, with the latest payload kept
   as a latin1 string (one byte per char in V8, lossless for arbitrary bytes).
-  Capped at 2M topics per broker. At 1M topics this measured 425 MB RSS versus
+  Capped at 2M topics per broker (reaching the cap raises a
+  `topic-cap-reached` event and a log warning; new topics are dropped and
+  counted). Slots are normally never freed; setting
+  `MANIFOLD_TOPIC_IDLE_TTL_MS` turns on an incremental background sweep that
+  frees topics idle for longer than the TTL. At 1M topics this measured 425 MB RSS versus
   532 MB for a Map-of-objects; the Rust store measured 380 MB but lost on
   FFI round-trip cost (see `native/README.md` for the full benchmark).
 - **Coalescing**: a topic published 10,000 times inside one 100 ms window
   produces one forwarded update. Per-flush forwarding is capped
-  (`FORWARD_CAP`), with counts always exact server-side.
+  (`FORWARD_CAP`), with counts always exact server-side. This applies to every
+  topic **except Sparkplug**.
+- **Sparkplug is not coalesced.** NDATA/DDATA carry only the metrics that
+  changed, so latest-wins would lose data that the registry, Sparkplug-source
+  bindings, pipelines and historian targets need. The store classifies each
+  topic once per slot (`queueClassifier`); Sparkplug topics also append every
+  payload to a per-flush queue that is drained in arrival order. Each queued
+  message is decoded and delivered, in order, to the registry and the engine
+  tap; the UI batch still carries only the latest message per topic. The queue
+  is bounded (`MANIFOLD_SPARKPLUG_QUEUE_MAX`, default 5,000 messages, and
+  `MANIFOLD_SPARKPLUG_QUEUE_BYTES`, default 8 MiB, per flush). Past a bound a
+  message is not queued, the broker's `sparkplugCoalesced` metric increments,
+  and that topic falls back to latest-wins for the rest of the window (its
+  latest payload is appended at drain, so it is never lost or reordered).
+  Messages therefore reach consumers at flush cadence (up to 100 ms later),
+  in order, not synchronously.
 - **Per-slot type cache**: a topic's classification (telemetry/alarm/…,
   Sparkplug or not) is a pure function of the topic string, so it is computed
   once per slot, not per flush.
@@ -113,6 +156,19 @@ Key mechanics:
 - Intake subscribes at QoS 1 by default (configurable per broker). If the
   broker refuses the wildcard grant (SUBACK 0x80), the manager emits
   `subscription-downgraded` and retries at QoS 0. `$SYS/#` stays at QoS 0.
+  A subscribe that fails for another reason (a timeout, a busy client) is
+  retried with exponential backoff, at most three times, before an error is
+  surfaced.
+- **Source time and quality** travel with the message when the payload has
+  them: a TVQ envelope's `t` and `q`, a Sparkplug message and metric
+  timestamp, and a metric's `Quality` property. `timestamp` stays arrival
+  time; `sourceTimestamp` and `quality` are set only when present, and the
+  pipeline engine and historian targets prefer them.
+- Other growth is bounded too: the MQTT 5 property side table is capped
+  (`MANIFOLD_MAX_MSG_PROPS`), `publish-success` socket emits are folded into
+  at most one summary per broker per second, and branch-silent alert rules read
+  an activity cache updated in O(depth) per touched topic instead of walking
+  the trie every interval.
 
 ## MQTT transports and versions
 
@@ -175,8 +231,11 @@ flowchart LR
   excluded, rebuilt only when the profile store revision changes. Steady-state
   per-message cost is array walks against pre-split segments.
 - Transforms: `repath` (with `{n}` / `{n-}` / `{topic}` segment templates),
-  `pick`, `rename`, `set`, `scale`, `numeric` (drop non-numeric), `sparkplugFlatten`
-  (`is_null` metrics propagate as explicit nulls), `envelope` (TVQ `{v,t,q}`).
+  `pick`, `rename`, `set`, `scale`, `numeric` (drop non-numeric; with `field`
+  it also unwraps a JSON field, e.g. `v` of an envelope), `sparkplugFlatten`
+  (`is_null` metrics propagate as explicit nulls), `envelope` (TVQ `{v,t,q}`;
+  `t` and `q` come from the source payload when it carries them, else arrival
+  time and Good).
 - Loop protection is two-layer because repath templates defeat static
   analysis: outputs matching the route's own source are blocked outright, and
   a short-lived hop counter on published (broker, topic) pairs catches
@@ -192,9 +251,9 @@ Three backends share one write interface (`writePoints`):
 
 | Backend | Wire format | Notes |
 |---|---|---|
-| InfluxDB v2 | line protocol | numeric values write `value=`, non-numeric write `raw="…"` — a topic that alternates types cannot cause field-type conflicts in a shard |
-| TimescaleDB / PostgreSQL | batched parameterized INSERT | table auto-created, promoted to hypertable when the extension exists; identifier allow-list; pooled connections with bounded connect/query timeouts |
-| Timebase (Flow Software) | TVQ REST on `:4511` | datasets auto-create; write path overridable per instance; Timebase's native MQTT/Sparkplug ingestion is an equally valid path |
+| InfluxDB v2 | line protocol | real numbers write `value=`, everything else (including booleans, as `"true"`/`"false"`) writes `raw="…"`, so a topic that alternates types cannot cause field-type conflicts in a shard. `null` is skipped and counted; names with control characters are rejected so a topic cannot inject lines. **No quality is stored**, which is why it is not offered for device data |
+| TimescaleDB / PostgreSQL | batched parameterized INSERT | table auto-created, promoted to hypertable when the extension exists; stores `quality`; identifier allow-list; pooled connections with bounded connect/query timeouts; the pool is keyed by the whole connection config, so an edited password or TLS setting takes effect |
+| Timebase (Flow Software) | TVQ REST on `:4511` | datasets auto-create; write path overridable per instance; quality is carried (Bad is preserved), each tag's samples are sent oldest-first; Timebase's native MQTT/Sparkplug ingestion is an equally valid path |
 
 Delivery always goes through the **outbox** — engines never call a historian
 directly:
@@ -203,9 +262,11 @@ directly:
 stateDiagram-v2
     [*] --> Queue: enqueue
     Queue --> Written: flush ok
-    Queue --> Spill: write failed / memory cap
-    Spill --> Written: drained oldest-first on recovery
-    Spill --> Dropped: spill file at cap
+    Queue --> Spill: write failed (retryable) / memory cap
+    Queue --> DeadLetter: rejected for good (4xx, SQL data error)
+    Spill --> Written: drained oldest-first, ahead of live data
+    Spill --> DeadLetter: rejected for good while draining
+    Spill --> Dropped: spill at cap
     note right of Dropped
         drop policy per historian:
         newest (default, keeps outage start)
@@ -213,9 +274,35 @@ stateDiagram-v2
     end note
 ```
 
-The spill is an append-only JSONL file per historian that survives restarts.
-All bounds are explicit and reported (queue depth, spill bytes, drop counts)
-in the UI and `/metrics`.
+**Ordering.** Delivery per historian is strictly oldest-first, because Timebase
+may ignore a point older than a tag's newest. While a spill backlog exists,
+live points are never sent ahead of it: if the backlog cannot be drained they
+are appended behind it on disk. A memory overflow spills the oldest queued
+points, and points that overflow while a live batch is in flight are held back
+so a failed batch is re-spilled in front of them.
+
+**Spill format** (per historian, under `<MANIFOLD_DATA_DIR>/outbox/`):
+
+| File | Contents |
+|---|---|
+| `<id>.<seq>.seg` | append-only JSONL segments, one point per line, rotated at 4 MiB; `<seq>` is a monotonic 13-digit number |
+| `<id>.cursor` | `{seg, offset}`: bytes already delivered from the oldest segment, written temp + fsync + rename, so a crash either keeps the old offset (a re-send, so delivery is **at-least-once**) or the new one, never a lost or half-written spill |
+| `<id>.deadletter.jsonl` | points the historian permanently rejected; capped at 5 MiB and counted |
+| `<id>.jsonl` | **legacy** single-file spill from older versions: read as the oldest segment and drained first, never appended to, so upgrading needs no conversion |
+
+Draining reads each segment once, forward (O(n)); all disk writes are
+asynchronous and serialized per historian. The in-memory queue holds 5,000
+points, the live spill is capped at 20 MiB (the drop policy decides which end
+goes beyond it), and each flush sends batches of 1,000.
+
+**Poison batches.** A batch the historian *permanently* rejects (HTTP 4xx except
+408/429 and the credential errors 401/403; PostgreSQL data or integrity errors)
+is bisected, with a bounded number of extra requests, to isolate the bad points.
+Those move to the dead-letter file; the rest is delivered and draining
+continues. Credential errors are different: the backlog waits for the operator
+to fix the token rather than being discarded. All bounds are explicit and
+reported (queue depth, spill bytes, written/spilled/dropped counts on `/metrics`;
+dead-letter counts in the outbox stats).
 
 ### Read-back (Trends)
 
@@ -245,6 +332,14 @@ flowchart LR
 - Timebase read-back uses the same documented dataset GET the CI integration
   test exercises; the API returns raw TVQs, so downsampling happens locally.
   Tag listing has no Timebase endpoint — Trends falls back to manual entry.
+- **Unverified Timebase behaviour.** The REST API reference could not be read
+  when the device work was written. Not confirmed: that a point older than a
+  tag's newest is ignored (the outbox is ordered as if it were), the shape
+  Timebase accepts for a Bad sample with no value (Manifold sends `v: null`
+  with the quality), whether samples closer than its advertised 500 ms
+  resolution are kept, and its quality-code semantics. CI runs against
+  `timebase/historian:1.3.4`; 2.x is current. See
+  [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md) §11.
 
 ## Alerting
 
@@ -281,16 +376,103 @@ errors.
 Rules fire on transitions and can POST each event to a webhook (5 s timeout).
 Webhook failures do not kill the engine, but they are not silent either:
 `webhookFailures` and `lastWebhookError` are reported on
-`GET /api/alerts/rules`.
+`GET /api/alerts/rules`. Webhook delivery goes through the egress guard
+(`guardedFetch`), so a webhook to loopback, link-local or, by default, a private
+address is refused; viewers see only `hasWebhook`, never the URL.
 
-## Tag bindings and the Sparkplug publisher
+## Tag sources, bindings and the Sparkplug publisher
 
-Bindings select tags from a source (OPC UA monitored items or Sparkplug
-registry metrics; MQTT-source selections compile into pipeline routes
-instead) and publish to a UNS destination. Report-by-exception: an absolute
-deadband suppresses small numeric changes; non-numeric values publish on
-change. OPC UA status codes map to quality (Good 192 / Uncertain 64 / Bad 0).
-Bindings never write toward devices.
+### The tag-source abstraction
+
+A binding no longer knows about OPC UA. `TagBindings` consumes **tag sources**:
+adapters registered with `registerSource(type, adapter)` that emit two
+normalized events (`server/services/tagSources/`):
+
+```js
+// one reading
+'sample'       { sourceType, sourceId, address, v, type, q, qReason?, tSource?, tRead }
+// the source as a whole
+'source-state' { sourceType, sourceId, state: 'online' | 'offline', reason }
+```
+
+`type` is a normalized name (`bool`, `int8` ... `uint64`, `float32`, `float64`,
+`string`, `datetime`); `q` is **192 Good / 64 Uncertain / 0 Bad**; `tSource` is
+the source's own timestamp when it has one (OPC UA does, polled protocols do
+not) and `tRead` is when the value was read. An adapter also implements
+`ensureMonitored(sourceId, address, intervalMs)`. There are two adapters: the
+OPC UA adapter (`OpcuaSource`, wrapping the manager's `value` and
+`connection-state` events and mapping OPC UA status codes to quality) and the
+device manager (`source type 'device'`, fed by the driver supervisor). Sparkplug
+sources are not adapters: they read the decoded message tap directly.
+MQTT-source selections still compile into pipeline routes instead.
+
+### Bindings
+
+A binding is `{ source, target, rbe }`:
+
+```js
+source: { type: 'device', deviceId, tags: [{ address: <tagKey>, name }] }
+      | { type: 'opcua', connectionId, samplingInterval?, tags: [{ address: <nodeId>, name }] }
+      | { type: 'sparkplug', brokerId, group, edge, device?, metrics? }
+target: { mode: 'mqtt', brokerId, pathTemplate, format: 'plain' | 'envelope',
+          qos?, retain?, deadband?, statusTopic? }
+      | { mode: 'sparkplug', brokerId, group, edge, device }
+rbe:    { heartbeatMs? }
+```
+
+Semantics (all covered by `bindings-v2.test.js` and the OPC UA integration test):
+
+- **Report-by-exception on (value, quality).** An absolute `deadband`
+  suppresses numeric changes smaller than the band; other values publish on
+  change; structures compare by bounded JSON. A quality change is always a
+  change (Good to Bad with the same value publishes), but only the `envelope`
+  format can express it, so for `plain` and Sparkplug targets a quality-only
+  change is counted as suppressed. Percent deadband is not implemented.
+- **Bad on source loss.** When a source goes `offline` (a device loses its
+  connection, its driver host dies, an OPC UA session drops) every known tag
+  of that source's bindings gets one Bad publish: the last value with `q: 0`
+  in an `envelope` binding. `plain` cannot carry quality, so there only the
+  status document changes. Recovery republishes as Good. The heartbeat
+  continues to republish an offline envelope binding's last values with `q: 0`
+  and skips offline `plain` bindings so stale values do not masquerade as live.
+- **`_status` topic.** An `mqtt` target publishes a retained, QoS 1
+  `<path>/_status` document `{ online, since, reason }` at start and on every
+  state change (the path template with `{name}` replaced by `_status`, or
+  `/_status` appended). `statusTopic: false` turns it off. No MQTT last-will
+  covers it, so it keeps its last value if Manifold itself stops.
+- **Typed Sparkplug metrics.** The sample's `type` selects the Sparkplug
+  datatype (Int8 ... UInt64, Float, Double, Boolean, String, DateTime). The
+  datatype is pinned the first time a metric is seen so BIRTH and DATA agree,
+  and a value that cannot be represented as it is sent as `is_null`. An unknown
+  type keeps the old by-value encoding. Sparkplug metrics do not carry
+  per-metric quality; a device going offline is a **DDEATH** (sequence-numbered,
+  only for a device that has been birthed) and recovery is a **DBIRTH** with the
+  last values before any further DDATA.
+- **Heartbeat.** `rbe.heartbeatMs` (at least 1000 when set through the API)
+  republishes unchanged tags at least that often. The envelope's `t` stays the
+  time of the last change.
+- **Lifecycle.** When a source comes (back) online its monitored items are
+  re-requested; a failed monitor request retries on a slow timer; editing or
+  deleting a binding resets its state (`reconcile`). The old defect where OPC UA
+  bindings went silent after a restart, an edit or a delete is gone.
+- **Path is not address.** The topic is `pathTemplate` plus a slugged tag
+  *name*; for devices the name defaults to the tag's `property` (the UNS name)
+  and falls back to its key. The device address never becomes a topic by itself.
+
+**Bindings never write toward devices**, and this is enforced where the bytes
+are built, not by the binding engine's good manners: the engine has no write
+path at all, and every device driver builds all outgoing frames through one
+encoder with an allowlist (Modbus function codes 1 to 4; S7 setup communication,
+Read Var and SZL reads; CIP session and connection management, Read Tag,
+Read Tag Fragmented, Multiple Service Packet with every inner service checked,
+and attribute and template reads). A forbidden service throws before any socket
+write, and the EtherNet/IP client re-parses each buffer once more before
+`socket.write`. Each allowlist has tests that attempt every refused service
+against a simulator that counts writes it receives. This is a guarantee about
+Manifold's code; it says nothing about what else on the network can write to
+the same PLC (see [Security model](#security-model)).
+
+### The Sparkplug publisher
 
 Sparkplug output runs one session per (broker, group, edge node) with the
 lifecycle the specification requires:
@@ -322,6 +504,97 @@ so a new subscriber replays the current status immediately.
 Manifold can act as a primary host itself: `POST /api/tags/sparkplug/state`
 starts a dedicated session that publishes retained STATE for a chosen host ID
 with a matching last-will, so edge nodes waiting on a primary host see one.
+
+## Southbound device drivers
+
+Read-only polling of Modbus TCP, Siemens S7 (S7comm) and EtherNet/IP (Logix)
+devices, with tags landing in the same binding engine as OPC UA. The design is
+in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
+(status: partly implemented); this section describes what exists.
+
+```mermaid
+flowchart LR
+    API[routes/devices.js] --> DM[deviceManager<br/>validate, egress check,<br/>latest values]
+    DM -- desired device set --> SUP[driverSupervisor<br/>fork, heartbeat,<br/>backoff, crash-loop park]
+    SUP -- fork + JSON IPC --> HOST[drivers/host.js]
+    HOST --> RT1[DeviceRuntime per device]
+    RT1 --> DRV[driver: plan, execute, bisect,<br/>probe, browse, close]
+    DRV <--> PLC[(PLC)]
+    RT1 -- sample batches, state --> HOST -- IPC --> SUP
+    SUP --> DM
+    DM -- 'sample', 'source-state' --> TB[tagBindings]
+    DM -- device-values, device-state --> IO[Socket.IO]
+```
+
+**Process model.** `driverSupervisor` forks one host (`drivers/host.js`) per
+protocol, or one per device that sets `isolate: true`. The main process never
+loads driver code. IPC is JSON; 64-bit integers cross as strings. One message per
+poll cycle carries a batch of samples. The supervisor pings each host,
+SIGKILLs one that stops answering, and restarts a dead one with exponential
+backoff (0.5 s doubling to 30 s). After more than five crashes in a minute the
+host is **parked** (surfaced on the Devices page, retried when the device set
+is saved again) and its devices report offline. An uncaught error inside a host
+is fatal on purpose: log, exit, be restarted. `testConnection` uses a
+transient host if none is running.
+
+**Runtime** (`drivers/runtime/deviceRuntime.js`) is protocol-agnostic and owns
+everything that must not be reimplemented per driver. Per device:
+
+- A **connection state machine** (`connecting`, `online`, `backoff`,
+  `stopped`) with jittered exponential backoff from 1 s to 60 s and no retry
+  cap. Any fatal transport result (timeout, response that does not match its
+  request, framing error) destroys the socket, marks every tag Bad
+  (`disconnected`) and reconnects. A socket is never reused after a timeout, so
+  a late reply cannot be matched to the next request.
+- A **scheduler**: tags belong to poll groups with an interval (at least
+  100 ms). One cycle per group at a time and one request in flight on the
+  device's single connection across all groups. An overrun is skipped and
+  counted, never queued. After five overrunning cycles in a row the effective
+  interval doubles (up to 8x) and is reported; it halves again after 20 clean
+  cycles.
+- **Deadlines** on every request plus a watchdog around the driver call.
+- **Bisect and quarantine.** A permanent request failure (Modbus exception 02,
+  an S7 or CIP refusal) is bisected to the offending tag, which is quarantined
+  (Bad, `quarantined`) and retried every minute while the rest keep polling.
+- **Per-unit circuit breakers** for Modbus gateways: three gateway exceptions
+  (0A/0B) open a unit's breaker (Bad, `unit-down`); it is probed every 30 s.
+- A device status (state, phase, connects, requests, timeouts, exception counts,
+  quarantined keys, per-group cycle times, overruns) that the supervisor relays.
+
+**Driver contract.** A driver module exports `describe()` (static description:
+fields, types, prerequisites, `experimental`, `readOnly`, capabilities),
+`validateTag(tag, options)` (a pure validator that normalizes the address) and
+`createDriver(device)` returning `{ connect, plan, execute, bisect, probe,
+browse?, close }`. `plan` is a pure function packing tags into requests within
+the device's limits (Modbus blocks with a default max gap of 0; S7 reads within
+the negotiated PDU, at most 20 items; CIP Multiple Service Packets);
+`execute` never throws for device or transport problems and returns per-item
+status; drivers hold exactly one connection. All three are our own
+implementations on `node:net`, with no new dependency; the EtherNet/IP
+decision record (`drivers/eip/NOTES.md`) explains why the candidate libraries
+were rejected.
+
+**Device manager.** Owns the stored configuration (profile-store collections
+`devices` and `deviceProfiles`; only `devices` is used so far), validates it with
+each driver's validators (tag keys `[A-Za-z0-9_.\-:[\]]{1,128}`, at most 20,000
+tags per device), applies the egress guard (`assertAllowedDeviceTarget`), pushes
+the desired set to the supervisor, keeps the latest value per tag, and emits the
+tag-source events above. A device whose target is refused is reported Stopped
+with the reason instead of being started. Live values reach the UI as coalesced
+volatile `device-values` batches (250 ms) and `device-state` events.
+
+**Samples.** A sample is `{ key, v, type, q, qReason?, tRead }`; `qReason` is one
+of `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode`,
+`unavailable`. Polled protocols have no device timestamp, so `tRead` is the
+honest timestamp.
+
+**Known gap.** Item-level refusal text is dropped on the way to the device
+status: an S7 CPU that refuses reads (PUT/GET off, optimized access) leaves the
+device Online with its tags quarantined, `lastError` null and the exception
+counter at `33028` (0x8104); the explanation ("PUT/GET not permitted, optimized
+block access enabled, or protection level too high") is visible only through
+Probe. See the review notes at the end of
+[`docs/REVIEW-2026-11.md`](docs/REVIEW-2026-11.md).
 
 ## OPC UA security
 
@@ -365,9 +638,25 @@ paths instead of a bare `BadSecurityChecksFailed`.
 
 `POST /api/opcua/discover` asks an endpoint URL for its available endpoints
 (security mode/policy combinations), so the right mode can be picked before
-connecting. After any reconnect, the subscription and every monitored item
-are rebuilt from the recorded (nodeId, samplingInterval) pairs — the UI never
-shows a live-looking value that stopped updating.
+connecting.
+
+### Supervised reconnect
+
+A connection that has been established and then drops is retried **forever**
+with jittered exponential backoff (1 s to 60 s): node-opcua's own short retry
+is only the first line, and when it gives up the manager's supervisor takes
+over. Saved connections are restored at startup with `supervise: true`
+(lightly staggered, 100 ms apart), so one that is unreachable when Manifold
+starts keeps retrying instead of being logged once and forgotten. A first
+connect started from the API that fails is reported to the caller and not kept.
+The manager emits a `connection-state` event (`online` / `offline`, with a
+reason) that the OPC UA tag source turns into `source-state`, which is what
+drives Bad-on-loss and re-monitoring in bindings. After any reconnect, the
+subscription and every monitored item are rebuilt from the recorded
+(nodeId, samplingInterval) pairs, serialized per connection so concurrent
+`monitor()` calls cannot create duplicate subscriptions — the UI never shows a
+live-looking value that stopped updating. Value updates to socket clients are
+coalesced (100 ms); the in-process tap used by bindings stays immediate.
 
 ## Client graph stack
 
@@ -390,28 +679,88 @@ coordinates.
 
 ## Security model
 
-- `MANIFOLD_AUTH_TOKEN` (admin) and optional `MANIFOLD_VIEWER_TOKEN` (read-only) gate the
-  REST API and the socket handshake. Viewer tokens can read everything but
-  every mutation — HTTP or socket — is refused.
-- `MANIFOLD_TOKENS` (`name:token:role,…`) issues named tokens with per-token
-  audit identity — revoke one person's token without rotating everyone's.
-- Failed authentication is rate-limited per IP (20 failures/minute, then
-  429), so the bearer token cannot be brute-forced quietly.
+**Authentication and roles**
+
+- `MANIFOLD_AUTH_TOKEN` (admin), `MANIFOLD_VIEWER_TOKEN` (read-only) and
+  `MANIFOLD_TOKENS` (`name:token[:role]`, named and individually revocable, with
+  per-token audit identity) gate the REST API and the socket handshake. **Any of
+  the three turns auth on**; a viewer token alone leaves nobody with admin.
+- Roles **fail closed** (`services/authConfig.js`): an unrecognised role in
+  `MANIFOLD_TOKENS` rejects that entry with a startup error rather than granting
+  admin, and a token containing `:` needs an explicit role. If tokens were
+  configured but every entry was rejected, auth stays on and everything is 401.
+- A **viewer** may use `GET`, `HEAD` and `OPTIONS` plus an explicit allowlist of
+  read-only POSTs: historian query, pipeline preview, subscription resolve,
+  schema inference, `/api/devices/validate-tags` and the i3X reads. Everything
+  else non-GET, over HTTP or the socket, is refused. Alert webhook URLs are
+  hidden from viewers.
+- Failed authentication is rate-limited per IP (20 failures/minute, then 429),
+  on both the REST and the socket paths.
+- `/metrics` requires a bearer token (any role) when auth is on, because broker
+  ids and route names are reconnaissance; `MANIFOLD_METRICS_PUBLIC=1` opts out.
+  `/health` stays open.
 - CORS is locked to `CLIENT_URL` (default `http://localhost:3000`); a blanket
   `cors()` would let any website script an authenticated browser.
-- Outbound HTTP (historian writes/queries, alert webhooks, broker admin APIs)
-  goes through bounded timeouts (`services/httpTimeout.js`) — a hung remote
-  endpoint cannot pin a request handler forever.
-- Every mutating action lands in the audit log (role, IP, route, outcome)
-  with secrets redacted, kept in a ring buffer and an append-only JSONL file.
-- Secrets (broker passwords, historian tokens, admin API keys) are stored
-  server-side only: never echoed by the API, redacted from audit entries, and
-  stripped from config exports. Config import preserves stored secrets when
-  the incoming document omits them.
-- `server/data/` is written mode 0600/0700. It is not encrypted: without a
-  real key-management story, at-rest encryption of a file the server must
-  read on boot adds no protection, so the honest measure is file permissions
-  plus host security.
+
+**Egress guard** (`services/egressGuard.js`). One chokepoint for connections the
+caller could not make directly. Two tiers: *always blocked* (loopback,
+link-local including cloud metadata `169.254.169.254`, multicast, reserved and
+carrier-grade-NAT space, and IPv6 forms that embed an IPv4 address, which are
+classified by the embedded address) and *blocked unless
+`MANIFOLD_ALLOW_PRIVATE_TARGETS=1`* (RFC1918, IPv6 ULA). Coverage differs by
+path and the differences matter:
+
+| Path | How it is checked |
+|---|---|
+| Network scanner | each candidate address through `isAllowedAddress` |
+| i3X, CESMII, broker admin, alert webhooks | `guardedFetch`: check before the request, a connect-time `lookup` that pins the checked address (closes DNS rebinding), manual redirects (at most 5, each hop re-checked, `Authorization`/cookies dropped across origins), one overall deadline |
+| Device drivers | `assertAllowedDeviceTarget` when a device is saved, tested or applied. Check-only: the driver opens its own socket, so a hostname is re-resolved at connect time and a small rebinding window remains (literal IPs have none). Loopback is additionally allowed when `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` |
+| MQTT brokers, OPC UA endpoints, historian and database URLs | **not checked**: admin-configured connections that the libraries open themselves |
+
+**Audit** (`services/auditLog.js`). The middleware is mounted *before* auth so
+rejected requests (401, 403, 429) are recorded even when they are GETs. Mutations
+are always recorded, with role, token *name* (never the token), IP, route
+without its query string, outcome, and a redacted body summary. Redaction is one
+shared rule (`services/secrets.js`: field names matching `pass`, `token`,
+`secret`, `key`, `credential`, `cert`, `authorization`, `webhook`, `ca`, `pfx`,
+and passwords in URLs), also used by config export. The file rotates by size
+(`MANIFOLD_AUDIT_MAX_BYTES`, `MANIFOLD_AUDIT_KEEP`); lines are written
+synchronously, so nothing is buffered across a crash.
+
+**Config export and import.** Export strips secrets by the shared name rule and
+includes devices and device profiles. Import is validated whole before anything
+is applied (ids, sizes, depth, prototype-polluting keys) and keeps stored
+secrets where the import carries null. Known issue: the name rule matches
+`key`, so export also blanks each device tag's `key`.
+
+**Profile store durability** (`services/profileStore.js`). The in-memory view
+updates synchronously; the disk write is coalesced (one per tick) and goes temp
+file, `fsync`, rename, directory `fsync`, so a crash leaves a complete old or
+new file. Rotating backups `profiles.json.bak.1` to `.5` are cut from the
+previous good file at most once per minute; a corrupt or missing file on startup
+is recovered from the newest valid backup, loudly. Pending writes are flushed on
+shutdown and on process exit. Ids are checked against prototype-polluting names
+and looked up with `Object.hasOwn`.
+
+**Secrets and files.** Secrets (broker passwords, historian tokens, admin API
+keys) are stored server-side only: never echoed by the API, redacted from audit
+entries, and stripped from config exports. `server/data/` is written mode
+0600/0700. It is not encrypted: without a real key-management story,
+at-rest encryption of a file the server must read on boot adds no protection, so
+the honest measure is file permissions plus host security.
+
+**Devices.** Creating or editing a device is admin-only and audited. The drivers
+are read-only by construction (see
+[Tag sources, bindings and the Sparkplug publisher](#tag-sources-bindings-and-the-sparkplug-publisher)),
+but Modbus TCP, S7comm and plain EtherNet/IP do not authenticate the client:
+anything that can reach the PLC can also write to it. Enabling PUT/GET on an S7
+CPU makes its data blocks writable by any peer. Restrict the network path (a
+firewall rule or a data diode) where a stronger guarantee than software is
+required.
+
+**Outbound HTTP** (historian writes and queries, alert webhooks, broker admin
+APIs) uses bounded timeouts (`services/httpTimeout.js`), so a hung remote
+endpoint cannot pin a request handler forever.
 
 ## Protocol notes
 
@@ -431,6 +780,8 @@ Observed behavior that shapes the implementation:
   implying MQTT exposes more than it does.
 - **Sparkplug edge death cascades to devices**, per specification, and the
   registry applies this when an NDEATH arrives.
+- **Sparkplug DATA is a delta.** Only changed metrics are sent, which is why
+  Sparkplug intake queues every message instead of coalescing.
 - **InfluxDB field types are fixed per shard.** The first write wins; later
   writes with a different type are rejected. Splitting numeric (`value=`) and
   string (`raw=`) fields at the client makes this failure mode impossible.
@@ -462,12 +813,20 @@ Observed behavior that shapes the implementation:
 | `GET/POST/DELETE` | `/api/models` | Contextualization models |
 | `GET/POST/DELETE` | `/api/recorder` · `GET /:id/data` · `POST/DELETE /replay` | Recording; read-back; replay |
 | `GET/POST/DELETE` | `/api/contracts` · `/infer` · `/violations` | Schema contracts |
-| `GET` | `/api/tags/sources` · `/browse` | Tag browser |
-| `GET/POST/DELETE` | `/api/tags/bindings` | Tag bindings |
+| `GET` | `/api/tags/sources` · `/browse` | Tag browser (devices, OPC UA, Sparkplug, MQTT) |
+| `GET/POST/DELETE` | `/api/tags/bindings` | Tag bindings (device, OPC UA or Sparkplug source; mqtt or Sparkplug target) |
 | `POST` | `/api/tags/sparkplug/state` | Start/stop a Sparkplug host STATE session |
 | `GET` | `/api/audit` | Audit trail (admin only) |
-| `GET/POST` | `/api/system/config/export` · `/import` | Config as code |
-| `GET` | `/metrics` | Prometheus metrics |
+| `GET/POST` | `/api/system/config/export` · `/import` | Config as code (devices included; import validated whole) |
+| `GET` | `/metrics` | Prometheus metrics (bearer token required when auth is on, unless `MANIFOLD_METRICS_PUBLIC=1`) |
+| `GET` | `/api/devices` | Devices with live status, driver host states, and the driver descriptors (protocols, fields, types, prerequisites, `experimental`) |
+| `POST` | `/api/devices` | Create a device (validated, egress-checked, applied live) |
+| `PUT/DELETE` | `/api/devices/:id` | Edit in place; delete (409 while a binding uses it) |
+| `POST` | `/api/devices/test` | One-off connect with an unsaved config: identity and negotiated limits, or the error |
+| `POST` | `/api/devices/validate-tags` | Validate and normalize tags for a protocol (read-only; allowed for viewers) |
+| `POST` | `/api/devices/:id/probe` | Read raw bytes at one address and return every candidate decoding |
+| `GET` | `/api/devices/:id/browse?node=` | The controller's own tag list (drivers with `browse`; EtherNet/IP) |
+| `GET` | `/api/devices/:id/values` | Latest value, type, quality and read time per tag |
 | `POST` | `/api/opcua/connections` · `/:id/monitor` | OPC UA connect; monitor |
 | `PUT/DELETE` | `/api/opcua/connections/:id` | Edit in place (reconnects); disconnect |
 | `GET` | `/api/opcua/connections/:id/browse` | Browse the address space |
@@ -479,12 +838,41 @@ Observed behavior that shapes the implementation:
 | `GET` | `/api/i3x/objects` · `/graph` · `/namespaces` | i3X inventory |
 
 Live updates (messages, broker stats, engine metrics, alerts, OPC UA values,
-discovery progress) stream over Socket.IO. Engine metrics push every 2 s only
-while a client is connected.
+device values and state, discovery progress) stream over Socket.IO. Engine
+metrics push every 2 s only while a client is connected. Device errors map to
+HTTP codes: validation 400 (with per-tag `details`), egress refusal 403, a
+driver or device failure 502.
+
+### Devices API
+
+A device is stored and returned as:
+
+```js
+{
+  id, name, enabled, protocol: 'modbus-tcp' | 's7' | 'ethernet-ip',
+  host, port,                       // egress-checked on save
+  unitId | rack, slot | slot, routePath,   // protocol-specific top-level fields
+  options: { byteOrder, wordOrder, addressBase, maxRegisters, maxGap, ... },
+  limits:  { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 },
+  pollGroups: [{ id, intervalMs }],           // intervalMs >= 100
+  tags: [{ key, address, type, pollGroup?, unit?, description?, property?, ... }],
+  isolate?: boolean                           // own host process; no UI
+}
+```
+
+`GET /api/devices` adds `status` to each device (`state`, `phase`, `reason`,
+`since`, `lastError`, `connects`, `requests`, `timeouts`, `exceptions` by code,
+`quarantined` keys, `openUnits`, and per-poll-group `intervalMs`,
+`effectiveIntervalMs`, `lastCycleMs`, `avgCycleMs`, `overruns`, `cycles`), the
+driver host states, and the driver descriptors the UI builds its forms from.
+Saving a device returns the stored record; a device that fails validation
+returns 400 with `details: [{ key, error }]`. Deleting a device that a binding
+uses returns 409.
 
 ## MCP tools
 
-75 tools, covering reads and mutations across the whole backend. Mutating
+75 tools, covering reads and mutations across the whole backend (there are no
+device-specific tools yet; devices are managed through the REST API and the UI). Mutating
 tools say so in their descriptions, and every call goes through the same
 authenticated REST API (and therefore the same audit log) as the UI.
 
@@ -533,6 +921,22 @@ Coverage highlights:
   independent client.
 - Perf smoke: order-of-magnitude floors on 200k ingests, trie build/resolve,
   and 50k tapped messages across 20 compiled routes.
+- Device drivers: pure-core tests per protocol (framing, addressing, decode
+  golden vectors, the planner, the read-only allowlist), driver tests and the
+  runtime against in-process simulators with fault injection (black-holed
+  socket, reset mid-response, late reply, truncated frame, wrong transaction
+  id, exceptions, device restart, connection refused then recovery), supervisor
+  tests (crash, hang, crash-loop parking), and an HTTP integration test of the
+  device API. The simulators (`server/test/support/`) implement write services on
+  purpose and count them, so tests can prove none is ever sent. They show that
+  driver and simulator agree, not that either matches real firmware.
+- Bindings v2 (quality-aware change detection, Bad on loss, `_status`, typed
+  Sparkplug metrics, heartbeat), an end-to-end OPC UA manager plus bindings
+  test, OPC UA reconnect, Sparkplug same-topic bursts and queue overflow,
+  historian outbox ordering, crash safety, poison batches and legacy-spill
+  migration, egress guard (IPv6 forms, redirects, rebinding), role parsing and
+  the viewer allowlist, config export/import validation, and profile-store
+  durability (crash, corrupt file, backups).
 
 Client tests (Vitest) cover the pure logic modules: topic-filter matching,
 graph builders/collapse/coverage, UNS tree building, payload diff.

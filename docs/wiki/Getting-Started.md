@@ -23,9 +23,10 @@ npm start              # serves API + built client on :5000
 
 ## Option B — Docker demo stack
 
-One command brings up Manifold, a Mosquitto broker, an OPC UA simulator, and a
-traffic generator publishing plain MQTT and Sparkplug B — pre-wired, so the UI
-is alive the moment it loads:
+One command brings up Manifold, a Mosquitto broker, an OPC UA simulator, simulated
+Modbus TCP / S7 / EtherNet/IP devices, and a traffic generator publishing plain MQTT
+and Sparkplug B — pre-wired, so the UI is alive the moment it loads (the
+Devices page already polls the three simulators):
 
 ```bash
 docker compose up --build
@@ -80,17 +81,25 @@ flowchart LR
 |---|---|
 | `PORT` | HTTP/socket port (default 5000) |
 | `MANIFOLD_AUTH_TOKEN` | Admin bearer token; enables auth on API + socket |
-| `MANIFOLD_VIEWER_TOKEN` | Optional read-only token |
+| `MANIFOLD_VIEWER_TOKEN` | Read-only token. Setting it alone **also turns auth on**, so set an admin token too |
 | `MANIFOLD_TOKENS` | Named tokens: `name:token:role,...` (roles `admin`/`viewer`) — see [Operations](Operations) |
 | `MANIFOLD_HOST` | Bind address. Default `127.0.0.1` when open, `0.0.0.0` when a token is set |
 | `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `1` = let the scanner / outbound clients reach RFC1918/LAN (needed for Discovery; fail-closed by default — loopback + cloud metadata always blocked). Safe only on a trusted network |
+| `MANIFOLD_ALLOW_LOOPBACK_DEVICES` | `1` = device drivers may target `127.0.0.0/8` / `::1` (local simulators only; off by default) |
+| `MANIFOLD_METRICS_PUBLIC` | `1` = leave `/metrics` open when auth is on (otherwise it needs a bearer token) |
 | `MANIFOLD_MAX_PAYLOAD_BYTES` | Per-topic retained payload cap (default 256 KB) |
 | `MANIFOLD_DATA_DIR` | Data directory (profiles, history, outbox spill, audit, OPC UA PKI) |
 | `MANIFOLD_NO_RESTORE` | `1` = don't reconnect saved profiles on boot |
 | `CLIENT_URL` | Allowed CORS origin (default `http://localhost:3000`) |
 
+The complete list (audit rotation, Sparkplug queue bounds, topic eviction, rate
+limits, timeouts) is in the
+[README](https://github.com/zbest1000/manifold#environment-variables).
+
 ## Where to next
 
+- Poll a PLC directly (Modbus TCP, S7, EtherNet/IP) → [Devices and Drivers](Devices-and-Drivers),
+  then publish its tags with [Mapping to the UNS](Mapping-to-the-UNS)
 - Wire up consumer lineage and broker health → [Broker Setup](Broker-Setup)
 - Send data to a time-series database → [Historians](Historians)
 - Reshape a messy namespace into a clean UNS → [Pipelines and Models](Pipelines-and-Models)

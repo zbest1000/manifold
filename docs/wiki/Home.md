@@ -1,6 +1,6 @@
 # 🏭 Manifold
 
-**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, explored, unified, and shaped into a Unified Namespace.
+**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, plus read-only Modbus TCP · S7 · EtherNet/IP device drivers, explored, unified, and shaped into a Unified Namespace.
 
 [![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
 
@@ -18,8 +18,10 @@
 | 🔌 | **[Broker Setup](Broker-Setup)** | Intake QoS, transports and MQTT 5, shared subscriptions, the EMQX ACL recipe, admin APIs for consumer lineage |
 | 🗄️ | **[Historians](Historians)** | InfluxDB, TimescaleDB, Timebase — store-and-forward in, Trends charts back out |
 | 🔀 | **[Pipelines and Models](Pipelines-and-Models)** | Route, reshape, and contextualize the live stream |
-| 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse device tags, publish them into the UNS, run a Sparkplug primary host |
-| 🛡️ | **[Operations](Operations)** | Fail-closed auth and named tokens, the egress guard, audit, the System health page, config as code, alerts |
+| 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | Poll Modbus TCP, S7 and EtherNet/IP PLCs: addressing, byte order, PLC-side prerequisites, polling health, the read-only guarantee |
+| 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | Device tags to topics: path versus address, quality and the `_status` topic, heartbeat, Sparkplug, Timebase |
+| 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse tags, publish them into the UNS, run a Sparkplug primary host |
+| 🛡️ | **[Operations](Operations)** | Fail-closed auth and named tokens, the egress guard and its limits, audit, profile durability, the System health page, config as code, alerts |
 | 🩺 | **[Troubleshooting](Troubleshooting)** | Symptom → cause → fix |
 
 ## 📐 How it fits together
@@ -27,6 +29,7 @@
 ```mermaid
 flowchart LR
     SRC[Brokers, OPC UA,<br/>CESMII, i3X] --> M[Manifold server]
+    PLC[Modbus TCP, S7,<br/>EtherNet/IP devices] -- read-only --> M
     M --> UI[Web UI<br/>graphs, UNS, Flows]
     M --> MCP[MCP server<br/>AI agents]
     M --> H[(Historians)]

@@ -249,9 +249,10 @@
             <h3>Tags &amp; Sparkplug</h3>
             <p>Browse device tags and publish them into the UNS.</p>
             <ul>
-              <li>Unified tag browser: OPC UA, Sparkplug registry, MQTT trie</li>
+              <li>Unified tag browser: devices, OPC UA, Sparkplug registry, MQTT trie</li>
+              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP (S7 and EtherNet/IP experimental)</li>
               <li>Bindings publish as values, TVQ, or a Sparkplug B device</li>
-              <li>Deadband + quality mapping, read-only toward devices</li>
+              <li>Deadband, heartbeat + quality mapping, read-only toward devices</li>
               <li>Optional Sparkplug primary-host <code>STATE</code></li>
             </ul>
           </div>
@@ -315,8 +316,8 @@
         <div class="steps">
           <div class="step">
             <h3><span class="tag">A</span> Docker demo stack</h3>
-            <p>Manifold + a broker + an OPC UA simulator + traffic, pre-wired — alive the moment it loads.</p>
-            <pre><span class="c"># broker, simulator, and traffic included</span>
+            <p>Manifold + a broker + an OPC UA simulator + simulated Modbus / S7 / EtherNet/IP devices + traffic, pre-wired — alive the moment it loads.</p>
+            <pre><span class="c"># broker, simulators (OPC UA, devices), and traffic included</span>
 docker compose up <span class="k">--build</span>
 <span class="c"># open http://localhost:5000</span></pre>
           </div>

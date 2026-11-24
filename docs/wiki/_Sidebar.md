@@ -6,6 +6,8 @@
 - 🔌 [Broker Setup](Broker-Setup)
 - 🗄️ [Historians](Historians)
 - 🔀 [Pipelines and Models](Pipelines-and-Models)
+- 🔧 [Devices and Drivers](Devices-and-Drivers)
+- 🗺️ [Mapping to the UNS](Mapping-to-the-UNS)
 - 🏷️ [Tags and Sparkplug](Tags-and-Sparkplug)
 - 🛡️ [Operations](Operations)
 - 🩺 [Troubleshooting](Troubleshooting)

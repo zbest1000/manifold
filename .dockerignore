@@ -20,3 +20,6 @@ native
 Dockerfile
 .dockerignore
 docker-compose.yml
+
+# NOTE: the demo's device-sim service runs server/tools/simulators.js, which
+# requires server/test/support/*.js, from the app image. Do not ignore either.

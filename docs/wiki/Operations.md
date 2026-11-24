@@ -34,7 +34,23 @@ npm start
 | Role | Token | Can |
 |---|---|---|
 | 🔑 Admin | `MANIFOLD_AUTH_TOKEN` | everything — API, socket, mutations |
-| 👁️ Viewer | `MANIFOLD_VIEWER_TOKEN` | read everything; every mutation refused with 403 |
+| 👁️ Viewer | `MANIFOLD_VIEWER_TOKEN` | read everything; mutations refused with 403, **except** a short allowlist of read-only POSTs (below) |
+
+**Behaviour to be aware of:**
+
+- A viewer token **by itself turns authentication on**, exactly like an admin
+  token. If you set only `MANIFOLD_VIEWER_TOKEN` there is no admin: set
+  `MANIFOLD_AUTH_TOKEN` (or an admin entry in `MANIFOLD_TOKENS`) too.
+- Roles fail closed. In `MANIFOLD_TOKENS` an **unknown role is rejected** with
+  a startup error (it used to be treated as admin) and that entry is ignored.
+  If tokens are configured but every entry is rejected, auth **stays on** and
+  everything answers 401, never an open server. A token that itself contains
+  `:` needs an explicit role as the last segment (`bot:ab:cd:viewer`).
+- Viewers may call these POSTs because they cannot change anything: historian
+  trend queries, pipeline dry-runs, subscription resolve, schema inference,
+  device tag validation, and i3X reads. Everything else non-GET is refused.
+- Viewers do not see alert **webhook URLs** (Slack/Teams URLs are credentials);
+  they see only that one is set.
 
 Auth is enforced identically on the REST API **and** the Socket.IO handshake —
 the socket can publish and actuate, so it is gated the same way. Viewers see a
@@ -83,16 +99,29 @@ security headers on every response.
 
 ### Network safety (egress guard)
 
-The two features that reach out to other machines — the CIDR network scanner and
-the outbound HTTP clients (i3X, CESMII, broker admin APIs) — pass every target
-through one egress guard. Loopback, link-local (including the cloud-metadata
-address `169.254.169.254`), multicast, and reserved ranges are **always**
-blocked, so Manifold can't be turned into an SSRF pivot or an internal port
-scanner. RFC1918 / LAN targets — the normal case on a plant network, and what
-Discovery is *for* — are **fail-closed by default**; set
+Features that reach out to other machines pass their targets through one egress
+guard. Loopback, link-local (including the cloud-metadata address
+`169.254.169.254`), multicast, and reserved ranges are **always** blocked, so
+Manifold can't be turned into an SSRF pivot or an internal port scanner. IPv6
+forms that embed an IPv4 address (mapped, NAT64, 6to4) are judged by the
+embedded address. RFC1918 / LAN targets — the normal case on a plant network,
+and what Discovery is *for* — are **fail-closed by default**; set
 `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` on a trusted on-prem network to allow them
 (the server warns at startup when it's on). The Docker demo sets it, since it is
 a local-only demo.
+
+What the guard covers, and how strongly:
+
+| Path | Enforcement |
+|---|---|
+| Network scanner (Discovery) | each candidate address is checked |
+| i3X, CESMII, broker admin API, **alert webhooks** | full: checked before the request, the connect-time address is pinned (closes DNS rebinding), redirects are followed manually (at most 5) and every hop is re-checked, and credentials are dropped on a cross-origin redirect. A webhook to `localhost` or a private address is **refused** (private ones work with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) |
+| **Device drivers** (Modbus, S7, EtherNet/IP) | checked when a device is saved, tested or started. The drivers open their own sockets, so the hostname is resolved again at connect time: a small DNS-rebinding window remains for hostnames (literal IPs have none). **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
+
+**Not covered:** MQTT broker hosts, OPC UA endpoints, and historian / database
+URLs are **not** checked. They are connections an admin configures by hand, and
+an admin can point them anywhere the server can reach. Treat admin tokens
+accordingly, and use network policy for these.
 
 ### CORS
 
@@ -103,8 +132,16 @@ UI from when the client is served separately.
 ## Audit log
 
 Every mutating API call and socket command is recorded — role, IP, route,
-outcome — with secrets redacted. View under **Settings → Audit** (admin
-only), or read the append-only JSONL in `MANIFOLD_DATA_DIR`.
+outcome — with secrets redacted. **Rejected requests are recorded too**: failed
+authentication (401), viewer-forbidden (403) and throttled (429) requests are
+audited even when they are GETs, because they are what an investigator looks
+for. Bearer tokens are never written (only the matched token's *name*), and
+query strings are dropped from the logged path. View under **Settings → Audit**
+(admin only), or read the append-only JSONL in `MANIFOLD_DATA_DIR`.
+
+`audit.jsonl` rotates by size: at `MANIFOLD_AUDIT_MAX_BYTES` (default 10 MiB)
+it becomes `audit.jsonl.1`, then `.2` and so on up to `MANIFOLD_AUDIT_KEEP`
+(default 5) files; the oldest is dropped.
 
 ## Prometheus
 
@@ -139,9 +176,20 @@ flowchart LR
 ```
 
 **Settings → Config** exports the entire DataOps setup — pipelines, models,
-historians, recordings, contracts, bindings, mounts, alert rules — as one
-JSON document with secrets stripped. Import merges by id and keeps stored
-secrets when the incoming document omits them.
+historians, recordings, contracts, bindings, **devices and device profiles**,
+mounts, alert rules — as one JSON document with secrets stripped. Import merges
+by id and keeps stored secrets when the incoming document carries a null.
+
+Secrets are stripped by field **name**, one shared rule for export and audit
+(anything matching `pass`, `token`, `secret`, `key`, `credential`, `cert`,
+`authorization`, `webhook`, plus `ca` and `pfx`), at any depth, and passwords in
+URLs. Import is validated whole before anything is applied (ids, sizes, depth,
+prototype-polluting keys); one bad item rejects the document with a 400.
+
+> ⚠️ **Known issue.** Because the secret rule matches the name `key`, **export
+> also blanks each device tag's `key`**, which is not a secret. Do not rely on
+> export/import to move devices between instances until this is fixed. Importing
+> over the same instance restores the keys by position.
 
 ## Alerts
 
@@ -169,6 +217,41 @@ webhook (5 s timeout). Webhook delivery failures are counted and the last
 error is shown with the rules — a dead webhook is visible, not silent. Recent
 events show in **Settings → Alerts** and stream over the socket.
 
+## Device drivers in operation
+
+- Each protocol's driver runs in its **own child process** supervised by the
+  server; see [Devices and Drivers](Devices-and-Drivers). A crashing driver
+  restarts with a growing delay and is **parked** after more than five crashes
+  in a minute (the Devices page says so; saving the device set again retries).
+  A hung driver is killed after missing heartbeats.
+- A device config can set `"isolate": true` to get its own process (useful for
+  a flaky gateway). This is honoured by the supervisor but not exposed in the
+  UI.
+- Device setup is admin-only and audited like any other change. A viewer can
+  read devices and live values; `POST /api/devices/validate-tags` is the only
+  device POST a viewer may call.
+- Saved OPC UA connections are **supervised**: after a restart, or a lost
+  session, Manifold keeps retrying (1 s growing to 60 s, jittered) until you
+  delete the connection, and re-creates its monitored items. A first connect you
+  start from the UI that fails is reported and not kept.
+- Device metrics are not on `/metrics` yet; use the Devices page or
+  `GET /api/devices` (state, cycle times, overruns, quarantined tags, last
+  error).
+
+## Limits that protect the server
+
+| Limit | Default | Setting | When it is reached |
+|---|---|---|---|
+| Topics per broker | 2,000,000 | (fixed) | New topics are dropped and counted, a `topic-cap-reached` event is raised and the server logs a warning |
+| Idle-topic eviction | off | `MANIFOLD_TOPIC_IDLE_TTL_MS` (milliseconds) | When set, topics silent for longer than this are forgotten by a background sweep, freeing their slots (so a namespace with churning topics does not slowly fill the cap) |
+| Retained payload per topic | 256 KB | `MANIFOLD_MAX_PAYLOAD_BYTES` | Larger payloads are truncated for storage and preview |
+| MQTT 5 property entries | 200,000 | `MANIFOLD_MAX_MSG_PROPS` | New topics' properties are refused and counted (`droppedProps`) |
+| Sparkplug un-coalesced queue | 5,000 messages / 8 MiB per 100 ms flush | `MANIFOLD_SPARKPLUG_QUEUE_MAX`, `MANIFOLD_SPARKPLUG_QUEUE_BYTES` | A topic falls back to latest-wins for that window; `sparkplugCoalesced` counts the affected messages |
+| Historian HTTP calls | 15 s | `MANIFOLD_HISTORIAN_TIMEOUT_MS` | The write fails and spills |
+
+See the full list of settings in the
+[README](https://github.com/zbest1000/manifold#environment-variables).
+
 ## Data directory
 
 `MANIFOLD_DATA_DIR` (default `server/data/`) holds profiles, history
@@ -178,9 +261,18 @@ certificate stores) — written 0600/0700.
 
 > ⚠️ The profiles file contains connection credentials, and `pki/own/private`
 > holds the OPC UA private key. Protect the host, and back the directory up
-> if your DataOps config matters. If the profiles file is ever corrupted, it
-> is backed up to `profiles.json.bak` before the server starts clean —
-> credentials are recoverable.
+> if your DataOps config matters.
+
+**How `profiles.json` is protected.** Changes are coalesced (all edits in one
+tick make one write) and written as temp file, `fsync`, rename, then a
+directory `fsync`, so a crash leaves the old or the new complete file, never an
+empty one. Rotating backups `profiles.json.bak.1` … `.5` (newest first) are cut
+from the previous good file, at most one per minute so a burst of edits cannot
+push every good copy out. On startup, a corrupt or missing file is **recovered
+from the newest valid backup** (loudly, in the log: changes since that backup
+are lost), after the bad file is kept as `profiles.json.bak`. Pending writes
+are flushed on shutdown and on exit; a hard kill (SIGKILL, power loss) can lose
+only the edits of the current instant.
 
 ## Docker image
 
