@@ -153,14 +153,76 @@ function toPlainValue(value) {
   return value;
 }
 
+const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 60_000 };
+const DEFAULT_FLUSH_MS = 100;
+
 class OpcuaManager extends EventEmitter {
-  constructor(io) {
+  /**
+   * @param io socket.io server (only emit()/volatile used)
+   * @param options.clientFactory (clientOptions) => client   (tests inject a fake)
+   * @param options.backoff { initialMs, maxMs }               reconnect delays
+   * @param options.random () => [0,1)                         jitter source
+   * @param options.valueFlushMs                               socket value coalescing window
+   *
+   * In-process events: 'value' (immediate) and
+   * 'connection-state' { connectionId, state: 'online'|'offline', reason }.
+   */
+  constructor(io, options = {}) {
     super();
     this.io = io;
-    this.connections = new Map(); // connectionId -> { client, session, subscription, info, monitored }
+    this.connections = new Map(); // connectionId -> entry
+    this._clientFactory = options.clientFactory || ((o) => OPCUAClient.create(o));
+    this._backoff = { ...DEFAULT_BACKOFF, ...(options.backoff || {}) };
+    this._random = options.random || Math.random;
+    this._flushMs = options.valueFlushMs ?? DEFAULT_FLUSH_MS;
+    this._pendingValues = new Map(); // `${connectionId}\0${nodeId}` -> evt
+    this._flushTimer = null;
   }
 
-  async connect(config = {}) {
+  // -- state / socket helpers ------------------------------------------------
+
+  _setState(entry, state, reason) {
+    if (entry.connState === state) return;
+    entry.connState = state;
+    this.emit('connection-state', { connectionId: entry.info.id, state, reason });
+  }
+
+  _queueValue(evt) {
+    this._pendingValues.set(`${evt.connectionId}\u0000${evt.nodeId}`, evt);
+    if (this._flushTimer) return;
+    this._flushTimer = setTimeout(() => this._flushValues(), this._flushMs);
+    this._flushTimer.unref?.();
+  }
+
+  _flushValues() {
+    this._flushTimer = null;
+    const batch = [...this._pendingValues.values()];
+    this._pendingValues.clear();
+    const target = this.io.volatile || this.io;
+    for (const evt of batch) target.emit('opcua-value', evt);
+  }
+
+  _dropPending(connectionId) {
+    const prefix = `${connectionId}\u0000`;
+    for (const key of this._pendingValues.keys()) {
+      if (key.startsWith(prefix)) this._pendingValues.delete(key);
+    }
+  }
+
+  _serial(entry, fn) {
+    const run = entry.chain.then(fn);
+    entry.chain = run.catch(() => {});
+    return run;
+  }
+
+  // -- connect / supervise ---------------------------------------------------
+
+  /**
+   * Connect. By default a failed first connect throws and nothing is kept.
+   * With `{ supervise: true }` (restore of a saved connection) a failure keeps
+   * the entry and retries forever with jittered exponential backoff.
+   */
+  async connect(config = {}, { supervise = false } = {}) {
     if (!config.endpointUrl) {
       throw new Error('endpointUrl is required (e.g. opc.tcp://host:4840)');
     }
@@ -170,6 +232,60 @@ class OpcuaManager extends EventEmitter {
       throw new Error(`OPC UA connection ${connectionId} already exists`);
     }
 
+    const info = {
+      id: connectionId,
+      name: config.name || config.endpointUrl,
+      endpointUrl: config.endpointUrl,
+      securityMode: config.securityMode || 'None',
+      securityPolicy: config.securityPolicy || 'None',
+      username: config.username || null,
+      status: 'connecting',
+      connectedAt: null,
+      lastError: null,
+      monitoredCount: 0
+    };
+
+    const entry = {
+      config,
+      client: null,
+      session: null,
+      subscription: null,
+      info,
+      monitored: new Map(),
+      // nodeId -> samplingInterval, so monitors can be rebuilt after reconnect
+      monitorSpecs: new Map(),
+      closing: false,
+      supervise,
+      connState: null,
+      epoch: 0,
+      attempt: 0,
+      retryTimer: null,
+      chain: Promise.resolve()
+    };
+    this.connections.set(connectionId, entry);
+    this.io.emit('opcua-connection-attempt', { connectionId, connection: { ...info } });
+
+    try {
+      await this._establish(entry);
+      return { connectionId, status: 'connected', endpointUrl: config.endpointUrl };
+    } catch (rawError) {
+      const error = withTrustHint(rawError);
+      info.lastError = error.message;
+      this.io.emit('opcua-error', { connectionId, error: error.message });
+      if (supervise && !entry.closing) {
+        this._setState(entry, 'offline', `connect failed: ${error.message}`);
+        this._scheduleRetry(entry);
+        return { connectionId, status: 'reconnecting', endpointUrl: config.endpointUrl };
+      }
+      info.status = 'error';
+      this._setState(entry, 'offline', `connect failed: ${error.message}`);
+      if (this.connections.get(connectionId) === entry) this.connections.delete(connectionId);
+      throw error;
+    }
+  }
+
+  async _buildClient(entry) {
+    const config = entry.config;
     const securityMode = MessageSecurityMode[config.securityMode] ?? MessageSecurityMode.None;
     const securityPolicy = SecurityPolicy[config.securityPolicy] ?? SecurityPolicy.None;
     const secure = securityMode !== MessageSecurityMode.None;
@@ -195,58 +311,40 @@ class OpcuaManager extends EventEmitter {
       clientOptions.certificateFile = clientCertificateFile(certificateManager);
       clientOptions.privateKeyFile = certificateManager.privateKey;
     }
+    return { client: this._clientFactory(clientOptions), certificateManager };
+  }
 
-    const client = OPCUAClient.create(clientOptions);
-
-    const info = {
-      id: connectionId,
-      name: config.name || config.endpointUrl,
-      endpointUrl: config.endpointUrl,
-      securityMode: config.securityMode || 'None',
-      securityPolicy: config.securityPolicy || 'None',
-      username: config.username || null,
-      status: 'connecting',
-      connectedAt: null,
-      lastError: null,
-      monitoredCount: 0
-    };
-
-    const entry = {
-      client,
-      session: null,
-      subscription: null,
-      info,
-      monitored: new Map(),
-      // nodeId -> samplingInterval, so monitors can be rebuilt after reconnect
-      monitorSpecs: new Map(),
-      closing: false
-    };
-    this.connections.set(connectionId, entry);
-    this.io.emit('opcua-connection-attempt', { connectionId, connection: { ...info } });
+  /** One connect attempt: new client + session, then go online. Throws on failure. */
+  async _establish(entry) {
+    const { info, config } = entry;
+    const { client, certificateManager } = await this._buildClient(entry);
+    entry.client = client;
+    const mine = () => entry.client === client && !entry.closing;
 
     client.on('connection_lost', () => {
+      if (!mine()) return;
+      entry.epoch++;
       info.status = 'reconnecting';
-      this.io.emit('opcua-reconnecting', { connectionId });
+      this.io.emit('opcua-reconnecting', { connectionId: info.id });
+      this._setState(entry, 'offline', 'connection lost');
     });
     client.on('connection_reestablished', () => {
+      if (!mine()) return;
       info.status = 'connected';
-      this.io.emit('opcua-connected', { connectionId, connection: { ...info } });
-      // The transport is back, but the subscription/monitored items may not
-      // have survived — rebuild them from the recorded specs so monitoredCount
-      // never lies after a reconnect.
-      this._recoverMonitors(connectionId).catch((error) => {
-        info.lastError = `re-monitor after reconnect: ${error.message}`;
-        this.io.emit('opcua-error', { connectionId, error: info.lastError });
-      });
+      this.io.emit('opcua-connected', { connectionId: info.id, connection: { ...info } });
+      this._sessionUsable(entry).catch(() => {});
     });
     client.on('close', () => {
-      // Fires when the client gives up for good (or on user disconnect).
-      // Without this, a dead endpoint shows "reconnecting" forever.
-      if (!entry.closing && info.status !== 'disconnected') {
-        info.status = 'disconnected';
-        info.lastError = info.lastError || 'connection closed';
-        this.io.emit('opcua-disconnected', { connectionId });
-      }
+      // node-opcua gave up for good (or user disconnect, which sets closing).
+      if (!mine()) return;
+      entry.epoch++;
+      entry.session = null;
+      entry.subscription = null;
+      entry.monitored.clear();
+      info.monitoredCount = 0;
+      info.lastError = info.lastError || 'connection closed';
+      this._setState(entry, 'offline', 'connection closed');
+      this._scheduleRetry(entry);
     });
 
     // trustServer: node-opcua's accept-unknown flag lives on the certificate
@@ -262,26 +360,80 @@ class OpcuaManager extends EventEmitter {
 
     try {
       await client.connect(config.endpointUrl);
-
+      if (entry.closing) throw new Error('connection closed');
       const userIdentity = config.username
         ? { type: UserTokenType.UserName, userName: config.username, password: config.password || '' }
         : { type: UserTokenType.Anonymous };
-      entry.session = await client.createSession(userIdentity);
-
-      info.status = 'connected';
-      info.connectedAt = new Date();
-      this.io.emit('opcua-connected', { connectionId, connection: { ...info } });
-      return { connectionId, status: 'connected', endpointUrl: config.endpointUrl };
-    } catch (rawError) {
-      const error = withTrustHint(rawError);
-      info.status = 'error';
-      info.lastError = error.message;
-      this.io.emit('opcua-error', { connectionId, error: error.message });
-      this.connections.delete(connectionId);
+      const session = await client.createSession(userIdentity);
+      if (entry.closing) {
+        await session.close?.().catch(() => {});
+        throw new Error('connection closed');
+      }
+      entry.session = session;
+    } catch (error) {
+      // Detach before disconnecting so the dying client's 'close' is ignored.
+      if (entry.client === client) entry.client = null;
       await client.disconnect().catch(() => {});
       throw error;
     } finally {
       if (toggleAutoAccept) certificateManager.automaticallyAcceptUnknownCertificate = previousAutoAccept;
+    }
+
+    info.status = 'connected';
+    info.connectedAt = new Date();
+    info.lastError = null;
+    entry.attempt = 0;
+    this.io.emit('opcua-connected', { connectionId: info.id, connection: { ...info } });
+    await this._sessionUsable(entry);
+  }
+
+  /** Session exists: rebuild monitors, then announce 'online'. */
+  async _sessionUsable(entry) {
+    const epoch = ++entry.epoch;
+    await this._recoverMonitors(entry.info.id).catch((error) => {
+      entry.info.lastError = `re-monitor after reconnect: ${error.message}`;
+      this.io.emit('opcua-error', { connectionId: entry.info.id, error: entry.info.lastError });
+    });
+    if (entry.closing || entry.epoch !== epoch || !entry.session) return;
+    this._setState(entry, 'online', 'connected');
+  }
+
+  _scheduleRetry(entry) {
+    if (entry.closing || entry.retryTimer) return;
+    const { initialMs, maxMs } = this._backoff;
+    const ceiling = Math.min(maxMs, initialMs * 2 ** Math.min(entry.attempt, 30));
+    const delay = Math.round(ceiling * (0.5 + this._random() * 0.5));
+    entry.attempt++;
+    if (entry.info.status !== 'reconnecting') {
+      entry.info.status = 'reconnecting';
+      this.io.emit('opcua-reconnecting', { connectionId: entry.info.id });
+    }
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null;
+      this._retry(entry).catch(() => {});
+    }, delay);
+    entry.retryTimer.unref?.();
+  }
+
+  async _retry(entry) {
+    if (entry.closing) return;
+    // Dispose of the previous (dead) client; detach first so it stays silent.
+    const old = entry.client;
+    entry.client = null;
+    if (old) await old.disconnect().catch(() => {});
+    if (entry.closing) return;
+    this.io.emit('opcua-connection-attempt', {
+      connectionId: entry.info.id,
+      connection: { ...entry.info }
+    });
+    try {
+      await this._establish(entry);
+    } catch (rawError) {
+      const error = withTrustHint(rawError);
+      entry.info.lastError = error.message;
+      if (entry.closing) return;
+      this._setState(entry, 'offline', `connect failed: ${error.message}`);
+      this._scheduleRetry(entry);
     }
   }
 
@@ -454,10 +606,23 @@ class OpcuaManager extends EventEmitter {
     return out;
   }
 
+  /**
+   * Monitor a node. Serialized per connection and idempotent: concurrent calls
+   * never create two subscriptions or duplicate items, and re-monitoring an
+   * already-monitored node resolves as a no-op.
+   */
   async monitor(connectionId, nodeId, samplingInterval = 500) {
     const entry = this.requireSession(connectionId);
+    return this._serial(entry, () => this._monitorInner(entry, nodeId, samplingInterval));
+  }
+
+  async _monitorInner(entry, nodeId, samplingInterval) {
+    const connectionId = entry.info.id;
     if (entry.monitored.has(nodeId)) {
       return { connectionId, nodeId, status: 'already-monitored' };
+    }
+    if (!entry.session || entry.closing) {
+      throw new Error(`OPC UA connection ${connectionId} is not established`);
     }
 
     if (!entry.subscription) {
@@ -487,8 +652,9 @@ class OpcuaManager extends EventEmitter {
         sourceTimestamp: dataValue.sourceTimestamp || null,
         serverTimestamp: dataValue.serverTimestamp || null
       };
-      this.io.emit('opcua-value', evt);
-      // In-process tap for the tag binding engine (socket clients aside).
+      // Socket clients get the latest value per node, coalesced (see _flushValues);
+      // the in-process tap (tag binding engine) stays immediate.
+      this._queueValue(evt);
       this.emit('value', evt);
     });
 
@@ -508,30 +674,37 @@ class OpcuaManager extends EventEmitter {
   async _recoverMonitors(connectionId) {
     const entry = this.connections.get(connectionId);
     if (!entry || entry.monitorSpecs.size === 0) return;
-    const specs = [...entry.monitorSpecs.entries()];
-    if (entry.subscription) {
-      await entry.subscription.terminate().catch(() => {});
-      entry.subscription = null;
-    }
-    entry.monitored.clear();
-    entry.monitorSpecs.clear();
-    entry.info.monitoredCount = 0;
-    for (const [nodeId, interval] of specs) {
-      await this.monitor(connectionId, nodeId, interval).catch((error) => {
-        entry.info.lastError = `re-monitor ${nodeId}: ${error.message}`;
-      });
-    }
+    return this._serial(entry, async () => {
+      const specs = [...entry.monitorSpecs.entries()];
+      if (entry.subscription) {
+        await entry.subscription.terminate().catch(() => {});
+        entry.subscription = null;
+      }
+      entry.monitored.clear();
+      entry.monitorSpecs.clear();
+      entry.info.monitoredCount = 0;
+      for (const [nodeId, interval] of specs) {
+        await this._monitorInner(entry, nodeId, interval).catch((error) => {
+          entry.info.lastError = `re-monitor ${nodeId}: ${error.message}`;
+          // keep the spec so the next reconnect retries it
+          entry.monitorSpecs.set(nodeId, interval);
+        });
+      }
+    });
   }
 
   async unmonitor(connectionId, nodeId) {
     const entry = this.requireSession(connectionId);
-    const item = entry.monitored.get(nodeId);
-    if (item) {
-      await item.terminate();
-      entry.monitored.delete(nodeId);
-      entry.monitorSpecs.delete(nodeId);
-      entry.info.monitoredCount = entry.monitored.size;
-    }
+    await this._serial(entry, async () => {
+      const item = entry.monitored.get(nodeId);
+      if (item) {
+        await item.terminate();
+        entry.monitored.delete(nodeId);
+        entry.monitorSpecs.delete(nodeId);
+        entry.info.monitoredCount = entry.monitored.size;
+      }
+      this._pendingValues.delete(`${connectionId}\u0000${nodeId}`);
+    });
     this.io.emit('opcua-monitor-stopped', { connectionId, nodeId });
     return { connectionId, nodeId, status: 'stopped' };
   }
@@ -548,17 +721,23 @@ class OpcuaManager extends EventEmitter {
       throw new Error('endpointUrl is required (e.g. opc.tcp://host:4840)');
     }
     if (this.connections.has(connectionId)) {
-      await this.disconnect(connectionId);
+      await this.disconnect(connectionId, 'updated');
     }
     return this.connect({ ...config, id: connectionId });
   }
 
-  async disconnect(connectionId) {
+  async disconnect(connectionId, reason = 'removed') {
     const entry = this.connections.get(connectionId);
     if (!entry) {
       throw new Error(`Unknown OPC UA connection ${connectionId}`);
     }
-    entry.closing = true; // suppress the 'close' handler's disconnected event
+    entry.closing = true; // stops retries and silences client events
+    if (entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = null;
+    }
+    this._setState(entry, 'offline', reason);
+    this._dropPending(connectionId);
 
     try {
       for (const item of entry.monitored.values()) {
@@ -566,7 +745,7 @@ class OpcuaManager extends EventEmitter {
       }
       if (entry.subscription) await entry.subscription.terminate().catch(() => {});
       if (entry.session) await entry.session.close().catch(() => {});
-      await entry.client.disconnect();
+      if (entry.client) await entry.client.disconnect();
     } finally {
       this.connections.delete(connectionId);
       this.io.emit('opcua-disconnected', { connectionId });
@@ -583,8 +762,13 @@ class OpcuaManager extends EventEmitter {
 
   async shutdown() {
     for (const connectionId of Array.from(this.connections.keys())) {
-      await this.disconnect(connectionId).catch(() => {});
+      await this.disconnect(connectionId, 'shutdown').catch(() => {});
     }
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
+    this._pendingValues.clear();
   }
 }
 

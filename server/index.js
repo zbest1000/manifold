@@ -219,11 +219,19 @@ function restoreProfiles() {
       console.warn(`restore: mqtt broker ${entry.config?.host}:${entry.config?.port}: ${error.message}`);
     }
   }
-  for (const config of profiles.opcuaEndpoints()) {
-    opcuaManager.connect(config).catch((error) => {
-      console.warn(`restore: opcua ${config.endpointUrl}: ${error.message}`);
-    });
-  }
+  // Saved OPC UA connections are supervised: the manager keeps retrying with
+  // jittered exponential backoff (1s -> 60s) until the user removes them.
+  // First connects are lightly staggered so a restart doesn't open every
+  // socket in the same tick.
+  profiles.opcuaEndpoints().forEach((config, i) => {
+    const start = () => {
+      opcuaManager.connect(config, { supervise: true }).catch((error) => {
+        console.warn(`restore: opcua ${config.endpointUrl}: ${error.message}`);
+      });
+    };
+    if (i === 0) start();
+    else setTimeout(start, Math.min(i * 100, 5000)).unref?.();
+  });
   if (profiles.data.cesmii) {
     try {
       cesmii.configure(profiles.data.cesmii);
