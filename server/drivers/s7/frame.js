@@ -27,7 +27,6 @@
  */
 
 const TPKT_HEADER = 4;
-const COTP_DT_HEADER = 3; // LI=2, 0xF0, TPDU-NR|EOT
 const MAX_TPKT_LENGTH = 0xffff;
 
 const COTP = Object.freeze({ CR: 0xe0, CC: 0xd0, DT: 0xf0, DR: 0x80, DC: 0xc0, ER: 0x70 });

@@ -37,7 +37,7 @@ export function usePolled(fetcher, { interval = 0, deps = [] } = {}) {
       alive.current = false;
       if (t) clearInterval(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- callers pass `deps` as a variable-length list, which the rule cannot verify
   }, [interval, reload, ...deps]);
 
   const setData = useCallback((updater) => setState((s) => ({ ...s, data: typeof updater === 'function' ? updater(s.data) : updater })), []);

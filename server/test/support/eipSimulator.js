@@ -548,7 +548,7 @@ class EipSimulator {
     let dims = tag.dims;
     let base = 0;
     let boolArray = !!tag.boolArray;
-    let data = tag.data;
+    const data = tag.data;
     const elemSize = (t) => (typeof t === 'object' ? this.templates.get(t.tpl).size : SIZE[t]);
     while (k < segs.length) {
       const s = segs[k];

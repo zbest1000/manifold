@@ -80,7 +80,7 @@ function UplotChart({ options, data, height, className }) {
       uRef.current = null;
     };
     // data is intentionally omitted — updates flow through the effect below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- options/height rebuild the chart; data streams in through the effect below
   }, [options, height]);
 
   useEffect(() => {
@@ -98,7 +98,7 @@ export function Sparkline({ values, height = 28, warn = false, area = true, labe
   const color = warn ? '#f59e0b' : ACCENT;
   const nums = (values || []).filter((v) => Number.isFinite(v));
   const flat = nums.length >= 2 && Math.min(...nums) === Math.max(...nums);
-  const data = useMemo(() => [nums.map((_, i) => i), nums], [values]); // eslint-disable-line react-hooks/exhaustive-deps
+  const data = useMemo(() => [nums.map((_, i) => i), nums], [values]); // eslint-disable-line react-hooks/exhaustive-deps -- depends on `values` only; `nums` is derived from it each render
   const options = useMemo(
     () => ({
       cursor: { show: false },
@@ -197,7 +197,7 @@ export function TimeSeriesChart({ series = [], height = 260, colorFor, area, sho
     }),
     // Rebuild ONLY on a structural change (series added/removed, area/grid
     // toggled) — never on new data points, which stream through setData.
-    [structKey, useArea, showGrid] // eslint-disable-line react-hooks/exhaustive-deps
+    [structKey, useArea, showGrid] // eslint-disable-line react-hooks/exhaustive-deps -- rebuilds only on structure changes; data streams through setData
   );
 
   if (!data[0] || data[0].length < 2) {

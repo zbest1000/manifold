@@ -16,31 +16,42 @@ const fmtClock = (ms) => (Number.isFinite(ms) ? new Date(ms).toLocaleTimeString(
 export default function ReplayScrubber({ getMessages, messages, toNodeId, graphRef, durationMs = 6000 }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [span, setSpan] = useState({ t0: NaN, t1: NaN, count: 0 });
   const rafRef = useRef(0);
   const startRef = useRef(0);
   const idxRef = useRef(0);
   const fromRef = useRef(0);
   const eventsRef = useRef([]);
   const trackRef = useRef(null);
+  const loadRef = useRef(null);
 
-  const load = () => {
+  const readEvents = () => {
     const msgs = getMessages ? getMessages() : messages || [];
-    const evs = msgs
+    return msgs
       .map((m) => ({ t: new Date(m.timestamp).getTime(), nodeId: toNodeId(m) }))
       .filter((e) => e.nodeId && Number.isFinite(e.t))
       .sort((a, b) => a.t - b.t);
+  };
+  const spanOf = (evs) => ({ t0: evs[0]?.t ?? NaN, t1: evs[evs.length - 1]?.t ?? NaN, count: evs.length });
+
+  const [span, setSpan] = useState(() => spanOf(readEvents()));
+
+  const load = () => {
+    const evs = readEvents();
     eventsRef.current = evs;
-    setSpan({ t0: evs[0]?.t ?? NaN, t1: evs[evs.length - 1]?.t ?? NaN, count: evs.length });
+    setSpan(spanOf(evs));
     return evs;
   };
 
+  // Keep the latest `load` reachable from the interval without re-subscribing.
+  useEffect(() => {
+    loadRef.current = load;
+  });
+
   // Refresh the window labels occasionally (not per tick) so they stay honest.
   useEffect(() => {
-    load();
-    const t = setInterval(() => document.visibilityState === 'visible' && !rafRef.current && load(), 5000);
+    loadRef.current();
+    const t = setInterval(() => document.visibilityState === 'visible' && !rafRef.current && loadRef.current(), 5000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const stop = () => {

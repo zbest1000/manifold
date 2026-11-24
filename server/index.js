@@ -123,10 +123,6 @@ function identityForToken(token) {
   return null;
 }
 
-function roleForToken(token) {
-  return identityForToken(token)?.role || null;
-}
-
 // Brute-force guard: a per-IP token bucket on FAILED auth attempts. Successful
 // requests are never throttled — this only slows credential guessing.
 const authFailures = new Map(); // ip -> { count, resetAt }
@@ -462,7 +458,7 @@ io.on('connection', (socket) => {
   });
 });
 
-app.use((err, req, res, next) => {
+app.use((err, req, res, _next) => { // Express recognises error handlers by their 4-argument arity
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });

@@ -364,7 +364,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     ctx.restore();
 
     if (minimap) drawMinimap(ctx, nodes, transformRef.current, sizeRef.current, style, colorFor);
-  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, labelDensity]);
+  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, labelDensity, nodeValuesRef]);
 
   useEffect(() => {
     drawRef.current = draw;
@@ -466,7 +466,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     sim.on('end', autoFit);
     simRef.current = sim;
     return () => sim.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- restarts the simulation only for new data/layout; other inputs are read via refs
   }, [data, layout, draw]);
 
   useEffect(() => {
@@ -752,7 +752,6 @@ const ForceGraph = forwardRef(function ForceGraph(
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('contextmenu', onContext);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

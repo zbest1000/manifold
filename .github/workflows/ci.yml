@@ -33,6 +33,9 @@ jobs:
       - name: Install server dependencies
         working-directory: server
         run: npm ci
+      - name: Lint server
+        working-directory: server
+        run: npm run lint
       - name: Run server tests
         working-directory: server
         run: npm test
@@ -49,6 +52,9 @@ jobs:
       - name: Install client dependencies
         working-directory: client
         run: npm ci
+      - name: Lint client
+        working-directory: client
+        run: npm run lint
       - name: Run client tests
         working-directory: client
         run: npm test
@@ -159,9 +165,46 @@ jobs:
       - name: Install MCP dependencies
         working-directory: mcp
         run: npm ci
+      - name: Lint MCP server
+        working-directory: mcp
+        run: npm run lint
       - name: Verify MCP server starts and registers tools
         working-directory: mcp
         run: node --check index.js
+
+  e2e:
+    name: UI smoke + accessibility (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+      # The suite boots the real backend (server/) in front of the built client,
+      # an in-process MQTT broker (aedes) and the Modbus simulator.
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+      - name: Build client
+        working-directory: client
+        run: npm run build
+      - name: Install Chromium
+        working-directory: client
+        run: npx playwright install --with-deps chromium
+      - name: Run UI smoke + accessibility tests
+        working-directory: client
+        run: npm run e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: client/playwright-report
+          retention-days: 7
 
   audit:
     name: Dependency audit (high+)

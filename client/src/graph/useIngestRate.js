@@ -38,7 +38,7 @@ export default function useIngestRate(ids = null, windowMs = 10_000) {
       off?.();
       clearInterval(t);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-subscribes only when the key/window changes
   }, [key, windowMs]);
   return rate;
 }

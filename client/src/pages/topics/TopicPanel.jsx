@@ -41,7 +41,7 @@ export default function TopicPanel({ node, brokerId, graph, onJump, onClose }) {
   const tick = useDataTick(true);
   const messages = useMemo(
     () => useStore.getState().getLiveMessages(brokerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tick signals new messages; the buffer is read from the non-reactive store
     [brokerId, tick]
   );
   const meta = node.meta || {};
@@ -457,9 +457,9 @@ function PanelPlot({ series, onExpand }) {
           </button>
         )}
       </div>
-      <div className="cursor-pointer" onClick={onExpand}>
+      <button type="button" onClick={onExpand} disabled={!onExpand} aria-label="Expand value history" className="block w-full cursor-pointer rounded text-left disabled:cursor-default">
         <Sparkline values={series} height={72} />
-      </div>
+      </button>
       <div className="mono mt-1 flex justify-between text-xs text-slate-400">
         <span>min {fmtNum(min)}</span>
         <span>{series.length} pts</span>

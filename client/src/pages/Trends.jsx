@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
-import ResponsiveHeader from '@/components/ResponsiveHeader';
+import PageHeader from '@/components/PageHeader';
 import TrendChart, { seriesColor } from '@/components/TrendChart';
 import { Card, Button, Input, Field, EmptyState, HelpButton } from '@/components/ui';
 
@@ -63,6 +63,7 @@ const RANGE_PRESETS = [
 ];
 
 const AUTO_REFRESH_MS = 30_000;
+const NONE = []; // stable empty list
 
 export default function Trends() {
   const allBrokers = useStore((s) => s.brokers);
@@ -73,15 +74,16 @@ export default function Trends() {
   const [recordings, setRecordings] = useState([]);
   const [histId, setHistId] = useState('');
   const [recId, setRecId] = useState('');
-  const [brokerId, setBrokerId] = useState('');
+  const [pickedBrokerId, setBrokerId] = useState('');
   const [tags, setTags] = useState([]);
   const [query, setQuery] = useState('');
-  const [suggestions, setSuggestions] = useState([]);
+  // Tag-search results remember the (source, query) they answer, so a change shows none until the new ones arrive.
+  const [suggestState, setSuggestState] = useState({ key: '', list: NONE });
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [rangeMs, setRangeMs] = useState(3_600_000);
-  const [data, setData] = useState(null); // { series, start, end }
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  // Latest series fetch: { key (the request it answers), scope (source it belongs to), data: { series, start, end }, error }
+  const [result, setResult] = useState(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [normalize, setNormalize] = useState(false);
   const searchSeq = useRef(0);
@@ -90,7 +92,6 @@ export default function Trends() {
 
   useEffect(() => {
     let alive = true;
-    setSourcesError('');
     api
       .listHistorians()
       .then((r) => {
@@ -122,10 +123,8 @@ export default function Trends() {
     };
   }, [sourcesTry]);
 
-  // Default the live broker to the first connected one.
-  useEffect(() => {
-    if (connectedBrokers[0]) setBrokerId((prev) => prev || connectedBrokers[0].id);
-  }, [connectedBrokers]);
+  // The live broker defaults to the first connected one until the user picks another.
+  const brokerId = pickedBrokerId || connectedBrokers[0]?.id || '';
 
   const usingRecording = sourceType === 'recording';
   const usingLive = sourceType === 'live';
@@ -146,32 +145,27 @@ export default function Trends() {
       .filter((t) => typeof t === 'string' && !t.startsWith('$SYS/'));
     const filtered = q ? topics.filter((t) => t.toLowerCase().includes(q)) : topics;
     return filtered.filter((t) => !tags.includes(t)).sort().slice(0, 40);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- topicVersion signals topic-set changes; topics come from the non-reactive index
   }, [usingLive, brokerId, query, tags, topicVersion]);
 
   // Debounced tag search against the active stored source (historian or
   // recording). The live source suggests locally via liveSuggestions instead.
+  const suggestKey = `${usingRecording ? recId : histId}|${query}`;
   useEffect(() => {
-    if (usingLive) {
-      setSuggestions([]);
-      return;
-    }
     const id = usingRecording ? recId : histId;
-    if (!id || !searchable) {
-      setSuggestions([]);
-      return;
-    }
+    if (usingLive || !id || !searchable) return undefined;
     const seq = ++searchSeq.current;
     const t = setTimeout(() => {
       const p = usingRecording ? api.recordingTags(id, query, 25) : api.historianTags(id, query, 25);
       p.then((r) => {
-        if (seq === searchSeq.current) setSuggestions(r.tags || []);
+        if (seq === searchSeq.current) setSuggestState({ key: suggestKey, list: r.tags || NONE });
       }).catch(() => {
-        if (seq === searchSeq.current) setSuggestions([]);
+        if (seq === searchSeq.current) setSuggestState({ key: suggestKey, list: NONE });
       });
     }, 300);
     return () => clearTimeout(t);
-  }, [usingLive, usingRecording, recId, histId, query, searchable]);
+  }, [usingLive, usingRecording, recId, histId, query, searchable, suggestKey]);
+  const suggestions = !usingLive && searchable && suggestState.key === suggestKey ? suggestState.list : NONE;
 
   const addTag = (raw) => {
     const tag = String(raw || '').trim();
@@ -185,15 +179,16 @@ export default function Trends() {
 
   const sourceId = usingLive ? brokerId : usingRecording ? recId : histId;
 
-  const load = useCallback(() => {
-    if (!sourceId || tags.length === 0) {
-      setData(null);
-      setError('');
-      return;
-    }
+  const active = Boolean(sourceId) && tags.length > 0;
+  const scope = `${usingLive ? 'live' : usingRecording ? 'rec' : 'hist'}|${sourceId}`;
+  const requestKey = `${scope}|${tags.join('\u0000')}|${rangeMs}|${reloadTick}`;
+  const reload = useCallback(() => setReloadTick((n) => n + 1), []);
+
+  useEffect(() => {
+    if (!sourceId || tags.length === 0) return undefined;
+    let alive = true;
     const end = Date.now();
     const start = end - rangeMs;
-    setLoading(true);
     const query = usingLive
       ? liveSeries(sourceId, tags, start, end)
       : usingRecording
@@ -205,32 +200,33 @@ export default function Trends() {
             maxPoints: 1000
           });
     query
-      .then((r) => {
-        setData({ series: r.series || [], start, end });
-        setError('');
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [usingLive, usingRecording, sourceId, tags, rangeMs]);
+      .then((r) => alive && setResult({ key: requestKey, scope, data: { series: r.series || [], start, end }, error: '' }))
+      // keep the last good data for this source, but say the refresh failed
+      .catch((e) => alive && setResult((prev) => ({ key: requestKey, scope, data: prev?.scope === scope ? prev.data : null, error: e.message })));
+    return () => {
+      alive = false;
+    };
+  }, [usingLive, usingRecording, sourceId, tags, rangeMs, requestKey, scope]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const current = active && result?.scope === scope ? result : null;
+  const data = current?.data ?? null;
+  const error = current?.error ?? '';
+  const loading = active && result?.key !== requestKey;
 
   // Auto-refresh: 30s cadence, skipped while the tab is hidden.
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh) return undefined;
     const t = setInterval(() => {
-      if (document.visibilityState === 'visible') load();
+      if (document.visibilityState === 'visible') reload();
     }, AUTO_REFRESH_MS);
     return () => clearInterval(t);
-  }, [autoRefresh, load]);
+  }, [autoRefresh, reload]);
 
   const shownSuggestions = usingLive ? liveSuggestions : suggestions.filter((s) => !tags.includes(s));
 
   return (
     <div className="flex h-full flex-col">
-      <ResponsiveHeader
+      <PageHeader
         title="Trends"
         subtitle="chart live from the message stream, a historian, or a local recording"
         actions={
@@ -269,7 +265,7 @@ export default function Trends() {
             >
               Auto 30s
             </Button>
-            <Button variant="outline" size="sm" onClick={load} disabled={!sourceId || tags.length === 0}>
+            <Button variant="outline" size="sm" onClick={reload} disabled={!sourceId || tags.length === 0}>
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
             </Button>
           </div>
@@ -280,7 +276,12 @@ export default function Trends() {
         {sourcesError && (
           <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
             <span>{sourcesError}</span>
-            <button onClick={() => setSourcesTry((v) => v + 1)} className="shrink-0 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20">
+            <button
+              type="button"
+              onClick={() => {
+                setSourcesError('');
+                setSourcesTry((v) => v + 1);
+              }} className="shrink-0 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20">
               Retry
             </button>
           </div>
@@ -317,8 +318,6 @@ export default function Trends() {
                     aria-pressed={sourceType === s.key}
                     onClick={() => {
                       setSourceType(s.key);
-                      setSuggestions([]);
-                      setData(null);
                     }}
                     className={clsx(
                       'rounded-lg px-3 py-1.5 text-xs font-medium transition',
@@ -338,7 +337,6 @@ export default function Trends() {
                       if (usingLive) setBrokerId(e.target.value);
                       else if (usingRecording) setRecId(e.target.value);
                       else setHistId(e.target.value);
-                      setSuggestions([]);
                     }}
                     className="w-full rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-100 focus:border-accent-500/60 focus:outline-none focus:ring-2 focus:ring-accent-500/20"
                   >

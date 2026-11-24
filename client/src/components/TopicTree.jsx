@@ -65,7 +65,7 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
     };
     walk(root, 0);
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- expandedKey is the stable string form of `expanded`
   }, [root, expandedKey, visiblePaths, sortBy]);
 
   const toggle = (path) =>
@@ -128,6 +128,19 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
     if (handled) e.preventDefault();
   };
 
+  // Pointer activation is delegated to the tree (the keyboard path is onKeyDown),
+  // so rows stay plain presentational treeitems under aria-activedescendant.
+  const onTreeClick = (e) => {
+    const el = e.target.closest?.('[data-row]');
+    if (!el) return;
+    const i = Number(el.dataset.row);
+    const row = rows[i];
+    if (!row) return;
+    setFocusIdx(i);
+    if (row.c.stat) onSelect(row.c);
+    else if (row.hasChildren) toggle(row.c.path);
+  };
+
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
   const slice = rows.slice(start, end);
@@ -157,6 +170,7 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
         aria-activedescendant={total ? rowId(cursor) : undefined}
         tabIndex={0}
         onKeyDown={onKeyDown}
+        onClick={onTreeClick}
         onScroll={(e) => {
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
@@ -178,11 +192,7 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
                   aria-level={depth + 1}
                   aria-expanded={hasChildren ? open : undefined}
                   aria-selected={Boolean(isSelected)}
-                  onClick={() => {
-                    setFocusIdx(start + i);
-                    if (c.stat) onSelect(c);
-                    else if (hasChildren) toggle(c.path);
-                  }}
+                  data-row={start + i}
                   className={clsx(
                     'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-white/5',
                     isSelected && 'bg-accent-500/15',

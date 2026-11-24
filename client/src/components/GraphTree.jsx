@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { groupColor } from '@/graph/buildGraph';
@@ -17,6 +17,8 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
   const [expanded, setExpanded] = useState(() => new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(600);
+  const [cursor, setCursor] = useState(0); // roving tabindex: the one row in the tab order
+  const scrollerRef = useRef(null);
 
   const { childrenOf, roots, byId } = useMemo(() => {
     const childrenOf = new Map();
@@ -74,7 +76,8 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
     if (matchIds) rootList = roots.filter((r) => matchIds.has(r.id));
     for (const r of rootList.slice().sort((a, b) => a.label.localeCompare(b.label))) walk(r.id, 0, seen);
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // expandedKey is the stable string form of `expanded` (cheaper to compare than the Set itself).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- expandedKey is the stable string form of `expanded`
   }, [byId, childrenOf, roots, expandedKey, matchIds]);
 
   const toggle = (n) => {
@@ -89,6 +92,22 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
 
   const style = GRAPH_STYLES.constellation;
   const total = rows.length;
+  const tabRow = Math.min(cursor, Math.max(total - 1, 0));
+
+  // Move keyboard focus to another row, scrolling it into the virtual window first.
+  const focusRow = (i) => {
+    const n = Math.max(0, Math.min(total - 1, i));
+    setCursor(n);
+    const el = scrollerRef.current;
+    if (!el) return;
+    const top = n * ROW_H;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight;
+    setScrollTop(el.scrollTop);
+    setViewH(el.clientHeight);
+    // The row may not be rendered until the window updates.
+    requestAnimationFrame(() => el.querySelector(`[data-row="${n}"]`)?.focus());
+  };
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
   const slice = rows.slice(start, end);
@@ -97,6 +116,7 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
     <div className="flex h-full flex-col">
       <div className="border-b border-white/5 px-3 py-2 text-xs text-subtle">{total.toLocaleString()} rows</div>
       <div
+        ref={scrollerRef}
         onScroll={(e) => {
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
@@ -117,7 +137,9 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                 <div
                   key={n.id}
                   role="treeitem"
-                  tabIndex={0}
+                  data-row={start + i}
+                  tabIndex={start + i === tabRow ? 0 : -1}
+                  onFocus={() => setCursor(start + i)}
                   aria-selected={n.id === selectedId}
                   aria-level={depth + 1}
                   aria-expanded={expandable ? open : undefined}
@@ -127,6 +149,9 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       onSelect(n);
+                    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+                      e.preventDefault();
+                      focusRow(e.key === 'Home' ? 0 : e.key === 'End' ? total - 1 : start + i + (e.key === 'ArrowDown' ? 1 : -1));
                     } else if (expandable && ((e.key === 'ArrowRight' && !open) || (e.key === 'ArrowLeft' && open))) {
                       e.preventDefault();
                       toggle(n);
@@ -151,6 +176,7 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                     {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
                   <span
+                    aria-hidden="true"
                     className="h-2 w-2 shrink-0 rounded-full"
                     style={{ background: groupColor(n.group, style.palette) }}
                   />

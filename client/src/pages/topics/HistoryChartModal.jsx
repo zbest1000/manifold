@@ -2,6 +2,13 @@ import { X } from 'lucide-react';
 import { TimeSeriesChart, fmtNum } from '@/components/charts';
 import { Modal } from '@/components/ui';
 
+const Stat = ({ label, value }) => (
+  <div>
+    <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
+    <p className="mono text-sm font-semibold text-slate-100">{value}</p>
+  </div>
+);
+
 export default function HistoryChartModal({ topic, points, onClose }) {
   const values = points.map((p) => p.v);
   const min = Math.min(...values);
@@ -12,13 +19,6 @@ export default function HistoryChartModal({ topic, points, onClose }) {
   const durS = Math.max(1, Math.round(tspan / 1000));
   const durLabel = durS < 90 ? `${durS}s` : durS < 5400 ? `${Math.round(durS / 60)}m` : `${(durS / 3600).toFixed(1)}h`;
   const chartSeries = [{ tag: topic, points: points.map((p) => [p.ts, p.v]) }];
-
-  const Stat = ({ label, value }) => (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="mono text-sm font-semibold text-slate-100">{value}</p>
-    </div>
-  );
 
   return (
     <Modal title="Value history" onClose={onClose} className="max-w-3xl p-5">

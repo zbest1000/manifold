@@ -15,7 +15,7 @@ import GraphLegend from '@/components/GraphLegend';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
-import ResponsiveHeader from '@/components/ResponsiveHeader';
+import PageHeader from '@/components/PageHeader';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { Badge, Button, EmptyState } from '@/components/ui';
 import ViewTab from '@/components/ViewTab';
@@ -41,6 +41,7 @@ function RendererLoading() {
 
 const FORCE_MAX = 30000; // force-layout worker node cap
 const GRAPH_MAX_NODES = 2500;
+const NO_HOSTS = []; // stable empty list
 
 export default function TopicGraph() {
   const brokers = useStore((s) => s.brokers);
@@ -49,8 +50,9 @@ export default function TopicGraph() {
   const { graphStyle, graphLayout, setGraphLayout, flowEnabled, activitySize, showValues, showMinimap } = useGraphPrefs();
   const { coverage, setCoverage } = useCoverage();
 
-  const [brokerId, setBrokerId] = useState(null);
-  const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
+  const [pickedBrokerId, setBrokerId] = useState(null);
+  // Sparkplug host applications (spBv1.0/STATE/*), remembered with the broker they belong to
+  const [spState, setSpState] = useState({ brokerId: null, hosts: NO_HOSTS });
   const [selected, setSelected] = useState(null);
   const [panelOpen, setPanelOpen] = useState(false);
   // Selecting a node opens its details panel; the Properties button reopens it.
@@ -64,7 +66,7 @@ export default function TopicGraph() {
   const [treeFilter, setTreeFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [labelDensity, setLabelDensity] = useState(0.5); // 0 (off) .. 1 (dense)
-  const [forcePositions, setForcePositions] = useState(null); // worker-computed force coords for show-all
+  const [forceState, setForceState] = useState(null); // { graph, positions }: worker-computed force coords for show-all
   const [forceBusy, setForceBusy] = useState(false);
   const [topicsError, setTopicsError] = useState(null);
   const [topicsTry, setTopicsTry] = useState(0);
@@ -79,11 +81,9 @@ export default function TopicGraph() {
 
   const connected = useMemo(() => brokers.filter((b) => b.status === 'connected'), [brokers]);
 
-  // Default to the first connected broker
-  useEffect(() => {
-    if (!brokerId && connected.length) setBrokerId(connected[0].id);
-    if (brokerId && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
-  }, [connected, brokerId, brokers]);
+  // The picked broker while it still exists, otherwise the first connected one.
+  const brokerId = pickedBrokerId && brokers.some((b) => b.id === pickedBrokerId) ? pickedBrokerId : connected[0]?.id || null;
+  const spHosts = spState.brokerId === brokerId ? spState.hosts : NO_HOSTS;
 
   // Pull the authoritative topic list when broker changes
   useEffect(() => {
@@ -105,16 +105,13 @@ export default function TopicGraph() {
   // Sparkplug host applications (spBv1.0/STATE/*), polled from the topology
   // snapshot; the strip only shows when the broker actually carries host STATE.
   useEffect(() => {
-    if (!brokerId) {
-      setSpHosts([]);
-      return undefined;
-    }
+    if (!brokerId) return undefined;
     let alive = true;
     const load = () =>
       api
         .brokerSparkplug(brokerId)
-        .then((res) => alive && setSpHosts(res.hosts || []))
-        .catch(() => alive && setSpHosts([])); // optional strip: absence is the honest empty state
+        .then((res) => alive && setSpState({ brokerId, hosts: res.hosts || NO_HOSTS }))
+        .catch(() => alive && setSpState({ brokerId, hosts: NO_HOSTS })); // optional strip: absence is the honest empty state
     load();
     const t = setInterval(() => {
       if (document.visibilityState === 'visible') load();
@@ -132,7 +129,7 @@ export default function TopicGraph() {
   // topic SET changes (topicVersion), not on every message.
   const brokerTopics = useMemo(
     () => useStore.getState().getTopics(brokerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- topicVersion signals topic-set changes; topics come from the non-reactive index
     [brokerId, topicVersion]
   );
   // Same derivation as Overview: the larger of the client index and the server's exact count.
@@ -148,14 +145,14 @@ export default function TopicGraph() {
   const fullGraph = useMemo(() => {
     if (!broker) return { nodes: [], links: [] };
     return buildMqttGraph(broker, brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- depends on broker id and topic set, not on every broker field
   }, [broker?.id, brokerTopics, showAll]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
   const graph = useMemo(
     () => collapseGraph(fullGraph, collapsed),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- collapseKey is the stable string form of `collapsed`
     [fullGraph, collapseKey]
   );
   // Groups actually present, for the color legend.
@@ -163,15 +160,16 @@ export default function TopicGraph() {
 
   // "Show coverage on topic map" from the Flows view: jump to the graph so the
   // painted trail is immediately visible (without overwriting the saved preference).
-  useEffect(() => {
+  // Adjusted during render (when coverage or broker changes) rather than in an effect.
+  const [coverageSeen, setCoverageSeen] = useState({ coverage, brokerId });
+  if (coverageSeen.coverage !== coverage || coverageSeen.brokerId !== brokerId) {
+    setCoverageSeen({ coverage, brokerId });
     if (coverage?.brokerId === brokerId) setUserView('graph');
-  }, [coverage, brokerId]);
+  }
 
-  // A batch force layout is a snapshot for a specific node set: drop it when the
-  // graph changes so stale coordinates aren't applied to different nodes.
-  useEffect(() => {
-    setForcePositions(null);
-  }, [graph]);
+  // A batch force layout is a snapshot for a specific node set: it only applies
+  // to the graph it was computed for, so stale coordinates never reach other nodes.
+  const forcePositions = forceState && forceState.graph === graph ? forceState.positions : null;
 
   // Big-graph force layout, computed off the main thread in a Web Worker.
   const runForceLayout = useCallback(() => {
@@ -191,7 +189,7 @@ export default function TopicGraph() {
       if (error || !positions) {
         toast.error(error || 'Layout failed', { id: t });
       } else {
-        setForcePositions(positions);
+        setForceState({ graph, positions });
         toast.success(`Force layout: ${count.toLocaleString()} nodes`, { id: t });
       }
       finish();
@@ -292,7 +290,7 @@ export default function TopicGraph() {
   if (connected.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        <ResponsiveHeader title="Topics" subtitle="Interactive node graph of the MQTT topic namespace" />
+        <PageHeader title="Topics" subtitle="Interactive node graph of the MQTT topic namespace" />
         <EmptyState
           icon={Share2}
           title="No connected brokers"
@@ -328,7 +326,7 @@ export default function TopicGraph() {
 
   return (
     <div className="flex h-full flex-col">
-      <ResponsiveHeader
+      <PageHeader
         title="Topics"
         subtitle={broker ? `${topicCount.toLocaleString()} topics · ${graph.nodes.length.toLocaleString()} nodes` : 'Select a broker'}
         actions={
@@ -547,7 +545,7 @@ export default function TopicGraph() {
                   <div className="flex flex-wrap items-stretch divide-x divide-white/10 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-xs backdrop-blur" role="group" aria-label="Big graph controls">
                     <Segment>
                       <SegLabel>Layout</SegLabel>
-                      <SegBtn active={!forcePositions} onClick={() => setForcePositions(null)} title="Deterministic radial layout">
+                      <SegBtn active={!forcePositions} onClick={() => setForceState(null)} title="Deterministic radial layout">
                         Radial
                       </SegBtn>
                       <SegBtn

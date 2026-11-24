@@ -7,29 +7,16 @@ import jsxA11y from 'eslint-plugin-jsx-a11y';
 /**
  * Client lint setup (flat config).
  *
- * Findings are ERRORS everywhere except the files listed in `PENDING`, which are
- * still being reworked by other teams: there the same rules are reported as
+ * Findings are ERRORS everywhere except the files listed in `PENDING` (the
+ * Devices and Tags pages, still being reworked by other teams): there the same rules are reported as
  * WARNINGS so `npm run lint` stays green while the debt stays visible. Remove a
  * path from `PENDING` once it is clean and its findings become errors.
  */
 const PENDING = [
-  'src/pages/Uns.jsx',
-  'src/pages/Overview.jsx',
-  'src/pages/TopicGraph.jsx',
-  'src/pages/System.jsx',
-  'src/pages/Trends.jsx',
   'src/pages/Devices.jsx',
   'src/pages/Tags.jsx',
   'src/pages/devices/**',
-  'src/pages/tags/**',
-  'src/components/ProducerFlows.jsx',
-  'src/components/ConsumerFlows.jsx',
-  'src/components/GraphToolbar.jsx',
-  'src/components/TopicTree.jsx',
-  'src/components/charts.jsx',
-  'src/graph/**',
-  'src/lib/api.js',
-  'src/store/store.js'
+  'src/pages/tags/**'
 ];
 
 const rules = {
@@ -56,7 +43,7 @@ const asWarnings = Object.fromEntries(
 );
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', 'test-results/**', 'playwright-report/**'] },
   {
     files: ['**/*.{js,jsx}'],
     plugins: { react, 'react-hooks': reactHooks, 'jsx-a11y': jsxA11y },
@@ -71,7 +58,7 @@ export default [
   },
   {
     // Node-side tooling and tests
-    files: ['*.config.js', 'src/test/**'],
+    files: ['*.config.js', 'src/test/**', 'e2e/**'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } }
   },
   {
@@ -79,6 +66,11 @@ export default [
     // time and uses a seeded PRNG during render on purpose.
     files: ['src/pages/Bench.jsx'],
     rules: { 'react-hooks/purity': 'off', 'react-hooks/immutability': 'off', 'react-hooks/set-state-in-effect': 'off' }
+  },
+  {
+    // Playwright fixtures receive a `use` callback that is not a React hook.
+    files: ['e2e/**'],
+    rules: { 'react-hooks/rules-of-hooks': 'off' }
   },
   { files: PENDING, rules: asWarnings }
 ];

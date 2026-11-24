@@ -572,7 +572,7 @@ test('outbox spill cap honors dropPolicy: oldest rewrites the file head, newest 
 test('pipeline hop guard blocks indirect A→B→A cycles', async () => {
   const m = new MqttManager({ emit() {} });
   const published = [];
-  m.publish = async (brokerId, topic, payload) => {
+  m.publish = async (brokerId, topic, _payload) => {
     published.push(topic);
   };
   const profiles = fakeProfiles({

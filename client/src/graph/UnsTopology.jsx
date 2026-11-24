@@ -48,7 +48,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const rafRef = useRef(0);
   const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
   const selectedRef = useRef(selectedId);
-  selectedRef.current = selectedId;
+  useEffect(() => {
+    selectedRef.current = selectedId;
+  }, [selectedId]);
 
   // A moved node is PINNED to an absolute world position, not offset from the
   // tidy layout: live sources (an OPC-UA mount, streaming topics) rebuild the
@@ -91,22 +93,41 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // A pending "focus this node" request, applied once the node is laid out.
   const focusPendingRef = useRef(null);
 
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggle = useCallback((node) => {
+    userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
+    const key = `${node.brokerId}:${node.path}`;
+    // Collapsing also collapses everything beneath, so re-expanding is tidy.
+    const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+        for (const k of [...next]) {
+          if (k !== key && k.startsWith(descendantPrefix)) next.delete(k);
+        }
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
   // Expanded paths per broker. Default: namespace + first level open. Seeding is
   // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
   // still gets auto-expanded, instead of loading collapsed while its siblings
   // are open. User collapses of already-seeded brokers are preserved.
-  const [expanded, setExpanded] = useState(() => new Set());
-  const seededRef = useRef(new Set());
-  useEffect(() => {
-    const fresh = roots.filter((r) => !seededRef.current.has(r.brokerId));
-    if (!fresh.length) return;
+  const [seeded, setSeeded] = useState(() => new Set()); // brokers already auto-expanded
+  // Adjusted during render (not in an effect) when a new broker's tree shows up.
+  const freshRoots = roots.filter((r) => !seeded.has(r.brokerId));
+  if (freshRoots.length) {
+    setSeeded((prev) => new Set([...prev, ...freshRoots.map((r) => r.brokerId)]));
     setExpanded((prev) => {
       const next = new Set(prev);
-      for (const r of fresh) seededRef.current.add(r.brokerId);
-      for (const k of seedExpansion(fresh)) next.add(k);
+      for (const k of seedExpansion(freshRoots)) next.add(k);
       return next;
     });
-  }, [roots]);
+  }
 
   // Warm the icon set (lazy chunk) so badges upgrade from glyphs to icons.
   useEffect(() => {
@@ -114,24 +135,31 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, []);
 
   // Focus request (from a lint finding / event click): open every ancestor so
-  // the node is on-screen, then queue a center-on that the layout effect applies
-  // once the node has a laid-out position.
+  // the node is on-screen (adjusted during render when the request changes),
+  // then queue a center-on that the layout effect applies once the node has a
+  // laid-out position.
+  const [focusSeen, setFocusSeen] = useState(null);
+  if (focusSeen !== focusTarget) {
+    setFocusSeen(focusTarget);
+    if (focusTarget?.brokerId && focusTarget.path != null) {
+      const { brokerId, path } = focusTarget;
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.add(`${brokerId}:`);
+        const segs = String(path).split('/').filter(Boolean);
+        let acc = '';
+        // Open ancestors only — the node itself need not be expanded to be visible.
+        for (let i = 0; i < segs.length - 1; i++) {
+          acc = i === 0 ? segs[i] : `${acc}/${segs[i]}`;
+          next.add(`${brokerId}:${acc}`);
+        }
+        return next;
+      });
+    }
+  }
   useEffect(() => {
     if (!focusTarget?.brokerId || focusTarget.path == null) return;
-    const { brokerId, path } = focusTarget;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.add(`${brokerId}:`);
-      const segs = String(path).split('/').filter(Boolean);
-      let acc = '';
-      // Open ancestors only — the node itself need not be expanded to be visible.
-      for (let i = 0; i < segs.length - 1; i++) {
-        acc = i === 0 ? segs[i] : `${acc}/${segs[i]}`;
-        next.add(`${brokerId}:${acc}`);
-      }
-      return next;
-    });
-    focusPendingRef.current = { brokerId, path: String(path) };
+    focusPendingRef.current = { brokerId: focusTarget.brokerId, path: String(focusTarget.path) };
     userMovedRef.current = true; // a deliberate jump — auto-fit must not override it
   }, [focusTarget]);
 
@@ -434,27 +462,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onSelect, posOf]);
-
-  const toggle = (node) => {
-    userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
-    const key = `${node.brokerId}:${node.path}`;
-    // Collapsing also collapses everything beneath, so re-expanding is tidy.
-    const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-        for (const k of [...next]) {
-          if (k !== key && k.startsWith(descendantPrefix)) next.delete(k);
-        }
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
+  }, [onSelect, posOf, toggle]);
 
   const keyboardHint = 'Arrow keys pan, plus and minus zoom, F fits the view.';
   const summary = useMemo(() => {

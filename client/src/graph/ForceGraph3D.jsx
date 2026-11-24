@@ -107,6 +107,10 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const autoRotateRef = useRef(false); // read by the render loop each frame
   const nodeScaleRef = useRef(nodeScale); // keeps the selection ring hugging scaled nodes
   const onSelectRef = useRef(onSelect);
+  const linkOpacityRef = useRef(linkOpacity); // initial opacity for a rebuilt scene (the look effect keeps it current)
+  useEffect(() => {
+    linkOpacityRef.current = linkOpacity;
+  }, [linkOpacity]);
   onSelectRef.current = onSelect;
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
@@ -354,7 +358,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       lineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(opaqueColor(style.link.color)),
         transparent: true,
-        opacity: linkOpacity,
+        opacity: linkOpacityRef.current,
         depthWrite: false
       });
       group.add(new THREE.LineSegments(lineGeo, lineMat));

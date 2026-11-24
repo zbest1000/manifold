@@ -31,70 +31,15 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
   const drawRef = useRef(() => {});
   // Latest onSelect for the mount-once interaction effect (see ForceGraph note).
   const cbRef = useRef({});
-  cbRef.current = { onSelect };
+  useEffect(() => {
+    cbRef.current = { onSelect };
+  }, [onSelect]);
 
   const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
   const colorFor = useCallback(
     (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
     [colorByProtocol, style]
   );
-
-  const draw = useCallback(() => {
-    const gl = glRef.current;
-    if (!gl) return;
-    const { w, h } = sizeRef.current;
-    const t = transformRef.current;
-    const bg = hexToRgb(style.background);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.clearColor(bg[0], bg[1], bg[2], 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-    const { nodes, lineVerts } = countsRef.current;
-    const b = buffersRef.current;
-
-    // Links
-    if (lineVerts > 0) {
-      const lp = progRef.current.line;
-      gl.useProgram(lp.program);
-      gl.uniform2f(lp.u_translate, t.x, t.y);
-      gl.uniform1f(lp.u_scale, t.k);
-      gl.uniform2f(lp.u_resolution, w, h);
-      const lc = hexToRgb(style.link.color);
-      // Zoom-aware opacity: faint when zoomed out (tens of thousands of edges
-      // would otherwise blob into a solid mass), stronger as you zoom in and only
-      // a few connection lines are on screen — so structure stays readable next
-      // to the labels.
-      const edgeAlpha = Math.min(0.6, 0.16 + t.k * 0.06);
-      gl.uniform4f(lp.u_color, lc[0], lc[1], lc[2], edgeAlpha);
-      gl.bindBuffer(gl.ARRAY_BUFFER, b.linePos);
-      gl.enableVertexAttribArray(lp.a_pos);
-      gl.vertexAttribPointer(lp.a_pos, 2, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.LINES, 0, lineVerts);
-    }
-
-    // Nodes
-    if (nodes > 0) {
-      const pp = progRef.current.point;
-      gl.useProgram(pp.program);
-      gl.uniform2f(pp.u_translate, t.x, t.y);
-      gl.uniform1f(pp.u_scale, t.k);
-      gl.uniform2f(pp.u_resolution, w, h);
-      gl.bindBuffer(gl.ARRAY_BUFFER, b.pos);
-      gl.enableVertexAttribArray(pp.a_pos);
-      gl.vertexAttribPointer(pp.a_pos, 2, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, b.color);
-      gl.enableVertexAttribArray(pp.a_color);
-      gl.vertexAttribPointer(pp.a_color, 3, gl.FLOAT, false, 0, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, b.size);
-      gl.enableVertexAttribArray(pp.a_size);
-      gl.vertexAttribPointer(pp.a_size, 1, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, nodes);
-    }
-
-    drawLabels(t, w, h);
-  }, [style]);
 
   // Label overlay: WebGL can't cheaply draw text, so labels are painted on a 2D
   // canvas layered on top — but ONLY for nodes actually on screen and large
@@ -162,6 +107,63 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     },
     [style]
   );
+
+  const draw = useCallback(() => {
+    const gl = glRef.current;
+    if (!gl) return;
+    const { w, h } = sizeRef.current;
+    const t = transformRef.current;
+    const bg = hexToRgb(style.background);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    const { nodes, lineVerts } = countsRef.current;
+    const b = buffersRef.current;
+
+    // Links
+    if (lineVerts > 0) {
+      const lp = progRef.current.line;
+      gl.useProgram(lp.program);
+      gl.uniform2f(lp.u_translate, t.x, t.y);
+      gl.uniform1f(lp.u_scale, t.k);
+      gl.uniform2f(lp.u_resolution, w, h);
+      const lc = hexToRgb(style.link.color);
+      // Zoom-aware opacity: faint when zoomed out (tens of thousands of edges
+      // would otherwise blob into a solid mass), stronger as you zoom in and only
+      // a few connection lines are on screen — so structure stays readable next
+      // to the labels.
+      const edgeAlpha = Math.min(0.6, 0.16 + t.k * 0.06);
+      gl.uniform4f(lp.u_color, lc[0], lc[1], lc[2], edgeAlpha);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.linePos);
+      gl.enableVertexAttribArray(lp.a_pos);
+      gl.vertexAttribPointer(lp.a_pos, 2, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, lineVerts);
+    }
+
+    // Nodes
+    if (nodes > 0) {
+      const pp = progRef.current.point;
+      gl.useProgram(pp.program);
+      gl.uniform2f(pp.u_translate, t.x, t.y);
+      gl.uniform1f(pp.u_scale, t.k);
+      gl.uniform2f(pp.u_resolution, w, h);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.pos);
+      gl.enableVertexAttribArray(pp.a_pos);
+      gl.vertexAttribPointer(pp.a_pos, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.color);
+      gl.enableVertexAttribArray(pp.a_color);
+      gl.vertexAttribPointer(pp.a_color, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.size);
+      gl.enableVertexAttribArray(pp.a_size);
+      gl.vertexAttribPointer(pp.a_size, 1, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.POINTS, 0, nodes);
+    }
+
+    drawLabels(t, w, h);
+  }, [style, drawLabels]);
 
   const fitAll = useCallback(() => {
     const nodes = nodesRef.current;
@@ -387,7 +389,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('contextmenu', onContext);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-once GL setup; live values are read through refs
   }, []);
 
   return (

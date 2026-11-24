@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Waypoints } from 'lucide-react';
 import { useStore } from '@/store/store';
 import FlowsView from '@/components/FlowsView';
-import ResponsiveHeader from '@/components/ResponsiveHeader';
+import PageHeader from '@/components/PageHeader';
 import { EmptyState, Button } from '@/components/ui';
 
 /**
@@ -14,20 +14,17 @@ import { EmptyState, Button } from '@/components/ui';
  */
 export default function Flows() {
   const brokers = useStore((s) => s.brokers);
-  const [brokerId, setBrokerId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const connected = brokers.filter((b) => b.status === 'connected');
-
-  useEffect(() => {
-    if (!brokerId && connected.length) setBrokerId(connected[0].id);
-    if (brokerId && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
-  }, [connected, brokerId, brokers]);
+  // Follow the user's pick while that broker exists; otherwise the first connected one.
+  const brokerId = selectedId && brokers.some((b) => b.id === selectedId) ? selectedId : connected[0]?.id || null;
 
   const broker = brokers.find((b) => b.id === brokerId);
 
   if (!connected.length) {
     return (
       <div className="flex h-full flex-col">
-        <ResponsiveHeader title="Flows" subtitle="Who publishes and who receives what, on a live broker" />
+        <PageHeader title="Flows" subtitle="Who publishes and who receives what, on a live broker" />
         <EmptyState
           icon={Waypoints}
           title="No connected brokers"
@@ -44,7 +41,7 @@ export default function Flows() {
 
   return (
     <div className="flex h-full flex-col">
-      <ResponsiveHeader
+      <PageHeader
         title="Flows"
         subtitle="Producer → topic → consumer lineage, from observed traffic + the broker admin API"
         actions={
@@ -52,7 +49,7 @@ export default function Flows() {
             <span className="sr-only">Broker</span>
             <select
               value={brokerId || ''}
-              onChange={(e) => setBrokerId(e.target.value)}
+              onChange={(e) => setSelectedId(e.target.value)}
               className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
             >
               {connected.map((b) => (

@@ -7,11 +7,13 @@ import { namespaceKind } from '@/graph/unsLevels';
 const SEV_COLOR = { error: 'text-red-400', warn: 'text-amber-400', info: 'text-sky-400' };
 
 export default function LintPanel({ brokers, onJump, onClose }) {
-  const [reports, setReports] = useState(null); // [{ broker, report, error }]
+  // The result remembers which (brokers, attempt) it answers, so a new request
+  // shows "Analyzing…" again without resetting state inside the effect.
+  const [result, setResult] = useState(null); // { brokers, attempt, reports: [{ broker, report, error }] }
   const [attempt, setAttempt] = useState(0);
+  const reports = result && result.brokers === brokers && result.attempt === attempt ? result.reports : null;
   useEffect(() => {
     let alive = true;
-    setReports(null);
     Promise.all(
       brokers.map((b) =>
         api
@@ -19,7 +21,7 @@ export default function LintPanel({ brokers, onJump, onClose }) {
           .then((report) => ({ broker: b, report, error: null }))
           .catch((e) => ({ broker: b, report: null, error: e?.message || 'Lint request failed' }))
       )
-    ).then((r) => alive && setReports(r));
+    ).then((r) => alive && setResult({ brokers, attempt, reports: r }));
     return () => {
       alive = false;
     };

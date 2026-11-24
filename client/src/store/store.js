@@ -114,7 +114,7 @@ function scheduleTick(store) {
   }, TICK_MS);
 }
 
-export const useStore = create((set, get) => ({
+export const useStore = create((set) => ({
   connected: false,
   authRole: null, // 'admin' | 'viewer' | null (unknown/open) — from /api/whoami
   brokers: [],

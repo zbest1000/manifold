@@ -34,30 +34,15 @@ export default function ConsumerFlows({ broker }) {
   const countersRef = useRef(new Map()); // clientId -> { msgsIn, msgsOut, ts }
   const [clientRates, setClientRates] = useState(new Map());
 
-  const refreshConfig = useCallback(async () => {
-    if (!broker?.id) return;
-    try {
-      setAdmin(await api.getBrokerAdmin(broker.id));
-    } catch (e) {
-      setAdmin({ configured: false });
-      setError(e?.message || 'Could not read the broker admin configuration');
-    }
-  }, [broker?.id]);
+  const brokerId = broker?.id;
 
-  useEffect(() => {
-    setData(null);
-    setExpanded(new Map());
-    setError(null);
-    setSelected(null);
-    refreshConfig();
-  }, [broker?.id, refreshConfig]);
-
+  // Fetch the per-client subscriptions and resolve them against observed topics.
   const load = useCallback(async () => {
-    if (!broker?.id) return;
+    if (!brokerId) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await api.brokerAdminPubSub(broker.id, { resolve: true, sampleLimit: 50 });
+      const res = await api.brokerAdminPubSub(brokerId, { resolve: true, sampleLimit: 50 });
       setData(res);
       setExpanded(new Map());
       // Roll cumulative counters into per-client msg/s across refreshes.
@@ -82,19 +67,47 @@ export default function ConsumerFlows({ broker }) {
     } finally {
       setBusy(false);
     }
-  }, [broker?.id]);
+  }, [brokerId]);
 
+  // Read the admin config again (after save/reset).
+  const refreshConfig = useCallback(async () => {
+    if (!brokerId) return;
+    try {
+      setAdmin(await api.getBrokerAdmin(brokerId));
+    } catch (e) {
+      setAdmin({ configured: false });
+      setError(e?.message || 'Could not read the broker admin configuration');
+    }
+  }, [brokerId]);
+
+  // Initial read; when an admin API is already configured, fetch the data too.
+  // Switching brokers remounts this component (keyed by the parent), so state starts clean.
   useEffect(() => {
-    if (admin?.configured && !data && !busy) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [admin?.configured]);
+    if (!brokerId) return undefined;
+    let alive = true;
+    api
+      .getBrokerAdmin(brokerId)
+      .then((cfg) => {
+        if (!alive) return;
+        setAdmin(cfg);
+        if (cfg?.configured) load();
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setAdmin({ configured: false });
+        setError(e?.message || 'Could not read the broker admin configuration');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [brokerId, load]);
 
   const save = async (e) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api.setBrokerAdmin(broker.id, form);
+      await api.setBrokerAdmin(brokerId, form);
       await refreshConfig();
       await load();
     } catch (err) {
@@ -104,7 +117,7 @@ export default function ConsumerFlows({ broker }) {
   };
 
   const reset = async () => {
-    await api.clearBrokerAdmin(broker.id);
+    await api.clearBrokerAdmin(brokerId);
     setData(null);
     setForm({ type: 'emqx', url: '', apiKey: '', apiSecret: '' });
     refreshConfig();
@@ -129,13 +142,13 @@ export default function ConsumerFlows({ broker }) {
         return;
       }
       try {
-        const res = await api.topicTree(broker.id, path, 300);
+        const res = await api.topicTree(brokerId, path, 300);
         setExpanded((prev) => new Map(prev).set(path, res.children || []));
       } catch (e) {
         setError(e?.message || 'Could not expand this namespace');
       }
     },
-    [broker?.id, expanded]
+    [brokerId, expanded]
   );
 
   // Clients receiving a concrete topic = filters that match it, reverse-mapped.
@@ -155,16 +168,16 @@ export default function ConsumerFlows({ broker }) {
     (clientId) => {
       const filters = (data?.subscriptions || []).filter((s) => s.clientId === clientId).map((s) => s.topic);
       const results = filters.map((f) => data?.resolution?.byFilter?.[f]).filter(Boolean);
-      const matchIds = coverageToMatchIds(broker.id, results);
-      setCoverage({ brokerId: broker.id, matchIds, label: `Coverage: ${clientId}` });
+      const matchIds = coverageToMatchIds(brokerId, results);
+      setCoverage({ brokerId, matchIds, label: `Coverage: ${clientId}` });
     },
-    [data, broker?.id, setCoverage]
+    [data, brokerId, setCoverage]
   );
 
   if (!admin?.configured) {
     return (
-      <div className="grid h-full place-items-center overflow-y-auto p-8">
-        <Card className="w-full max-w-md p-5">
+      <div role="region" aria-label="Broker admin connection" tabIndex={0} className="grid h-full place-items-center overflow-y-auto p-4 sm:p-8">
+        <Card className="w-full max-w-md p-4 sm:p-5">
           <div className="mb-1 flex items-center gap-2 text-base font-semibold text-slate-100">
             <ShieldCheck size={18} className="text-accent-400" /> Connect a broker admin API
           </div>
@@ -228,7 +241,7 @@ export default function ConsumerFlows({ broker }) {
             onExpand={expand}
           />
         ) : (
-          <div className="grid h-full place-items-center p-8">
+          <div className="grid h-full place-items-center p-4 sm:p-8">
             <EmptyState
               icon={Users}
               title={error ? 'Admin API error' : busy ? 'Resolving subscriptions…' : 'No subscriptions reported'}
@@ -249,17 +262,17 @@ export default function ConsumerFlows({ broker }) {
         )}
       </div>
 
-      <div className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
+      <div role="region" aria-label="Consumption details" tabIndex={0} className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
         <Card className="p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-200">
               <Radio size={15} className="text-accent-400" /> Consumption map
             </span>
             <span className="flex items-center gap-1">
-              <button onClick={load} disabled={busy} title="Refresh" className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 disabled:opacity-40">
+              <button type="button" onClick={load} disabled={busy} title="Refresh" aria-label="Refresh subscriptions" className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 disabled:opacity-40">
                 <RefreshCw size={13} className={busy ? 'animate-spin' : ''} />
               </button>
-              <button onClick={reset} title="Disconnect admin" className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10">
+              <button type="button" onClick={reset} title="Disconnect admin" aria-label="Disconnect broker admin" className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10">
                 <Trash2 size={13} />
               </button>
             </span>

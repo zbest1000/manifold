@@ -154,6 +154,7 @@ function classifyValue(v) {
   return { kind: 'raw', raw: String(v) }; // boolean, bigint, ...
 }
 
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 // ---- line protocol helpers (InfluxDB) ---------------------------------------
@@ -177,6 +178,7 @@ function escTag(s) {
 function escFieldString(s) {
   return String(s)
     .replace(/(["\\])/g, '\\$1')
+    // eslint-disable-next-line no-control-regex -- escaping control characters is the point
     .replace(/[\u0000-\u001f\u007f]/g, (c) => (c === '\n' ? '\\n' : c === '\r' ? '\\r' : `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`));
 }
 

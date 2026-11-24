@@ -15,6 +15,9 @@ function isoDaysAgo(days) {
   return d.toISOString().slice(0, 19).replace('T', ' ') + '+00';
 }
 
+// Stable empty list so memo deps below don't change identity every render.
+const NONE = [];
+
 export default function Cesmii() {
   const { data: loadedStatus, error: statusError, loading: statusLoading, reload: reloadStatus } = usePolled(() => api.cesmiiStatus());
   const [localStatus, setStatus] = useState(null); // set by connect/disconnect; otherwise the loaded status applies
@@ -39,8 +42,8 @@ export default function Cesmii() {
     },
     { deps: [connected] }
   );
-  const equipment = connected ? lists.data?.equipment || [] : [];
-  const attributes = connected ? lists.data?.attributes || [] : [];
+  const equipment = (connected && lists.data?.equipment) || NONE;
+  const attributes = (connected && lists.data?.attributes) || NONE;
   const listError = connected ? lists.error : null;
   const loadLists = lists.reload;
 

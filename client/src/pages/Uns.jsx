@@ -10,7 +10,7 @@ import { buildUnsTree } from '@/graph/unsTree';
 import { buildMountRoots } from '@/graph/unsMounts';
 import useIngestRate from '@/graph/useIngestRate';
 import { formatRate } from '@/graph/rateWindow';
-import ResponsiveHeader from '@/components/ResponsiveHeader';
+import PageHeader from '@/components/PageHeader';
 import GraphTree from '@/components/GraphTree';
 import ViewTab from '@/components/ViewTab';
 import { Button, EmptyState } from '@/components/ui';
@@ -89,7 +89,7 @@ export default function Uns() {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- connectedKey is the stable string form of the connected broker set
   }, [connectedKey, retryTick]);
 
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function Uns() {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mountTick/opcuaKey/retryTick are the intended triggers
   }, [mountTick, opcuaKey, retryTick]);
 
   // Mounted structure is a snapshot: refresh it while mounts exist and the tab is visible.
@@ -132,7 +132,7 @@ export default function Uns() {
   const versionKey = scoped.map((b) => `${b.id}:${topicVersionMap[b.id] || 0}`).join('|');
   const brokerRoots = useMemo(
     () => scoped.map((b) => buildUnsTree(b, useStore.getState().getTopics(b.id))),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- versionKey changes exactly when a broker's topic set changes; topics come from the non-reactive index
     [versionKey]
   );
   const roots = useMemo(() => (scope === 'all' ? [...brokerRoots, ...mountRoots] : brokerRoots), [brokerRoots, mountRoots, scope]);
@@ -176,7 +176,7 @@ export default function Uns() {
   if (!connected.length && !mountRoots.length) {
     return (
       <div className="flex h-full flex-col">
-        <ResponsiveHeader title="Unified Namespace" subtitle="Live topology of the whole namespace, by level" />
+        <PageHeader title="Unified Namespace" subtitle="Live topology of the whole namespace, by level" />
         <EmptyState
           icon={Network}
           title="No connected brokers"
@@ -195,7 +195,7 @@ export default function Uns() {
 
   return (
     <div className="flex h-full flex-col">
-      <ResponsiveHeader
+      <PageHeader
         title="Unified Namespace"
         subtitle={`${totalTopics.toLocaleString()} topics · live topology`}
         actions={

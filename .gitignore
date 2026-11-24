@@ -2,6 +2,8 @@
 node_modules/
 
 # Build output
+client/test-results/
+client/playwright-report/
 client/dist/
 dist/
 build/

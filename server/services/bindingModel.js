@@ -117,6 +117,7 @@ function validateAssetPath(p, what = 'assetPath') {
   if (typeof p !== 'string' || !p.trim()) return `${what} must be a non-empty string`;
   if (p.length > 512) return `${what} is longer than 512 characters`;
   if (/[{}]/.test(p)) return `${what} must not contain placeholders`;
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
   if (/[\u0000-\u001f]/.test(p)) return `${what} must not contain control characters`;
   const segs = p.split('/');
   for (const seg of segs) {

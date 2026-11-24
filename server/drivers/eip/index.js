@@ -192,7 +192,7 @@ class EipDriver {
         onFrame: this.onFrame,
       });
       this.client = client;
-      let preferredSize = this.sizePreference === 'auto' ? (this.largeRejected ? SMALL_SIZE : LARGE_SIZE) : this.sizePreference;
+      const preferredSize = this.sizePreference === 'auto' ? (this.largeRejected ? SMALL_SIZE : LARGE_SIZE) : this.sizePreference;
       try {
         const opened = await client.open({ preferredSize, deadlineMs: this.requestDeadlineMs });
         if (this.sizePreference === 'auto' && !opened.large) this.largeRejected = true;

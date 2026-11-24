@@ -20,7 +20,7 @@ export default function FlowsView({ broker }) {
         <SubTab active={tab === 'producers'} onClick={() => setTab('producers')} icon={Radio} label="Producers" hint="who publishes what (Sparkplug + $SYS)" />
         <SubTab active={tab === 'consumers'} onClick={() => setTab('consumers')} icon={Users} label="Consumers" hint="who receives what (admin API, wildcards resolved)" />
       </div>
-      <div className="min-h-0 flex-1">{tab === 'producers' ? <ProducerFlows broker={broker} /> : <ConsumerFlows broker={broker} />}</div>
+      <div className="min-h-0 flex-1">{tab === 'producers' ? <ProducerFlows broker={broker} /> : <ConsumerFlows key={broker.id} broker={broker} />}</div>
     </div>
   );
 }

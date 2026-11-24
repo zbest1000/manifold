@@ -188,7 +188,7 @@ export default function GraphToolbar({
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          aria-label={`Visual style and layout (current: ${active.name})`}
+          aria-label={`${active.name} visual style and layout`}
           className={clsx(clusterBox, 'gap-2 px-3 py-2 text-sm text-slate-200 hover:border-white/20')}
         >
           <Palette size={16} className="text-accent-400" aria-hidden="true" />

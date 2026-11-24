@@ -104,7 +104,7 @@ export default function ProducerFlows({ broker }) {
             onSelect={setSelected}
           />
         ) : (
-          <div className="grid h-full place-items-center p-8">
+          <div className="grid h-full place-items-center p-4 sm:p-8">
             <EmptyState
               icon={Cpu}
               title="No Sparkplug devices seen yet"
@@ -130,7 +130,7 @@ export default function ProducerFlows({ broker }) {
         )}
       </div>
 
-      <div className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
+      <div role="region" aria-label="Producer details" tabIndex={0} className="max-h-[45%] w-full shrink-0 space-y-3 overflow-y-auto border-t border-white/5 bg-surface-900/30 p-3 md:max-h-none md:w-80 md:border-l md:border-t-0">
         {/* Sparkplug topology summary */}
         <Card className="p-3">
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-200">

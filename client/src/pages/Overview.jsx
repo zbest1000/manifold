@@ -7,7 +7,7 @@ import { totalTopicCount } from '@/graph/topicCount';
 import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import { Card, Badge, Button } from '@/components/ui';
-import ResponsiveHeader from '@/components/ResponsiveHeader';
+import PageHeader from '@/components/PageHeader';
 import { formatDistanceToNow } from 'date-fns';
 
 const sum = (obj, field) => Object.values(obj || {}).reduce((acc, v) => acc + (Number(v?.[field]) || 0), 0);
@@ -60,7 +60,7 @@ export default function Overview() {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- connectedKey is the stable string form of the connected broker set
   }, [connectedKey, retry]);
 
   // Read high-frequency data from the non-reactive store snapshot; refreshes at
@@ -71,12 +71,12 @@ export default function Overview() {
     for (const b of brokers) all = all.concat(state.getLiveMessages(b.id));
     all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     return { recent: all.slice(0, 12) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dataTick signals new messages; they are read from the non-reactive store
   }, [brokers, dataTick]);
   // Topic total: the larger of the client index and the server's exact count.
   const topicCount = useMemo(
     () => totalTopicCount(brokers, (id) => useStore.getState().getTopics(id).length),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- topicVersion signals topic-set changes; counts come from the non-reactive index
     [brokers, topicVersion]
   );
 
@@ -109,7 +109,7 @@ export default function Overview() {
 
   return (
     <div className="flex h-full flex-col">
-      <ResponsiveHeader
+      <PageHeader
         title="Overview"
         subtitle="Live snapshot of your MQTT and OPC UA connections"
         actions={

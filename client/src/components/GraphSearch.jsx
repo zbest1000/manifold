@@ -37,9 +37,11 @@ export default function GraphSearch({ nodes, onMatches, onFit }) {
   const count = matchIds ? matchIds.size : 0;
 
   return (
-    <div className="pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-1.5 backdrop-blur">
-      <Search size={15} className="text-slate-500" />
+    <div role="search" aria-label="Search graph nodes" className="pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-1.5 backdrop-blur">
+      <Search size={15} className="text-slate-400" aria-hidden="true" />
       <input
+        type="search"
+        aria-label="Search nodes"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && matchIds && matchIds.size && onFit(matchIds)}
@@ -48,19 +50,25 @@ export default function GraphSearch({ nodes, onMatches, onFit }) {
       />
       {query && (
         <>
-          <span className={clsx('text-[11px]', count ? 'text-accent-300' : 'text-slate-500')}>{count}</span>
+          <span role="status" aria-label={`${count} matching ${count === 1 ? 'node' : 'nodes'}`} className={clsx('text-[11px]', count ? 'text-accent-300' : 'text-slate-400')}>
+            {count}
+          </span>
           <button
+            type="button"
             onClick={() => matchIds && matchIds.size && onFit(matchIds)}
             title="Zoom to matches"
+            aria-label="Zoom to matches"
             className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-slate-200"
           >
-            <Crosshair size={14} />
+            <Crosshair size={14} aria-hidden="true" />
           </button>
           <button
+            type="button"
             onClick={() => setQuery('')}
+            aria-label="Clear search"
             className="rounded-md p-1 text-slate-400 hover:bg-white/10 hover:text-slate-200"
           >
-            <X size={14} />
+            <X size={14} aria-hidden="true" />
           </button>
         </>
       )}

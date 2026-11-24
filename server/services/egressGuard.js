@@ -103,10 +103,6 @@ function classifyV4Detail(ip) {
   return detail('public');
 }
 
-function classifyV4(ip) {
-  return classifyV4Detail(ip).cls;
-}
-
 /**
  * Parse a (net.isIP-validated) IPv6 literal into eight 16-bit groups.
  * Handles `::` compression, a trailing dotted IPv4 and strips a zone id.
@@ -162,10 +158,6 @@ function classifyV6Detail(ip) {
   if (g[0] === 0xfd00 && g[1] === 0x0ec2) return detail('hard-blocked'); // AWS IPv6 metadata fd00:ec2::254
   if ((g[0] & 0xfe00) === 0xfc00) return detail('private'); // fc00::/7 unique-local
   return detail('public');
-}
-
-function classifyV6(ip) {
-  return classifyV6Detail(ip).cls;
 }
 
 function classifyDetail(ip) {

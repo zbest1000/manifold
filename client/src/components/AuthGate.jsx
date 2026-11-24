@@ -5,6 +5,30 @@ import { reconnectSocket } from '@/lib/socket';
 import { useStore } from '@/store/store';
 import { Card, Button, Input } from '@/components/ui';
 
+// Only a 401 means "locked": any other status (or a network error) is NOT a
+// rejected token, so we open rather than hang on "Connecting…" forever or lock
+// out a user because the status endpoint blipped.
+const probe = async (candidate) => {
+  try {
+    const res = await fetch('/api/system/status', {
+      headers: candidate ? { Authorization: `Bearer ${candidate}` } : {}
+    });
+    return res.status !== 401;
+  } catch {
+    return true; // network/transport error — don't trap the user on the gate
+  }
+};
+
+// Discover the caller's role so the UI can show a read-only badge for viewers.
+const loadRole = async (setAuthRole) => {
+  try {
+    const who = await api.whoami();
+    setAuthRole(who?.role ?? null);
+  } catch {
+    setAuthRole(null);
+  }
+};
+
 /**
  * Boot-time auth gate. Probes an authenticated endpoint once: if the server was
  * started with MANIFOLD_AUTH_TOKEN and we don't hold a valid token, everything would
@@ -22,36 +46,12 @@ export default function AuthGate({ children }) {
 
   const setAuthRole = useStore((s) => s.setAuthRole);
 
-  // Only a 401 means "locked": any other status (or a network error) is NOT a
-  // rejected token, so we open rather than hang on "Connecting…" forever or lock
-  // out a user because the status endpoint blipped.
-  const probe = async (candidate) => {
-    try {
-      const res = await fetch('/api/system/status', {
-        headers: candidate ? { Authorization: `Bearer ${candidate}` } : {}
-      });
-      return res.status !== 401;
-    } catch {
-      return true; // network/transport error — don't trap the user on the gate
-    }
-  };
-
-  // Discover the caller's role so the UI can show a read-only badge for viewers.
-  const loadRole = async () => {
-    try {
-      const who = await api.whoami();
-      setAuthRole(who?.role ?? null);
-    } catch {
-      setAuthRole(null);
-    }
-  };
-
   useEffect(() => {
     probe(getAuthToken()).then((ok) => {
-      if (ok) loadRole();
+      if (ok) loadRole(setAuthRole);
       setState(ok ? 'open' : 'locked');
     });
-  }, []);
+  }, [setAuthRole]);
 
   const unlock = async (e) => {
     e.preventDefault();
@@ -59,7 +59,7 @@ export default function AuthGate({ children }) {
     if (await probe(token.trim())) {
       setAuthToken(token.trim());
       reconnectSocket();
-      await loadRole();
+      await loadRole(setAuthRole);
       setState('open');
     } else {
       setError('That token was rejected by the server.');
