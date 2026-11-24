@@ -385,8 +385,9 @@ class TagBindings {
           b,
           m.name,
           m.value,
-          192,
-          new Date(msg.timestamp).getTime() || Date.now(),
+          // per-metric quality/timestamp when the publisher supplied them
+          m.quality === 0 || m.quality === 64 ? m.quality : 192,
+          Number(m.sourceTimestamp) > 0 ? Number(m.sourceTimestamp) : new Date(msg.timestamp).getTime() || Date.now(),
           SPB_TYPES[m.datatypeName]
         );
       }

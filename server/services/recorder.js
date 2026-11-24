@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { messageQuality, messageTime } = require('./pipelineEngine');
 const path = require('path');
 const readline = require('readline');
 const { matchParts, compiledView } = require('./mqttMatch');
@@ -134,10 +135,10 @@ class Recorder {
       if (rec.brokerId !== msg.brokerId) continue;
       if (!matchParts(parts, topicParts)) continue;
       const s = this._status(rec.id);
-      const ts = new Date(msg.timestamp).getTime() || Date.now();
+      const ts = messageTime(msg);
 
       if (rec.target?.type === 'historian') {
-        this.outbox?.enqueue(rec.target.historianId, [{ tag: msg.topic, ts, value: msg.payload, quality: 192 }]);
+        this.outbox?.enqueue(rec.target.historianId, [{ tag: msg.topic, ts, value: msg.payload, quality: messageQuality(msg) }]);
         s.points++;
         s.lastTs = ts;
         continue;

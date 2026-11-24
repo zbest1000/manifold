@@ -49,10 +49,24 @@ function applyTemplate(template, topic) {
 
 /** Best available quality for a tapped MQTT message (OPC 0-255 scale). */
 function messageQuality(msg) {
-  // Sparkplug metrics may carry explicit quality properties; a decoded payload
-  // that failed to parse is the one case we can honestly call bad.
+  // The intake surfaces quality from TVQ envelopes and Sparkplug payloads; a
+  // payload that failed to decode is the one case we can call bad ourselves.
   if (msg.sparkplugError) return 0; // bad
+  if (msg.quality === 0 || msg.quality === 64 || msg.quality === 192) return msg.quality;
   return 192; // good — the value did arrive over a live session
+}
+
+const MIN_SOURCE_TS = Date.UTC(2000, 0, 1);
+
+/**
+ * Timestamp for a tapped message: the source timestamp when the payload
+ * carried a plausible one (TVQ `t`, Sparkplug timestamp), else arrival time.
+ * A device clock that is unset or far in the future must not corrupt history.
+ */
+function messageTime(msg, now = Date.now()) {
+  const src = Number(msg.sourceTimestamp);
+  if (Number.isFinite(src) && src >= MIN_SOURCE_TS && src <= now + 86_400_000) return src;
+  return new Date(msg.timestamp).getTime() || now;
 }
 
 /**
@@ -122,7 +136,7 @@ function applyTransforms(transforms, msg) {
         // quality — so consumers can tell "value is 0" from "value is dead".
         payload = {
           v: payload,
-          t: new Date(msg.timestamp).getTime() || Date.now(),
+          t: messageTime(msg),
           q: messageQuality(msg)
         };
         break;
@@ -238,7 +252,7 @@ class PipelineEngine {
       this.outbox.enqueue(target.historianId, [
         {
           tag: out.topic,
-          ts: new Date(msg.timestamp).getTime() || Date.now(),
+          ts: messageTime(msg),
           value: out.payload,
           quality: messageQuality(msg)
         }
@@ -286,4 +300,4 @@ class PipelineEngine {
   }
 }
 
-module.exports = { PipelineEngine, applyTransforms, applyTemplate };
+module.exports = { PipelineEngine, applyTransforms, applyTemplate, messageQuality, messageTime };

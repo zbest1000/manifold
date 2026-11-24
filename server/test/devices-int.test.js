@@ -170,3 +170,62 @@ test('test connection and probe work against the simulator; the egress guard blo
     await t.cleanup();
   }
 });
+
+test('an S7 device flows through the same runtime, manager and binding path', async () => {
+  const { createS7Simulator } = require('./support/s7Simulator');
+  const db = Buffer.alloc(16);
+  db.writeFloatBE(73.25, 0);
+  db.writeInt16BE(-12, 4);
+  db[6] = 0b00000010; // DBX6.1
+  const plc = createS7Simulator({ maxPdu: 240, dbs: { 10: db } });
+  await plc.start();
+  const profiles = memoryProfiles();
+  const mqtt = fakeBroker();
+  const devices = new DeviceManager({ profiles, guard: async () => {}, supervisorOptions: { backoff: { initialMs: 50, maxMs: 200 } } });
+  const bindings = new TagBindings({ mqttManager: mqtt, profiles, sparkplugPublisher: null });
+  bindings.registerSource('device', devices);
+  bindings.start();
+  await devices.start();
+  try {
+    assert.ok(devices.protocols().some((p) => p.id === 's7'));
+    const saved = await devices.save({
+      name: 'Filler PLC',
+      protocol: 's7',
+      host: '127.0.0.1',
+      port: plc.port,
+      rack: 0,
+      slot: 1,
+      limits: { requestDeadlineMs: 300, connectTimeoutMs: 500 },
+      pollGroups: [{ id: 'default', intervalMs: 100 }],
+      tags: [
+        { key: 'speed', address: 'DB10.DBD0', type: 'REAL' },
+        { key: 'trim', address: 'DB10.DBW4', type: 'INT' },
+        { key: 'running', address: 'DB10.DBX6.1', type: 'BOOL' }
+      ]
+    });
+    profiles.upsertIn('bindings', 'b1', {
+      enabled: true,
+      source: { type: 'device', deviceId: saved.id, tags: ['speed', 'trim', 'running'].map((k) => ({ address: k, name: k })) },
+      target: { mode: 'mqtt', brokerId: 'br', pathTemplate: 'acme/line1/filler/{name}', format: 'envelope' }
+    });
+    bindings.reconcile();
+    const values = (name) => mqtt.published.filter((p) => p.topic === `acme/line1/filler/${name}`).map((p) => p.payload);
+    await until(() => values('running').length >= 1, 8000, 'first S7 sample');
+    assert.strictEqual(values('speed')[0].v, 73.25);
+    assert.strictEqual(values('trim')[0].v, -12);
+    assert.strictEqual(values('running')[0].v, true);
+    assert.strictEqual(values('speed')[0].q, 192);
+
+    await assert.rejects(
+      devices.save({ name: 'x', protocol: 's7', host: '127.0.0.1', port: plc.port, rack: 0, slot: 1, tags: [{ key: 'bad', address: 'DB10.NOPE', type: 'INT' }] }),
+      (error) => error instanceof DeviceValidationError && error.details[0].key === 'bad'
+    );
+    assert.strictEqual(plc.stats.writesReceived, 0);
+    assert.strictEqual(plc.stats.controlReceived, 0);
+  } finally {
+    bindings.stop();
+    await devices.stop();
+    await plc.stop?.();
+    await plc.close?.();
+  }
+});
