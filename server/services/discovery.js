@@ -222,7 +222,8 @@ class DiscoveryService extends EventEmitter {
     this.scanning = true;
     this.abortRequested = false;
     this.lastResults = [];
-    this.io.emit('discovery-started', { range, ports: ports.map((p) => p.port), totalProbes: jobs.length, blockedHosts: blocked });
+    const totalProbes = jobs.length; // the workers consume `jobs`, so count before they start
+    this.io.emit('discovery-started', { range, ports: ports.map((p) => p.port), totalProbes, blockedHosts: blocked });
 
     let completed = 0;
     const results = [];
@@ -270,7 +271,7 @@ class DiscoveryService extends EventEmitter {
         if (completed % 50 === 0 || jobs.length === 0) {
           this.io.emit('discovery-progress', {
             completed,
-            total: completed + jobs.length,
+            total: totalProbes,
             found: results.length
           });
         }
@@ -299,7 +300,7 @@ class DiscoveryService extends EventEmitter {
         this.io.emit('discovery-error', { error: error.message });
       });
 
-    return { range, totalProbes: jobs.length, status: 'scanning' };
+    return { range, totalProbes, status: 'scanning' };
   }
 
   stopScan() {
