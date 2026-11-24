@@ -43,7 +43,11 @@ async function request(path, options = {}) {
     const raw = body.error || `Request failed (${res.status})`;
     const h = humanizeError(raw);
     useStore.getState().pushLog('error', 'api', h.summary, { path, status: res.status, raw, code: h.code, hint: h.hint });
-    throw new Error(h.summary);
+    const err = new Error(h.summary);
+    // Field-level validation errors ({ key, error }[]) travel with the error.
+    if (Array.isArray(body.details)) err.details = body.details;
+    err.status = res.status;
+    throw err;
   }
   return body;
 }
@@ -232,6 +236,19 @@ export const api = {
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
   updateOpcuaConnection: (id, config) =>
     request(`/api/opcua/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
+
+  // Southbound device drivers (Modbus TCP, …)
+  devices: () => request('/api/devices'),
+  createDevice: (device) => request('/api/devices', { method: 'POST', body: JSON.stringify(device) }),
+  updateDevice: (id, device) =>
+    request(`/api/devices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(device) }),
+  deleteDevice: (id) => request(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testDevice: (device) => request('/api/devices/test', { method: 'POST', body: JSON.stringify({ device }) }),
+  validateDeviceTags: (protocol, options, tags) =>
+    request('/api/devices/validate-tags', { method: 'POST', body: JSON.stringify({ protocol, options, tags }) }),
+  probeDevice: (id, body) =>
+    request(`/api/devices/${encodeURIComponent(id)}/probe`, { method: 'POST', body: JSON.stringify(body) }),
+  deviceValues: (id) => request(`/api/devices/${encodeURIComponent(id)}/values`),
 
   // Sparkplug host application STATE (Manifold as primary host)
   sparkplugState: (body) => request('/api/tags/sparkplug/state', { method: 'POST', body: JSON.stringify(body) }),

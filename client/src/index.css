@@ -70,3 +70,9 @@ body {
   border-radius: 4px;
   padding: 0 4px;
 }
+
+/* Visible keyboard focus everywhere (mouse clicks do not trigger it). */
+:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}

@@ -1,4 +1,4 @@
-import { useId, useState, useEffect } from 'react';
+import { useId, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { HelpCircle, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -12,19 +12,71 @@ import clsx from 'clsx';
  * and paints it under its neighbours). Owns Esc + backdrop-click close. Use this
  * for every overlay instead of a bare `fixed inset-0` div.
  */
-export function Modal({ title, onClose, children, className }) {
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const modalStack = []; // topmost modal owns Esc and Tab (nested dialogs)
+
+export function Modal({ title, onClose, children, className, labelledBy }) {
+  const ref = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
   useEffect(() => {
-    const onKey = (e) => e.key === 'Escape' && onClose();
+    const el = ref.current;
+    const token = {};
+    modalStack.push(token);
+    const previouslyFocused = document.activeElement;
+    // Focus the first control inside the dialog (falls back to the dialog itself).
+    const first = el && (el.querySelector('[data-autofocus]') || el.querySelector(FOCUSABLE));
+    (first || el)?.focus();
+
+    const onKey = (e) => {
+      if (modalStack[modalStack.length - 1] !== token) return;
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeRef.current();
+        return;
+      }
+      if (e.key !== 'Tab' || !el) return;
+      const items = [...el.querySelectorAll(FOCUSABLE)].filter((n) => n.offsetParent !== null || n === document.activeElement);
+      if (!items.length) {
+        e.preventDefault();
+        el.focus();
+        return;
+      }
+      const firstEl = items[0];
+      const lastEl = items[items.length - 1];
+      if (e.shiftKey && (document.activeElement === firstEl || document.activeElement === el)) {
+        e.preventDefault();
+        lastEl.focus();
+      } else if (!e.shiftKey && document.activeElement === lastEl) {
+        e.preventDefault();
+        firstEl.focus();
+      } else if (!el.contains(document.activeElement)) {
+        e.preventDefault();
+        firstEl.focus();
+      }
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const i = modalStack.indexOf(token);
+      if (i >= 0) modalStack.splice(i, 1);
+      if (previouslyFocused && document.contains(previouslyFocused)) previouslyFocused.focus?.();
+    };
+  }, []);
+
   return createPortal(
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/80 p-6" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/80 p-3 sm:p-6" onClick={() => closeRef.current()}>
       <div
-        className={clsx('max-h-[85vh] w-full overflow-y-auto rounded-2xl border border-white/10 bg-surface-900 shadow-2xl', className || 'max-w-lg p-6')}
+        ref={ref}
+        tabIndex={-1}
+        className={clsx('max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-white/10 bg-surface-900 shadow-2xl focus:outline-none', className || 'max-w-lg p-6')}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label={title}
+        aria-modal="true"
+        aria-label={labelledBy ? undefined : title}
+        aria-labelledby={labelledBy}
       >
         {children}
       </div>

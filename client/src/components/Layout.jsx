@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock, Gauge, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Share2, Radio, Cpu, Radar, Settings as SettingsIcon, Activity, Factory, Boxes, Waypoints, Network, Workflow, Tags as TagsIcon, LineChart, Lock, Gauge, HardDrive, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { StatusDot, Tooltip, IconButton } from './ui';
@@ -33,6 +33,7 @@ const NAV_GROUPS = [
     label: 'Connect',
     items: [
       { to: '/brokers', label: 'MQTT Brokers', icon: Radio },
+      { to: '/devices', label: 'Devices', icon: HardDrive },
       { to: '/opcua', label: 'OPC UA', icon: Cpu },
       { to: '/cesmii', label: 'CESMII SMIP', icon: Factory },
       { to: '/i3x', label: 'i3X', icon: Boxes },

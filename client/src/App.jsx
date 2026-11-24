@@ -12,6 +12,7 @@ const Trends = lazy(() => import('./pages/Trends'));
 const Pipelines = lazy(() => import('./pages/Pipelines'));
 const Tags = lazy(() => import('./pages/Tags'));
 const Brokers = lazy(() => import('./pages/Brokers'));
+const Devices = lazy(() => import('./pages/Devices'));
 const OpcUa = lazy(() => import('./pages/OpcUa'));
 const Cesmii = lazy(() => import('./pages/Cesmii'));
 const I3x = lazy(() => import('./pages/I3x'));
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="pipelines" element={<S><Pipelines /></S>} />
         <Route path="tags" element={<S><Tags /></S>} />
         <Route path="brokers" element={<S><Brokers /></S>} />
+        <Route path="devices" element={<S><Devices /></S>} />
         <Route path="opcua" element={<S><OpcUa /></S>} />
         <Route path="cesmii" element={<S><Cesmii /></S>} />
         <Route path="i3x" element={<S><I3x /></S>} />

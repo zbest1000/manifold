@@ -35,6 +35,28 @@ function emitActivity(msg) {
   }
 }
 
+// Device live values (southbound drivers) also bypass React until flushed: batches
+// arrive throttled from the server, we coalesce them and replace only the
+// touched device's map, so only components selecting that device re-render.
+const pendingDeviceValues = new Map(); // deviceId -> { tagKey: sample }
+let deviceFlushScheduled = false;
+const DEVICE_FLUSH_MS = 500;
+function scheduleDeviceFlush(store) {
+  if (deviceFlushScheduled) return;
+  deviceFlushScheduled = true;
+  setTimeout(() => {
+    deviceFlushScheduled = false;
+    if (!pendingDeviceValues.size) return;
+    const batch = [...pendingDeviceValues];
+    pendingDeviceValues.clear();
+    store.setState((s) => {
+      const deviceValues = { ...s.deviceValues };
+      for (const [id, vals] of batch) deviceValues[id] = { ...(deviceValues[id] || {}), ...vals };
+      return { deviceValues };
+    });
+  }, DEVICE_FLUSH_MS);
+}
+
 let tickScheduled = false;
 let errorSeq = 0;
 
@@ -102,6 +124,14 @@ export const useStore = create((set, get) => ({
   // Reactive change signals for the high-frequency data (see note above).
   dataTick: 0,
   topicVersion: {}, // brokerId -> integer, bumped only when the topic SET changes
+
+  // Southbound devices: live phase per device id, last value/quality per tag, and a
+  // counter pages watch to refetch the list after `devices-changed`.
+  deviceStates: {}, // deviceId -> { state, phase, reason, since }
+  deviceValues: {}, // deviceId -> { tagKey: { v, q, qReason, tRead, type } }
+  devicesVersion: 0,
+  setDeviceState: (deviceId, st) => set((s) => ({ deviceStates: { ...s.deviceStates, [deviceId]: st } })),
+  seedDeviceValues: (deviceId, values) => set((s) => ({ deviceValues: { ...s.deviceValues, [deviceId]: values || {} } })),
 
   opcuaValues: {}, // connectionId -> { nodeId: { value, ... } } (low frequency)
 
@@ -337,6 +367,14 @@ export function initRealtime() {
   socket.on('opcua-connected', () => refreshOpcua());
   socket.on('opcua-disconnected', () => refreshOpcua());
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
+
+  socket.on('device-state', ({ deviceId, ...st } = {}) => deviceId && useStore.getState().setDeviceState(deviceId, st));
+  socket.on('device-values', ({ deviceId, values } = {}) => {
+    if (!deviceId || !values) return;
+    pendingDeviceValues.set(deviceId, { ...(pendingDeviceValues.get(deviceId) || {}), ...values });
+    scheduleDeviceFlush(useStore);
+  });
+  socket.on('devices-changed', () => useStore.setState((st) => ({ devicesVersion: st.devicesVersion + 1 })));
 
   socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
   socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
