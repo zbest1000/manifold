@@ -36,7 +36,9 @@ export default defineConfig({
     trace: 'off',
     screenshot: 'off',
     video: 'off',
-    reducedMotion: 'reduce'
+    reducedMotion: 'reduce',
+    // The app follows the OS theme by default; the suite runs dark unless a test picks a theme.
+    colorScheme: 'dark'
   },
   projects: [
     { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js', 'devices-protocols.spec.js', 'profiles.spec.js', 'outage.spec.js', 'tags-binding.spec.js'] },

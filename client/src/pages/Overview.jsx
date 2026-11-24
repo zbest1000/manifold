@@ -1,16 +1,52 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Radio, Cpu, HardDrive, Share2, Radar, ArrowRight, MessageSquare, Workflow, Database, Tag, BellRing } from 'lucide-react';
+import { Radar, ArrowRight } from 'lucide-react';
 import { useStore } from '@/store/store';
 import { useConnections, useDataTick, useTopicVersionSum } from '@/store/selectors';
 import { totalTopicCount } from '@/graph/topicCount';
+import useIngestRate from '@/graph/useIngestRate';
 import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
-import { Card, Badge, Button } from '@/components/ui';
+import { deviceBadge } from '@/lib/deviceStatus';
+import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
-import { formatDistanceToNow } from 'date-fns';
+
+/**
+ * Overview: the dashboard pattern (docs/design/ui-design-system.md#dashboard).
+ * Top to bottom: what needs attention, the numbers that describe the estate,
+ * then the connection list and the latest values. No decoration.
+ */
 
 const sum = (obj, field) => Object.values(obj || {}).reduce((acc, v) => acc + (Number(v?.[field]) || 0), 0);
+const fmt = (n) => Number(n || 0).toLocaleString();
+
+/** A broker that is offline AND failing to connect is a fault, not an idle connection. */
+const brokerTone = (b) => (b.status === 'connected' ? 'good' : toneOf(b.status) === 'neutral' ? (b.lastError ? 'bad' : 'neutral') : toneOf(b.status));
+
+const num = (v) => (typeof v === 'number' ? v.toLocaleString(undefined, { maximumFractionDigits: 3 }) : String(v));
+
+/** Raw payload as one line (tooltip) and a readable value for the list. */
+function raw(payload) {
+  if (payload == null) return '';
+  if (typeof payload === 'string') return payload;
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return String(payload);
+  }
+}
+function readable(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const keys = Object.keys(payload);
+    if ('value' in payload && keys.every((k) => ['value', 'unit', 'u', 'quality', 'q', 'timestamp', 't', 'ts'].includes(k))) {
+      const unit = payload.unit ?? payload.u;
+      return `${num(payload.value)}${unit ? ` ${unit}` : ''}`;
+    }
+    if (keys.length === 1) return `${keys[0]}: ${num(payload[keys[0]])}`;
+  }
+  if (typeof payload === 'number') return num(payload);
+  return raw(payload);
+}
 
 export default function Overview() {
   const { brokers, opcua } = useConnections();
@@ -19,6 +55,7 @@ export default function Overview() {
   const connectedIds = brokers.filter((b) => b.status === 'connected').map((b) => b.id);
   const connectedKey = connectedIds.join('|');
   const topicVersion = useTopicVersionSum(brokers.map((b) => b.id));
+  const ingestRate = useIngestRate(null);
   const [seedError, setSeedError] = useState(null);
   const [retry, setRetry] = useState(0);
   const [engine, setEngine] = useState(null); // pushed every 2s while anything is connected
@@ -33,17 +70,11 @@ export default function Overview() {
     api
       .devices()
       .then((r) => live && setDevices(r.devices || []))
-      .catch(() => live && setDevices([])); // the tile shows 0; the Devices page reports the error
+      .catch(() => live && setDevices([])); // the count shows 0; the Devices page reports the error
     return () => {
       live = false;
     };
   }, [devicesVersion]);
-  const deviceStatus = (d) => {
-    if (d.enabled === false) return 'disconnected';
-    const state = deviceStates[d.id]?.state || d.status?.state;
-    return state === 'online' ? 'connected' : 'reconnecting';
-  };
-  const devicesOnline = devices.filter((d) => deviceStatus(d) === 'connected').length;
 
   useEffect(() => {
     socket.on('engine-metrics', setEngine);
@@ -66,9 +97,7 @@ export default function Overview() {
   }, [retry]);
 
   // Seed the topic index from the server exactly like the Topics and UNS pages
-  // do, so all three count from the same source (the live socket alone only
-  // carries topics that publish while this page is open: that is why Overview
-  // used to say 8 while Topics said 325).
+  // do, so all three count from the same source.
   useEffect(() => {
     let alive = true;
     for (const id of connectedIds) {
@@ -83,270 +112,304 @@ export default function Overview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connectedKey is the stable string form of the connected broker set
   }, [connectedKey, retry]);
 
-  // Read high-frequency data from the non-reactive store snapshot; refreshes at
-  // the throttled tick / structure change rather than on every message.
-  const { recent } = useMemo(() => {
+  // Latest value per topic, most recently updated first. Read from the
+  // non-reactive store snapshot; refreshes on the throttled tick.
+  const latest = useMemo(() => {
     const state = useStore.getState();
-    let all = [];
-    for (const b of brokers) all = all.concat(state.getLiveMessages(b.id));
-    all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    return { recent: all.slice(0, 12) };
+    const names = new Map(brokers.map((b) => [b.id, b.name]));
+    const byTopic = new Map();
+    for (const b of brokers) {
+      for (const m of state.getLiveMessages(b.id)) {
+        const key = `${b.id}\u0000${m.topic}`;
+        const prev = byTopic.get(key);
+        if (!prev || new Date(m.timestamp) > new Date(prev.timestamp)) byTopic.set(key, { ...m, brokerName: names.get(b.id) });
+      }
+    }
+    return [...byTopic.values()].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 12);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dataTick signals new messages; they are read from the non-reactive store
   }, [brokers, dataTick]);
-  // Topic total: the larger of the client index and the server's exact count.
+
   const topicCount = useMemo(
     () => totalTopicCount(brokers, (id) => useStore.getState().getTopics(id).length),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- topicVersion signals topic-set changes; counts come from the non-reactive index
     [brokers, topicVersion]
   );
 
-  const stats = [
-    {
-      label: 'MQTT Brokers',
-      value: brokers.length,
-      sub: `${brokers.filter((b) => b.status === 'connected').length} connected`,
-      icon: Radio,
-      to: '/brokers',
-      accent: 'from-sky-400 to-sky-600'
-    },
-    {
-      label: 'OPC UA Servers',
-      value: opcua.length,
-      sub: `${opcua.filter((c) => c.status === 'connected').length} connected`,
-      icon: Cpu,
-      to: '/opcua',
-      accent: 'from-violet-400 to-violet-600'
-    },
-    {
-      label: 'Devices',
-      value: devices.length,
-      sub: `${devicesOnline} online`,
-      icon: HardDrive,
-      to: '/devices',
-      accent: 'from-amber-400 to-orange-600'
-    },
-    {
-      label: 'Topics Tracked',
-      value: topicCount.toLocaleString(),
-      sub: 'across all brokers',
-      icon: Share2,
-      to: '/topics',
-      accent: 'from-emerald-400 to-emerald-600'
-    }
-  ];
+  // ---- derived state ----------------------------------------------------------------------
+  const deviceRows = devices.map((d) => {
+    const badge = deviceBadge(d, d.status, deviceStates[d.id]);
+    return { d, badge };
+  });
+  const brokersUp = brokers.filter((b) => b.status === 'connected').length;
+  const opcuaUp = opcua.filter((c) => c.status === 'connected').length;
+  const devicesUp = deviceRows.filter((r) => r.badge.key === 'online').length;
+  const devicesEnabled = deviceRows.filter((r) => r.d.enabled !== false).length;
+
+  const p = engine?.pipelines;
+  const o = engine?.outbox;
+  const bnd = engine?.bindings;
+  const pipelineErrors = sum(p, 'errors');
+  const loopBlocked = sum(p, 'loopBlocked');
+  const spilled = sum(o, 'spillBytes');
+  const dropped = sum(o, 'dropped');
+  const bindingErrors = sum(bnd, 'errors');
+  const recentAlerts = alerts?.recent ?? 0;
+
+  // What needs a human, worst first.
+  const issues = [];
+  for (const b of brokers) {
+    if (b.status !== 'connected') issues.push({ key: `b-${b.id}`, tone: brokerTone(b) === 'neutral' ? 'warn' : brokerTone(b), what: b.name, detail: `MQTT broker ${b.status}${b.lastError ? `: ${b.lastError}` : ''}`, to: '/brokers' });
+  }
+  for (const c of opcua) {
+    if (c.status !== 'connected') issues.push({ key: `o-${c.id}`, tone: toneOf(c.status) === 'warn' ? 'warn' : 'bad', what: c.name, detail: `OPC UA server ${c.status}`, to: '/opcua' });
+  }
+  for (const { d, badge } of deviceRows) {
+    if (d.enabled !== false && badge.key !== 'online') issues.push({ key: `d-${d.id}`, tone: toneOf(badge.status) === 'warn' ? 'warn' : 'bad', what: d.name, detail: `Device ${badge.label.toLowerCase()}`, to: '/devices' });
+  }
+  if (pipelineErrors > 0) issues.push({ key: 'p-err', tone: 'bad', what: 'Pipelines', detail: `${fmt(pipelineErrors)} delivery errors`, to: '/pipelines' });
+  if (loopBlocked > 0) issues.push({ key: 'p-loop', tone: 'warn', what: 'Pipelines', detail: `${fmt(loopBlocked)} messages blocked as loops`, to: '/pipelines' });
+  if (dropped > 0) issues.push({ key: 'h-drop', tone: 'bad', what: 'Historians', detail: `${fmt(dropped)} points dropped`, to: '/pipelines' });
+  if (spilled > 0) issues.push({ key: 'h-spill', tone: 'warn', what: 'Historians', detail: `${(spilled / 1024).toFixed(1)} KB spilled to disk`, to: '/pipelines' });
+  if (bindingErrors > 0) issues.push({ key: 't-err', tone: 'bad', what: 'Tag bindings', detail: `${fmt(bindingErrors)} publish errors`, to: '/tags' });
+  if (recentAlerts > 0)
+    issues.push({ key: 'a', tone: 'warn', what: 'Alerts', detail: `${recentAlerts >= 50 ? '50+' : recentAlerts} recent events${alerts?.latest ? ` · latest: ${alerts.latest.detail || alerts.latest.ruleName || ''}` : ''}`, to: '/settings' });
+  issues.sort((a, b) => (a.tone === b.tone ? 0 : a.tone === 'bad' ? -1 : 1));
+
+  const nothingConfigured = brokers.length === 0 && opcua.length === 0 && devices.length === 0;
+  const engineLoading = !engine && !alerts && brokers.length + opcua.length > 0;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         title="Overview"
-        subtitle="Live snapshot of your brokers, OPC UA servers and devices"
         actions={
-          <Link to="/discovery">
-            <Button variant="outline">
-              <Radar size={15} /> Discover network
-            </Button>
-          </Link>
+          <ButtonLink to="/discovery" variant="secondary">
+            <Radar size={14} aria-hidden="true" /> Discover network
+          </ButtonLink>
         }
       />
 
-      <div className="flex-1 space-y-6 overflow-y-auto p-4 sm:p-6">
+      <PageBody className="space-y-5">
         {(seedError || alertsError) && (
-          <div role="alert" className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-            <span>{seedError ? `Topic list unavailable: ${seedError}` : `Alerts unavailable: ${alertsError}`}</span>
-            <button
-              onClick={() => {
-                setSeedError(null);
-                setAlertsError(null);
-                setRetry((v) => v + 1);
-              }}
-              className="shrink-0 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20"
-            >
-              Retry
-            </button>
+          <Banner
+            variant="error"
+            title={seedError ? 'Topic list unavailable' : 'Alerts unavailable'}
+            onRetry={() => {
+              setSeedError(null);
+              setAlertsError(null);
+              setRetry((v) => v + 1);
+            }}
+          >
+            {seedError || alertsError}
+          </Banner>
+        )}
+
+        {nothingConfigured ? (
+          <Panel title="Get started">
+            <p className="text-sm text-muted">Nothing is connected yet. Add an MQTT broker to see its topics, or a PLC to poll its tags.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ButtonLink to="/brokers" variant="primary">
+                Connect a broker
+              </ButtonLink>
+              <ButtonLink to="/devices">Add a device</ButtonLink>
+              <ButtonLink to="/discovery">Scan the network</ButtonLink>
+            </div>
+          </Panel>
+        ) : (
+          <AttentionList issues={issues} total={brokers.length + opcua.length + devicesEnabled} />
+        )}
+
+        <section aria-labelledby="ov-sources" className="space-y-2">
+          <h2 id="ov-sources" className="text-sm font-medium text-fg">
+            Sources
+          </h2>
+          <StatGroup className="grid-cols-2 lg:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1">
+            <Stat to="/brokers" label="MQTT brokers" value={`${brokersUp} / ${brokers.length}`} sub="connected" tone={brokers.length ? (brokersUp === brokers.length ? 'good' : 'warn') : undefined} data-testid="tile-MQTT Brokers" />
+            <Stat to="/devices" label="Devices" value={`${devicesUp} / ${devicesEnabled}`} sub={devices.length > devicesEnabled ? `online · ${devices.length - devicesEnabled} disabled` : 'online'} tone={devicesEnabled ? (devicesUp === devicesEnabled ? 'good' : 'warn') : undefined} data-testid="tile-Devices" />
+            <Stat to="/opcua" label="OPC UA servers" value={`${opcuaUp} / ${opcua.length}`} sub="connected" tone={opcua.length ? (opcuaUp === opcua.length ? 'good' : 'warn') : undefined} data-testid="tile-OPC UA Servers" />
+            <Stat to="/topics" label="Topics" value={fmt(topicCount)} sub="across all brokers" data-testid="tile-Topics Tracked" />
+            <Stat to="/trends" label="Ingest" value={ingestRate < 10 ? ingestRate.toFixed(1) : fmt(Math.round(ingestRate))} unit="msg/s" sub="10 s average" />
+          </StatGroup>
+        </section>
+
+        <section aria-labelledby="ov-engine" className="space-y-2">
+          <h2 id="ov-engine" className="text-sm font-medium text-fg">
+            Data flow
+          </h2>
+          {engineLoading ? (
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line xl:grid-cols-4" aria-busy="true" aria-label="Loading engine health">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="space-y-2 bg-panel px-4 py-3">
+                  <Skeleton className="h-3 w-20" />
+                  <Skeleton className="h-6 w-14" />
+                  <Skeleton className="h-3 w-24" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <StatGroup className="grid-cols-2 xl:grid-cols-4">
+              <Stat
+                to="/pipelines"
+                label="Pipeline routes"
+                value={fmt(Object.keys(p || {}).length)}
+                sub={`${fmt(sum(p, 'published'))} delivered${pipelineErrors ? ` · ${fmt(pipelineErrors)} errors` : ''}`}
+                tone={pipelineErrors ? 'bad' : undefined}
+              />
+              <Stat
+                to="/pipelines"
+                label="Historian points"
+                value={fmt(sum(o, 'written'))}
+                sub={`${fmt(sum(o, 'queued'))} queued${dropped ? ` · ${fmt(dropped)} dropped` : ''}`}
+                tone={dropped ? 'bad' : spilled ? 'warn' : undefined}
+              />
+              <Stat
+                to="/tags"
+                label="Tag values published"
+                value={fmt(sum(bnd, 'published'))}
+                sub={`${fmt(sum(bnd, 'suppressed'))} held back by deadband`}
+                tone={bindingErrors ? 'bad' : undefined}
+              />
+              <Stat
+                to="/settings"
+                label="Alert events"
+                value={recentAlerts >= 50 ? '50+' : fmt(recentAlerts)}
+                sub={`${alerts?.rules ?? 0} ${alerts?.rules === 1 ? 'rule' : 'rules'} configured`}
+                tone={recentAlerts ? 'warn' : undefined}
+              />
+            </StatGroup>
+          )}
+        </section>
+
+        {!nothingConfigured && (
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <ConnectionsPanel brokers={brokers} opcua={opcua} deviceRows={deviceRows} />
+            <LatestPanel latest={latest} hasBrokers={brokers.length > 0} />
           </div>
         )}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {stats.map((s) => (
-            <Link key={s.label} to={s.to}>
-              <Card className="group p-5 transition hover:border-white/10 hover:bg-surface-900/80">
-                <div className="flex items-center justify-between">
-                  <div className={`grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br ${s.accent} shadow-lg`}>
-                    <s.icon size={20} className="text-white" />
-                  </div>
-                  <ArrowRight size={16} className="text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
-                </div>
-                <p className="mt-4 text-3xl font-semibold tracking-tight" data-testid={`tile-${s.label}`}>{s.value}</p>
-                <p className="text-sm text-slate-300">{s.label}</p>
-                <p className="text-xs text-slate-400">{s.sub}</p>
-              </Card>
+      </PageBody>
+    </div>
+  );
+}
+
+/** Problems first; one quiet line when there are none. */
+function AttentionList({ issues, total }) {
+  if (issues.length === 0) {
+    return (
+      <div role="status" className="flex items-center gap-2.5 rounded-lg border border-line bg-panel px-4 py-3 text-sm">
+        <StatusDot tone="good" />
+        <span className="text-fg">All {total} connections are healthy</span>
+        <span className="text-muted">· no engine errors, no recent alerts</span>
+      </div>
+    );
+  }
+  return (
+    <Panel title="Needs attention" count={issues.length} flush>
+      <ul className="divide-y divide-line">
+        {issues.map((i) => (
+          <li key={i.key}>
+            <Link to={i.to} className="group flex items-center gap-3 px-4 py-2 text-sm transition-colors hover:bg-raised">
+              <StatusDot tone={i.tone} />
+              <span className="min-w-0 shrink-0 font-medium text-fg">{i.what}</span>
+              <span className="min-w-0 flex-1 truncate text-muted">{i.detail}</span>
+              <ArrowRight size={14} aria-hidden="true" className="shrink-0 text-faint transition-colors group-hover:text-fg" />
             </Link>
-          ))}
-        </div>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
 
-        {!engine && !alerts && brokers.length + opcua.length > 0 && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-busy="true" aria-label="Loading engine health">
-            {[0, 1, 2, 3].map((i) => (
-              <Card key={i} className="h-28 animate-pulse p-4" />
+const RANK = { bad: 0, warn: 1, neutral: 2, info: 3, good: 4 };
+
+function ConnectionsPanel({ brokers, opcua, deviceRows }) {
+  const rows = [
+    ...brokers.map((b) => ({ key: `b-${b.id}`, name: b.name, kind: 'MQTT', endpoint: `${b.host}:${b.port}`, status: b.status, tone: brokerTone(b), label: b.status })),
+    ...opcua.map((c) => ({ key: `o-${c.id}`, name: c.name, kind: 'OPC UA', endpoint: c.endpointUrl, status: c.status, label: c.status })),
+    ...deviceRows.map(({ d, badge }) => ({
+      key: `d-${d.id}`,
+      name: d.name,
+      kind: d.protocol,
+      endpoint: `${d.host}:${d.port}`,
+      status: badge.status,
+      label: badge.label.toLowerCase()
+    }))
+  ].sort((a, b) => RANK[a.tone || toneOf(a.status)] - RANK[b.tone || toneOf(b.status)] || a.name.localeCompare(b.name));
+
+  return (
+    <section aria-labelledby="ov-conn" className="min-w-0 space-y-2">
+      <h2 id="ov-conn" className="text-sm font-medium text-fg">
+        Connections <span className="ml-1 text-xs font-normal tabular-nums text-subtle">{rows.length}</span>
+      </h2>
+      <Table caption="Connections" className="min-w-[28rem]">
+        <THead>
+          <Th>Name</Th>
+          <Th>Type</Th>
+          <Th>Endpoint</Th>
+          <Th>State</Th>
+        </THead>
+        <tbody>
+          {rows.map((r) => (
+            <Tr key={r.key}>
+              <Td header className="max-w-[12rem] truncate font-medium text-fg">
+                {r.name}
+              </Td>
+              <Td className="whitespace-nowrap text-muted">{r.kind}</Td>
+              <Td className="mono max-w-[14rem] truncate text-xs text-muted">{r.endpoint}</Td>
+              <Td>
+                <StatusText status={r.status} tone={r.tone}>
+                  {r.label}
+                </StatusText>
+              </Td>
+            </Tr>
+          ))}
+        </tbody>
+      </Table>
+    </section>
+  );
+}
+
+function LatestPanel({ latest, hasBrokers }) {
+  return (
+    <section aria-labelledby="ov-latest" className="min-w-0 space-y-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 id="ov-latest" className="text-sm font-medium text-fg">
+          Latest values
+        </h2>
+        <Link to="/topics" className="text-xs text-accent-text hover:underline">
+          All topics
+        </Link>
+      </div>
+      {latest.length === 0 ? (
+        <div className="rounded-lg border border-line bg-panel px-4 py-8 text-center text-sm text-muted">
+          {hasBrokers ? 'Values appear here as soon as a connected broker publishes. If nothing arrives, check the broker’s subscription filter.' : 'Connect a broker to see live values.'}
+        </div>
+      ) : (
+        <Table caption="Latest values" className="min-w-[28rem] table-fixed">
+          <THead>
+            <Th className="w-[45%]">Topic</Th>
+            <Th>Value</Th>
+            <Th align="right" className="w-24">
+              Updated
+            </Th>
+          </THead>
+          <tbody>
+            {latest.map((m) => (
+              <Tr key={`${m.brokerId}:${m.topic}`}>
+                <Td header className="text-fg">
+                  <Path value={m.topic} />
+                </Td>
+                <Td className="mono truncate text-xs tabular-nums text-fg" title={raw(m.payload)}>
+                  {readable(m.payload)}
+                </Td>
+                <Td align="right" className="text-xs text-subtle">
+                  <Timestamp value={m.timestamp} />
+                </Td>
+              </Tr>
             ))}
-          </div>
-        )}
-
-        {(engine || alerts) && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <HealthCard
-              to="/pipelines"
-              icon={Workflow}
-              label="Pipelines"
-              value={Object.keys(engine?.pipelines || {}).length}
-              unit="active routes"
-              lines={[
-                `${sum(engine?.pipelines, 'published').toLocaleString()} delivered`,
-                sum(engine?.pipelines, 'errors') + sum(engine?.pipelines, 'loopBlocked') > 0 &&
-                  `${sum(engine?.pipelines, 'errors')} errors · ${sum(engine?.pipelines, 'loopBlocked')} loop-blocked`
-              ]}
-              warn={sum(engine?.pipelines, 'errors') > 0}
-            />
-            <HealthCard
-              to="/pipelines"
-              icon={Database}
-              label="Historians"
-              value={sum(engine?.outbox, 'written').toLocaleString()}
-              unit="points written"
-              lines={[
-                `${sum(engine?.outbox, 'queued')} queued`,
-                sum(engine?.outbox, 'spillBytes') > 0 && `${(sum(engine?.outbox, 'spillBytes') / 1024).toFixed(1)} KB spilled to disk`,
-                sum(engine?.outbox, 'dropped') > 0 && `${sum(engine?.outbox, 'dropped')} dropped`
-              ]}
-              warn={sum(engine?.outbox, 'spillBytes') > 0 || sum(engine?.outbox, 'dropped') > 0}
-            />
-            <HealthCard
-              to="/tags"
-              icon={Tag}
-              label="Tag bindings"
-              value={sum(engine?.bindings, 'published').toLocaleString()}
-              unit="values published"
-              lines={[
-                `${sum(engine?.bindings, 'suppressed').toLocaleString()} deadband-suppressed`,
-                sum(engine?.bindings, 'errors') > 0 && `${sum(engine?.bindings, 'errors')} errors`
-              ]}
-              warn={sum(engine?.bindings, 'errors') > 0}
-            />
-            <HealthCard
-              to="/settings"
-              icon={BellRing}
-              label="Alerts"
-              value={(alerts?.recent ?? 0) >= 50 ? '50+' : (alerts?.recent ?? 0)}
-              unit={`recent events · ${alerts?.rules ?? 0} rules`}
-              lines={[alerts?.latest && `latest: ${alerts.latest.detail || alerts.latest.ruleName || ''}`]}
-              warn={(alerts?.recent ?? 0) > 0}
-            />
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card className="p-5">
-            <h2 className="mb-3 text-sm font-semibold text-slate-200">Connections</h2>
-            {brokers.length === 0 && opcua.length === 0 && devices.length === 0 ? (
-              <div className="space-y-3 py-8 text-center">
-                <p className="text-sm text-slate-400">No active connections yet.</p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  <Link to="/brokers">
-                    <Button size="sm">Add a broker</Button>
-                  </Link>
-                  <Link to="/devices">
-                    <Button size="sm" variant="outline">Add a device</Button>
-                  </Link>
-                  <Link to="/discovery">
-                    <Button size="sm" variant="outline">Run discovery</Button>
-                  </Link>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {brokers.map((b) => (
-                  <Row key={b.id} icon={Radio} name={b.name} sub={`${b.host}:${b.port}`} status={b.status} />
-                ))}
-                {opcua.map((c) => (
-                  <Row key={c.id} icon={Cpu} name={c.name} sub={c.endpointUrl} status={c.status} />
-                ))}
-                {devices.map((d) => (
-                  <Row
-                    key={d.id}
-                    icon={HardDrive}
-                    name={d.name}
-                    sub={`${d.host}:${d.port} · ${d.protocol}`}
-                    status={deviceStatus(d)}
-                    label={d.enabled === false ? 'disabled' : deviceStatus(d) === 'connected' ? 'online' : 'connecting'}
-                  />
-                ))}
-              </div>
-            )}
-          </Card>
-
-          <Card className="p-5">
-            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
-              <MessageSquare size={15} className="text-accent-400" /> Recent messages
-            </h2>
-            {recent.length === 0 ? (
-              <p className="py-8 text-center text-sm text-slate-400">
-                Live messages will appear here once a connected broker publishes. Check the broker&apos;s subscribe filter if nothing arrives.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {recent.map((m) => (
-                  <div key={m.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-white/5">
-                    <span className="mono flex-1 truncate text-xs text-slate-300">{m.topic}</span>
-                    <Badge className="shrink-0">{m.type}</Badge>
-                    <span className="shrink-0 text-xs text-slate-400">
-                      {formatDistanceToNow(new Date(m.timestamp), { addSuffix: true })}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Card>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HealthCard({ to, icon: Icon, label, value, unit, lines = [], warn = false }) {
-  return (
-    <Link to={to}>
-      <Card className="group h-full p-4 transition hover:border-white/10 hover:bg-surface-900/80">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-slate-300">
-            <Icon size={15} className={warn ? 'text-amber-400' : 'text-slate-400'} />
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</span>
-          </div>
-          <ArrowRight size={14} className="text-slate-400 transition group-hover:translate-x-0.5 group-hover:text-slate-400" />
-        </div>
-        <p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p>
-        <p className="text-xs text-slate-400">{unit}</p>
-        <div className="mt-1.5 space-y-0.5">
-          {lines.filter(Boolean).map((l) => (
-            <p key={l} className="truncate text-xs text-slate-400">
-              {l}
-            </p>
-          ))}
-        </div>
-      </Card>
-    </Link>
-  );
-}
-
-function Row({ icon: Icon, name, sub, status, label }) {
-  return (
-    <div className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2.5">
-      <div className="grid h-9 w-9 place-items-center rounded-lg bg-white/5 text-slate-300">
-        <Icon size={16} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-slate-200">{name}</p>
-        <p className="mono truncate text-xs text-slate-400">{sub}</p>
-      </div>
-      <Badge status={status}>{label}</Badge>
-    </div>
+          </tbody>
+        </Table>
+      )}
+    </section>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Radio, Plus, Trash2, Server, ChevronRight, Pencil } from 'lucide-react';
+import { Plus, Trash2, ChevronRight, Pencil } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
@@ -7,10 +7,15 @@ import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import { nextSort, sortRows } from '@/lib/sortRows';
 import {
-  Card, Button, Badge, Input, Field, Select, Checkbox, EmptyState, IconButton, Banner, LoadingState, PageBody,
+  Button, Input, Field, Select, Checkbox, EmptyState, IconButton, Banner, LoadingState, PageBody, Dialog, StatusText, Timestamp,
   Table, THead, TableSort, Th, Tr, Td, useConfirm
 } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
+
+/**
+ * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md#list-page).
+ * A sortable table of connections; create and edit happen in one dialog.
+ */
 
 const BLANK = {
   name: '',
@@ -40,6 +45,7 @@ const SORT_ACCESSORS = {
   status: (b) => b.status,
   messages: (b) => b.metrics?.messagesReceived ?? 0,
   topics: (b) => b.metrics?.topicCount ?? 0,
+  activity: (b) => new Date(b.lastActivity || 0).getTime(),
   errors: (b) => b.metrics?.errors ?? 0
 };
 
@@ -64,6 +70,7 @@ export default function Brokers() {
 
   const isWs = form.protocol === 'ws' || form.protocol === 'wss';
   const rows = sortRows(brokers, sort, SORT_ACCESSORS);
+  const connected = brokers.filter((b) => b.status === 'connected').length;
 
   const buildConfig = () => ({
     name: form.name || undefined,
@@ -92,6 +99,12 @@ export default function Brokers() {
     setShowForm(false);
     setEditingId(null);
     setForm(BLANK);
+  };
+
+  const openNew = () => {
+    setForm(BLANK);
+    setEditingId(null);
+    setShowForm(true);
   };
 
   const save = async () => {
@@ -163,10 +176,10 @@ export default function Brokers() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="MQTT Brokers"
-        subtitle="Connect to brokers and stream their topic namespaces"
+        subtitle={brokers.length ? `${connected} of ${brokers.length} connected` : 'Connect to brokers and stream their topic namespaces'}
         actions={
-          <Button onClick={() => (showForm ? closeForm() : setShowForm(true))} aria-expanded={showForm}>
-            <Plus size={15} aria-hidden="true" /> {showForm ? 'Close form' : 'Connect a broker'}
+          <Button onClick={openNew}>
+            <Plus size={14} aria-hidden="true" /> Connect a broker
           </Button>
         }
       />
@@ -178,12 +191,120 @@ export default function Brokers() {
           </Banner>
         )}
 
-        {showForm && (
-          <Card className="p-4 sm:p-5">
-            <h2 className="mb-4 text-sm font-semibold text-slate-100">{editingId ? 'Edit broker connection' : 'New broker connection'}</h2>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Name">
-                <Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="Production broker" />
+        {loading && brokers.length === 0 && !error ? (
+          <LoadingState label="brokers" rows={2} />
+        ) : brokers.length === 0 ? (
+          !error && (
+            <div className="rounded-lg border border-line bg-panel">
+              <EmptyState
+                title="No brokers yet"
+                hint="Connect an MQTT broker (Mosquitto, EMQX, HiveMQ, a Sparkplug host) and Manifold subscribes to it and maps its topic namespace."
+                action={
+                  <Button onClick={openNew}>
+                    <Plus size={14} aria-hidden="true" /> Connect a broker
+                  </Button>
+                }
+              />
+            </div>
+          )
+        ) : (
+          <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
+            <Table caption="MQTT broker connections" className="min-w-[56rem]">
+              <THead>
+                <Th sortKey="name">Broker</Th>
+                <Th sortKey="status">State</Th>
+                <Th>Subscription</Th>
+                <Th sortKey="messages" align="right">Messages</Th>
+                <Th sortKey="topics" align="right">Topics</Th>
+                <Th sortKey="activity" align="right">Last activity</Th>
+                <Th sortKey="errors" align="right">Errors</Th>
+                <Th srOnly align="right">Actions</Th>
+              </THead>
+              <tbody>
+                {rows.map((b) => {
+                  const errors = b.metrics?.errors ?? 0;
+                  const up = b.status === 'connected';
+                  return (
+                    <Tr key={b.id} highlight={editingId === b.id}>
+                      <Td header className="max-w-[18rem]">
+                        <span className="block truncate font-medium text-fg">{b.name}</span>
+                        <span className="mono block truncate text-xs text-muted">
+                          {b.protocol}://{b.host}:{b.port}
+                        </span>
+                      </Td>
+                      <Td className="max-w-[16rem]">
+                        <StatusText status={b.status} tone={!up && b.lastError && b.status !== 'connecting' && b.status !== 'reconnecting' ? 'bad' : undefined} />
+                        {!up && b.lastError && (
+                          <span className="mono block truncate text-xs text-subtle" title={b.lastError}>
+                            {b.lastError}
+                          </span>
+                        )}
+                        {up && b.connectedAt && (
+                          <span className="block text-xs text-subtle">
+                            since <Timestamp value={b.connectedAt} />
+                          </span>
+                        )}
+                      </Td>
+                      <Td className="mono whitespace-nowrap text-xs text-muted">
+                        {b.autoSubscribe === false ? <span className="font-sans text-subtle">Off</span> : `${b.subscribeFilter || '#'} · QoS ${b.subscribeQos ?? 1}`}
+                      </Td>
+                      <Td align="right" className="mono tabular-nums">{(b.metrics?.messagesReceived ?? 0).toLocaleString()}</Td>
+                      <Td align="right" className="mono tabular-nums">{(b.metrics?.topicCount ?? 0).toLocaleString()}</Td>
+                      <Td align="right" className="text-xs text-muted">
+                        {b.lastActivity ? <Timestamp value={b.lastActivity} /> : '—'}
+                      </Td>
+                      <Td align="right">
+                        {errors > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => openLog(b.id)}
+                            aria-label={`${errors} errors for ${b.name}, open log`}
+                            className="mono rounded px-1 tabular-nums text-bad underline decoration-dotted underline-offset-2 hover:bg-bad/10"
+                          >
+                            {errors.toLocaleString()}
+                          </button>
+                        ) : (
+                          <span className="mono tabular-nums text-subtle">0</span>
+                        )}
+                      </Td>
+                      <Td align="right" className="w-20">
+                        <span className="inline-flex items-center gap-0.5">
+                          <IconButton icon={Pencil} label={`Edit ${b.name}`} size={14} onClick={() => edit(b)} />
+                          <IconButton icon={Trash2} label={`Disconnect and remove ${b.name}`} size={14} className="hover:bg-bad/10 hover:text-bad" onClick={() => disconnect(b)} />
+                        </span>
+                      </Td>
+                    </Tr>
+                  );
+                })}
+              </tbody>
+            </Table>
+          </TableSort>
+        )}
+      </PageBody>
+
+      {showForm && (
+        <Dialog
+          title={editingId ? `Edit ${form.name || form.host}` : 'Connect a broker'}
+          description={editingId ? 'Saving reconnects the broker with the new settings.' : 'Manifold subscribes on connect and maps the topic namespace.'}
+          size="lg"
+          onClose={closeForm}
+          onSubmit={save}
+          footer={
+            <>
+              <Button variant="secondary" onClick={closeForm}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={busy}>
+                {editingId ? 'Save changes' : 'Connect'}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-5">
+            <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <legend className="mb-2 text-sm font-medium text-fg">Connection</legend>
+              <Field label="Name" className="sm:col-span-2">
+                <Input value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="Production broker" data-autofocus />
               </Field>
               <Select
                 label="Protocol"
@@ -201,21 +322,25 @@ export default function Brokers() {
                 <option value="ws">ws (WebSocket)</option>
                 <option value="wss">wss (WebSocket TLS)</option>
               </Select>
-              <Field label="Host">
-                <Input value={form.host} onChange={(e) => set({ host: e.target.value })} placeholder="broker.example.com" />
-              </Field>
-              <Field label="Port">
-                <Input type="number" value={form.port} onChange={(e) => set({ port: e.target.value })} placeholder={isWs ? 'required — e.g. 8083' : undefined} />
-              </Field>
-              {isWs && (
-                <Field label="WebSocket path">
-                  <Input value={form.wsPath} onChange={(e) => set({ wsPath: e.target.value })} placeholder="/mqtt" />
-                </Field>
-              )}
               <Select label="MQTT version" value={form.mqttVersion} onChange={(e) => set({ mqttVersion: Number(e.target.value) })}>
                 <option value={4}>MQTT 3.1.1 (v4)</option>
                 <option value={5}>MQTT 5</option>
               </Select>
+              <Field label="Host">
+                <Input className="mono" value={form.host} onChange={(e) => set({ host: e.target.value })} placeholder="broker.example.com" />
+              </Field>
+              <Field label="Port">
+                <Input className="mono" type="number" value={form.port} onChange={(e) => set({ port: e.target.value })} placeholder={isWs ? 'required — e.g. 8083' : undefined} />
+              </Field>
+              {isWs && (
+                <Field label="WebSocket path">
+                  <Input className="mono" value={form.wsPath} onChange={(e) => set({ wsPath: e.target.value })} placeholder="/mqtt" />
+                </Field>
+              )}
+            </fieldset>
+
+            <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+              <legend className="mb-2 text-sm font-medium text-fg">Authentication</legend>
               <Field label="Username (optional)">
                 <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" />
               </Field>
@@ -228,163 +353,78 @@ export default function Brokers() {
                   placeholder={editingId ? 'unchanged' : undefined}
                 />
               </Field>
-            </div>
+            </fieldset>
 
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              aria-expanded={showAdvanced}
-              aria-controls="broker-advanced"
-              className="mt-4 flex items-center gap-1.5 rounded text-xs font-medium text-muted transition hover:text-slate-200"
-            >
-              <ChevronRight size={14} aria-hidden="true" className={clsx('transition-transform', showAdvanced && 'rotate-90')} />
-              Connection config — retries, timeouts, keep-alive
-            </button>
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                aria-expanded={showAdvanced}
+                aria-controls="broker-advanced"
+                className="-ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-sm font-medium text-fg transition-colors hover:text-accent-text"
+              >
+                <ChevronRight size={14} aria-hidden="true" className={clsx('text-subtle transition-transform duration-150', showAdvanced && 'rotate-90')} />
+                Connection settings
+                <span className="hidden font-normal text-subtle sm:inline">retries, timeouts, keep-alive, intake</span>
+              </button>
 
-            {showAdvanced && (
-              <div id="broker-advanced" className="mt-3 grid grid-cols-1 gap-4 rounded-xl border border-white/5 bg-surface-950/40 p-4 sm:grid-cols-2">
-                <Field label="Client ID (optional)">
-                  <Input value={form.clientId} onChange={(e) => set({ clientId: e.target.value })} placeholder="auto-generated" />
-                </Field>
-                <Field label="Keep-alive (seconds)">
-                  <Input type="number" value={form.keepalive} onChange={(e) => set({ keepalive: e.target.value })} />
-                </Field>
-                <Field label="Connect timeout (ms)">
-                  <Input type="number" value={form.timeout} onChange={(e) => set({ timeout: e.target.value })} />
-                </Field>
-                <Field label="Reconnect delay (ms)">
-                  <Input type="number" value={form.reconnectPeriod} disabled={!form.reconnect} onChange={(e) => set({ reconnectPeriod: e.target.value })} />
-                </Field>
-                <Field
-                  label="Subscription filter (intake)"
-                  help={
-                    <>
-                      Topic filter auto-subscribed on connect. Use <span className="mono">$share/&lt;group&gt;/#</span> for load-balanced intake across
-                      instances — messages still arrive on their real topics.
-                    </>
-                  }
-                >
-                  <Input value={form.subscribeFilter} onChange={(e) => set({ subscribeFilter: e.target.value })} placeholder="#" />
-                </Field>
-                <Select
-                  label="Subscribe QoS (intake durability)"
-                  value={form.subscribeQos}
-                  onChange={(e) => set({ subscribeQos: e.target.value })}
-                  help={
-                    <>
-                      If the broker refuses the wildcard grant, intake retries at QoS 0 automatically. Note: stock EMQX <em>silently</em> denies &apos;#&apos; at
-                      QoS 1+ (default ACL + deny_action=ignore) — allow it in the broker ACL, or pick QoS 0 here if no data appears.
-                    </>
-                  }
-                >
-                  <option value={0}>QoS 0 — fire and forget</option>
-                  <option value={1}>QoS 1 — at least once (default)</option>
-                  <option value={2}>QoS 2 — exactly once</option>
-                </Select>
-                <Field label="Max reconnect attempts (0 = unlimited)">
-                  <Input type="number" value={form.maxReconnect} disabled={!form.reconnect} onChange={(e) => set({ maxReconnect: e.target.value })} />
-                </Field>
-                <div className="flex flex-col justify-center gap-2.5">
-                  <Checkbox label="Auto-reconnect" checked={form.reconnect} onChange={(v) => set({ reconnect: v })} />
-                  <Checkbox label="Clean session" checked={form.cleanSession} onChange={(v) => set({ cleanSession: v })} />
-                  <Checkbox label={`Auto-subscribe to ${form.subscribeFilter || '#'}`} checked={form.autoSubscribe} onChange={(v) => set({ autoSubscribe: v })} />
-                  {(form.protocol === 'mqtts' || form.protocol === 'wss') && (
-                    <Checkbox label="Verify TLS certificate" checked={form.rejectUnauthorized} onChange={(v) => set({ rejectUnauthorized: v })} />
-                  )}
+              {showAdvanced && (
+                <div id="broker-advanced" className="mt-3 grid grid-cols-1 gap-x-4 gap-y-3 border-l-2 border-line pl-4 sm:grid-cols-2">
+                  <Field label="Client ID (optional)">
+                    <Input className="mono" value={form.clientId} onChange={(e) => set({ clientId: e.target.value })} placeholder="auto-generated" />
+                  </Field>
+                  <Field label="Keep-alive (seconds)">
+                    <Input type="number" value={form.keepalive} onChange={(e) => set({ keepalive: e.target.value })} />
+                  </Field>
+                  <Field label="Connect timeout (ms)">
+                    <Input type="number" value={form.timeout} onChange={(e) => set({ timeout: e.target.value })} />
+                  </Field>
+                  <Field label="Reconnect delay (ms)">
+                    <Input type="number" value={form.reconnectPeriod} disabled={!form.reconnect} onChange={(e) => set({ reconnectPeriod: e.target.value })} />
+                  </Field>
+                  <Field
+                    label="Subscription filter (intake)"
+                    help={
+                      <>
+                        Topic filter subscribed on connect. Use <span className="mono">$share/&lt;group&gt;/#</span> to load-balance intake across instances;
+                        messages still arrive on their real topics.
+                      </>
+                    }
+                  >
+                    <Input className="mono" value={form.subscribeFilter} onChange={(e) => set({ subscribeFilter: e.target.value })} placeholder="#" />
+                  </Field>
+                  <Select
+                    label="Subscribe QoS (intake durability)"
+                    value={form.subscribeQos}
+                    onChange={(e) => set({ subscribeQos: e.target.value })}
+                    help={
+                      <>
+                        If the broker refuses the wildcard grant, intake retries at QoS 0. Stock EMQX <em>silently</em> denies &apos;#&apos; at QoS 1+ (default ACL with
+                        deny_action=ignore): allow it in the broker ACL, or pick QoS 0 if no data appears.
+                      </>
+                    }
+                  >
+                    <option value={0}>QoS 0 — at most once</option>
+                    <option value={1}>QoS 1 — at least once (default)</option>
+                    <option value={2}>QoS 2 — exactly once</option>
+                  </Select>
+                  <Field label="Max reconnect attempts (0 = unlimited)">
+                    <Input type="number" value={form.maxReconnect} disabled={!form.reconnect} onChange={(e) => set({ maxReconnect: e.target.value })} />
+                  </Field>
+                  <div className="flex flex-col justify-center gap-2">
+                    <Checkbox label="Auto-reconnect" checked={form.reconnect} onChange={(v) => set({ reconnect: v })} />
+                    <Checkbox label="Clean session" checked={form.cleanSession} onChange={(v) => set({ cleanSession: v })} />
+                    <Checkbox label={`Subscribe to ${form.subscribeFilter || '#'} on connect`} checked={form.autoSubscribe} onChange={(v) => set({ autoSubscribe: v })} />
+                    {(form.protocol === 'mqtts' || form.protocol === 'wss') && (
+                      <Checkbox label="Verify TLS certificate" checked={form.rejectUnauthorized} onChange={(v) => set({ rejectUnauthorized: v })} />
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
-              <Button variant="ghost" onClick={closeForm}>
-                Cancel
-              </Button>
-              <Button onClick={save} disabled={busy}>
-                <Radio size={15} aria-hidden="true" /> {editingId ? 'Save changes' : 'Connect'}
-              </Button>
+              )}
             </div>
-          </Card>
-        )}
-
-        {loading && brokers.length === 0 && !error ? (
-          <LoadingState label="brokers" rows={2} />
-        ) : brokers.length === 0 ? (
-          !showForm &&
-          !error && (
-            <Card>
-              <EmptyState
-                icon={Server}
-                title="No brokers connected yet"
-                hint="Connect an MQTT broker (Mosquitto, EMQX, HiveMQ, a Sparkplug host…) and Manifold will subscribe and map its topic namespace."
-                action={
-                  <Button onClick={() => setShowForm(true)}>
-                    <Plus size={15} aria-hidden="true" /> Connect a broker
-                  </Button>
-                }
-              />
-            </Card>
-          )
-        ) : (
-          <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
-            <Table caption="MQTT broker connections">
-              <THead>
-                <Th sortKey="name">Broker</Th>
-                <Th sortKey="status">Status</Th>
-                <Th sortKey="messages" align="right">Messages</Th>
-                <Th sortKey="topics" align="right">Topics</Th>
-                <Th sortKey="errors" align="right">Errors</Th>
-                <Th srOnly align="right">Actions</Th>
-              </THead>
-              <tbody>
-                {rows.map((b) => {
-                  const errors = b.metrics?.errors ?? 0;
-                  return (
-                    <Tr key={b.id} highlight={editingId === b.id}>
-                      <Td header>
-                        <span className="block text-slate-100">{b.name}</span>
-                        <span className="mono block text-xs text-muted">
-                          {b.protocol}://{b.host}:{b.port}
-                        </span>
-                      </Td>
-                      <Td>
-                        <Badge status={b.status} />
-                      </Td>
-                      <Td align="right" className="mono tabular-nums">{(b.metrics?.messagesReceived ?? 0).toLocaleString()}</Td>
-                      <Td align="right" className="mono tabular-nums">{(b.metrics?.topicCount ?? 0).toLocaleString()}</Td>
-                      <Td align="right">
-                        {errors > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => openLog(b.id)}
-                            aria-label={`${errors} errors for ${b.name}, open log`}
-                            className="mono rounded-md px-1.5 py-0.5 tabular-nums text-rose-300 underline decoration-dotted underline-offset-2 hover:bg-rose-500/10"
-                          >
-                            {errors.toLocaleString()}
-                          </button>
-                        ) : (
-                          <span className="mono tabular-nums text-muted">0</span>
-                        )}
-                      </Td>
-                      <Td align="right">
-                        <span className="inline-flex items-center gap-1">
-                          <IconButton icon={Pencil} label={`Edit ${b.name}`} size={14} onClick={() => edit(b)} />
-                          <IconButton
-                            icon={Trash2}
-                            label={`Disconnect and remove ${b.name}`}
-                            size={14}
-                            className="hover:bg-rose-500/10 hover:text-rose-300"
-                            onClick={() => disconnect(b)}
-                          />
-                        </span>
-                      </Td>
-                    </Tr>
-                  );
-                })}
-              </tbody>
-            </Table>
-          </TableSort>
-        )}
-      </PageBody>
+          </div>
+        </Dialog>
+      )}
       {confirmDialog}
     </div>
   );

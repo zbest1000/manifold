@@ -2,19 +2,297 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-  --toast-bg: #1e293b;
-  --toast-color: #f1f5f9;
-  /* Text tokens, all >= 4.5:1 (WCAG AA) on every dark surface in the app
-     (surface-950 #0a0f1c .. surface-800 #1e293b). */
-  --text-primary: #f1f5f9;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8; /* 5.7:1 on surface-800 */
-  --text-subtle: #8b9ab0; /* 5.1:1 on surface-800 */
-  --text-faint: #8493a9; /* decorative separators / placeholders, still >= 4.5:1 on surface-900 */
+/* ===================================================================== */
+/* Fonts: IBM Plex Sans (variable) for UI, IBM Plex Mono for data.         */
+/* Self-hosted from npm (@fontsource*), latin + latin-ext only, so the UI   */
+/* renders identically on air-gapped plant networks. No CDN.               */
+/* ===================================================================== */
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500 700;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* ===================================================================== */
+/* Tokens. Values are "R G B" triplets so Tailwind can add alpha:          */
+/* bg-panel, bg-bad/10, ... Contrast ratios: docs/design/ui-design-system.md */
+/* Theme is set on <html data-theme> by /theme-init.js before first paint.  */
+/* ===================================================================== */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: 15 15 16;
+  --panel: 22 22 23;
+  --raised: 30 30 32;
+  --overlay: 35 35 37;
+  --border: 42 42 45;
+  --border-strong: 58 58 62;
+  --border-stronger: 74 74 79;
+  --text: 236 236 238;
+  --text-muted: 163 163 169;
+  --text-subtle: 143 143 149;
+  --text-faint: 133 133 139;
+  --accent: 44 197 207;
+  --accent-hover: 90 212 220;
+  --accent-fg: 4 25 27;
+  --accent-text: 79 210 219;
+  --good: 63 193 132;
+  --warn: 227 163 58;
+  --bad: 240 106 99;
+  --info: 106 166 248;
+  --aux: 179 154 245;
+  --good-50: 240 250 245;
+  --good-100: 201 238 221;
+  --good-200: 159 224 194;
+  --good-300: 117 210 166;
+  --good-400: 82 199 144;
+  --good-500: 63 193 132;
+  --good-600: 54 164 112;
+  --good-700: 43 131 90;
+  --good-800: 28 87 59;
+  --good-900: 22 68 46;
+  --good-950: 16 48 33;
+  --warn-50: 253 248 239;
+  --warn-100: 247 229 200;
+  --warn-200: 241 209 157;
+  --warn-300: 235 189 113;
+  --warn-400: 230 172 78;
+  --warn-500: 227 163 58;
+  --warn-600: 193 139 49;
+  --warn-700: 154 111 39;
+  --warn-800: 102 73 26;
+  --warn-900: 79 57 20;
+  --warn-950: 57 41 15;
+  --bad-50: 254 243 243;
+  --bad-100: 251 213 211;
+  --bad-200: 248 181 177;
+  --bad-300: 244 148 143;
+  --bad-400: 242 121 115;
+  --bad-500: 240 106 99;
+  --bad-600: 204 90 84;
+  --bad-700: 163 72 67;
+  --bad-800: 108 48 45;
+  --bad-900: 84 37 35;
+  --bad-950: 60 27 25;
+  --info-50: 243 248 254;
+  --info-100: 213 230 253;
+  --info-200: 181 211 252;
+  --info-300: 148 191 250;
+  --info-400: 121 175 249;
+  --info-500: 106 166 248;
+  --info-600: 90 141 211;
+  --info-700: 72 113 169;
+  --info-800: 48 75 112;
+  --info-900: 37 58 87;
+  --info-950: 27 42 62;
+  --aux-50: 249 247 254;
+  --aux-100: 234 227 252;
+  --aux-200: 217 205 250;
+  --aux-300: 200 182 248;
+  --aux-400: 187 164 246;
+  --aux-500: 179 154 245;
+  --aux-600: 152 131 208;
+  --aux-700: 122 105 167;
+  --aux-800: 81 69 110;
+  --aux-900: 63 54 86;
+  --aux-950: 45 39 61;
+  --accent-50: 238 250 251;
+  --accent-100: 196 239 242;
+  --accent-200: 150 226 231;
+  --accent-300: 103 213 220;
+  --accent-400: 79 210 219;
+  --accent-500: 44 197 207;
+  --accent-600: 37 167 176;
+  --accent-700: 30 134 141;
+  --accent-800: 20 89 93;
+  --accent-900: 15 69 72;
+  --accent-950: 11 49 52;
+  --n-50: 247 247 248;
+  --n-100: 236 236 238;
+  --n-200: 218 218 221;
+  --n-300: 197 197 201;
+  --n-400: 163 163 169;
+  --n-500: 143 143 149;
+  --n-600: 133 133 139;
+  --n-700: 74 74 79;
+  --n-800: 42 42 45;
+  --n-900: 27 27 29;
+  --n-950: 17 17 18;
+  /* foreground tint for hover fills (legacy bg-white/x), and well shade */
+  --tint: 255 255 255;
+  --tint-k: 1;
+  --shade-k: 1;
+  --scrim: 0 0 0 / 0.6;
+  --shadow-overlay: 0 0 0 1px rgb(var(--border-strong)), 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --focus: var(--accent-text);
+  --field: 18 18 19;
+  --control-off: 107 107 114;
+  --danger: 201 48 44;
+  --danger-hover: 216 58 53;
+  --danger-fg: 255 255 255;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: 246 246 247;
+  --panel: 255 255 255;
+  --raised: 240 240 242;
+  --overlay: 255 255 255;
+  --border: 226 226 229;
+  --border-strong: 205 205 210;
+  --border-stronger: 169 169 176;
+  --text: 23 23 26;
+  --text-muted: 85 85 92;
+  --text-subtle: 100 100 107;
+  --text-faint: 107 107 114;
+  --accent: 0 116 125;
+  --accent-hover: 0 99 107;
+  --accent-fg: 255 255 255;
+  --accent-text: 0 109 117;
+  --good: 19 122 72;
+  --warn: 151 90 0;
+  --bad: 196 40 46;
+  --info: 31 95 194;
+  --aux: 107 71 201;
+  --good-50: 236 244 240;
+  --good-100: 11 73 43;
+  --good-200: 13 85 50;
+  --good-300: 16 104 61;
+  --good-400: 19 122 72;
+  --good-500: 19 122 72;
+  --good-600: 16 104 61;
+  --good-700: 13 83 49;
+  --good-800: 9 55 32;
+  --good-900: 7 43 25;
+  --good-950: 5 31 18;
+  --warn-50: 247 242 235;
+  --warn-100: 91 54 0;
+  --warn-200: 106 63 0;
+  --warn-300: 128 77 0;
+  --warn-400: 151 90 0;
+  --warn-500: 151 90 0;
+  --warn-600: 128 77 0;
+  --warn-700: 103 61 0;
+  --warn-800: 68 40 0;
+  --warn-900: 53 32 0;
+  --warn-950: 38 23 0;
+  --bad-50: 250 238 238;
+  --bad-100: 118 24 28;
+  --bad-200: 137 28 32;
+  --bad-300: 167 34 39;
+  --bad-400: 196 40 46;
+  --bad-500: 196 40 46;
+  --bad-600: 167 34 39;
+  --bad-700: 133 27 31;
+  --bad-800: 88 18 21;
+  --bad-900: 69 14 16;
+  --bad-950: 49 10 12;
+  --info-50: 237 242 250;
+  --info-100: 19 57 116;
+  --info-200: 22 67 136;
+  --info-300: 26 81 165;
+  --info-400: 31 95 194;
+  --info-500: 31 95 194;
+  --info-600: 26 81 165;
+  --info-700: 21 65 132;
+  --info-800: 14 43 87;
+  --info-900: 11 33 68;
+  --info-950: 8 24 49;
+  --aux-50: 243 240 251;
+  --aux-100: 64 43 121;
+  --aux-200: 75 50 141;
+  --aux-300: 91 60 171;
+  --aux-400: 107 71 201;
+  --aux-500: 107 71 201;
+  --aux-600: 91 60 171;
+  --aux-700: 73 48 137;
+  --aux-800: 48 32 90;
+  --aux-900: 37 25 70;
+  --aux-950: 27 18 50;
+  --accent-50: 235 244 245;
+  --accent-100: 0 70 75;
+  --accent-200: 0 81 88;
+  --accent-300: 0 109 117;
+  --accent-400: 0 109 117;
+  --accent-500: 0 116 125;
+  --accent-600: 0 99 106;
+  --accent-700: 0 79 85;
+  --accent-800: 0 52 56;
+  --accent-900: 0 41 44;
+  --accent-950: 0 29 31;
+  --n-50: 23 23 26;
+  --n-100: 23 23 26;
+  --n-200: 35 35 39;
+  --n-300: 54 54 59;
+  --n-400: 85 85 92;
+  --n-500: 100 100 107;
+  --n-600: 107 107 114;
+  --n-700: 58 58 64;
+  --n-800: 39 39 43;
+  --n-900: 23 23 26;
+  --n-950: 13 13 15;
+  --tint: 23 23 26;
+  --tint-k: 0.9;
+  --shade-k: 0.22;
+  --scrim: 23 23 26 / 0.32;
+  --shadow-overlay: 0 0 0 1px rgb(var(--border-strong)), 0 12px 32px -10px rgb(23 23 26 / 0.22);
+  --focus: var(--accent-text);
+  --field: 255 255 255;
+  --control-off: 142 142 150;
+  --danger: 196 40 46;
+  --danger-hover: 168 30 36;
+  --danger-fg: 255 255 255;
+}
+
+/* Higher contrast on request: stronger hairlines, muted text closer to body text. */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-theme='dark'] {
+    --border: 74 74 79;
+    --border-strong: 110 110 117;
+    --text-muted: 205 205 210;
+    --text-subtle: 190 190 196;
+    --text-faint: 180 180 186;
+  }
+  :root[data-theme='light'] {
+    --border: 169 169 176;
+    --border-strong: 120 120 128;
+    --text-muted: 50 50 56;
+    --text-subtle: 60 60 66;
+    --text-faint: 66 66 72;
+  }
+}
+
+/* ===================================================================== */
+/* Base                                                                    */
+/* ===================================================================== */
 html,
 body,
 #root {
@@ -23,28 +301,55 @@ body,
 }
 
 body {
-  /* System font stack — no external CDN so the UI renders identically on
-     air-gapped / on-prem plant networks that have no outbound internet. */
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  font-family: theme('fontFamily.sans');
+  font-size: 0.875rem;
+  line-height: 1.375rem;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  font-feature-settings: 'ss02' 0;
 }
 
-/* Thin scrollbars for panels */
+/* Every number in a table, a stat or mono text lines up. */
+table,
+.mono,
+.font-mono,
+.tabular-nums,
+[data-numeric] {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-color: rgb(var(--border-strong)) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgb(var(--border-strong));
   border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.3);
+}
+
+/* Visible keyboard focus everywhere (mouse clicks do not trigger it). */
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
+}
+
+::placeholder {
+  color: rgb(var(--text-faint));
+  opacity: 1;
 }
 
 .graph-canvas {
@@ -59,114 +364,202 @@ body {
 }
 
 .mono {
-  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-family: theme('fontFamily.mono');
+  font-feature-settings: 'zero' 0;
 }
 
-/* Value-change flash for the topic tree (remounted via key to replay). */
+@layer components {
+  /* Helper text under a control. */
+  .helper {
+    color: rgb(var(--text-subtle));
+    font-size: 0.75rem; /* 12px */
+    line-height: 1rem;
+  }
+  /* Small label: sentence case, medium weight. (Used to be an uppercase
+     letter-spaced micro-label; the design system drops that idiom.) */
+  .label-xs {
+    color: rgb(var(--text-muted));
+    font-size: 0.75rem;
+    line-height: 1rem;
+    font-weight: 500;
+  }
+  /* Overline: the ONE place uppercase is allowed (group captions in dense
+     sidebars). Use sparingly. */
+  .overline {
+    color: rgb(var(--text-subtle));
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
+/* Value-change flash for live values (remounted via key to replay). */
 @keyframes valueflash {
   0% {
-    background-color: rgba(56, 189, 248, 0.5);
-    color: #e0f2fe;
+    background-color: rgb(var(--accent) / 0.28);
   }
   100% {
     background-color: transparent;
   }
 }
 .valueflash {
-  animation: valueflash 0.9s ease-out;
-  border-radius: 4px;
+  animation: valueflash 0.8s ease-out;
+  border-radius: 3px;
   padding: 0 4px;
 }
 
-/* Visible keyboard focus everywhere (mouse clicks do not trigger it). */
-:focus-visible {
-  outline: 2px solid #38bdf8;
-  outline-offset: 2px;
-}
-
-/* ------------------------------------------------------------------ */
-/* Semantic text utilities. Prefer these over text-slate-500/600 + an   */
-/* arbitrary pixel size. Minimums: helper text 12px, micro-labels 11px. */
-/* ------------------------------------------------------------------ */
-@layer components {
-  .helper {
-    color: var(--text-subtle);
-    font-size: 0.75rem; /* 12px */
-    line-height: 1.1rem;
+/* Off-canvas drawers (mobile nav, log panel) slide in from their edge. */
+@keyframes drawer-in-left {
+  from {
+    transform: translateX(-24px);
+    opacity: 0;
   }
-  .label-xs {
-    color: var(--text-muted);
-    font-size: 0.6875rem; /* 11px: smallest size allowed, uppercase labels only */
-    line-height: 1rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  to {
+    transform: none;
+    opacity: 1;
   }
 }
+@keyframes drawer-in-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes dialog-in {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-in-left {
+  animation: drawer-in-left 0.16s cubic-bezier(0.2, 0, 0, 1);
+}
+.drawer-in-right {
+  animation: drawer-in-right 0.16s cubic-bezier(0.2, 0, 0, 1);
+}
+.dialog-in {
+  animation: dialog-in 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
 
-/* ------------------------------------------------------------------ */
-/* Contrast safety net for markup we have not migrated yet.             */
-/* The whole app is a dark UI (the only light surface, the UNS paper    */
-/* canvas, is painted on a <canvas>), so Tailwind's slate-500/600 text  */
-/* colours (4.0:1 and 2.5:1 on the page background) are lifted to        */
-/* AA-compliant equivalents. Backgrounds, borders and rings that use     */
-/* the same palette are untouched: only `color` and placeholder colour.  */
-/* Elements that sit on a light fill opt out by being inside .on-light.  */
-/* ------------------------------------------------------------------ */
-.text-slate-500:where(:not(.on-light *)),
-.hover\:text-slate-500:hover:where(:not(.on-light *)),
-.group:hover .group-hover\:text-slate-500:where(:not(.on-light *)) {
-  color: var(--text-subtle);
+/* Keyboard users: skip link. */
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 200;
+  border-radius: 4px;
+  background: rgb(var(--accent));
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: rgb(var(--accent-fg));
+  transition: top 0.12s;
 }
-.text-slate-600:where(:not(.on-light *)),
-.hover\:text-slate-600:hover:where(:not(.on-light *)) {
-  color: var(--text-faint);
+.skip-link:focus {
+  top: 0.75rem;
 }
-.placeholder\:text-slate-500:where(:not(.on-light *))::placeholder,
-.placeholder\:text-slate-600:where(:not(.on-light *))::placeholder {
-  color: var(--text-faint);
-  opacity: 1;
+
+/* ===================================================================== */
+/* Compatibility layer for pages not yet migrated to the design system.    */
+/* Colour names are remapped in tailwind.config.js; these rules cover what */
+/* a colour remap cannot.                                                  */
+/* ===================================================================== */
+
+/* Uppercase letter-spaced micro-labels -> sentence case. */
+.uppercase.tracking-wide,
+.uppercase.tracking-wider,
+.uppercase.tracking-widest,
+.uppercase.tracking-\[0\.06em\] {
+  text-transform: none;
+  letter-spacing: normal;
 }
-::placeholder {
-  color: var(--text-faint);
-  opacity: 1;
+
+/* No frosted glass. (blur(0) would still create a containing block for
+   position:fixed children, so switch the filter off entirely.) */
+[class*='backdrop-blur'] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
-/* 10px text is below the readable floor; lift it to the 11px micro-label size. */
+
+/* Legacy floating chips (they carry backdrop-blur) sit over the graph canvases,
+   which keep their own dark style in the light theme: give them a solid panel
+   so their light-theme text stays readable. */
+:root[data-theme='light'] [class*='backdrop-blur'] {
+  background-color: rgb(var(--panel)) !important;
+}
+
+/* Gradient icon tiles -> a quiet raised square with a muted icon. */
+[class*='bg-gradient-to-'] {
+  background-image: none !important;
+  background-color: rgb(var(--raised)) !important;
+  box-shadow: inset 0 0 0 1px rgb(var(--border)) !important;
+}
+[class*='bg-gradient-to-'] .text-white,
+[class*='bg-gradient-to-'].text-white {
+  color: rgb(var(--text-muted)) !important;
+}
+
+/* `hover:text-white` on quiet controls would vanish on a light page. */
+:root[data-theme='light'] .hover\:text-white:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-white {
+  color: rgb(var(--text));
+}
+
+/* 9-10px text is below the readable floor; lift it to 11px. */
 .text-\[10px\],
 .text-\[9px\] {
   font-size: 0.6875rem;
   line-height: 1rem;
 }
 
-/* Off-canvas drawers (mobile nav, log panel) slide in from their edge. */
-@keyframes drawer-in-left {
-  from { transform: translateX(-100%); }
-  to { transform: none; }
+/* The ping halo around "connected" dots is decoration; drop it. */
+.animate-ping {
+  animation: none;
+  opacity: 0;
 }
-@keyframes drawer-in-right {
-  from { transform: translateX(100%); }
-  to { transform: none; }
-}
-.drawer-in-left { animation: drawer-in-left 0.18s ease-out; }
-.drawer-in-right { animation: drawer-in-right 0.18s ease-out; }
 
-/* Keyboard users: skip link and reduced motion. */
-.skip-link {
-  position: absolute;
-  left: 0.75rem;
-  top: -4rem;
-  z-index: 200;
-  border-radius: 0.75rem;
-  background: #0369a1;
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: #fff;
-  transition: top 0.15s;
+/* uPlot (charts-uplot.css hard-codes a navy palette): re-tone with tokens. */
+:root .uplot,
+:root .u-wrap,
+:root .u-legend {
+  color: rgb(var(--text-subtle));
+  font-family: theme('fontFamily.sans');
 }
-.skip-link:focus {
-  top: 0.75rem;
+:root .u-ts .u-legend {
+  background: rgb(var(--overlay));
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: 6px;
+  box-shadow: var(--shadow-overlay);
 }
+:root .u-legend .u-series th {
+  color: rgb(var(--text-muted));
+}
+:root .u-legend .u-series:first-child th {
+  color: rgb(var(--text-subtle));
+}
+:root .u-legend .u-value {
+  font-family: theme('fontFamily.mono');
+  font-weight: 500;
+  color: rgb(var(--text));
+}
+:root .u-cursor-x,
+:root .u-cursor-y {
+  border-color: rgb(var(--border-stronger)) !important;
+}
+
+/* ===================================================================== */
+/* Motion: respect the user's setting.                                     */
+/* ===================================================================== */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -174,5 +567,6 @@ body {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

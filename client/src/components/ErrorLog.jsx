@@ -1,15 +1,11 @@
-import { ScrollText, X, Trash2, Inbox, Filter } from 'lucide-react';
+import { ScrollText, X, Trash2, Filter } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
-import { Tooltip, Modal } from './ui';
+import { Tooltip, Modal, StatusDot } from './ui';
 
 const LEVELS = ['error', 'warning', 'info', 'verbose'];
-const LEVEL_STYLE = {
-  error: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
-  warning: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
-  info: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
-  verbose: 'bg-slate-500/15 text-slate-300 ring-slate-500/30'
-};
+const LEVEL_TONE = { error: 'bad', warning: 'warn', info: 'info', verbose: 'neutral' };
+const LEVEL_TEXT = { error: 'text-bad', warning: 'text-warn', info: 'text-info', verbose: 'text-muted' };
 
 function relTime(ts) {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -21,10 +17,9 @@ function relTime(ts) {
 
 function Empty({ title, hint }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-subtle">
-      <Inbox size={26} className="text-subtle" />
-      <p className="text-sm">{title}</p>
-      <p className="max-w-xs text-xs text-subtle">{hint}</p>
+    <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+      <p className="text-sm font-medium text-fg">{title}</p>
+      <p className="max-w-xs text-sm text-muted">{hint}</p>
     </div>
   );
 }
@@ -64,94 +59,87 @@ export default function ErrorLog({ collapsed = false }) {
             onClick={() => openLog()}
             aria-label="View the event log"
             className={clsx(
-              'relative grid h-8 w-8 place-items-center rounded-lg transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
-              unseen > 0 ? 'bg-rose-500/15 text-rose-300' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              'relative grid h-8 w-8 place-items-center rounded-md transition-colors',
+              unseen > 0 ? 'text-bad hover:bg-raised' : 'text-muted hover:bg-raised hover:text-fg'
             )}
           >
-            <ScrollText size={16} />
-            {unseen > 0 && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-surface-900" />}
+            <ScrollText size={16} aria-hidden="true" />
+            {unseen > 0 && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-bad" />}
           </button>
         </Tooltip>
       ) : (
         <button
           onClick={() => openLog()}
           className={clsx(
-            'flex w-full items-center justify-between rounded-lg border px-2.5 py-1.5 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
-            unseen > 0
-              ? 'border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15'
-              : 'border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/5'
+            'flex h-8 w-full items-center justify-between rounded-md px-2.5 text-muted transition-colors hover:bg-raised hover:text-fg'
           )}
         >
-          <span className="flex items-center gap-2 text-sm">
-            <ScrollText size={14} />
+          <span className="flex items-center gap-2.5 text-sm">
+            <ScrollText size={16} aria-hidden="true" className="text-subtle" />
             Logs
           </span>
-          <span
-            className={clsx(
-              'mono rounded-full px-1.5 py-0.5 text-2xs font-semibold',
-              unseen > 0 ? 'bg-rose-500 text-white' : 'bg-white/10 text-slate-400'
-            )}
-          >
-            {badge}
+          <span className={clsx('flex items-center gap-1.5 text-xs tabular-nums', unseen > 0 ? 'font-medium text-bad' : 'text-subtle')}>
+            {unseen > 0 && <StatusDot tone="bad" size={6} />}
+            {unseen > 0 ? `${badge} new` : badge}
           </span>
         </button>
       )}
 
       {logOpen && (
         <Modal placement="right" title="Event log" onClose={closeLog} className="flex w-full max-w-md flex-col">
-      <header className="flex items-center justify-between border-b border-white/5 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <ScrollText size={16} className="text-slate-300" />
-          <h2 className="text-sm font-semibold text-slate-100">Log</h2>
-          <span className="mono text-xs text-subtle">{logs.length}</span>
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
+        <div className="flex items-baseline gap-2">
+          <h2 className="text-sm font-medium text-fg">Log</h2>
+          <span className="text-xs tabular-nums text-subtle">{logs.length}</span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={clearLogs}
             disabled={logs.length === 0}
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-slate-400 transition hover:bg-white/5 hover:text-slate-200 disabled:opacity-40"
+            className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-muted transition-colors hover:bg-raised hover:text-fg disabled:opacity-40"
           >
-            <Trash2 size={13} /> Clear
+            <Trash2 size={13} aria-hidden="true" /> Clear
           </button>
           <button
             onClick={closeLog}
-            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
+            className="grid h-8 w-8 place-items-center rounded-md text-muted transition-colors hover:bg-raised hover:text-fg"
             aria-label="Close log"
           >
-            <X size={16} />
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
       </header>
 
       {/* Broker scope (set when opened from a broker's error count) */}
       {logBrokerFilter && (
-        <div className="flex items-center gap-2 border-b border-white/5 bg-white/[0.02] px-4 py-2 text-xs text-slate-300">
-          <Filter size={12} className="text-subtle" />
+        <div className="flex items-center gap-2 border-b border-line bg-raised px-4 py-2 text-xs text-muted">
+          <Filter size={12} aria-hidden="true" className="text-subtle" />
           <span>
-            Filtered to <span className="font-medium text-slate-100">{filterBrokerName}</span>
+            Filtered to <span className="font-medium text-fg">{filterBrokerName}</span>
           </span>
           <button
             onClick={clearBrokerFilter}
-            className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200"
+            className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-muted transition-colors hover:bg-panel hover:text-fg"
           >
-            <X size={11} /> clear
+            <X size={11} aria-hidden="true" /> clear
           </button>
         </div>
       )}
 
       {/* Level filter — persisted. Click a level to show/hide it. */}
-      <div className="flex flex-wrap gap-1.5 border-b border-white/5 px-4 py-2.5">
+      <div className="flex flex-wrap gap-1 border-b border-line px-4 py-2">
         {LEVELS.map((lv) => (
           <button
             key={lv}
             onClick={() => toggleLogFilter(lv)}
             aria-pressed={logFilters[lv]}
             className={clsx(
-              'rounded-full px-2.5 py-1 text-2xs font-medium uppercase tracking-wide ring-1 ring-inset transition',
-              logFilters[lv] ? LEVEL_STYLE[lv] : 'bg-transparent text-subtle ring-white/10 hover:text-slate-200'
+              'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs capitalize transition-colors',
+              logFilters[lv] ? 'border-line-strong bg-raised text-fg' : 'border-transparent text-subtle hover:text-fg'
             )}
           >
-            {lv} <span className="mono ml-0.5 opacity-70">{counts[lv]}</span>
+            <StatusDot tone={logFilters[lv] ? LEVEL_TONE[lv] : 'neutral'} size={6} />
+            {lv} <span className="tabular-nums text-subtle">{counts[lv]}</span>
           </button>
         ))}
       </div>
@@ -168,34 +156,22 @@ export default function ErrorLog({ collapsed = false }) {
             hint={logBrokerFilter ? 'No entries for this broker at the enabled levels.' : 'Enable a level above to see entries.'}
           />
         ) : (
-          <ul className="divide-y divide-white/5">
+          <ul className="divide-y divide-line">
             {visible.map((e) => (
               <li key={e.id} className="px-4 py-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex flex-wrap items-center gap-1.5">
-                    <span
-                      className={clsx(
-                        'rounded-full px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide ring-1 ring-inset',
-                        LEVEL_STYLE[e.level] || LEVEL_STYLE.verbose
-                      )}
-                    >
+                    <span className={clsx('inline-flex items-center gap-1.5 text-xs font-medium capitalize', LEVEL_TEXT[e.level] || LEVEL_TEXT.verbose)}>
+                      <StatusDot tone={LEVEL_TONE[e.level] || 'neutral'} size={6} />
                       {e.level}
                     </span>
-                    <span className="mono text-2xs uppercase text-subtle">{e.source}</span>
-                    {e.meta?.code && (
-                      <span className="mono rounded px-1.5 py-0.5 text-2xs font-medium text-slate-300 ring-1 ring-inset ring-white/10">
-                        {e.meta.code}
-                      </span>
-                    )}
-                    {e.count > 1 && (
-                      <span className="mono rounded-full bg-white/10 px-1.5 py-0.5 text-2xs font-semibold text-slate-300">
-                        ×{e.count}
-                      </span>
-                    )}
+                    <span className="mono text-2xs text-subtle">{e.source}</span>
+                    {e.meta?.code && <span className="mono rounded border border-line px-1 text-2xs text-muted">{e.meta.code}</span>}
+                    {e.count > 1 && <span className="mono text-2xs text-muted">×{e.count}</span>}
                   </span>
                   <span className="mono shrink-0 text-xs text-subtle">{relTime(e.ts)}</span>
                 </div>
-                <p className="mt-1 break-words text-sm text-slate-200">{e.message}</p>
+                <p className="mt-1 break-words text-sm text-fg">{e.message}</p>
                 {e.meta?.hint && <p className="mt-0.5 text-xs text-muted">{e.meta.hint}</p>}
                 {(e.meta?.topic || e.meta?.path) && (
                   <p className="mono mt-1 truncate text-xs text-subtle">
