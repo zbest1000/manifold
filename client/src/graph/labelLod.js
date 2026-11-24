@@ -55,21 +55,22 @@ export function estimateLabelWidth(text, k, fontPx = 12) {
  * Choose the labels to draw.
  * @param ordered   nodes sorted by importance (see orderByImportance)
  * @param view      { k, tx, ty, w, h } camera: screen = world * k + t
- * @param opts      { leafZoom, maxLabels, forced:Set<id>, labelOf(node) }
+ * @param opts      { leafZoom, maxLabels, forced:Set<id>, labelOf(node), radiusOf(node),
+ *                    screenSized (labels drawn at a constant on-screen size), fontPx }
  * @returns Set of node ids whose label should be drawn
  */
 export function selectLabelIds(ordered, view, opts = {}) {
   const { k, tx, ty, w, h } = view;
-  const { leafZoom = DEFAULT_LEAF_ZOOM, maxLabels = 120, forced = null, labelOf = (n) => n.label || '', radiusOf = () => 6 } = opts;
+  const { leafZoom = DEFAULT_LEAF_ZOOM, maxLabels = 120, forced = null, labelOf = (n) => n.label || '', radiusOf = () => 6, screenSized = false, fontPx = 12 } = opts;
   const out = new Set();
-  if (k < LOD_MIN_ZOOM || maxLabels <= 0) {
+  if ((k < LOD_MIN_ZOOM && !screenSized) || maxLabels <= 0) {
     if (forced) for (const id of forced) out.add(id);
     return out;
   }
   const CELL = 80;
   const grid = new Map();
   const boxes = [];
-  const lineH = 14 * k + 2;
+  const lineH = screenSized ? fontPx + 4 : 14 * k + 2;
   const fits = (x0, y0, x1, y1) => {
     for (let cx = Math.floor(x0 / CELL); cx <= Math.floor(x1 / CELL); cx++) {
       for (let cy = Math.floor(y0 / CELL); cy <= Math.floor(y1 / CELL); cy++) {
@@ -96,9 +97,9 @@ export function selectLabelIds(ordered, view, opts = {}) {
   };
   const boxFor = (n) => {
     const text = labelOf(n);
-    const bw = estimateLabelWidth(text, k);
+    const bw = screenSized ? estimateLabelWidth(text, 1, fontPx) : estimateLabelWidth(text, k);
     const sx = n.x * k + tx;
-    const sy = n.y * k + ty + (radiusOf(n) + 2) * k;
+    const sy = n.y * k + ty + (screenSized ? radiusOf(n) * k + 2 : (radiusOf(n) + 2) * k);
     return [sx - bw / 2, sy, sx + bw / 2, sy + lineH];
   };
 

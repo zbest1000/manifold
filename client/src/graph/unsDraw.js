@@ -5,11 +5,27 @@
 import { resolveIconName, getIconImage } from './unsIcons';
 import { nodeLevel } from './unsLevels';
 import { LIVE_WINDOW_MS, unsLiveMap, unsRateMap, unsValueMap, staleness } from './unsLive';
-import { R, nodeKey } from './unsLayout';
+import { R, COL_W, nodeKey } from './unsLayout';
+import { ellipsize } from './canvasKit';
 
 const PULSE_MS = 700; // node ring flash right after a message
 const FONT = 'ui-sans-serif, system-ui, sans-serif';
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+// Widest a label may be: a column minus a gutter, so neighbouring columns never collide.
+export const LABEL_MAX_W = COL_W - 40;
+
+/** Icon raster size bucket (device px) for an icon drawn `px` device pixels wide. */
+export function iconRasterSize(px) {
+  if (!(px > 40)) return 40;
+  if (px <= 80) return 80;
+  if (px <= 160) return 160;
+  return 256;
+}
+
+/** "1 topic", "2 topics", "1,234 topics". */
+export function countLabel(n, word) {
+  return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+}
 
 export function truncate(s, n) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
@@ -17,12 +33,14 @@ export function truncate(s, n) {
 
 /**
  * Draw one frame.
- * st: { w, h, dpr, t:{x,y,k}, layout, posOf, theme, levels, selectedId, selKeys, box, now }
+ * st: { w, h, dpr, dprY?, t:{x,y,k}, layout, posOf, theme, levels, selectedId, selKeys, box, now, reducedMotion? }
+ * dpr / dprY are the backing-store / CSS-size ratios (see canvasKit.applyCanvasSize).
  */
 export function drawTopology(ctx, st) {
-  const { w, h, dpr, t, layout, posOf, theme, levels, selectedId, selKeys, box, now } = st;
+  const { w, h, dpr, t, layout, posOf, theme, levels, selectedId, selKeys, box, now, reducedMotion = false } = st;
+  const dprY = st.dprY || dpr;
   ctx.save();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dprY, 0, 0);
 
   // Canvas + dot grid
   ctx.fillStyle = theme.bg;
@@ -41,16 +59,24 @@ export function drawTopology(ctx, st) {
   ctx.scale(t.k, t.k);
 
   const liveAt = (n) => unsLiveMap.get(`${n.brokerId}:${n.path}`) || 0;
-  const dashOffset = -((now / 40) % 24);
+  const dashOffset = reducedMotion ? 0 : -((now / 40) % 24);
   // Level of detail: tiny text is noise, so drop caption lines when zoomed far out.
   const showCaption = t.k >= 0.45;
   const showName = t.k >= 0.28;
+
+  // Visible world rect (+ the label block margin) — off-screen nodes/edges are skipped.
+  const vx0 = -t.x / t.k - COL_W;
+  const vy0 = -t.y / t.k - 80;
+  const vx1 = (w - t.x) / t.k + COL_W;
+  const vy1 = (h - t.y) / t.k + 80;
+  const onScreen = (p) => p.x >= vx0 && p.x <= vx1 && p.y >= vy0 && p.y <= vy1;
 
   // Edges first: animated dashed green while the child branch is publishing.
   for (const e of layout.edges) {
     const live = now - liveAt(e.to.node) < LIVE_WINDOW_MS;
     const a = posOf(e.from);
     const b = posOf(e.to);
+    if (Math.max(a.x, b.x) < vx0 || Math.min(a.x, b.x) > vx1 || Math.max(a.y, b.y) < vy0 || Math.min(a.y, b.y) > vy1) continue;
     const x1 = a.x + R + 3;
     const x2 = b.x - R - 3;
     const mx = (x1 + x2) / 2;
@@ -72,13 +98,15 @@ export function drawTopology(ctx, st) {
   }
 
   const [pr, pg, pb] = theme.pulse;
+  const iconPx = iconRasterSize(22 * t.k * dpr);
   for (const l of layout.nodes) {
     const n = l.node;
     const P = posOf(l);
+    if (!onScreen(P)) continue;
     const lvl = nodeLevel(n, levels, theme.mode);
     const color = lvl.color;
     const last = liveAt(n);
-    const pulsing = now - last < PULSE_MS;
+    const pulsing = !reducedMotion && now - last < PULSE_MS;
     const live = now - last < LIVE_WINDOW_MS;
 
     if (selKeys.has(nodeKey(n))) {
@@ -114,7 +142,12 @@ export function drawTopology(ctx, st) {
     ctx.strokeStyle = n.id === selectedId ? theme.selected : color;
     ctx.stroke();
 
-    const iconImg = getIconImage(resolveIconName(n), color, 40);
+    // Rasterize the SVG icon near the size it lands on screen (zoom x DPR): a
+    // 40px raster drawn at zoom 3 on a 2x display was a 132px blur. While a
+    // bigger raster decodes, the 40px one stands in.
+    const iconName = resolveIconName(n);
+    let iconImg = getIconImage(iconName, color, iconPx);
+    if (iconPx !== 40 && !(iconImg && iconImg.complete && iconImg.naturalWidth > 0)) iconImg = getIconImage(iconName, color, 40);
     if (iconImg && iconImg.complete && iconImg.naturalWidth > 0) {
       ctx.drawImage(iconImg, P.x - 11, P.y - 11, 22, 22);
     } else {
@@ -157,24 +190,27 @@ export function drawTopology(ctx, st) {
     if (!showName) continue;
     // Labels get a canvas-coloured halo so crossing edges never block the text.
     ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = theme.halo;
     ctx.lineWidth = 4;
     ctx.font = `600 13px ${FONT}`;
-    ctx.strokeText(truncate(n.name, 22), P.x, P.y + R + 24);
+    const name = ellipsize(ctx, n.name, LABEL_MAX_W);
+    ctx.strokeText(name, P.x, P.y + R + 24);
     ctx.fillStyle = theme.name;
-    ctx.fillText(truncate(n.name, 22), P.x, P.y + R + 24);
+    ctx.fillText(name, P.x, P.y + R + 24);
     if (!showCaption) continue;
     ctx.font = `600 11px ${FONT}`;
-    const caption = lvl.name.toUpperCase();
+    const caption = ellipsize(ctx, lvl.name.toUpperCase(), LABEL_MAX_W);
     ctx.strokeText(caption, P.x, P.y + R + 38);
     ctx.fillStyle = theme.sub;
     ctx.fillText(caption, P.x, P.y + R + 38);
     if (n.children.size > 0) {
       if (n.topicCount > 0) {
         const rate = unsRateMap.get(`${n.brokerId}:${n.path}`) || 0;
-        const line = rate > 0 ? `${n.topicCount.toLocaleString()} topics · ${rate.toLocaleString()}/s` : `${n.topicCount.toLocaleString()} topics`;
+        let line = rate > 0 ? `${countLabel(n.topicCount, 'topic')} · ${rate.toLocaleString()}/s` : countLabel(n.topicCount, 'topic');
         ctx.font = `500 11px ${FONT}`;
+        line = ellipsize(ctx, line, LABEL_MAX_W);
         ctx.strokeText(line, P.x, P.y + R + 52);
         ctx.fillStyle = rate > 0 ? theme.rate : theme.count;
         ctx.fillText(line, P.x, P.y + R + 52);
@@ -183,8 +219,8 @@ export function drawTopology(ctx, st) {
       // Leaf: the topic's latest VALUE, so the namespace doubles as a dashboard.
       const v = unsValueMap.get(`${n.brokerId}:${n.path}`);
       if (v && v.value !== '') {
-        const text = truncate(v.value, 24);
         ctx.font = `600 11px ${MONO}`;
+        const text = ellipsize(ctx, v.value, LABEL_MAX_W);
         ctx.strokeText(text, P.x, P.y + R + 52);
         ctx.fillStyle = stale === 'dead' ? theme.valueDead : stale === 'overdue' ? theme.valueOverdue : theme.value;
         ctx.fillText(text, P.x, P.y + R + 52);

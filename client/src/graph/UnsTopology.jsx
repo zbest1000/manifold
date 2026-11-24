@@ -7,6 +7,21 @@ import { DEFAULT_LEVELS } from './unsLevels';
 import { recordActivity, rollRates, liveMeta } from './unsLive';
 import { nodeKey, seedExpansion, layoutForest, fitTransform, pickNode, onToggleAffordance } from './unsLayout';
 import { drawTopology } from './unsDraw';
+import {
+  applyCanvasSize,
+  attachPinchZoom,
+  clientToLocal,
+  createFrameScheduler,
+  prefersReducedMotion,
+  registerTestHook,
+  screenToWorld,
+  watchCanvasSize,
+  wheelFactor,
+  zoomAround
+} from './canvasKit';
+import { MIN_K } from './unsLayout';
+
+const MAX_K = 3;
 
 /**
  * UNS topology renderer: the Unified-Namespace lens on the data fabric.
@@ -29,7 +44,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const themeTokens = UNS_THEMES[theme] || UNS_THEMES.dark;
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
-  const sizeRef = useRef({ w: 0, h: 0 });
+  const sizeRef = useRef({ w: 0, h: 0, sx: 1, sy: 1 });
+  const schedRef = useRef(null); // frame scheduler (see the animation effect)
   const transformRef = useRef({ x: 130, y: 60, k: 1 });
   const visibleRef = useRef([]); // laid-out visible nodes for hit-testing
   // Absolute world positions for nodes the user has dragged, keyed
@@ -45,8 +61,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const selRef = useRef(new Set());
   const boxRef = useRef(null); // active rubber-band box, world coords {x1,y1,x2,y2}
   const [selCount, setSelCount] = useState(0);
-  const rafRef = useRef(0);
   const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
+  // Any camera / selection change: note the interaction and ask for a frame.
+  const kick = useCallback(() => {
+    interactAt.current = Date.now();
+    schedRef.current?.request();
+  }, []);
   const selectedRef = useRef(selectedId);
   useEffect(() => {
     selectedRef.current = selectedId;
@@ -68,6 +88,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     if (!f) return;
     // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
     Object.assign(transformRef.current, f);
+    schedRef.current?.request();
   }, [posOf]);
 
   // Auto arrange: drop every manual offset and re-frame the tidy layout.
@@ -87,6 +108,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       t.k = Math.min(1.4, Math.max(t.k, 0.8)); // never focus while zoomed way out
       t.x = w / 2 - t.k * p.x;
       t.y = h / 2 - t.k * p.y;
+      schedRef.current?.request();
     },
     [posOf]
   );
@@ -165,7 +187,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   // Live activity: stamp ancestors, count per-branch rates, record leaf values.
   useEffect(() => {
-    const off = onMessageActivity((msg) => recordActivity(msg));
+    const off = onMessageActivity((msg) => {
+      recordActivity(msg);
+      schedRef.current?.request(); // coalesced: at most one paint per frame
+    });
     const roller = setInterval(rollRates, 1000);
     return () => {
       off?.();
@@ -197,30 +222,53 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         focusPendingRef.current = null;
       }
     }
-    // Read-only hook for e2e tests / screenshot tooling: world coordinates of
-    // the visible nodes (manual offsets applied) plus the current view transform.
-    if (typeof window !== 'undefined') {
-      window.__unsLayout = {
+    schedRef.current?.request();
+  }, [layout, fitAll, posOf, centerOn]);
+
+  // Read-only hook for e2e tests (enabled by ?e2e=1 only): world AND screen
+  // (CSS px, canvas-relative) positions of the visible nodes, the camera, the
+  // canvas size, and the paint counter.
+  useEffect(
+    () =>
+      registerTestHook('uns', {
         get transform() {
           return { ...transformRef.current };
         },
-        nodes: layout.nodes.map((l) => {
-          const p = posOf(l);
-          return { name: l.node.name, path: l.node.path, x: p.x, y: p.y, open: l.open, hasKids: l.hasKids, depth: l.node.depth };
-        })
-      };
-    }
-  }, [layout, fitAll, posOf, centerOn]);
+        get size() {
+          return { ...sizeRef.current };
+        },
+        get frames() {
+          return schedRef.current?.stats.frames ?? 0;
+        },
+        get nodes() {
+          const t = transformRef.current;
+          return visibleRef.current.map((l) => {
+            const p = posOf(l);
+            return { name: l.node.name, path: l.node.path, id: l.node.id, x: p.x, y: p.y, sx: p.x * t.k + t.x, sy: p.y * t.k + t.y, open: l.open, hasKids: l.hasKids, depth: l.node.depth };
+          });
+        },
+        fit: () => fitAll(),
+        setTransform: (t) => {
+          userMovedRef.current = true;
+          Object.assign(transformRef.current, t);
+          schedRef.current?.request();
+        }
+      }),
+    [posOf, fitAll]
+  );
 
   // ---- Drawing ----
+  const reducedRef = useRef(false);
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const { w, h } = sizeRef.current;
+    const { w, h, sx, sy } = sizeRef.current;
+    if (!w || !h) return;
     drawTopology(canvas.getContext('2d'), {
       w,
       h,
-      dpr: window.devicePixelRatio || 1,
+      dpr: sx,
+      dprY: sy,
       t: transformRef.current,
       layout,
       posOf,
@@ -229,36 +277,45 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       selectedId: selectedRef.current,
       selKeys: selRef.current,
       box: boxRef.current,
-      now: Date.now()
+      now: Date.now(),
+      reducedMotion: reducedRef.current
     });
   }, [layout, levels, posOf, themeTokens]);
-
-  // Animation loop: cheap (bounded visible nodes), drives dashes + pulses + decay.
-  // Idle throttle: pulses/dashes only animate around live traffic and
-  // interaction; a quiet view redraws at ~8fps instead of burning 60.
+  const drawRef = useRef(draw);
   useEffect(() => {
-    let running = true;
-    let lastDraw = 0;
-    const tick = (ts) => {
-      if (!running) return;
-      const now = Date.now();
-      const active = now - liveMeta.lastDataAt < 3000 || now - interactAt.current < 1000;
-      if (document.hidden) {
-        rafRef.current = requestAnimationFrame(tick);
-        return;
-      }
-      if (active || ts - lastDraw >= 125) {
-        lastDraw = ts;
-        draw();
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      running = false;
-      cancelAnimationFrame(rafRef.current);
-    };
+    drawRef.current = draw;
+    schedRef.current?.request();
   }, [draw]);
+
+  // Frame scheduling: full frame rate only while something moves (live traffic
+  // animating the dashes/pulses, or the user interacting); otherwise one paint a
+  // second keeps staleness / rate captions honest. Nothing at all runs while the
+  // tab is hidden or the canvas is scrolled off-screen, and with
+  // prefers-reduced-motion the dashes/pulses stand still (no continuous frames).
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    reducedRef.current = prefersReducedMotion();
+    const onMq = () => {
+      reducedRef.current = prefersReducedMotion();
+      schedRef.current?.request();
+    };
+    mq?.addEventListener?.('change', onMq);
+    const sched = createFrameScheduler(() => drawRef.current(), {
+      el: wrapRef.current,
+      idleMs: 1000,
+      isActive: () => {
+        const now = Date.now();
+        return now - interactAt.current < 1000 || (!reducedRef.current && now - liveMeta.lastDataAt < 3000);
+      }
+    });
+    schedRef.current = sched;
+    sched.request();
+    return () => {
+      mq?.removeEventListener?.('change', onMq);
+      sched.dispose();
+      schedRef.current = null;
+    };
+  }, []);
 
   // Sizing + interactions.
   useEffect(() => {
@@ -266,23 +323,18 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
 
-    const resize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      const { width, height } = wrap.getBoundingClientRect();
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      sizeRef.current = { w: width, h: height };
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
+    // Integer backing store at the current DPR, re-applied on container resize
+    // (window, sidebar collapse, panels) AND on DPR change (monitor move, zoom).
+    const unwatch = watchCanvasSize(wrap, ({ w, h, dpr }) => {
+      sizeRef.current = applyCanvasSize(canvas, w, h, dpr);
+      // Until the user takes the camera, keep the forest framed in the new box.
+      if (!userMovedRef.current && visibleRef.current.length) fitAll();
+      drawRef.current(); // paint synchronously: a resized canvas is cleared
+    });
 
     const toWorld = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const t = transformRef.current;
-      return { x: (e.clientX - rect.left - t.x) / t.k, y: (e.clientY - rect.top - t.y) / t.k };
+      const p = clientToLocal(canvas, e.clientX, e.clientY);
+      return screenToWorld(transformRef.current, p.x, p.y);
     };
 
     const pick = (pt) => pickNode(visibleRef.current, posOf, pt);
@@ -295,9 +347,30 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     let moved = 0;
     let last = { x: 0, y: 0 };
     let ctrlToggled = false; // a ctrl/⌘-click that toggled selection — onUp skips select
+    let pinching = false;
+    const unpinch = attachPinchZoom(
+      canvas,
+      (factor, cx, cy) => {
+        userMovedRef.current = true;
+        Object.assign(transformRef.current, zoomAround(transformRef.current, cx, cy, factor, MIN_K, MAX_K));
+        kick();
+      },
+      (on) => {
+        pinching = on;
+        if (on) {
+          mode = null;
+          grabbed = null;
+          boxRef.current = null;
+        }
+      }
+    );
     const keyOf = (l) => nodeKey(l.node);
     const onDown = (e) => {
-      interactAt.current = Date.now();
+      if (e.button > 0 || pinching) return; // primary button / first finger only
+      // No text selection, no page scroll/zoom gesture, keep keyboard focus here.
+      e.preventDefault();
+      canvas.focus({ preventScroll: true });
+      kick();
       userMovedRef.current = true; // any canvas interaction hands the camera to the user
       moved = 0;
       ctrlToggled = false;
@@ -326,13 +399,15 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       }
     };
     const onMove = (e) => {
-      interactAt.current = Date.now();
+      if (pinching) return;
       if (!mode) {
+        if (e.target !== canvas) return; // hover feedback only over the canvas
         // hover cursor feedback
         const over = pick(toWorld(e));
         canvas.style.cursor = over ? 'grab' : 'default';
         return;
       }
+      kick();
       const dx = e.clientX - last.x;
       const dy = e.clientY - last.y;
       moved += Math.abs(dx) + Math.abs(dy);
@@ -367,6 +442,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
     let pendingSelect = 0;
     const onUp = (e) => {
+      if (!mode && !ctrlToggled) return; // not a gesture that started on this canvas
+      kick();
       const wasDrag = moved >= 6;
       const hit = grabbed;
       const wasBox = mode === 'box';
@@ -424,37 +501,33 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       if (hit?.hasKids) toggle(hit.node);
     };
     const onWheel = (e) => {
-      interactAt.current = Date.now();
       userMovedRef.current = true; // zooming = user owns the camera now
       e.preventDefault();
-      const t = transformRef.current;
-      const rect = canvas.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      const nk = Math.max(0.2, Math.min(3, t.k * factor));
-      t.x = px - ((px - t.x) * nk) / t.k;
-      t.y = py - ((py - t.y) * nk) / t.k;
-      t.k = nk;
+      const p = clientToLocal(canvas, e.clientX, e.clientY);
+      Object.assign(transformRef.current, zoomAround(transformRef.current, p.x, p.y, wheelFactor(e), MIN_K, MAX_K));
+      kick();
     };
 
     const onKey = (e) => {
       if (e.key === 'Escape' && selRef.current.size) {
         selRef.current = new Set();
         setSelCount(0);
-        interactAt.current = Date.now(); // prompt a redraw so the rings clear now
+        kick(); // prompt a redraw so the rings clear now
       }
     };
 
     canvas.addEventListener('pointerdown', onDown);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
     canvas.addEventListener('dblclick', onDbl);
     canvas.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKey);
     return () => {
       clearTimeout(pendingSelect);
-      ro.disconnect();
+      unwatch();
+      unpinch();
+      window.removeEventListener('pointercancel', onUp);
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
@@ -462,7 +535,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onSelect, posOf, toggle]);
+  }, [onSelect, posOf, toggle, fitAll, kick]);
 
   const keyboardHint = 'Arrow keys pan, plus and minus zoom, F fits the view.';
   const summary = useMemo(() => {
@@ -485,16 +558,13 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     else if (e.key === 'ArrowUp') t.y += step;
     else if (e.key === 'ArrowDown') t.y -= step;
     else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
-      const nk = Math.max(0.2, Math.min(3, t.k * (e.key === '-' || e.key === '_' ? 0.9 : 1.1)));
-      t.x = w / 2 - ((w / 2 - t.x) * nk) / t.k;
-      t.y = h / 2 - ((h / 2 - t.y) * nk) / t.k;
-      t.k = nk;
+      Object.assign(t, zoomAround(t, w / 2, h / 2, e.key === '-' || e.key === '_' ? 0.9 : 1.1, MIN_K, MAX_K));
     } else if (e.key === 'f' || e.key === 'F') fitAll();
     else handled = false;
     if (handled) {
       e.preventDefault();
       userMovedRef.current = true;
-      interactAt.current = Date.now();
+      kick();
     }
   };
 
@@ -503,7 +573,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden" style={{ background: themeTokens.bg }}>
       <canvas
         ref={canvasRef}
-        className="h-full w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/70"
+        style={{ touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
+        className="absolute left-0 top-0 block h-full w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/70"
         role="img"
         aria-label={summary}
         aria-describedby="uns-canvas-help"
@@ -511,7 +582,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         onKeyDown={onCanvasKey}
       />
       <span id="uns-canvas-help" className="sr-only">{keyboardHint}</span>
-      <div className="absolute bottom-4 right-4 z-10 flex flex-wrap items-center justify-end gap-2">
+      <div className="absolute bottom-4 right-4 z-10 flex max-w-[calc(100%-2rem)] flex-col items-end gap-2">
         {selCount > 0 && (
           <button
             onClick={() => {
@@ -524,23 +595,25 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
             {selCount} selected · drag to move · Esc to clear
           </button>
         )}
-        {onToggleTheme && (
-          <button
-            onClick={onToggleTheme}
-            aria-label={theme === 'dark' ? 'Switch the topology to the light theme' : 'Switch the topology to the dark theme'}
-            title={theme === 'dark' ? 'Light canvas' : 'Dark canvas'}
-            className={`${btn} flex items-center gap-1.5`}
-          >
-            {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-            {theme === 'dark' ? 'Light' : 'Dark'}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              aria-label={theme === 'dark' ? 'Switch the topology to the light theme' : 'Switch the topology to the dark theme'}
+              title={theme === 'dark' ? 'Light canvas' : 'Dark canvas'}
+              className={`${btn} flex items-center gap-1.5`}
+            >
+              {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+              {theme === 'dark' ? 'Light' : 'Dark'}
+            </button>
+          )}
+          <button onClick={autoArrange} title="Reset manual node positions to the tidy layout and fit to view" className={btn}>
+            Auto arrange
           </button>
-        )}
-        <button onClick={autoArrange} title="Reset manual node positions to the tidy layout and fit to view" className={btn}>
-          Auto arrange
-        </button>
-        <button onClick={fitAll} title="Fit the current arrangement to the viewport (keeps manual moves)" className={btn}>
-          Fit
-        </button>
+          <button onClick={fitAll} title="Fit the current arrangement to the viewport (keeps manual moves)" className={btn}>
+            Fit
+          </button>
+        </div>
       </div>
     </div>
   );

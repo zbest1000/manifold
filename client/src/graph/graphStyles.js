@@ -6,6 +6,10 @@
  * the renderer reads these values every frame. The looks are inspired by a range
  * of well-loved graph visualizations, but the presets stand on their own and are
  * named for the aesthetic they produce, not their inspiration.
+ *
+ * This file is THE theme object for the 2D canvas graph (ForceGraph), the
+ * WebGL big-graph renderer and the three.js 3D view: every colour those
+ * renderers draw comes from the selected preset (no literals in draw paths).
  */
 
 const shared = {
@@ -13,7 +17,13 @@ const shared = {
   nodeMinRadius: 4,
   nodeMaxRadius: 22,
   labelFont: '12px Inter, sans-serif',
-  showLabelsAtZoom: 0.75
+  showLabelsAtZoom: 0.75,
+  // Collapsed-subtree badge text, drawn on a linkHighlight pill.
+  badgeInk: '#0a0f1c',
+  // Minimap panel (2D graph): translucent so the graph stays visible beneath.
+  minimap: { bg: 'rgba(10,15,28,0.85)', border: 'rgba(255,255,255,0.12)' },
+  // three.js scene lighting + the neutral base the per-instance colours multiply.
+  scene3d: { ambient: '#ffffff', directional: '#ffffff', nodeBase: '#ffffff' }
 };
 
 export const GRAPH_STYLES = {
@@ -28,7 +38,7 @@ export const GRAPH_STYLES = {
     linkHighlight: '#7dd3fc',
     node: { glow: 14, stroke: 'rgba(255,255,255,0.85)', strokeWidth: 1.2 },
     palette: ['#7dd3fc', '#a78bfa', '#f472b6', '#34d399', '#fbbf24', '#60a5fa'],
-    label: { color: '#cbd5e1', halo: '#0a0f1c' },
+    label: { color: '#cbd5e1', halo: '#0a0f1c', strong: '#ffffff' },
     selectedRing: '#f8fafc'
   },
 
@@ -43,7 +53,7 @@ export const GRAPH_STYLES = {
     linkHighlight: '#e0f2fe',
     node: { glow: 0, stroke: '#38bdf8', strokeWidth: 1.5, square: true },
     palette: ['#38bdf8', '#22d3ee', '#67e8f9', '#0ea5e9', '#7dd3fc'],
-    label: { color: '#bae6fd', halo: '#0b1f2a' },
+    label: { color: '#bae6fd', halo: '#0b1f2a', strong: '#ffffff' },
     selectedRing: '#e0f2fe'
   },
 
@@ -58,7 +68,7 @@ export const GRAPH_STYLES = {
     linkHighlight: '#c4b5fd',
     node: { glow: 18, stroke: 'rgba(255,255,255,0.65)', strokeWidth: 1 },
     palette: ['#c4b5fd', '#f9a8d4', '#a5f3fc', '#fca5a5', '#fcd34d', '#86efac'],
-    label: { color: '#e2e8f0', halo: '#11142b' },
+    label: { color: '#e2e8f0', halo: '#11142b', strong: '#ffffff' },
     selectedRing: '#ffffff'
   },
 
@@ -73,7 +83,7 @@ export const GRAPH_STYLES = {
     linkHighlight: '#f0abfc',
     node: { glow: 22, stroke: '#ffffff', strokeWidth: 1.2 },
     palette: ['#f0abfc', '#22d3ee', '#a3e635', '#fb7185', '#facc15', '#818cf8'],
-    label: { color: '#f5f3ff', halo: '#050510' },
+    label: { color: '#f5f3ff', halo: '#050510', strong: '#ffffff' },
     selectedRing: '#ffffff'
   },
 
@@ -88,7 +98,7 @@ export const GRAPH_STYLES = {
     linkHighlight: '#bbf7d0',
     node: { glow: 8, stroke: '#4ade80', strokeWidth: 1.4, square: true },
     palette: ['#4ade80', '#22c55e', '#a3e635', '#86efac', '#65a30d'],
-    label: { color: '#bbf7d0', halo: '#04120a' },
+    label: { color: '#bbf7d0', halo: '#04120a', strong: '#ffffff' },
     selectedRing: '#dcfce7'
   },
 
@@ -103,8 +113,10 @@ export const GRAPH_STYLES = {
     linkHighlight: '#0ea5e9',
     node: { glow: 0, stroke: '#334155', strokeWidth: 1.2 },
     palette: ['#0ea5e9', '#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#3b82f6'],
-    label: { color: '#334155', halo: '#f8fafc' },
-    selectedRing: '#0f172a'
+    label: { color: '#334155', halo: '#f8fafc', strong: '#0f172a' },
+    selectedRing: '#0f172a',
+    badgeInk: '#ffffff',
+    minimap: { bg: 'rgba(248,250,252,0.92)', border: 'rgba(15,23,42,0.15)' }
   }
 };
 

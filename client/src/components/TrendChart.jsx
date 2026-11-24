@@ -1,5 +1,5 @@
 import { LineChart as LineIcon, Loader2, AlertTriangle } from 'lucide-react';
-import { TimeSeriesChart } from './charts';
+import { CHART_THEME, TimeSeriesChart, finiteExtent } from './charts';
 
 /**
  * TrendChart — the Trends page's multi-series time chart. Thin wrapper over the
@@ -10,9 +10,8 @@ import { TimeSeriesChart } from './charts';
  * `series`: [{ tag, points: [[tsMs, value], ...] }]
  */
 
-// Fixed slot order — assigned by series position, CVD-separated, >=3:1 contrast
-// on the dark surface. Slots 9-10 reuse 1-2 (identity stays via the legend).
-const PALETTE = ['#3987e5', '#22c55e', '#e879a6', '#eab308', '#2dd4bf', '#f97316', '#a78bfa', '#f87171'];
+// Fixed slot order — assigned by series position (palette lives in CHART_THEME).
+const PALETTE = CHART_THEME.palette;
 
 export function seriesColor(i) {
   return PALETTE[i % PALETTE.length];
@@ -32,10 +31,9 @@ function fmtRange(n) {
 // The raw [min, max] rides along on `range` for the legend.
 function normalizeSeries(series) {
   return series.map((s) => {
-    const vals = (s.points || []).map((p) => p[1]).filter((v) => Number.isFinite(v));
-    if (!vals.length) return s;
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
+    const ext = finiteExtent((s.points || []).map((p) => p[1]));
+    if (!ext) return s;
+    const [min, max] = ext;
     const span = max - min;
     const points = s.points.map(([t, v]) => [t, Number.isFinite(v) ? (span ? (v - min) / span : 0.5) : v]);
     return { ...s, points, range: [min, max] };

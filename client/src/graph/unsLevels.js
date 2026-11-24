@@ -10,12 +10,11 @@
  */
 
 export const DEFAULT_LEVELS = ['Unified Namespace', 'Business Unit', 'Site', 'Area', 'Line', 'Cell', 'Node'];
-export const LEVEL_COLORS = ['#2563eb', '#3b82f6', '#16a34a', '#22c55e', '#0d9488', '#64748b', '#94a3b8'];
-export const LEVEL_COLORS_DARK = ['#60a5fa', '#93c5fd', '#4ade80', '#86efac', '#2dd4bf', '#94a3b8', '#cbd5e1'];
-export const SPARKPLUG_COLOR = '#9333ea';
-export const SPARKPLUG_COLOR_DARK = '#c084fc';
-export const SYSTEM_COLOR = '#d97706';
-export const SYSTEM_COLOR_DARK = '#fbbf24';
+// Level ring colours are theme tokens: they live with the rest of the UNS canvas
+// palette in unsTheme.js and are re-exported here for existing importers.
+import { LEVEL_COLORS, LEVEL_COLORS_DARK, SPARKPLUG_COLOR, SPARKPLUG_COLOR_DARK, SYSTEM_COLOR, SYSTEM_COLOR_DARK } from './unsTheme';
+
+export { LEVEL_COLORS, LEVEL_COLORS_DARK, SPARKPLUG_COLOR, SPARKPLUG_COLOR_DARK, SYSTEM_COLOR, SYSTEM_COLOR_DARK };
 
 export const SPARKPLUG_NAMESPACE = 'spBv1.0';
 

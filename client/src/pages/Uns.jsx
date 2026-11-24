@@ -370,7 +370,7 @@ function Legend({ theme, levels }) {
   const ring = (path, depth) => nodeLevel({ path, depth }, levels, theme.mode).color;
   return (
     <div
-      className={`pointer-events-none absolute bottom-4 left-4 z-10 hidden max-w-[calc(100%-2rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-3 py-2 text-xs shadow-sm sm:flex md:max-w-[60%] ${theme.legend}`}
+      className={`pointer-events-none absolute bottom-4 left-4 z-10 hidden max-w-[calc(100%-23rem)] flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-3 py-2 text-xs shadow-sm sm:flex ${theme.legend}`}
     >
       {levels.slice(0, 4).map((lvl, i) => (
         <span key={lvl} className="inline-flex items-center gap-1.5">

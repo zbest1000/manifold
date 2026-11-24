@@ -6,6 +6,14 @@
 
 export const THEME_KEY = 'tc.unsTheme';
 
+// Level ring colours by depth (ISA-95 levels), plus the two non-ISA namespaces.
+export const LEVEL_COLORS = ['#2563eb', '#3b82f6', '#16a34a', '#22c55e', '#0d9488', '#64748b', '#94a3b8'];
+export const LEVEL_COLORS_DARK = ['#60a5fa', '#93c5fd', '#4ade80', '#86efac', '#2dd4bf', '#94a3b8', '#cbd5e1'];
+export const SPARKPLUG_COLOR = '#9333ea';
+export const SPARKPLUG_COLOR_DARK = '#c084fc';
+export const SYSTEM_COLOR = '#d97706';
+export const SYSTEM_COLOR_DARK = '#fbbf24';
+
 export const UNS_THEMES = {
   dark: {
     mode: 'dark',

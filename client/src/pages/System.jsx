@@ -3,7 +3,7 @@ import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldChec
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
 import { Card, Button, EmptyState, Modal } from '@/components/ui';
-import { Sparkline, TimeSeriesChart } from '@/components/charts';
+import { CHART_THEME, Sparkline, TimeSeriesChart } from '@/components/charts';
 
 /**
  * System — the tool that watches your namespace, watched. Parses Manifold's own
@@ -164,7 +164,7 @@ function MetricModal({ label, value, unit, history, warn, onClose }) {
           <X size={16} />
         </button>
       </div>
-      <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? '#f59e0b' : '#38bdf8')} />
+      <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? CHART_THEME.warn : CHART_THEME.accent)} />
     </Modal>
   );
 }

@@ -21,7 +21,13 @@
   font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Floating legend / hover readout — top-right, over the plot, no layout cost. */
+/* Floating legend / hover readout — top-right, over the plot, no layout cost.
+   Only shown while the pointer is over the chart: idle, it was a block of "—"
+   values covering the top of the plot (on a phone, a quarter of it). */
+.u-ts:not(:hover):not(:focus-within) .u-legend {
+  opacity: 0;
+}
+
 .u-ts .u-legend {
   position: absolute;
   top: 6px;
