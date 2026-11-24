@@ -434,8 +434,9 @@ Rules
     object per asset per cycle, capped in size; a mapping that would exceed
     the cap is rejected at save time with the count.
 
-Historian delivery reuses the outbox: a mapping can add a historian target,
-so device data gets store-and-forward without passing through a broker.
+Historian delivery: the broker publish is always on. A mapping can
+additionally add a direct historian target (opt-in), which reuses the outbox
+so device history survives a broker outage.
 
 ## 7. Safety and security
 
@@ -522,16 +523,24 @@ Detailed findings on the current UI are in `docs/REVIEW-2026-11.md`.
 Phase 0 is worth doing even if the drivers are never built: it fixes defects
 in the OPC UA path that exist today.
 
-## 11. Open questions
+## 11. Decisions and open questions
 
-1. Is there real hardware available for S7 and Logix verification? Without
-   it, phases 2 and 3 stay "experimental".
-2. Should device data be able to bypass MQTT entirely (device → historian),
-   or must everything transit a broker so the UNS stays the single source?
-   The design allows both; the default should be decided.
-3. Percent deadband needs an engineering range per tag; is requiring a range
+Decided
+
+1. **Hardware verification.** Real S7 and Logix hardware is available, so
+   phases 2 and 3 include a hardware verification step and the drivers leave
+   "experimental" only after it.
+2. **Broker first, historian optional.** A mapping always publishes to the
+   broker, so the UNS remains the single source of truth and every consumer
+   sees the same data. A direct historian target is opt-in per mapping, for
+   data whose history must survive a broker outage; it goes through the
+   existing store-and-forward outbox with the read timestamp preserved.
+
+Open
+
+1. Percent deadband needs an engineering range per tag; is requiring a range
    acceptable, or should percent be of last value?
-4. Is the GPL-3.0 S7 library acceptable as an optional, separately installed
+2. Is the GPL-3.0 S7 library acceptable as an optional, separately installed
    plugin for users who prefer it?
 
 ## Research notes
