@@ -10,7 +10,11 @@ const router = express.Router();
 router.get('/rules', (req, res) => {
   const { profiles, alerts } = req.app.locals.services;
   res.json({
-    rules: profiles?.alertRules() || [],
+    // Webhook URLs are credentials (Slack/Teams); the read-only role sees only
+    // whether one is set.
+    rules: (profiles?.alertRules() || []).map((r) =>
+      req.role === 'viewer' && r.webhookUrl ? { ...r, webhookUrl: null, hasWebhook: true } : r
+    ),
     types: RULE_TYPES,
     // Webhook delivery health — collected by the engine, surfaced here so a
     // silently failing webhook shows up somewhere an operator looks.

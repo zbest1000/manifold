@@ -533,6 +533,7 @@ const shutdown = async () => {
   audit.close();
   mqttManager.shutdown();
   await opcuaManager.shutdown();
+  profiles.flush?.(); // coalesced profile writes must reach disk before exit
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 };

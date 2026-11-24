@@ -1,8 +1,6 @@
 'use strict';
 
 const path = require('path');
-const net = require('net');
-const dns = require('dns').promises;
 const { EventEmitter } = require('events');
 const { randomUUID } = require('crypto');
 const { DriverSupervisor } = require('./driverSupervisor');
@@ -51,11 +49,6 @@ function loadDrivers(modules) {
     }
   }
   return out;
-}
-
-function isLoopback(address) {
-  if (net.isIPv4(address)) return address.startsWith('127.');
-  return address === '::1' || /^::ffff:127\./i.test(address);
 }
 
 class DeviceManager extends EventEmitter {
@@ -150,16 +143,7 @@ class DeviceManager extends EventEmitter {
    * MANIFOLD_ALLOW_PRIVATE_TARGETS=1; metadata ranges are always refused.
    */
   async _guardTarget(host) {
-    if (typeof egressGuard.assertAllowedDeviceTarget === 'function') {
-      return egressGuard.assertAllowedDeviceTarget(host);
-    }
-    if (process.env.MANIFOLD_ALLOW_LOOPBACK_DEVICES === '1') {
-      const addresses = net.isIP(host)
-        ? [host]
-        : (await dns.lookup(host, { all: true }).catch(() => [])).map((r) => r.address);
-      if (addresses.length && addresses.every(isLoopback)) return undefined;
-    }
-    return egressGuard.assertAllowedHost(host);
+    await egressGuard.assertAllowedDeviceTarget(host, { purpose: 'device' });
   }
 
   // ---- configuration ---------------------------------------------------------
