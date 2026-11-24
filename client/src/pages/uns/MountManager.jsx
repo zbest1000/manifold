@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { X, Trash2 } from 'lucide-react';
+import { RefreshCw, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { HelpButton } from '@/components/ui';
+import { Badge, Button, HelpButton, IconButton, Input, Select, StatusText } from '@/components/ui';
+import { PanelSection, SidePanel } from '@/components/CanvasChrome';
 
 export default function MountManager({ mounts, brokers = [], opcua, i3xStatus, onChanged, onClose }) {
   const [type, setType] = useState('opcua');
@@ -34,11 +35,14 @@ export default function MountManager({ mounts, brokers = [], opcua, i3xStatus, o
     }
   };
 
+  const canAdd = !busy && !(type === 'opcua' && connectedOpcua.length === 0) && !(type === 'i3x' && !i3xStatus?.configured);
   return (
-    <div className="absolute right-4 top-4 z-20 w-80 max-w-[calc(100%-2rem)] rounded-xl border border-white/10 bg-surface-900/95 p-3 shadow-xl backdrop-blur">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-semibold text-slate-100">UNS sources</span>
-        <span className="flex items-center gap-1">
+    <SidePanel
+      title="Namespace sources"
+      label="Namespace sources"
+      onClose={onClose}
+      actions={
+        <>
           <HelpButton title="What feeds the Unified Namespace?" label="About UNS sources">
             <p>
               The namespace is one shared tree that several sources feed at once. They fall into two groups.
@@ -71,112 +75,82 @@ export default function MountManager({ mounts, brokers = [], opcua, i3xStatus, o
               binding. For example, mount an OPC UA server to find the node you want, then route it into
               <code>uns/plant1/line1</code> on your broker so it becomes a live topic that others can subscribe to.
             </p>
-            <p className="text-slate-400">
+            <p className="text-subtle">
               Mounted sources re-browse every 60 seconds. Press <b>Refresh</b> to update now.
             </p>
           </HelpButton>
-          <button
-            onClick={onChanged}
-            title="Re-browse mounted sources now (also refreshes every 60s)"
-            className="rounded px-1.5 py-0.5 text-xs text-accent-300 hover:bg-white/10"
-          >
-            Refresh
-          </button>
-          <button aria-label="Close UNS sources" onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
-            <X size={14} />
-          </button>
-        </span>
-      </div>
-      <p className="mb-2 text-xs leading-snug text-slate-400">
-        Everything below feeds one namespace. MQTT brokers (and any Sparkplug traffic on them) stream live; OPC UA and
-        i3X graft in structure only. To carry values across sources, use a Pipeline route or a Tag binding.
-      </p>
-
-      {/* Live sources: MQTT brokers (Sparkplug is decoded within them) — managed on the Brokers page */}
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Live sources</p>
-      <div className="mb-3 space-y-1">
+          <IconButton icon={RefreshCw} size={14} label="Re-browse mounted sources now (also every 60 s)" side="left" onClick={onChanged} />
+        </>
+      }
+    >
+      <PanelSection>
+        <p className="text-sm text-muted">
+          Everything here feeds one namespace. MQTT brokers, and any Sparkplug traffic on them, stream live. OPC UA and i3X add structure only. To carry values across sources, use a Pipeline route or a Tag binding.
+        </p>
+      </PanelSection>
+      <PanelSection title="Live sources">
         {brokers.length === 0 ? (
-          <p className="text-xs text-slate-400">
-            No brokers connected. Add one on the <b className="text-slate-400">MQTT Brokers</b> page.
-          </p>
+          <p className="text-sm text-muted">No brokers connected. Add one on the MQTT Brokers page.</p>
         ) : (
-          brokers.map((b) => (
-            <div key={b.id} className="flex items-center justify-between rounded-lg bg-black/20 px-2 py-1.5 text-xs">
-              <span className="truncate text-slate-300">
-                <span className="mr-1.5 rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-xs uppercase text-emerald-300">mqtt</span>
-                {b.name || `${b.host}:${b.port}`}
-              </span>
-              <span className="text-xs text-emerald-400">live</span>
-            </div>
-          ))
+          <ul className="divide-y divide-line">
+            {brokers.map((b) => (
+              <li key={b.id} className="flex items-center justify-between gap-2 py-1.5">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Badge>MQTT</Badge>
+                  <span className="truncate text-sm text-fg">{b.name || `${b.host}:${b.port}`}</span>
+                </span>
+                <StatusText tone="good" className="text-xs">
+                  Live
+                </StatusText>
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
-
-      {/* Mounted sources: OPC UA / i3X, structure only */}
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Mounted sources</p>
-      {mounts.length > 0 && (
-        <div className="mb-2 space-y-1">
-          {mounts.map((m) => (
-            <div key={m.id} className="flex items-center justify-between rounded-lg bg-black/20 px-2 py-1.5 text-xs">
-              <span className="truncate text-slate-300">
-                <span className="mr-1.5 rounded bg-white/10 px-1 py-0.5 font-mono text-xs uppercase">{m.type}</span>
-                {m.label || m.connectionId || 'i3X namespace'}
-              </span>
-              <button aria-label="Remove mount" onClick={() => remove(m.id)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-red-400">
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="space-y-1.5">
-        <div className="flex gap-1.5">
-          <select
-            aria-label="Source type"
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 focus:outline-none"
-          >
-            <option value="opcua">OPC UA</option>
-            <option value="i3x">i3X</option>
-          </select>
-          {type === 'opcua' && (
-            <select
-              aria-label="OPC UA connection to mount"
-              value={connectionId}
-              onChange={(e) => setConnectionId(e.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 focus:outline-none"
-            >
-              {connectedOpcua.length === 0 && <option value="">no connections</option>}
-              {connectedOpcua.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.endpointUrl}
-                </option>
-              ))}
-            </select>
+      </PanelSection>
+      <PanelSection title="Mounted sources">
+        {mounts.length > 0 && (
+          <ul className="mb-3 divide-y divide-line">
+            {mounts.map((m) => (
+              <li key={m.id} className="flex items-center justify-between gap-2 py-1">
+                <span className="flex min-w-0 items-center gap-2">
+                  <Badge>{m.type === 'opcua' ? 'OPC UA' : 'i3X'}</Badge>
+                  <span className="truncate text-sm text-fg">{m.label || m.connectionId || 'i3X namespace'}</span>
+                </span>
+                <IconButton icon={Trash2} size={14} label={`Remove ${m.label || m.connectionId || 'i3X namespace'}`} side="left" className="hover:bg-bad/10 hover:text-bad" onClick={() => remove(m.id)} />
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="space-y-3">
+          <div className="grid grid-cols-[auto_1fr] gap-2">
+            <Select aria-label="Source type" value={type} onChange={(e) => setType(e.target.value)} className="w-auto">
+              <option value="opcua">OPC UA</option>
+              <option value="i3x">i3X</option>
+            </Select>
+            {type === 'opcua' ? (
+              <Select aria-label="OPC UA connection to mount" value={connectionId} onChange={(e) => setConnectionId(e.target.value)}>
+                {connectedOpcua.length === 0 && <option value="">No connections</option>}
+                {connectedOpcua.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name || c.endpointUrl}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <span />
+            )}
+          </div>
+          <Input aria-label="Mount label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label (optional)" />
+          <Button variant="secondary" className="w-full" onClick={add} loading={busy} disabled={!canAdd}>
+            Mount source
+          </Button>
+          {error && (
+            <p role="alert" className="text-sm text-bad">
+              {error}
+            </p>
           )}
         </div>
-        <input
-          aria-label="Mount label"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Label (optional)"
-          className="w-full rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-400 focus:border-accent-500/60 focus:outline-none"
-        />
-        <button
-          onClick={add}
-          disabled={busy || (type === 'opcua' && connectedOpcua.length === 0) || (type === 'i3x' && !i3xStatus?.configured)}
-          className="w-full rounded-lg bg-accent-500/20 px-2.5 py-1.5 text-xs font-medium text-accent-200 hover:bg-accent-500/30 disabled:opacity-40"
-        >
-          Mount source
-        </button>
-        {error && (
-          <p role="alert" className="text-xs text-rose-300">
-            {error}
-          </p>
-        )}
-      </div>
-    </div>
+      </PanelSection>
+    </SidePanel>
   );
 }
-

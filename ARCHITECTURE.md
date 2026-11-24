@@ -210,8 +210,11 @@ skeleton with exact subtree counts, and the lint pass scores structural
 conformance (naming-convention mixes, payloads on branches, empty segments,
 single-child chains, depth variance).
 
-The topology canvas throttles its draw loop to roughly 8 fps when there is no
-traffic and no interaction, returning to full frame rate on either signal.
+The topology canvas paints through the shared frame scheduler
+(`createFrameScheduler` in `client/src/graph/canvasKit.js`): about one frame per
+second when there is no traffic and no interaction (to keep staleness and rate
+captions honest), full frame rate while data flows or the user interacts, and
+nothing at all while the tab is hidden or the canvas is scrolled out of view.
 
 ## Pipelines
 

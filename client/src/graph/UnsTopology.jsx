@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Sun, Moon } from 'lucide-react';
+import { Maximize2, Minus, Plus, Workflow } from 'lucide-react';
 import { onMessageActivity } from '@/store/store';
 import { loadIcons } from './unsIcons';
-import { UNS_THEMES } from './unsTheme';
+import { buildUnsTheme } from './unsTheme';
+import { useCanvasTokens } from './canvasTokens';
+import { IconButton } from '@/components/ui';
 import { DEFAULT_LEVELS } from './unsLevels';
 import { recordActivity, rollRates, liveMeta } from './unsLive';
 import { nodeKey, seedExpansion, layoutForest, fitTransform, pickNode, onToggleAffordance } from './unsLayout';
@@ -28,8 +30,9 @@ const MAX_K = 3;
  *
  * Renders the namespace as a horizontal tidy tree of badge nodes with a level
  * ring + glyph, name and LEVEL caption beneath, "+ / -" expand affordances, and
- * edges that animate green while data flows through the branch. Theme-able
- * (dark by default, light on toggle); all colours live in unsTheme.js.
+ * edges that animate (dashed, in the good colour) while data flows through the
+ * branch. Colours follow the app theme: unsTheme.js derives them from the design
+ * tokens, and a theme switch repaints in place (camera, expansion, selection kept).
  *
  * The code is split by concern: unsLevels (level naming), unsLive (liveness
  * state), unsTree (tree build), unsLayout (layout/fit/hit-test), unsDraw
@@ -40,8 +43,14 @@ export { DEFAULT_LEVELS, levelName, levelColor, nodeLevel } from './unsLevels';
 export { buildUnsTree } from './unsTree';
 export { unsLiveMap, unsValueMap, unsRateMap, lastActive, nodeValue, nodeRate, staleness, expectedInterval } from './unsLive';
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, theme = 'dark', onToggleTheme }) {
-  const themeTokens = UNS_THEMES[theme] || UNS_THEMES.dark;
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null }) {
+  const tokens = useCanvasTokens();
+  const themeTokens = buildUnsTheme(tokens);
+  const hoverRef = useRef(null); // node key under the pointer
+  const themeRef = useRef(themeTokens);
+  useEffect(() => {
+    themeRef.current = themeTokens;
+  }, [themeTokens]);
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
   const sizeRef = useRef({ w: 0, h: 0, sx: 1, sy: 1 });
@@ -102,18 +111,30 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   const centerOn = useCallback(
     (l) => {
       const { w, h } = sizeRef.current;
-      if (!w) return;
+      if (!w || !h) return false;
       const p = posOf(l);
       const t = transformRef.current;
-      t.k = Math.min(1.4, Math.max(t.k, 0.8)); // never focus while zoomed way out
+      t.k = Math.min(1.15, Math.max(t.k, 0.85)); // a readable zoom, never focus while zoomed way out
       t.x = w / 2 - t.k * p.x;
       t.y = h / 2 - t.k * p.y;
       schedRef.current?.request();
+      return true;
     },
     [posOf]
   );
-  // A pending "focus this node" request, applied once the node is laid out.
+  // A pending "focus this node" request, applied once the node is laid out AND
+  // the canvas has a size (tried on every layout, on resize and on request).
   const focusPendingRef = useRef(null);
+  const applyFocus = useCallback(() => {
+    const pending = focusPendingRef.current;
+    if (!pending) return;
+    const target = visibleRef.current.find((l) => l.node.brokerId === pending.brokerId && l.node.path === pending.path);
+    if (target && centerOn(target)) focusPendingRef.current = null;
+  }, [centerOn]);
+  const applyFocusRef = useRef(applyFocus);
+  useEffect(() => {
+    applyFocusRef.current = applyFocus;
+  }, [applyFocus]);
 
   const [expanded, setExpanded] = useState(() => new Set());
   const toggle = useCallback((node) => {
@@ -214,16 +235,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
     // Apply a queued focus once its node has a position (it may take an extra
     // layout pass for the just-expanded ancestors to lay the node out).
-    if (focusPendingRef.current) {
-      const { brokerId, path } = focusPendingRef.current;
-      const target = layout.nodes.find((l) => l.node.brokerId === brokerId && l.node.path === path);
-      if (target) {
-        centerOn(target);
-        focusPendingRef.current = null;
-      }
-    }
+    applyFocus();
     schedRef.current?.request();
-  }, [layout, fitAll, posOf, centerOn]);
+    // focusTarget: a jump to a node whose ancestors are already open changes no layout.
+  }, [layout, fitAll, posOf, applyFocus, focusTarget]);
 
   // Read-only hook for e2e tests (enabled by ?e2e=1 only): world AND screen
   // (CSS px, canvas-relative) positions of the visible nodes, the camera, the
@@ -239,6 +254,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         },
         get frames() {
           return schedRef.current?.stats.frames ?? 0;
+        },
+        get selectedId() {
+          return selectedRef.current;
+        },
+        get theme() {
+          return { mode: themeRef.current.mode, bg: themeRef.current.bg };
         },
         get nodes() {
           const t = transformRef.current;
@@ -273,14 +294,16 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       layout,
       posOf,
       theme: themeTokens,
+      tokens,
       levels,
       selectedId: selectedRef.current,
+      hoverKey: hoverRef.current,
       selKeys: selRef.current,
       box: boxRef.current,
       now: Date.now(),
       reducedMotion: reducedRef.current
     });
-  }, [layout, levels, posOf, themeTokens]);
+  }, [layout, levels, posOf, themeTokens, tokens]);
   const drawRef = useRef(draw);
   useEffect(() => {
     drawRef.current = draw;
@@ -310,6 +333,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     });
     schedRef.current = sched;
     sched.request();
+    // Labels are measured and drawn in the design system's faces: repaint once they load.
+    document.fonts?.ready?.then(() => schedRef.current?.request());
     return () => {
       mq?.removeEventListener?.('change', onMq);
       sched.dispose();
@@ -326,7 +351,16 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     // Integer backing store at the current DPR, re-applied on container resize
     // (window, sidebar collapse, panels) AND on DPR change (monitor move, zoom).
     const unwatch = watchCanvasSize(wrap, ({ w, h, dpr }) => {
+      const prev = sizeRef.current;
+      // Once the user (or a jump) owns the camera, a resize (a side panel
+      // opening, the sidebar collapsing) keeps the point at the centre of the
+      // view in the centre, so the selection is never shoved out of sight.
+      if (userMovedRef.current && prev.w > 0 && prev.h > 0) {
+        transformRef.current.x += (w - prev.w) / 2;
+        transformRef.current.y += (h - prev.h) / 2;
+      }
       sizeRef.current = applyCanvasSize(canvas, w, h, dpr);
+      applyFocusRef.current();
       // Until the user takes the camera, keep the forest framed in the new box.
       if (!userMovedRef.current && visibleRef.current.length) fitAll();
       drawRef.current(); // paint synchronously: a resized canvas is cleared
@@ -404,7 +438,12 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         if (e.target !== canvas) return; // hover feedback only over the canvas
         // hover cursor feedback
         const over = pick(toWorld(e));
-        canvas.style.cursor = over ? 'grab' : 'default';
+        canvas.style.cursor = over ? 'pointer' : 'default';
+        const hk = over ? keyOf(over) : null;
+        if (hk !== hoverRef.current) {
+          hoverRef.current = hk;
+          schedRef.current?.request();
+        }
         return;
       }
       kick();
@@ -568,13 +607,18 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     }
   };
 
-  const btn = `rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70 ${themeTokens.toolbar}`;
+  const zoomBy = (f) => {
+    const { w, h } = sizeRef.current;
+    userMovedRef.current = true;
+    Object.assign(transformRef.current, zoomAround(transformRef.current, w / 2, h / 2, f, MIN_K, MAX_K));
+    kick();
+  };
   return (
-    <div ref={wrapRef} className="relative h-full w-full overflow-hidden" style={{ background: themeTokens.bg }}>
+    <div ref={wrapRef} className="relative h-full w-full overflow-hidden bg-app">
       <canvas
         ref={canvasRef}
         style={{ touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
-        className="absolute left-0 top-0 block h-full w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/70"
+        className="absolute left-0 top-0 block h-full w-full focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
         role="img"
         aria-label={summary}
         aria-describedby="uns-canvas-help"
@@ -582,38 +626,28 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         onKeyDown={onCanvasKey}
       />
       <span id="uns-canvas-help" className="sr-only">{keyboardHint}</span>
-      <div className="absolute bottom-4 right-4 z-10 flex max-w-[calc(100%-2rem)] flex-col items-end gap-2">
-        {selCount > 0 && (
+      {selCount > 1 && (
+        <div role="status" className="absolute bottom-4 left-1/2 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-panel py-1 pl-3 pr-1 text-xs text-fg shadow-overlay">
+          <span className="truncate tabular-nums">{selCount} selected · drag one to move them together</span>
           <button
+            type="button"
             onClick={() => {
               selRef.current = new Set();
               setSelCount(0);
+              kick();
             }}
-            title="Clear the multi-selection (Esc)"
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium shadow-sm transition ${themeTokens.sel}`}
+            className="h-7 shrink-0 rounded px-2 font-medium text-muted transition-colors hover:bg-raised hover:text-fg"
           >
-            {selCount} selected · drag to move · Esc to clear
-          </button>
-        )}
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {onToggleTheme && (
-            <button
-              onClick={onToggleTheme}
-              aria-label={theme === 'dark' ? 'Switch the topology to the light theme' : 'Switch the topology to the dark theme'}
-              title={theme === 'dark' ? 'Light canvas' : 'Dark canvas'}
-              className={`${btn} flex items-center gap-1.5`}
-            >
-              {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-              {theme === 'dark' ? 'Light' : 'Dark'}
-            </button>
-          )}
-          <button onClick={autoArrange} title="Reset manual node positions to the tidy layout and fit to view" className={btn}>
-            Auto arrange
-          </button>
-          <button onClick={fitAll} title="Fit the current arrangement to the viewport (keeps manual moves)" className={btn}>
-            Fit
+            Clear <span className="text-subtle">Esc</span>
           </button>
         </div>
+      )}
+      <div role="toolbar" aria-label="Map controls" aria-orientation="vertical" className="absolute bottom-4 right-4 z-10 flex flex-col rounded-md border border-line bg-panel p-0.5 shadow-overlay">
+        <IconButton icon={Plus} label="Zoom in" side="left" onClick={() => zoomBy(1.25)} />
+        <IconButton icon={Minus} label="Zoom out" side="left" onClick={() => zoomBy(0.8)} />
+        <span aria-hidden="true" className="mx-1.5 my-0.5 h-px bg-line" />
+        <IconButton icon={Maximize2} label="Fit to view (F)" side="left" onClick={fitAll} />
+        <IconButton icon={Workflow} label="Auto arrange: reset moved nodes and fit" side="left" onClick={autoArrange} />
       </div>
     </div>
   );

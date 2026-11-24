@@ -1,9 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Activity, Cpu, Radio, Workflow, Database, HardDriveDownload, ShieldCheck, BellRing, Tag, RefreshCw, AlertTriangle, Maximize2, X } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
+import clsx from 'clsx';
 import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
-import { Card, Button, EmptyState, Modal } from '@/components/ui';
-import { CHART_THEME, Sparkline, TimeSeriesChart } from '@/components/charts';
+import { Banner, Button, Dialog, Skeleton, StatGroup, StatusDot, StatusText } from '@/components/ui';
+import { Sparkline, TimeSeriesChart } from '@/components/charts';
 
 /**
  * System — the tool that watches your namespace, watched. Parses Manifold's own
@@ -75,6 +76,8 @@ const distinctLabel = (byKey, name, label) => {
 
 const fmtInt = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
 const fmtNum = (n, d = 1) => (n == null ? '—' : n.toFixed(d));
+// Rates: one decimal under 10, none above (design system data rule).
+const fmtRate = (r) => (r == null ? '—' : r < 10 ? r.toFixed(1) : Math.round(r).toLocaleString());
 const fmtBytes = (n) => (n == null ? '—' : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${(n / 1024).toFixed(0)} KB`);
 function fmtUptime(sec) {
   if (sec == null) return '—';
@@ -86,101 +89,87 @@ function fmtUptime(sec) {
   return `${m}m ${Math.floor(sec % 60)}s`;
 }
 
-// --- sparkline ---------------------------------------------------------------
+// --- metric cells --------------------------------------------------------------
 
+// Stable colour callbacks (charts resolve them against the current theme at paint time).
+const accentLine = (_i, t) => t.accent;
+const warnLine = (_i, t) => t.warn;
+
+/**
+ * One metric in a StatGroup strip: label, value with unit, an optional
+ * secondary line and a real sparkline of its rolling history. The whole cell
+ * opens the history Dialog once there are two samples.
+ */
 function StatTile({ label, value, unit, history, warn, sub }) {
   const [open, setOpen] = useState(false);
   const canChart = (history?.length || 0) >= 2;
-  const tile = (
-    <div className="flex items-start justify-between gap-2">
-      <div className="min-w-0">
-        {/* Wrap the label instead of truncating — "Delivered"/"Bindings published"
-            were cut to "DELI…"/"BINDIN…" in the narrow tiles. */}
-        <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-slate-400" title={label}>
-          {label}
-          {canChart && <Maximize2 size={9} className="opacity-0 transition group-hover:opacity-100" />}
-        </p>
-        <p className={`mt-0.5 text-lg font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
-          {value}
-          {unit && <span className="ml-1 text-xs font-normal text-slate-400">{unit}</span>}
-        </p>
-        {sub && <p className="truncate text-xs text-slate-400">{sub}</p>}
-      </div>
-      <div className="w-20 shrink-0">
-        <Sparkline values={history} warn={warn} height={28} label={label} />
-      </div>
-    </div>
+  const body = (
+    <>
+      <span className="flex items-center gap-1.5 text-xs text-muted">
+        {warn && <StatusDot tone="warn" size={6} />}
+        <span className="min-w-0 break-words">{label}</span>
+      </span>
+      <span className="mt-1 flex items-baseline gap-1">
+        <span className={clsx('text-xl font-medium tabular-nums tracking-tight', warn ? 'text-warn' : 'text-fg')}>{value}</span>
+        {unit && <span className="text-sm text-subtle">{unit}</span>}
+      </span>
+      {sub && <span className="mt-0.5 block truncate text-xs text-subtle">{sub}</span>}
+      <span className="mt-auto block pt-2">
+        <Sparkline values={history} warn={warn} height={24} label={label} />
+      </span>
+    </>
   );
-  const cardClass = `group rounded-xl border px-3 py-2.5 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70 ${warn ? 'border-amber-500/30 bg-amber-500/[0.06]' : 'border-white/5 bg-white/[0.02]'}`;
+  const cls = 'flex h-full min-w-0 flex-col items-stretch justify-start bg-panel px-4 py-3 text-left';
   return (
     <>
       {canChart ? (
-        <div
-          role="button"
-          tabIndex={0}
-          aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''}. Expand history chart`}
+        <button
+          type="button"
           onClick={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setOpen(true);
-            }
-          }}
-          title="Click to expand this metric"
-          className={`${cardClass} cursor-pointer hover:border-white/15 hover:bg-white/[0.05]`}
+          aria-label={`${label}: ${value}${unit ? ` ${unit}` : ''}${warn ? ', needs attention' : ''}. Open history`}
+          className={clsx(cls, 'transition-colors duration-150 hover:bg-raised focus-visible:relative focus-visible:z-10')}
         >
-          {tile}
-        </div>
+          {body}
+        </button>
       ) : (
-        <div className={cardClass}>{tile}</div>
+        <div className={cls}>{body}</div>
       )}
-      {open && <MetricModal label={label} value={value} unit={unit} history={history} warn={warn} onClose={() => setOpen(false)} />}
+      {open && <MetricDialog label={label} value={value} unit={unit} history={history} warn={warn} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-// Click-to-expand: a full uPlot time chart of a tile's rolling history, on a
-// synthesized time axis (samples are POLL_MS apart, newest = now).
-function MetricModal({ label, value, unit, history, warn, onClose }) {
+// The history of one metric as a full time chart, on a synthesized time axis
+// (samples are POLL_MS apart, newest = the latest poll).
+function MetricDialog({ label, value, unit, history, warn, onClose }) {
   const now = useContext(UpdatedAtContext);
   const series = useMemo(() => {
     const n = history.length;
-    const points = history.map((v, i) => [now - (n - 1 - i) * POLL_MS, v]);
-    return [{ tag: `${label}${unit ? ` (${unit})` : ''}`, points }];
+    return [{ tag: label, unit, points: history.map((v, i) => [now - (n - 1 - i) * POLL_MS, v]) }];
   }, [history, label, unit, now]);
-  // The shared Modal portals to <body>, escaping the tile's backdrop-blur Card.
   return (
-    <Modal title={`${label} history`} onClose={onClose} className="max-w-3xl p-5">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">{label}</h3>
-          <p className={`mt-0.5 text-2xl font-semibold tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
-            {value}
-            {unit && <span className="ml-1 text-sm font-normal text-slate-400">{unit}</span>}
-          </p>
-          <p className="mt-0.5 text-xs text-slate-400">last ~{Math.round((history.length * POLL_MS) / 1000)}s · {history.length} samples</p>
-        </div>
-        <button onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
-          <X size={16} />
-        </button>
-      </div>
-      <TimeSeriesChart series={series} height={320} colorFor={() => (warn ? CHART_THEME.warn : CHART_THEME.accent)} />
-    </Modal>
+    <Dialog title={label} description={`Last ${Math.round((history.length * POLL_MS) / 1000)} s · ${history.length} samples, every ${POLL_MS / 1000} s`} onClose={onClose} size="lg">
+      <p className="mb-3 flex items-baseline gap-1">
+        <span className={clsx('text-2xl font-medium tabular-nums', warn ? 'text-warn' : 'text-fg')}>{value}</span>
+        {unit && <span className="text-sm text-subtle">{unit}</span>}
+      </p>
+      <TimeSeriesChart series={series} height={300} unit={unit} colorFor={warn ? warnLine : accentLine} />
+    </Dialog>
   );
 }
 
-function Section({ icon: Icon, title, children, warn }) {
+/** A group of metrics: a 13px heading (state summary on the right) over one StatGroup strip. */
+function Section({ title, status, children }) {
   return (
-    <Card className="p-4">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
-        <Icon size={15} className={warn ? 'text-amber-400' : 'text-accent-400'} /> {title}
-      </h2>
-      {/* auto-fit so tiles never shrink below a label-readable width, whether the
-          section is full-width or half-width */}
-      <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))' }}>
-        {children}
+    <section aria-labelledby={`sys-${title}`}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 id={`sys-${title}`} className="text-sm font-medium text-fg">
+          {title}
+        </h2>
+        {status}
       </div>
-    </Card>
+      <StatGroup className="grid-cols-2 lg:grid-cols-4">{children}</StatGroup>
+    </section>
   );
 }
 
@@ -257,23 +246,20 @@ export default function System() {
   if (!metrics) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="System" subtitle="Manifold's own health and Prometheus readings" />
-        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <PageHeader title="System" />
+        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {error ? (
-            <EmptyState
-              icon={AlertTriangle}
-              title="Couldn't read /metrics"
-              hint={`${error}. Check that the server is running and your access token is valid, then retry.`}
-              action={
-                <Button variant="outline" size="sm" onClick={poll}>
-                  <RefreshCw size={14} /> Retry
-                </Button>
-              }
-            />
+            <Banner variant="error" title="Could not read /metrics" onRetry={poll}>
+              {error}. Check that the server is running and your access token is valid.
+            </Banner>
           ) : (
-            <div className="grid gap-4" aria-busy="true" aria-label="Loading health metrics">
+            <div className="space-y-5" role="status" aria-busy="true">
+              <span className="sr-only">Loading health metrics…</span>
               {[0, 1, 2].map((i) => (
-                <Card key={i} className="h-28 animate-pulse p-4" />
+                <div key={i} className="space-y-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-24 w-full rounded-lg" />
+                </div>
               ))}
             </div>
           )}
@@ -294,26 +280,22 @@ export default function System() {
       <div className="flex h-full flex-col">
         <PageHeader
           title="System"
-          subtitle="Manifold's own health and Prometheus readings — /metrics, live"
+          subtitle={updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()} · every ${POLL_MS / 1000} s from /metrics` : undefined}
           actions={
-            <div className="flex flex-wrap items-center gap-3">
-              {updatedAt && <span className="text-xs text-slate-400">updated {new Date(updatedAt).toLocaleTimeString()}</span>}
-              <Button variant="outline" size="sm" onClick={poll}>
-                <RefreshCw size={14} /> Refresh
-              </Button>
-            </div>
+            <Button variant="secondary" onClick={poll}>
+              <RefreshCw size={14} aria-hidden="true" /> Refresh
+            </Button>
           }
         />
 
-        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-6">
+        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {error && (
-            <p role="alert" className="flex items-center justify-between gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-              <span>Last poll failed: {error}. Showing the previous readings.</span>
-              <button type="button" onClick={poll} className="shrink-0 rounded border border-amber-400/40 px-2 py-0.5 hover:bg-amber-500/20">Retry</button>
-            </p>
+            <Banner variant="warn" title="Last poll failed, showing the previous readings" onRetry={poll}>
+              {error}
+            </Banner>
           )}
 
-          <Section icon={Activity} title="Process health" warn={loopWarn}>
+          <Section title="Process" status={loopWarn ? <StatusText tone="warn">Event loop slow</StatusText> : null}>
             <GaugeTile metrics={metrics} hist={hist} name="manifold_process_uptime_seconds" label="Uptime" fmt={fmtUptime} />
             <GaugeTile metrics={metrics} hist={hist} name="manifold_process_memory_bytes" labels={{ kind: 'rss' }} label="Memory RSS" fmt={fmtBytes} />
             <GaugeTile metrics={metrics} hist={hist} name="manifold_process_memory_bytes" labels={{ kind: 'heap_used' }} label="Heap used" fmt={fmtBytes} />
@@ -331,7 +313,7 @@ export default function System() {
           </Section>
 
           {brokers.length > 0 && (
-            <Section icon={Radio} title="Broker ingest">
+            <Section title="Broker ingest">
               {brokers.map((b) => {
                 const msgs = histFor(hist, 'manifold_broker_messages_received_total', { broker: b });
                 return (
@@ -340,7 +322,7 @@ export default function System() {
                     label={b}
                     value={fmtInt(val(metrics, 'manifold_broker_topics', { broker: b }))}
                     unit="topics"
-                    sub={`${fmtInt(rate(msgs) / (POLL_MS / 1000))}/s · ${fmtInt(val(metrics, 'manifold_broker_messages_received_total', { broker: b }))} total`}
+                    sub={`${fmtRate(rate(msgs) / (POLL_MS / 1000))} msg/s · ${fmtInt(val(metrics, 'manifold_broker_messages_received_total', { broker: b }))} total`}
                     history={deltas(msgs)}
                   />
                 );
@@ -348,8 +330,8 @@ export default function System() {
             </Section>
           )}
 
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Section icon={Workflow} title="Pipelines" warn={pipelineErrors > 0}>
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <Section title="Pipelines" status={pipelineErrors > 0 ? <StatusText tone="warn">{fmtInt(pipelineErrors)} failed</StatusText> : null}>
               {[
                 { label: 'Delivered', result: 'delivered' },
                 { label: 'Matched', result: 'matched' },
@@ -360,7 +342,7 @@ export default function System() {
               ))}
             </Section>
 
-            <Section icon={Database} title="Historian outbox" warn={dropped > 0 || spill > 0}>
+            <Section title="Historian outbox" status={dropped > 0 ? <StatusText tone="warn">{fmtInt(dropped)} dropped</StatusText> : spill > 0 ? <StatusText tone="warn">Spilling to disk</StatusText> : null}>
               <CounterTile metrics={metrics} hist={hist} family="manifold_outbox_points_total" result="written" label="Written" />
               <GaugeTile metrics={metrics} hist={hist} name="manifold_outbox_queued_points" label="Queued" />
               <StatTile label="Spilled" value={fmtBytes(spill)} warn={spill > 0} history={aggHistory(hist, 'manifold_outbox_spill_bytes')} />
@@ -368,8 +350,8 @@ export default function System() {
             </Section>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <Section icon={ShieldCheck} title="Contracts" warn={violations > 0}>
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <Section title="Contracts and alerts" status={violations > 0 ? <StatusText tone="warn">{fmtInt(violations)} violations</StatusText> : null}>
               <CounterTile metrics={metrics} hist={hist} family="manifold_contract_checks_total" label="Checks" />
               <CounterTile metrics={metrics} hist={hist} family="manifold_contract_violations_total" label="Violations" warnPositive />
               <GaugeTile metrics={metrics} hist={hist} name="manifold_alert_events" label="Alert events" />
@@ -377,7 +359,7 @@ export default function System() {
             </Section>
 
             {recordings.length > 0 && (
-              <Section icon={HardDriveDownload} title="Recorder">
+              <Section title="Recorder">
                 {recordings.map((r) => (
                   <StatTile
                     key={r}

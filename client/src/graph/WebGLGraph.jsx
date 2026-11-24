@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { GRAPH_STYLES } from './graphStyles';
-import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { useEffect, useMemo, useRef, useCallback } from 'react';
+import { resolveGraphStyle } from './graphStyles';
+import { groupColor } from './buildGraph';
+import { useCanvasTokens, FONT } from './canvasTokens';
 import {
   applyCanvasSize,
   attachPinchZoom,
@@ -52,7 +53,7 @@ export function webglNodeSize(n) {
   return Math.min(MAX_NODE_SIZE, 4 + Math.sqrt(n.degree || 0) * 1.5);
 }
 
-export default function WebGLGraph({ data, styleId = 'constellation', selectedId = null, onSelect, colorByProtocol = false, labelDensity = 0.5, positions = null }) {
+export default function WebGLGraph({ data, styleId = 'standard', selectedId = null, onSelect, colorByProtocol = false, labelDensity = 0.5, positions = null }) {
   const canvasRef = useRef(null);
   const labelCanvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -77,11 +78,15 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     cbRef.current = { onSelect };
   }, [onSelect]);
 
-  const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
+  // Theme-derived style (canvasTokens): a theme switch re-uploads only the
+  // per-node colour buffer and repaints; positions and camera are untouched.
+  const tokens = useCanvasTokens();
+  const style = useMemo(() => resolveGraphStyle(styleId, tokens), [styleId, tokens]);
   const colorFor = useCallback(
-    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
-    [colorByProtocol, style]
+    (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style, tokens]
   );
+  const colorForRef = useRef(colorFor);
 
   // Label overlay: WebGL can't cheaply draw text, so labels are painted on a 2D
   // canvas layered on top — ONLY for nodes on screen, large enough to read at
@@ -106,7 +111,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
       if (d <= 0.001) return;
       const MAX = Math.round(80 + d * 1120); // ~80 → ~1200 labels
       const MIN_SCREEN_R = 9 - d * 7; // ~9px (sparse) → ~2px (dense) radius to qualify
-      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      ctx.font = `400 11px ${FONT}`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'left';
       ctx.lineJoin = 'round';
@@ -121,7 +126,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
         const tw = ctx.measureText(text).width;
         if (!grid.tryPlace(x - 1, py - 7, x + tw + 1, py + 7) && !strong) return false;
         ctx.lineWidth = 3;
-        ctx.strokeStyle = style.background;
+        ctx.strokeStyle = style.label.halo;
         ctx.strokeText(text, x, py);
         ctx.fillStyle = strong ? style.label.strong : style.label.color;
         ctx.fillText(text, x, py);
@@ -277,7 +282,7 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     nodes.forEach((n, i) => {
       pos[i * 2] = n.x;
       pos[i * 2 + 1] = n.y;
-      const c = hexToRgb(colorFor(n));
+      const c = hexToRgb(colorForRef.current(n));
       color[i * 3] = c[0];
       color[i * 3 + 1] = c[1];
       color[i * 3 + 2] = c[2];
@@ -304,7 +309,28 @@ export default function WebGLGraph({ data, styleId = 'constellation', selectedId
     // data updates (which would fight the user's pan/zoom).
     if (posChanged) fitAll();
     schedRef.current?.request();
-  }, [data, colorFor, positions, fitAll, ensureGL]);
+  }, [data, positions, fitAll, ensureGL]);
+
+  // Colours only (theme or style change): rewrite the colour buffer in place.
+  useEffect(() => {
+    if (colorForRef.current === colorFor) return;
+    colorForRef.current = colorFor;
+    const gl = glRef.current;
+    const arrays = arraysRef.current;
+    if (!arrays) return;
+    const nodes = nodesRef.current;
+    for (let i = 0; i < nodes.length; i++) {
+      const c = hexToRgb(colorFor(nodes[i]));
+      arrays.color[i * 3] = c[0];
+      arrays.color[i * 3 + 1] = c[1];
+      arrays.color[i * 3 + 2] = c[2];
+    }
+    if (gl && !gl.isContextLost() && buffersRef.current.color) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffersRef.current.color);
+      gl.bufferData(gl.ARRAY_BUFFER, arrays.color, gl.STATIC_DRAW);
+    }
+    schedRef.current?.request();
+  }, [colorFor]);
 
   useEffect(() => {
     selectedRef.current = selectedId;

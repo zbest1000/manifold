@@ -9,6 +9,8 @@ export const COL_W = 224;
 export const R = 21; // node radius
 export const MIN_K = 0.2;
 export const MAX_FIT_K = 1.4;
+// CSS px kept clear around a fitted forest (status line on top, legend and map controls below).
+export const FIT_INSET = { top: 52, bottom: 72, side: 56 };
 
 export const nodeKey = (n) => `${n.brokerId}:${n.path}`;
 
@@ -85,8 +87,12 @@ export function fitTransform(laidNodes, posOf, { w, h }, { excludeMounts = true 
     minY = Math.min(minY, p.y - R - 10);
     maxY = Math.max(maxY, p.y + R + 56); // label block below the badge
   }
-  const k = Math.max(MIN_K, Math.min(MAX_FIT_K, Math.min((w - 60) / Math.max(maxX - minX, 1), (h - 120) / Math.max(maxY - minY, 1))));
-  return { k, x: w / 2 - (k * (minX + maxX)) / 2, y: (h - 60) / 2 - (k * (minY + maxY)) / 2 } // leaves room for the legend along the bottom;
+  // Keep the framed forest clear of the floating overlays: the source status
+  // line along the top and the legend / map controls along the bottom.
+  const top = FIT_INSET.top;
+  const avail = Math.max(h - FIT_INSET.top - FIT_INSET.bottom, Math.min(h, 80));
+  const k = Math.max(MIN_K, Math.min(MAX_FIT_K, Math.min((w - 2 * FIT_INSET.side) / Math.max(maxX - minX, 1), avail / Math.max(maxY - minY, 1))));
+  return { k, x: w / 2 - (k * (minX + maxX)) / 2, y: top + avail / 2 - (k * (minY + maxY)) / 2 };
 }
 
 /** The laid node under a world-space point, or null. */

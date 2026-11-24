@@ -10,11 +10,13 @@
  */
 
 export const DEFAULT_LEVELS = ['Unified Namespace', 'Business Unit', 'Site', 'Area', 'Line', 'Cell', 'Node'];
-// Level ring colours are theme tokens: they live with the rest of the UNS canvas
-// palette in unsTheme.js and are re-exported here for existing importers.
-import { LEVEL_COLORS, LEVEL_COLORS_DARK, SPARKPLUG_COLOR, SPARKPLUG_COLOR_DARK, SYSTEM_COLOR, SYSTEM_COLOR_DARK } from './unsTheme';
+// Level ring colours come from the data palette (dataPalette.js) for the
+// current theme's tokens, so they follow the app theme.
+import { FALLBACK_TOKENS } from './canvasTokens';
+import { levelPalette } from './dataPalette';
 
-export { LEVEL_COLORS, LEVEL_COLORS_DARK, SPARKPLUG_COLOR, SPARKPLUG_COLOR_DARK, SYSTEM_COLOR, SYSTEM_COLOR_DARK };
+/** A token snapshot, or 'dark' / 'light' for the static fallback tokens. */
+const toTokens = (t) => (t && typeof t === 'object' ? t : FALLBACK_TOKENS[t === 'dark' ? 'dark' : 'light']);
 
 export const SPARKPLUG_NAMESPACE = 'spBv1.0';
 
@@ -31,8 +33,8 @@ export function levelName(depth, levels = DEFAULT_LEVELS) {
   return levels[Math.min(depth, levels.length - 1)];
 }
 
-export function levelColor(depth, mode = 'light') {
-  const set = mode === 'dark' ? LEVEL_COLORS_DARK : LEVEL_COLORS;
+export function levelColor(depth, tokens = 'light') {
+  const set = levelPalette(toTokens(tokens)).levels;
   return set[Math.min(depth, set.length - 1)];
 }
 
@@ -55,19 +57,20 @@ export function sparkplugLevelName(segs) {
 
 /**
  * Level info for a UNS tree node ({ path, depth }): the caption, the kind of
- * namespace it lives in, and its ring colour. ISA-95 names are used only for
- * nodes in the ISA-95 part of the forest.
+ * namespace it lives in, and its ring colour (for `tokens`: a canvasTokens
+ * snapshot, or 'dark' / 'light'). ISA-95 names are used only for nodes in the
+ * ISA-95 part of the forest.
  */
-export function nodeLevel(node, levels = DEFAULT_LEVELS, mode = 'light') {
-  const dark = mode === 'dark';
+export function nodeLevel(node, levels = DEFAULT_LEVELS, tokens = 'light') {
+  const tk = toTokens(tokens);
   const kind = namespaceKind(node.path);
   if (kind === 'sparkplug') {
-    return { kind, name: sparkplugLevelName(String(node.path).split('/')), color: dark ? SPARKPLUG_COLOR_DARK : SPARKPLUG_COLOR };
+    return { kind, name: sparkplugLevelName(String(node.path).split('/')), color: levelPalette(tk).sparkplug };
   }
   if (kind === 'system') {
-    return { kind, name: node.depth <= 1 ? 'System' : 'System topic', color: dark ? SYSTEM_COLOR_DARK : SYSTEM_COLOR };
+    return { kind, name: node.depth <= 1 ? 'System' : 'System topic', color: levelPalette(tk).system };
   }
-  return { kind, name: levelName(node.depth, levels), color: levelColor(node.depth, mode) };
+  return { kind, name: levelName(node.depth, levels), color: levelColor(node.depth, tk) };
 }
 
 /** Icon name for a non-ISA-95 node, or null to fall back to the usual rules. */

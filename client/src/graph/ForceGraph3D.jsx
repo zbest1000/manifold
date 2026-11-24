@@ -1,7 +1,8 @@
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as THREE from 'three';
-import { GRAPH_STYLES } from './graphStyles';
-import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { resolveGraphStyle } from './graphStyles';
+import { groupColor } from './buildGraph';
+import { useCanvasTokens, FONT } from './canvasTokens';
 import { attachPinchZoom, registerTestHook, sanitizePositions, watchCanvasSize, wheelFactor } from './canvasKit';
 
 /**
@@ -42,7 +43,7 @@ function truncateLabel(label) {
 function makeLabelSprite(text, labelStyle) {
   const fontSize = 28;
   const pad = 10;
-  const font = `600 ${fontSize}px Inter, sans-serif`;
+  const font = `500 ${fontSize}px ${FONT}`;
   const canvas = document.createElement('canvas');
   let ctx = canvas.getContext('2d');
   ctx.font = font;
@@ -64,6 +65,7 @@ function makeLabelSprite(text, labelStyle) {
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(material);
+  sprite.userData.text = text; // re-rasterised in place on a theme change
   const worldH = 15; // world units; perspective scales it with distance
   sprite.scale.set(worldH * (w / h), worldH, 1);
   return sprite;
@@ -79,6 +81,14 @@ export function fitDistance(radius, fovDeg, aspect) {
   const v = (fovDeg * Math.PI) / 360;
   const h = Math.atan(Math.tan(v) * (aspect > 0 ? aspect : 1));
   return (r / Math.sin(Math.min(v, h))) * 1.08;
+}
+
+function applySceneTheme(scene, ambient, dirLight, style) {
+  scene.background = new THREE.Color(style.background);
+  ambient.color.set(style.scene3d.ambient);
+  ambient.intensity = style.scene3d.ambientIntensity;
+  dirLight.color.set(style.scene3d.directional);
+  dirLight.intensity = style.scene3d.directionalIntensity;
 }
 
 function positionLabel(sprite, n) {
@@ -97,7 +107,7 @@ function disposeObject(obj) {
 const ForceGraph3D = forwardRef(function ForceGraph3D(
   {
     data,
-    styleId = 'constellation',
+    styleId = 'standard',
     selectedId = null,
     onSelect,
     colorByProtocol = false,
@@ -127,11 +137,17 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   }, [linkOpacity]);
   onSelectRef.current = onSelect;
 
-  const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
+  // Theme-derived style (canvasTokens). The scene is built once per dataset; a
+  // theme or style change updates materials, lights, background and label
+  // textures IN PLACE (see the theme effect), keeping camera and selection.
+  const tokens = useCanvasTokens();
+  const style = useMemo(() => resolveGraphStyle(styleId, tokens), [styleId, tokens]);
+  const styleRef = useRef(style);
   const colorFor = useCallback(
-    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
-    [colorByProtocol, style]
+    (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style, tokens]
   );
+  const colorForRef = useRef(colorFor);
 
   const capped = data && data.nodes.length > MAX_3D_NODES;
 
@@ -352,6 +368,17 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
         }
         return out;
       },
+      get rotation() {
+        return { ...rotRef.current };
+      },
+      /** The colour of the top-left corner (the scene background) as [r, g, b]. */
+      bgPixel() {
+        renderFrame();
+        const gl = renderer.getContext();
+        const px = new Uint8Array(4);
+        gl.readPixels(1, gl.drawingBufferHeight - 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        return [px[0], px[1], px[2]];
+      },
       loseContext: () => renderer.forceContextLoss(),
       restoreContext: () => renderer.forceContextRestore(),
       /**
@@ -419,9 +446,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     byIdRef.current = byId;
 
     const { scene, rotGroup, requestRender, ambient, dirLight } = three;
-    scene.background = new THREE.Color(style.background);
-    ambient.color.set(style.scene3d.ambient);
-    dirLight.color.set(style.scene3d.directional);
+    const style = styleRef.current;
+    const colorFor = colorForRef.current;
+    applySceneTheme(scene, ambient, dirLight, style);
 
     const group = new THREE.Group();
 
@@ -485,11 +512,15 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
 
     // Labels: sprites for the highest-degree nodes only (text is expensive).
     const labelGroup = new THREE.Group();
+    // Labels scale with the layout so they stay readable when the camera is fit to a big tree.
+    const labelScale = Math.max(1, radius / 450);
     const labeled = new Set();
     const byDegree = nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, LABEL_COUNT);
     for (const n of byDegree) {
       if (!n.label) continue;
       const sprite = makeLabelSprite(truncateLabel(n.label), style.label);
+      sprite.scale.multiplyScalar(labelScale);
+      sprite.userData.scale = labelScale;
       positionLabel(sprite, n);
       labelGroup.add(sprite);
       labeled.add(n.id);
@@ -514,7 +545,30 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       selSpriteRef.current = null;
       objsRef.current = null;
     };
-  }, [data, style, colorFor]);
+  }, [data]);
+
+  // Theme / style change: recolour the existing scene in place (no rebuild).
+  useEffect(() => {
+    styleRef.current = style;
+    colorForRef.current = colorFor;
+    const three = threeRef.current;
+    if (!three) return;
+    applySceneTheme(three.scene, three.ambient, three.dirLight, style);
+    const objs = objsRef.current;
+    if (objs) {
+      objs.lineMat?.color.set(opaqueColor(style.link.color));
+      objs.highlight.material.color.set(style.selectedRing);
+      for (const sprite of objs.labelGroup.children) {
+        const next = makeLabelSprite(sprite.userData.text, style.label);
+        sprite.material.map?.dispose();
+        sprite.material.map = next.material.map;
+        sprite.material.needsUpdate = true;
+        sprite.scale.copy(next.scale).multiplyScalar(sprite.userData.scale || 1);
+        next.material.dispose();
+      }
+    }
+    three.requestRender();
+  }, [style, colorFor]);
 
   // Auto-rotate is driven by a ref the render loop reads; Beautify also spins.
   useEffect(() => {
@@ -529,8 +583,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     if (!three || !objs?.nodeMesh) return;
     const nodes = nodesRef.current;
     const { nodeMesh, maxDepth } = objs;
-    const inner = new THREE.Color(style.palette[0]);
-    const outer = new THREE.Color(style.palette[style.palette.length - 1]);
+    const inner = new THREE.Color(style.linkHighlight);
+    const outer = new THREE.Color(style.palette[6]);
     const c = new THREE.Color();
     for (let i = 0; i < nodes.length; i++) {
       if (beautify) {
@@ -550,7 +604,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const three = threeRef.current;
     const lineMat = objsRef.current?.lineMat;
     if (!three || !lineMat) return;
-    const glow = beautify && style.id !== 'slate';
+    const glow = beautify && style.mode !== 'light'; // additive blending washes out on a light surface
     lineMat.opacity = beautify ? Math.max(linkOpacity, 0.5) : linkOpacity;
     lineMat.blending = glow ? THREE.AdditiveBlending : THREE.NormalBlending;
     lineMat.needsUpdate = true;
@@ -600,6 +654,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       highlight.scale.setScalar(nodeRadius(node) * nodeScaleRef.current + 3);
       if (node.label && !labeled.has(node.id)) {
         const sprite = makeLabelSprite(truncateLabel(node.label), style.label);
+        sprite.userData.scale = Math.max(1, radiusRef.current / 450);
+        sprite.scale.multiplyScalar(sprite.userData.scale);
         positionLabel(sprite, node);
         labelGroup.add(sprite);
         selSpriteRef.current = sprite;
@@ -630,8 +686,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
         aria-label="3D node graph. Use the Tree view for a keyboard-accessible list."
       />
       {capped && (
-        <div className="pointer-events-none absolute right-4 top-16 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur">
-          3D view showing the first {MAX_3D_NODES.toLocaleString()} nodes — use the 2D graph or tree for the full set.
+        <div role="status" className="pointer-events-none absolute bottom-16 right-4 max-w-xs rounded-md border border-line bg-panel px-3 py-2 text-xs text-muted shadow-overlay">
+          Showing the first {MAX_3D_NODES.toLocaleString()} nodes. Use the 2D graph or the tree for the full set.
         </div>
       )}
     </div>

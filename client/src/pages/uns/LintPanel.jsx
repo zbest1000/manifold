@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
-import { ShieldCheck } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { api } from '@/lib/api';
-import PanelHeader from './PanelHeader';
 import { namespaceKind } from '@/graph/unsLevels';
+import { Banner, LoadingState, StatusText } from '@/components/ui';
+import { PanelSection, SidePanel } from '@/components/CanvasChrome';
 
-const SEV_COLOR = { error: 'text-red-400', warn: 'text-amber-400', info: 'text-sky-400' };
+const SEVERITY = { error: { tone: 'bad', word: 'Error' }, warn: { tone: 'warn', word: 'Warning' }, info: { tone: 'info', word: 'Info' } };
+const SEV_ORDER = { error: 0, warn: 1, info: 2 };
 
 export default function LintPanel({ brokers, onJump, onClose }) {
   // The result remembers which (brokers, attempt) it answers, so a new request
-  // shows "Analyzing…" again without resetting state inside the effect.
+  // shows the loading state again without resetting state inside the effect.
   const [result, setResult] = useState(null); // { brokers, attempt, reports: [{ broker, report, error }] }
   const [attempt, setAttempt] = useState(0);
   const reports = result && result.brokers === brokers && result.attempt === attempt ? result.reports : null;
@@ -28,73 +30,85 @@ export default function LintPanel({ brokers, onJump, onClose }) {
   }, [brokers, attempt]);
 
   return (
-    <aside className="flex max-h-[50%] w-full shrink-0 flex-col border-t border-white/5 bg-surface-900/40 md:max-h-none md:w-80 md:border-l md:border-t-0">
-      <PanelHeader icon={ShieldCheck} title="Namespace lint" onClose={onClose} />
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-        {!reports && <p className="text-xs text-slate-400" role="status">Analyzing namespace…</p>}
-        {reports?.map(({ broker, report, error }) => (
-          <div key={broker.id}>
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="truncate text-xs font-semibold text-slate-200">{broker.name}</span>
-              {report && <ScoreBadge score={report.score} />}
+    <SidePanel title="Namespace lint" label="Namespace lint" onClose={onClose} width="md:w-[26rem]">
+      {!reports && <LoadingState label="lint findings" rows={3} className="m-4" />}
+      {reports?.map(({ broker, report, error }) => (
+        <PanelSection
+          key={broker.id}
+          title={broker.name}
+          aside={
+            report && (
+              <span className="tabular-nums">
+                Score <span className={report.score >= 85 ? 'text-good' : report.score >= 60 ? 'text-warn' : 'text-bad'}>{report.score}</span> / 100
+              </span>
+            )
+          }
+        >
+          {!report && <Banner variant="error" title="Lint unavailable" onRetry={() => setAttempt((v) => v + 1)}>{error}</Banner>}
+          {report && report.findings.length === 0 && (
+            <StatusText tone="good">No structural issues in {report.stats.topics.toLocaleString()} topics</StatusText>
+          )}
+          {report && report.findings.length > 0 && (
+            <div role="region" aria-label={`Lint findings for ${broker.name}`} tabIndex={0} className="-mx-4 overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <caption className="sr-only">Lint findings for {broker.name}</caption>
+                <thead className="border-b border-line">
+                  <tr>
+                    <th scope="col" className="h-8 w-24 whitespace-nowrap px-4 align-middle text-xs font-medium text-muted">
+                      Severity
+                    </th>
+                    <th scope="col" className="h-8 whitespace-nowrap pr-4 align-middle text-xs font-medium text-muted">
+                      Finding
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.findings
+                    .slice()
+                    .sort((a, b) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b.severity] ?? 3))
+                    .map((f, i) => {
+                      const sev = SEVERITY[f.severity] || { tone: 'neutral', word: f.severity || 'Note' };
+                      return (
+                        <tr key={i} className="border-t border-line align-top first:border-t-0">
+                          <td className="whitespace-nowrap px-4 py-2">
+                            <StatusText tone={sev.tone} className="text-xs">
+                              {sev.word}
+                            </StatusText>
+                          </td>
+                          <td className="min-w-0 py-2 pr-4">
+                            <p className="font-medium text-fg">{f.title}</p>
+                            {f.path && (
+                              <button
+                                type="button"
+                                onClick={() => onJump(broker.id, f.path)}
+                                className="group mt-0.5 inline-flex max-w-full items-center gap-1 rounded text-left font-mono text-xs text-accent-text hover:underline"
+                                title="Show this node on the map"
+                              >
+                                <span className="break-all">{f.path}</span>
+                                <ArrowRight size={12} aria-hidden="true" className="shrink-0" />
+                                <span className="sr-only">Show on the map</span>
+                              </button>
+                            )}
+                            {f.detail && <p className="mt-0.5 text-xs text-muted">{f.detail}</p>}
+                            {namespaceKind(f.path) === 'sparkplug' && (
+                              <p className="mt-1 text-xs text-subtle">Sparkplug topics follow the Sparkplug B layout (namespace, group, message type, edge node, device), not ISA-95 levels.</p>
+                            )}
+                            {f.why && <p className="mt-1 text-xs leading-snug text-subtle">{f.why}</p>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
             </div>
-            {!report && (
-              <div role="alert" className="flex items-center justify-between gap-2 rounded-lg bg-rose-500/10 px-2 py-1.5 text-xs text-rose-300">
-                <span>Lint unavailable{error ? `: ${error}` : ''}</span>
-                <button onClick={() => setAttempt((v) => v + 1)} className="shrink-0 rounded border border-rose-400/40 px-2 py-0.5 hover:bg-rose-500/20">
-                  Retry
-                </button>
-              </div>
-            )}
-            {report && report.findings.length === 0 && (
-              <p className="text-xs text-emerald-400">No structural issues found in {report.stats.topics.toLocaleString()} topics.</p>
-            )}
-            {report?.findings.map((f, i) => {
-              const navigable = Boolean(f.path);
-              const cls = `mb-1 block w-full rounded-lg bg-black/20 px-2 py-1.5 text-left text-xs ${navigable ? 'group cursor-pointer transition hover:bg-white/5' : ''}`;
-              const body = (
-                <>
-                  <div className="flex items-start gap-1.5">
-                    <span className={`font-semibold ${SEV_COLOR[f.severity] || 'text-slate-300'}`}>{f.title}</span>
-                    {navigable && (
-                      <span className="ml-auto shrink-0 text-xs text-accent-300 opacity-0 transition group-hover:opacity-100">jump →</span>
-                    )}
-                  </div>
-                  {f.path && <div className="mt-0.5 break-all font-mono text-xs text-slate-400">{f.path}</div>}
-                  {f.detail && <div className="mt-0.5 text-slate-400">{f.detail}</div>}
-                  {/* WHY it matters — the finding's explanation, previously dropped. */}
-                  {namespaceKind(f.path) === 'sparkplug' && (
-                    <div className="mt-1 text-xs italic text-slate-400">
-                      Sparkplug topics follow the Sparkplug B spec (namespace / group / message type / edge node / device), not ISA-95 levels.
-                    </div>
-                  )}
-                  {f.why && <div className="mt-1 leading-snug text-xs text-slate-400">{f.why}</div>}
-                </>
-              );
-              return navigable ? (
-                <button key={i} type="button" onClick={() => onJump(broker.id, f.path)} className={cls} title="Jump to this node in the topology">
-                  {body}
-                </button>
-              ) : (
-                <div key={i} className={cls}>
-                  {body}
-                </div>
-              );
-            })}
-            {report?.truncated && (
-              <p className="text-xs text-slate-400">
-                Findings truncated — totals: {Object.entries(report.stats.byRule).map(([r, c]) => `${r}: ${c}`).join(', ')}
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
-    </aside>
+          )}
+          {report?.truncated && (
+            <p className="mt-2 text-xs text-subtle">
+              Findings truncated. Totals: {Object.entries(report.stats.byRule).map(([r, c]) => `${r} ${c}`).join(', ')}
+            </p>
+          )}
+        </PanelSection>
+      ))}
+    </SidePanel>
   );
 }
-
-function ScoreBadge({ score }) {
-  const color = score >= 85 ? 'text-emerald-400 border-emerald-500/40' : score >= 60 ? 'text-amber-400 border-amber-500/40' : 'text-red-400 border-red-500/40';
-  return <span className={`rounded-lg border px-1.5 py-0.5 font-mono text-xs ${color}`}>{score}/100</span>;
-}
-

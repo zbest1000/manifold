@@ -15,6 +15,14 @@ export function finiteExtent(values) {
   return min === Infinity ? null : [min, max];
 }
 
+/** Is a sample's quality Bad? (false, 'bad', or an OPC-style quality code below 64). */
+export function isBadQuality(q) {
+  if (q == null || q === true) return false;
+  if (q === false) return true;
+  if (typeof q === 'number') return q < 64;
+  return /^(bad|false|0)$/i.test(String(q));
+}
+
 /**
  * Align historian series on the union of their timestamps for uPlot.
  * Returns [xsSeconds, ...ys]. A series that simply has no sample at another
@@ -23,6 +31,12 @@ export function finiteExtent(values) {
  * sample interval — gets an explicit `null`, which uPlot renders as a break
  * instead of a misleading straight line across the hole. Non-finite values
  * (NaN, Infinity, strings) are treated as missing.
+ *
+ * A point may carry a quality as its third element ([ts, value, quality]):
+ * `false`, 'bad', or an OPC-style code below 64 marks a Bad-quality sample.
+ * The result carries two non-enumerable extras for the chart's overlay:
+ *   result.bad  per series, the x indices of Bad-quality samples;
+ *   result.gaps per series, [xIndexBefore, xIndexAfter] pairs around each outage.
  */
 export function alignSeries(series, { gapFactor = 5 } = {}) {
   const per = series.map((s) => {
@@ -30,7 +44,7 @@ export function alignSeries(series, { gapFactor = 5 } = {}) {
     for (const p of s.points || []) {
       const ts = Number(p?.[0]);
       const v = p?.[1];
-      if (Number.isFinite(ts) && typeof v === 'number' && Number.isFinite(v)) pts.push([ts, v]);
+      if (Number.isFinite(ts) && typeof v === 'number' && Number.isFinite(v)) pts.push([ts, v, isBadQuality(p?.[2])]);
     }
     pts.sort((a, b) => a[0] - b[0]);
     return pts;
@@ -60,7 +74,18 @@ export function alignSeries(series, { gapFactor = 5 } = {}) {
     for (const [ts, v] of pts) arr[idx.get(ts)] = v;
     return arr;
   });
-  return [xsMs.map((t) => t / 1000), ...ys];
+  const out = [xsMs.map((t) => t / 1000), ...ys];
+  const bad = per.map((pts) => pts.filter((p) => p[2]).map((p) => idx.get(p[0])));
+  const gaps = per.map((pts, i) =>
+    gapTs[i].map((g) => {
+      const before = pts.filter((p) => p[0] < g).pop();
+      const after = pts.find((p) => p[0] > g);
+      return before && after ? [idx.get(before[0]), idx.get(after[0])] : null;
+    }).filter(Boolean)
+  );
+  Object.defineProperty(out, 'bad', { value: bad, enumerable: false });
+  Object.defineProperty(out, 'gaps', { value: gaps, enumerable: false });
+  return out;
 }
 
 // Pad the y-scale so a trace has breathing room instead of jamming edge-to-edge;

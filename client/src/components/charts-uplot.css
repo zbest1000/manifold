@@ -1,8 +1,7 @@
-/* Dark-theme overrides for uPlot. The base uPlot.min.css assumes a light page;
-   these re-tone it for Manifold's dark surfaces and float the legend as a
-   compact hover readout instead of a block that eats layout height. */
+/* uPlot on the design system: every colour is a token (both themes), numbers
+   are tabular, the hover readout is an overlay surface. Canvas colours (axes,
+   grid, series) come from the chart theme in charts.jsx. */
 
-/* The chart wrapper is the positioning context for the floating legend. */
 .u-ts,
 .u-spark {
   position: relative;
@@ -12,37 +11,45 @@
   position: relative;
 }
 
-/* uPlot renders x-axis tick LABELS as HTML; keep them muted. (y ticks are
-   canvas-drawn and colored via the axis `stroke` option.) */
 .uplot,
 .u-wrap,
 .u-legend {
-  color: #7c8aa0;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: rgb(var(--text-subtle));
+  font-family: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
-/* Floating legend / hover readout — top-right, over the plot, no layout cost.
-   Only shown while the pointer is over the chart: idle, it was a block of "—"
-   values covering the top of the plot (on a phone, a quarter of it). */
+/* Hover readout: an overlay surface over the top-right of the plot. Only shown
+   while the pointer (or focus) is on the chart, so idle it never covers data. */
 .u-ts:not(:hover):not(:focus-within) .u-legend {
   opacity: 0;
 }
 
 .u-ts .u-legend {
   position: absolute;
-  top: 6px;
+  top: 8px;
   right: 8px;
   margin: 0;
-  padding: 5px 9px;
-  background: rgba(15, 26, 43, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 9px;
-  box-shadow: 0 8px 24px -14px rgba(0, 0, 0, 0.7);
-  font-size: 11px;
-  line-height: 1.5;
+  max-width: min(22rem, calc(100% - 4rem));
+  max-height: calc(100% - 3rem);
+  overflow: hidden;
+  padding: 6px 8px;
+  background: rgb(var(--overlay));
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: 6px;
+  box-shadow: var(--shadow-overlay);
+  font-size: 12px;
+  line-height: 1.45;
   pointer-events: none;
   z-index: 5;
   text-align: left;
+  transition: opacity 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* With many series the readout lists them in two columns. */
+.u-ts .u-legend tbody {
+  display: grid;
+  grid-template-columns: 1fr;
 }
 
 .u-legend .u-series {
@@ -50,50 +57,59 @@
 }
 
 .u-legend .u-series > * {
-  padding: 0 2px;
+  padding: 0 3px;
 }
 
 .u-legend .u-marker {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 2px;
   border: none !important;
 }
 
 .u-legend .u-series th {
-  font-weight: 500;
-  color: #cbd5e1;
-  max-width: 220px;
+  font-weight: 400;
+  color: rgb(var(--text-muted));
+  max-width: 14rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .u-legend .u-value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 600;
-  color: #e6edf5;
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 500;
+  color: rgb(var(--text));
+  text-align: right;
 }
 
-/* The x row (time) header sits at the top of the readout, dimmer. */
+/* The time row heads the readout. */
 .u-legend .u-series:first-child th {
-  color: #94a3b8;
-  font-weight: 400;
+  color: rgb(var(--text-subtle));
 }
 
-/* Dimmed toggled-off series (uPlot toggles on legend click — pointer-events are
-   off here so the floating readout stays non-interactive). */
 .u-legend .u-off * {
   opacity: 0.45;
 }
 
-/* Crosshair. */
+/* Crosshair: a hairline in the strongest border tone. */
 .u-cursor-x,
 .u-cursor-y {
-  border-color: rgba(148, 163, 184, 0.35) !important;
+  border-color: rgb(var(--border-stronger)) !important;
+}
+
+/* Drag-to-zoom selection box. */
+.u-select {
+  background: rgb(var(--accent) / 0.1);
 }
 
 /* Sparklines carry no legend/cursor/axes at all. */
 .u-spark .u-legend {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .u-ts .u-legend {
+    transition: none;
+  }
 }

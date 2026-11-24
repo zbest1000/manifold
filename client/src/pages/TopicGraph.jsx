@@ -1,28 +1,26 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Share2, X, ListTree, Search, Boxes, Box, Tag, Waypoints, Loader2, Cpu, Maximize2, PanelRight, RotateCw } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Share2, X, ListTree, Boxes, Box, PanelRight, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
 import { useGraphPrefs, useCoverage } from '@/store/selectors';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
-import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
-import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
+import { buildMqttGraph, collapseGraph, groupColor, GROUP_ORDER } from '@/graph/buildGraph';
+import { DEFAULT_LAYOUT, resolveGraphStyle } from '@/graph/graphStyles';
+import { useCanvasTokens } from '@/graph/canvasTokens';
 import { deriveTopicCount } from '@/graph/topicCount';
 import GraphToolbar from '@/components/GraphToolbar';
-import GraphLegend from '@/components/GraphLegend';
+import { GROUP_LABELS } from '@/components/GraphLegend';
 import GraphSearch from '@/components/GraphSearch';
 import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
 import PageHeader from '@/components/PageHeader';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
-import { Badge, Button, EmptyState } from '@/components/ui';
-import ViewTab from '@/components/ViewTab';
-import { formatDistanceToNow } from 'date-fns';
+import { Banner, ButtonLink, EmptyState, IconButton, Input, SegmentedControl, Select, Spinner, StatusDot, StatusText, Timestamp } from '@/components/ui';
+import { BarDivider, CanvasNote, FloatingBar, ToolToggle } from '@/components/CanvasChrome';
 import TopicPanel from './topics/TopicPanel';
 import Graph3DControls from './topics/Graph3DControls';
-import { Segment, SegLabel, SegBtn } from './topics/Segments';
 import { numericFromPayload, shortText } from './topics/topicUtils';
 import { loadSavedView, saveView, resolveTopicsView, TREE_DEFAULT_THRESHOLD } from './topics/viewPref';
 
@@ -33,8 +31,8 @@ const WebGLGraph = lazy(() => import('@/graph/WebGLGraph'));
 
 function RendererLoading() {
   return (
-    <div className="flex h-full items-center justify-center text-xs text-slate-400" role="status">
-      <Loader2 size={14} className="mr-2 animate-spin" /> Loading renderer…
+    <div className="flex h-full items-center justify-center gap-2 text-sm text-muted" role="status">
+      <Spinner size={14} /> Loading renderer…
     </div>
   );
 }
@@ -50,15 +48,39 @@ export default function TopicGraph() {
   const { graphStyle, graphLayout, setGraphLayout, flowEnabled, activitySize, showValues, showMinimap } = useGraphPrefs();
   const { coverage, setCoverage } = useCoverage();
 
-  const [pickedBrokerId, setBrokerId] = useState(null);
+  // Deep link: /topics?broker=<id>&topic=<a/b/c> selects that topic; selections keep the URL in sync.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [pickedBrokerId, setBrokerId] = useState(() => searchParams.get('broker') || null);
+  const [pendingTopic, setPendingTopic] = useState(() => searchParams.get('topic') || null);
+  const [fitTarget, setFitTarget] = useState(null); // node id to frame once the graph has laid it out
   // Sparkplug host applications (spBv1.0/STATE/*), remembered with the broker they belong to
   const [spState, setSpState] = useState({ brokerId: null, hosts: NO_HOSTS });
   const [selected, setSelected] = useState(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  // The selection, mirrored into the URL (replaceState) so it can be shared.
+  const syncUrl = useCallback(
+    (topic, broker) =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (topic) {
+            next.set('topic', topic);
+            if (broker) next.set('broker', broker);
+          } else {
+            next.delete('topic');
+          }
+          return next;
+        },
+        { replace: true }
+      ),
+    [setSearchParams]
+  );
   // Selecting a node opens its details panel; the Properties button reopens it.
   const selectNode = (n) => {
     setSelected(n);
     setPanelOpen(Boolean(n));
+    setPendingTopic(null);
+    syncUrl(n?.meta?.fullTopic || null, brokerIdRef.current);
   };
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
@@ -83,6 +105,10 @@ export default function TopicGraph() {
 
   // The picked broker while it still exists, otherwise the first connected one.
   const brokerId = pickedBrokerId && brokers.some((b) => b.id === pickedBrokerId) ? pickedBrokerId : connected[0]?.id || null;
+  const brokerIdRef = useRef(brokerId);
+  useEffect(() => {
+    brokerIdRef.current = brokerId;
+  }, [brokerId]);
   const spHosts = spState.brokerId === brokerId ? spState.hosts : NO_HOSTS;
 
   // Pull the authoritative topic list when broker changes
@@ -155,6 +181,39 @@ export default function TopicGraph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- collapseKey is the stable string form of `collapsed`
     [fullGraph, collapseKey]
   );
+  // Resolve a pending deep link once its topic exists (topics may stream in
+  // after the first render). Adjusted during render, not in an effect.
+  let deepLinkMiss = null;
+  if (pendingTopic && brokerId) {
+    const id = `topic:${brokerId}:${pendingTopic}`;
+    const node = graph.nodes.find((n) => n.id === id);
+    const stat = node ? null : brokerTopics.find((t) => (t.topic || t) === pendingTopic);
+    if (node || stat) {
+      setPendingTopic(null);
+      setSelected(
+        node || {
+          id,
+          label: pendingTopic.split('/').pop(),
+          kind: 'topic',
+          meta: { fullTopic: pendingTopic, isLeaf: true, messageCount: stat?.messageCount, type: stat?.type, lastActivity: stat?.lastActivity }
+        }
+      );
+      setPanelOpen(true);
+      if (node) setFitTarget(id);
+    } else if (brokerTopics.length > 0) {
+      deepLinkMiss = pendingTopic;
+    }
+  }
+  // Frame a deep-linked node once the layout has placed it.
+  useEffect(() => {
+    if (!fitTarget || view !== 'graph') return undefined;
+    const t = setTimeout(() => {
+      graphRef.current?.fitTo(new Set([fitTarget]));
+      setFitTarget(null);
+    }, 900);
+    return () => clearTimeout(t);
+  }, [fitTarget, view]);
+
   // Groups actually present, for the color legend.
   const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
 
@@ -260,8 +319,10 @@ export default function TopicGraph() {
         meta: { fullTopic: c.path, isLeaf: true, messageCount: c.stat?.messageCount, type: c.stat?.type, lastActivity: c.stat?.lastActivity }
       });
       setPanelOpen(true);
+      setPendingTopic(null);
+      syncUrl(c.path, brokerId);
     },
-    [brokerId]
+    [brokerId, syncUrl]
   );
 
   // Double-click a branch node to collapse/expand its subtree.
@@ -290,139 +351,184 @@ export default function TopicGraph() {
   if (connected.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="Topics" subtitle="Interactive node graph of the MQTT topic namespace" />
+        <PageHeader title="Topics" />
         <EmptyState
           icon={Share2}
           title="No connected brokers"
-          hint="Connect to an MQTT broker to visualize its live topic tree as a node graph."
+          hint="Connect to an MQTT broker to see its live topic tree as a graph."
           action={
-            <Link to="/brokers">
-              <Button>Connect a broker</Button>
-            </Link>
+            <ButtonLink to="/brokers" variant="primary">
+              Connect a broker
+            </ButtonLink>
           }
         />
       </div>
     );
   }
 
-  const propertiesButton = (
-    <button
-      type="button"
-      onClick={() => selected && setPanelOpen(true)}
-      disabled={!selected}
-      aria-label="Properties of the selected node"
-      title={selected ? 'Show properties of the selected node' : 'Select a node first'}
-      className={clsx(
-        'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60',
-        selected
-          ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/20 hover:text-slate-100'
-          : 'cursor-not-allowed border-white/5 bg-surface-900/60 text-slate-400/60'
-      )}
-    >
-      <PanelRight size={15} aria-hidden="true" />
-      <span className="hidden font-medium sm:inline">Properties</span>
-    </button>
-  );
+  const coverageOn = coverage?.brokerId === brokerId && !showAll && view === 'graph';
+  const panelShown = selected && panelOpen;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         title="Topics"
-        subtitle={broker ? `${topicCount.toLocaleString()} topics · ${graph.nodes.length.toLocaleString()} nodes` : 'Select a broker'}
+        subtitle={broker ? `${topicCount.toLocaleString()} topics · ${graph.nodes.length.toLocaleString()} nodes${graph.capped && !showAll ? ' shown' : ''}` : 'Select a broker'}
         actions={
-          <>
-            <div className="flex overflow-hidden rounded-xl border border-white/10" role="group" aria-label="View">
-              <ViewTab active={view === 'graph'} onClick={() => setView('graph')} icon={Share2} label="Graph" />
-              <ViewTab active={view === '3d'} onClick={() => setView('3d')} icon={Box} label="3D" />
-              <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
-            </div>
-            <label className="flex items-center">
-              <span className="sr-only">Broker</span>
-              <select
-                value={brokerId || ''}
-                onChange={(e) => {
-                  setBrokerId(e.target.value);
-                  setSelected(null);
-                }}
-                className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-              >
-                {connected.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
+          <Select
+            aria-label="Broker"
+            value={brokerId || ''}
+            onChange={(e) => {
+              setBrokerId(e.target.value);
+              selectNode(null);
+            }}
+            className="w-auto max-w-[14rem]"
+          >
+            {connected.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </Select>
         }
       />
 
-      {topicsError && (
-        <div role="alert" className="flex items-center justify-between gap-3 border-b border-rose-500/20 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-          <span>Could not load the topic list: {topicsError}. Showing only topics seen live.</span>
-          <button
-            onClick={() => {
-              setTopicsError(null);
-              setTopicsTry((v) => v + 1);
-            }}
-            className="flex shrink-0 items-center gap-1 rounded-lg border border-rose-400/40 px-2.5 py-1 text-xs hover:bg-rose-500/20"
-          >
-            <RotateCw size={12} /> Retry
-          </button>
-        </div>
-      )}
-
-      {autoTree && (
-        <div role="status" className="border-b border-white/5 bg-surface-900/40 px-4 py-2 text-xs text-slate-300">
-          Showing the Tree because this broker has {topicCount.toLocaleString()} topics (more than {TREE_DEFAULT_THRESHOLD}), where the graph gets crowded.
-          Pick Graph above to switch; your choice is remembered.
-        </div>
-      )}
-
-      {spHosts.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-white/5 bg-surface-900/40 px-4 py-2">
-          <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            <Cpu size={12} className="text-accent-400" aria-hidden="true" /> Host applications
-          </span>
-          {spHosts.map((h) => (
-            <span
-              key={h.id}
-              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-xs"
-              title={`spBv1.0/STATE/${h.id}`}
-            >
-              <span className={clsx('h-1.5 w-1.5 rounded-full', h.online ? 'bg-emerald-400' : h.online === false ? 'bg-rose-400' : 'bg-slate-400')} aria-hidden="true" />
-              <span className="font-mono text-slate-200">{h.id}</span>
-              <Badge status={h.online ? 'connected' : 'offline'}>{h.online ? 'online' : h.online === false ? 'offline' : 'unknown'}</Badge>
-              {(h.timestamp || h.lastSeen) && (
-                <span className="text-slate-400">{formatDistanceToNow(new Date(h.timestamp || h.lastSeen), { addSuffix: true })}</span>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
-        {view === 'tree' ? (
-          <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30 max-md:max-w-none">
-            <div className="flex items-center gap-1.5 border-b border-white/5 px-3 py-2">
-              <Search size={14} className="text-slate-400" aria-hidden="true" />
-              <input
-                aria-label="Filter topics"
-                value={treeFilter}
-                onChange={(e) => setTreeFilter(e.target.value)}
-                placeholder="Filter topics…"
-                className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-400 focus:outline-none"
+      {/* One toolbar row: view switch, then the controls of the current view. Nothing floats over the top of the canvas. */}
+      <div role="toolbar" aria-label="Topics view" className="relative flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-4 py-1.5 sm:px-6">
+        <SegmentedControl
+          label="View"
+          size="sm"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'graph', label: 'Graph', icon: Share2 },
+            { value: '3d', label: '3D', icon: Box },
+            { value: 'tree', label: 'Tree', icon: ListTree }
+          ]}
+        />
+        {view === 'graph' && (
+          <>
+            {!showAll && <GraphSearch inline nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} className="min-w-[10rem] max-w-xs flex-1" />}
+            {(graph.capped || showAll) && (
+              <ToolToggle
+                pressed={showAll}
+                onClick={() => setShowAll((v) => !v)}
+                icon={Boxes}
+                label={showAll ? `All ${graph.nodes.length.toLocaleString()} nodes` : `Show all ${topicCount.toLocaleString()}`}
+                title={showAll ? 'Back to the interactive graph' : 'Draw every topic with the GPU renderer'}
+                showLabel
               />
+            )}
+            {showAll ? (
+              <>
+                <BarDivider />
+                <SegmentedControl
+                  label="Big graph layout"
+                  size="sm"
+                  value={forcePositions ? 'force' : 'radial'}
+                  onChange={(v) => (v === 'radial' ? setForceState(null) : runForceLayout())}
+                  options={[
+                    { value: 'radial', label: 'Radial' },
+                    { value: 'force', label: forceBusy ? 'Force…' : 'Force' }
+                  ]}
+                />
+                <label className="flex shrink-0 items-center gap-2 text-xs text-muted">
+                  Labels
+                  <input type="range" min="0" max="1" step="0.05" value={labelDensity} aria-label="Label density" onChange={(e) => setLabelDensity(Number(e.target.value))} className="h-1 w-20 cursor-pointer accent-accent" />
+                  <span className="w-8 tabular-nums text-fg">{labelDensity <= 0.001 ? 'Off' : `${Math.round(labelDensity * 100)} %`}</span>
+                </label>
+              </>
+            ) : (
+              <div className="ml-auto flex items-center">
+                <GraphToolbar
+                  inline
+                  showFlow
+                  onFit={() => graphRef.current?.fitTo()}
+                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
+                  onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
+                  onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+                  onProperties={() => setPanelOpen(true)}
+                  hasSelection={Boolean(selected)}
+                />
+              </div>
+            )}
+          </>
+        )}
+        {view === '3d' && (
+          <>
+            <BarDivider />
+            <Graph3DControls
+              beautify={beautify3d}
+              onBeautify={() => setBeautify3d((v) => !v)}
+              autoRotate={autoRotate3d}
+              onAutoRotate={() => setAutoRotate3d((v) => !v)}
+              nodeScale={nodeScale3d}
+              onNodeScale={setNodeScale3d}
+              linkOpacity={linkOpacity3d}
+              onLinkOpacity={setLinkOpacity3d}
+            />
+            <div className="ml-auto flex items-center gap-0.5">
+              <IconButton icon={RotateCcw} label="Reset the camera" onClick={() => graph3dRef.current?.resetView()} />
+              <IconButton icon={PanelRight} label={selected ? 'Properties of the selected node' : 'Properties (select a node first)'} disabled={!selected} onClick={() => selected && setPanelOpen(true)} />
             </div>
+          </>
+        )}
+        {view === 'tree' && <Input type="search" aria-label="Filter topics" value={treeFilter} onChange={(e) => setTreeFilter(e.target.value)} placeholder="Filter topics" className="h-8 min-w-[10rem] max-w-xs flex-1" />}
+      </div>
+
+      {(topicsError || autoTree || spHosts.length > 0 || deepLinkMiss) && (
+        <div className="space-y-2 border-b border-line px-4 py-2 sm:px-6">
+          {topicsError && (
+            <Banner
+              variant="error"
+              title="Could not load the topic list. Showing only topics seen live."
+              onRetry={() => {
+                setTopicsError(null);
+                setTopicsTry((v) => v + 1);
+              }}
+            >
+              {topicsError}
+            </Banner>
+          )}
+          {autoTree && (
+            <p role="status" className="text-sm text-muted">
+              Showing the tree because this broker has {topicCount.toLocaleString()} topics (more than {TREE_DEFAULT_THRESHOLD}). Pick Graph to switch; your choice is remembered.
+            </p>
+          )}
+          {deepLinkMiss && (
+            <p role="status" className="text-sm text-muted">
+              <span className="text-fg">No topic yet at</span> <code className="break-all font-mono text-xs text-fg">{deepLinkMiss}</code>. It is selected as soon as it publishes.
+            </p>
+          )}
+          {spHosts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted">Sparkplug host applications</span>
+              {spHosts.map((h) => (
+                <span key={h.id} className="inline-flex items-center gap-2" title={`spBv1.0/STATE/${h.id}`}>
+                  <StatusText tone={h.online ? 'good' : h.online === false ? 'bad' : 'neutral'}>
+                    <span className="font-mono text-xs">{h.id}</span>
+                    <span className="sr-only">{h.online ? ' online' : h.online === false ? ' offline' : ' unknown'}</span>
+                  </StatusText>
+                  {(h.timestamp || h.lastSeen) && <Timestamp value={h.timestamp || h.lastSeen} className="text-xs text-subtle" />}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="relative flex min-h-0 flex-1 overflow-hidden max-md:flex-col">
+        {view === 'tree' ? (
+          <div className="flex min-h-0 w-full flex-col border-line md:max-w-md md:border-r">
             {brokerTopics.length === 0 ? (
               <EmptyState
                 icon={ListTree}
                 title="No topics yet"
                 hint="Topics appear as soon as the broker publishes. If nothing shows up, check the subscribe filter on the MQTT Brokers page."
                 action={
-                  <Link to="/brokers">
-                    <Button size="sm" variant="outline">Open MQTT Brokers</Button>
-                  </Link>
+                  <ButtonLink to="/brokers" size="sm">
+                    Open MQTT Brokers
+                  </ButtonLink>
                 }
               />
             ) : (
@@ -430,7 +536,7 @@ export default function TopicGraph() {
             )}
           </div>
         ) : view === '3d' ? (
-          <div className="relative flex-1">
+          <div className="relative min-h-0 min-w-0 flex-1">
             <Suspense fallback={<RendererLoading />}>
               <ForceGraph3D
                 ref={graph3dRef}
@@ -444,50 +550,11 @@ export default function TopicGraph() {
                 beautify={beautify3d}
               />
             </Suspense>
-            <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
-              {propertiesButton}
-              <button
-                type="button"
-                onClick={() => graph3dRef.current?.resetView()}
-                aria-label="Reset the 3D camera"
-                title="Reset the camera to the default angle and zoom"
-                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-sm text-slate-300 backdrop-blur transition hover:border-white/20 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/60"
-              >
-                <Maximize2 size={15} aria-hidden="true" />
-                <span className="hidden font-medium sm:inline">Reset view</span>
-              </button>
-            </div>
-            <Graph3DControls
-              beautify={beautify3d}
-              onBeautify={() => setBeautify3d((v) => !v)}
-              autoRotate={autoRotate3d}
-              onAutoRotate={() => setAutoRotate3d((v) => !v)}
-              nodeScale={nodeScale3d}
-              onNodeScale={setNodeScale3d}
-              linkOpacity={linkOpacity3d}
-              onLinkOpacity={setLinkOpacity3d}
-            />
-            <div className="pointer-events-none absolute bottom-4 left-4 hidden rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-xs text-slate-300 backdrop-blur sm:block">
-              Drag to rotate. Scroll to zoom. Click a node for details. The style menu restyles this view too.
-            </div>
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
+            <p className="pointer-events-none absolute bottom-4 left-4 hidden text-xs text-subtle sm:block">Drag to rotate · scroll to zoom · click a node for details</p>
+            <TopicsLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         ) : (
-          <div className="relative flex-1">
-            {!showAll && (
-              <>
-                <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
-                <GraphToolbar
-                  showFlow
-                  onFit={() => graphRef.current?.fitTo()}
-                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
-                  onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
-                  onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
-                  onProperties={() => setPanelOpen(true)}
-                  hasSelection={Boolean(selected)}
-                />
-              </>
-            )}
+          <div className="relative min-h-0 min-w-0 flex-1">
             {showAll ? (
               // GPU renderer for the "show everything" view: one draw call per
               // frame plus a viewport-culled label overlay stays smooth at 60k+.
@@ -508,121 +575,101 @@ export default function TopicGraph() {
                 activitySize={activitySize}
                 nodeValuesRef={showValues ? nodeValuesRef : null}
                 labelDensity={labelDensity}
-                matchIds={coverage?.brokerId === brokerId ? coverage.matchIds : matchIds}
+                matchIds={coverageOn ? coverage.matchIds : matchIds}
                 minimap={showMinimap}
+                fitInset={FIT_INSET}
               />
             )}
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
-            {coverage?.brokerId === brokerId && !showAll && (
-              // Coverage paint handed over from the Flows view: the highlighted
-              // trail is exactly what the chosen client actually receives.
-              <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-xl border border-accent-500/50 bg-accent-500/15 px-3 py-2 text-xs text-accent-200 backdrop-blur">
-                <span>{coverage.label}</span>
-                <button onClick={() => setCoverage(null)} aria-label="Clear coverage highlight" title="Clear coverage highlight" className="rounded p-0.5 hover:bg-white/10">
-                  <X size={12} />
-                </button>
-              </div>
-            )}
-            {(graph.capped || showAll) && (
-              <div className="absolute left-4 top-16 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAll((v) => !v)}
-                  aria-pressed={showAll}
-                  className={clsx(
-                    'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs backdrop-blur transition',
-                    showAll
-                      ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
-                      : 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                  )}
-                >
-                  <Boxes size={13} aria-hidden="true" />
-                  {showAll ? `Showing all ${graph.nodes.length.toLocaleString()} nodes` : `Show all ${topicCount.toLocaleString()} topics as nodes`}
-                </button>
-
-                {/* One unified control cluster for the big-graph view */}
-                {showAll && (
-                  <div className="flex flex-wrap items-stretch divide-x divide-white/10 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-xs backdrop-blur" role="group" aria-label="Big graph controls">
-                    <Segment>
-                      <SegLabel>Layout</SegLabel>
-                      <SegBtn active={!forcePositions} onClick={() => setForceState(null)} title="Deterministic radial layout">
-                        Radial
-                      </SegBtn>
-                      <SegBtn
-                        active={Boolean(forcePositions)}
-                        onClick={runForceLayout}
-                        disabled={forceBusy || graph.nodes.length > FORCE_MAX}
-                        title={
-                          graph.nodes.length > FORCE_MAX
-                            ? `Force layout supports up to ${FORCE_MAX.toLocaleString()} nodes`
-                            : 'Organic force-directed layout (computed in a Web Worker)'
-                        }
-                      >
-                        {forceBusy ? <Loader2 size={12} className="animate-spin" /> : <Waypoints size={12} />}
-                        Force
-                      </SegBtn>
-                    </Segment>
-
-                    <Segment>
-                      <SegLabel>
-                        <Tag size={11} aria-hidden="true" /> Labels
-                      </SegLabel>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={labelDensity}
-                        aria-label="Label density"
-                        onChange={(e) => setLabelDensity(Number(e.target.value))}
-                        className="h-1 w-20 cursor-pointer accent-accent-400"
-                        title="Label density"
-                      />
-                      <span className="w-8 tabular-nums text-slate-300">{labelDensity <= 0.001 ? 'off' : `${Math.round(labelDensity * 100)}%`}</span>
-                    </Segment>
-                  </div>
-                )}
-                {showAll && graph.nodes.length > 60000 && (
-                  <span className="rounded-lg bg-surface-900/70 px-2 py-1 text-xs text-slate-300 backdrop-blur">heavy: zoom in for detail</span>
-                )}
-              </div>
-            )}
-            {topicCount === 0 && (
-              <div className="pointer-events-none absolute inset-x-0 top-24 mx-auto w-fit max-w-sm rounded-xl border border-white/10 bg-surface-900/90 px-4 py-3 text-center text-sm text-slate-300">
-                No topics yet. They appear as soon as the broker publishes. If nothing arrives, check the subscribe filter on the MQTT Brokers page.
-              </div>
-            )}
-            <div className="pointer-events-none absolute bottom-4 left-4 right-4 flex flex-col gap-2 sm:right-auto">
-              {!showAll && (
-                <div className="pointer-events-auto w-fit max-w-full">
-                  <ReplayScrubber getMessages={getReplayMessages} toNodeId={replayNodeId} graphRef={graphRef} />
-                </div>
+            <div className="pointer-events-none absolute inset-x-4 top-3 z-10 flex flex-col items-start gap-2">
+              {coverageOn && (
+                // Coverage paint handed over from the Flows view: the highlighted
+                // trail is exactly what the chosen client receives.
+                <FloatingBar role="status" className="max-w-full gap-2 py-0.5 pl-2.5 pr-0.5 text-xs text-fg">
+                  <StatusDot tone="info" size={6} />
+                  <span className="truncate">{coverage.label}</span>
+                  <IconButton icon={X} size={12} label="Clear coverage highlight" className="h-7 w-7" onClick={() => setCoverage(null)} />
+                </FloatingBar>
               )}
-              <div className="hidden w-fit rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-xs text-slate-300 backdrop-blur sm:block">
-                Drag · scroll to zoom · click for details · double-click a branch to collapse · zoom in to reveal leaf labels
-              </div>
+              {showAll && graph.nodes.length > 60000 && <CanvasNote className="mx-0 text-xs">Very large graph: zoom in for labels and detail.</CanvasNote>}
             </div>
+            {topicCount === 0 && (
+              <div className="pointer-events-none absolute inset-x-0 top-20 z-10">
+                <CanvasNote>No topics yet. They appear as soon as the broker publishes. If nothing arrives, check the subscribe filter on the MQTT Brokers page.</CanvasNote>
+              </div>
+            )}
+            {!showAll && (
+              <div className="pointer-events-none absolute bottom-4 left-4 right-4 z-10 flex items-end sm:right-auto">
+                <ReplayScrubber getMessages={getReplayMessages} toNodeId={replayNodeId} graphRef={graphRef} />
+              </div>
+            )}
+            <TopicsLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         )}
 
-        {view === 'tree' && !(selected && panelOpen) && (
-          <div className="hidden flex-1 place-items-center p-8 text-center text-sm text-slate-400 md:grid">
-            <p className="max-w-xs">Select a topic in the tree to inspect its payload and history, or publish a test message.</p>
+        {view === 'tree' && !panelShown && (
+          <div className="hidden flex-1 place-items-center p-8 text-center text-sm text-muted md:grid">
+            <p className="max-w-xs">Select a topic to inspect its payload and history, or publish a test message.</p>
           </div>
         )}
 
-        {selected && panelOpen && (
+        {panelShown && (
           <TopicPanel
             node={selected}
             brokerId={brokerId}
             graph={graph}
             onJump={(id) => {
               const n = graph.nodes.find((x) => x.id === id);
-              if (n) setSelected(n);
+              if (n) selectNode(n);
             }}
             onClose={() => setPanelOpen(false)}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// Fit-to-view keeps the graph clear of the replay control and legend at the bottom.
+const FIT_INSET = { top: 40, right: 40, bottom: 88, left: 40 };
+
+/**
+ * Quiet inline key for the node colours of the current style (groups present
+ * in this graph only), bottom-right of the canvas; folds to a button on phones.
+ */
+function TopicsLegend({ styleId, groups }) {
+  const tokens = useCanvasTokens();
+  const [open, setOpen] = useState(false);
+  const style = resolveGraphStyle(styleId, tokens);
+  const present = GROUP_ORDER.filter((g) => groups.has(g));
+  if (present.length === 0) return null;
+  const items = present.map((g) => (
+    <span key={g} className="inline-flex items-center gap-1.5">
+      <svg width="10" height="10" aria-hidden="true">
+        {style.node.square ? <rect x="1" y="1" width="8" height="8" fill={groupColor(g, style.palette)} /> : <circle cx="5" cy="5" r="4" fill={groupColor(g, style.palette)} />}
+      </svg>
+      {GROUP_LABELS[g] || g}
+    </span>
+  ));
+  return (
+    <div className="pointer-events-none absolute bottom-4 right-4 z-10 flex max-w-[calc(100%-2rem)] flex-col items-end gap-1">
+      <div role="group" aria-label="Node colours" className="pointer-events-auto hidden max-w-md flex-wrap items-center justify-end gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay md:flex">
+        {items}
+      </div>
+      <div className="pointer-events-auto flex flex-col items-end gap-1 md:hidden">
+        {open && (
+          <div id="topics-key" role="group" aria-label="Node colours" className="flex max-w-[16rem] flex-wrap gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay">
+            {items}
+          </div>
+        )}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="topics-key"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex h-8 items-center rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-muted shadow-overlay hover:text-fg"
+        >
+          Key
+        </button>
       </div>
     </div>
   );

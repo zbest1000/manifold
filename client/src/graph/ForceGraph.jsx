@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   forceSimulation,
   forceLink,
@@ -12,8 +12,10 @@ import {
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import { drag } from 'd3-drag';
-import { GRAPH_STYLES, LAYOUTS } from './graphStyles';
-import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { resolveGraphStyle, LAYOUTS } from './graphStyles';
+import { groupColor } from './buildGraph';
+import { useCanvasTokens, FONT, MONO } from './canvasTokens';
+import { withAlpha } from './colorMath';
 import { LOD_MIN_NODES, computeBranchSizes, orderByImportance, selectLabelIds } from './labelLod';
 import {
   applyCanvasSize,
@@ -56,7 +58,7 @@ function graphSignature(data) {
 const ForceGraph = forwardRef(function ForceGraph(
   {
     data,
-    styleId = 'constellation',
+    styleId = 'standard',
     layoutId = 'organic',
     selectedId = null,
     onSelect,
@@ -113,7 +115,10 @@ const ForceGraph = forwardRef(function ForceGraph(
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
-  const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
+  // Theme-derived style: a new object when the app theme (tokens) or the style
+  // changes, which repaints through `draw` without touching the simulation.
+  const tokens = useCanvasTokens();
+  const style = useMemo(() => resolveGraphStyle(styleId, tokens), [styleId, tokens]);
   const layout = LAYOUTS[layoutId] || LAYOUTS.organic;
 
   // Props the mount-once interaction effect needs at CALL time, not mount time.
@@ -125,8 +130,8 @@ const ForceGraph = forwardRef(function ForceGraph(
   cbRef.current = { onSelect, onExpand, style, testId };
 
   const colorFor = useCallback(
-    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
-    [colorByProtocol, style]
+    (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style, tokens]
   );
 
   const draw = useCallback(() => {
@@ -310,16 +315,19 @@ const ForceGraph = forwardRef(function ForceGraph(
 
       ctx.globalAlpha = alpha;
 
-      let glow = 0;
-      if (!heavy) glow = (style.node.glow || 0) + Math.min(rate, 4) * 6;
-      if (glow > 0) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = glow;
-      } else if (ctx.shadowBlur) {
-        ctx.shadowBlur = 0;
+
+      if (n.id === selectedId) {
+        // Selection: a soft accent halo under the node, an accent ring around it.
+        ctx.fillStyle = withAlpha(style.selectedRing, 0.18);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r + 7 / t.k, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      ctx.fillStyle = color;
+      // A node in a failing state (Sparkplug DEATH, a dormant filter) is drawn
+      // hollow: the state is carried by shape as well as by the state colour.
+      const hollow = n.state === 'bad' || n.state === 'warn';
+      ctx.fillStyle = hollow ? style.background : color;
       ctx.beginPath();
       if (style.node.square) {
         const s = r * 1.7;
@@ -328,25 +336,28 @@ const ForceGraph = forwardRef(function ForceGraph(
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
       }
       ctx.fill();
-      ctx.shadowBlur = 0;
 
-      if (style.node.strokeWidth) {
+      if (hollow) {
+        ctx.lineWidth = 2 / t.k;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      } else if (style.node.strokeWidth) {
         ctx.lineWidth = style.node.strokeWidth / t.k;
         ctx.strokeStyle = style.node.stroke;
         ctx.stroke();
       }
 
       if (n.id === selectedId) {
-        ctx.lineWidth = 2.5 / t.k;
+        ctx.lineWidth = 2 / t.k;
         ctx.strokeStyle = style.selectedRing;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, r + 5 / t.k, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, r + 4 / t.k, 0, Math.PI * 2);
         ctx.stroke();
       }
 
       // Collapsed-subtree badge
       if (n.collapsedCount) {
-        drawBadge(ctx, n.x + r, n.y - r, `+${n.collapsedCount}`, t.k, style.linkHighlight, style.badgeInk);
+        drawBadge(ctx, n.x + r, n.y - r, `+${n.collapsedCount}`, t.k, style);
       }
 
       ctx.globalAlpha = 1;
@@ -375,17 +386,17 @@ const ForceGraph = forwardRef(function ForceGraph(
         if (showValues && nodeAlpha(n) > 0.5) {
           const v = nv[n.id];
           if (v && v.text != null) {
-            ctx.font = `600 ${VALUE_PX}px 'JetBrains Mono', monospace`;
+            ctx.font = `500 ${VALUE_PX}px ${MONO}`;
             const vt = ellipsize(ctx, String(v.text), LABEL_MAX_W);
             ctx.strokeText(vt, 0, LABEL_PX + 3);
-            ctx.fillStyle = style.linkHighlight;
+            ctx.fillStyle = style.value;
             ctx.fillText(vt, 0, LABEL_PX + 3);
           }
         }
         ctx.restore();
         if (showValues && nodeAlpha(n) > 0.5) {
           const v = nv[n.id];
-          if (v?.series && v.series.length > 1) drawSparkline(ctx, v.series, n.x, n.y - r - 4 / t.k, 34, 12, t.k, style.linkHighlight);
+          if (v?.series && v.series.length > 1) drawSparkline(ctx, v.series, n.x, n.y - r - 4 / t.k, 34, 12, t.k, style.value);
         }
       }
     }
@@ -393,7 +404,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     // Live-flow overlay: expanding pulse rings + travelling dots.
     const byId = nodeByIdRef.current;
     if (pulseRef.current.size) {
-      ctx.strokeStyle = style.linkHighlight;
+      ctx.strokeStyle = style.flow;
       for (const [id, s] of pulseRef.current) {
         const n = byId.get(id);
         if (!n) continue;
@@ -407,11 +418,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = 1;
     }
     if (particlesRef.current.length) {
-      ctx.fillStyle = style.linkHighlight;
-      if (!heavy) {
-        ctx.shadowColor = style.linkHighlight;
-        ctx.shadowBlur = 8;
-      }
+      ctx.fillStyle = style.flow;
       const dot = 3.5 / t.k;
       for (const p of particlesRef.current) {
         const pos = particlePosition(p, byId);
@@ -710,7 +717,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     if (!nodes.length || w === 0) return;
     // Loop-based bounds (Math.min(...xs) overflows the call stack past ~100k nodes)
     // padded by the biggest node, framed clear of the floating overlays.
-    const f = fitBounds(boundsOf(nodes, cbRef.current.style.nodeMaxRadius + 4), { w, h }, { inset: fitInsetRef.current, minK: 0.05, maxK: 2.5 });
+    const f = fitBounds(boundsOf(nodes, cbRef.current.style.nodeMaxRadius + 4), { w, h }, { inset: fitInsetRef.current, minK: 0.05, maxK: set && set.size === 1 ? 1.6 : 2.5 });
     if (!f) return;
     const t = zoomIdentity.translate(f.x, f.y).scale(f.k);
     if (selRef.current && zoomRef.current) selRef.current.call(zoomRef.current.transform, t);
@@ -983,18 +990,19 @@ function particlePosition(p, byId) {
   return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
 }
 
-function drawBadge(ctx, x, y, text, k, color, ink) {
+function drawBadge(ctx, x, y, text, k, style) {
   ctx.save();
-  ctx.font = `600 ${10 / k}px Inter, sans-serif`;
+  ctx.font = `500 ${11 / k}px ${FONT}`;
   const padX = 4 / k;
   const w = ctx.measureText(text).width + padX * 2;
-  const h = 13 / k;
-  ctx.fillStyle = color;
-  ctx.globalAlpha = 0.9;
-  roundRect(ctx, x - w / 2, y - h / 2, w, h, 4 / k);
+  const h = 15 / k;
+  ctx.fillStyle = style.badgeFill;
+  roundRect(ctx, x - w / 2, y - h / 2, w, h, 3 / k);
   ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = ink;
+  ctx.lineWidth = 1 / k;
+  ctx.strokeStyle = style.badgeBorder;
+  ctx.stroke();
+  ctx.fillStyle = style.badgeInk;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y);

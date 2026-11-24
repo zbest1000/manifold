@@ -157,8 +157,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 border-b border-white/5 px-3 py-2 text-xs text-slate-400">
-        <span className="mr-auto">{total.toLocaleString()} rows</span>
+      <div className="flex items-center gap-1 border-b border-line px-3 py-1.5 text-xs text-muted">
+        <span className="mr-auto tabular-nums">{total.toLocaleString()} rows</span>
         <SortBtn active={sortBy === 'name'} onClick={() => setSortBy('name')} icon={ArrowDownAZ} label="Name" />
         <SortBtn active={sortBy === 'messages'} onClick={() => setSortBy('messages')} icon={Hash} label="Msgs" />
         <SortBtn active={sortBy === 'recent'} onClick={() => setSortBy('recent')} icon={Clock} label="Recent" />
@@ -175,10 +175,10 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
         }}
-        className="relative flex-1 overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-400/70"
+        className="relative flex-1 overflow-auto focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
       >
         {total === 0 ? (
-          <p className="px-4 py-8 text-center text-sm text-slate-400">No topics match. Clear the filter to see everything.</p>
+          <p className="px-4 py-8 text-center text-sm text-muted">No topics match. Clear the filter to see everything.</p>
         ) : (
           <div style={{ height: total * ROW_H, position: 'relative' }}>
             {slice.map((row, i) => {
@@ -194,9 +194,9 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
                   aria-selected={Boolean(isSelected)}
                   data-row={start + i}
                   className={clsx(
-                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-white/5',
-                    isSelected && 'bg-accent-500/15',
-                    start + i === cursor && 'outline outline-1 -outline-offset-1 outline-accent-400/60'
+                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-raised',
+                    isSelected && 'bg-accent/[0.07] shadow-[inset_2px_0_0_rgb(var(--accent))]',
+                    start + i === cursor && 'outline outline-1 -outline-offset-1 outline-[rgb(var(--focus)/0.6)]'
                   )}
                   style={{ top: (start + i) * ROW_H, height: ROW_H, paddingLeft: `${depth * 14 + 8}px` }}
                 >
@@ -208,29 +208,29 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
                       e.stopPropagation();
                       if (hasChildren) toggle(c.path);
                     }}
-                    className={clsx('shrink-0 text-slate-400', !hasChildren && 'invisible')}
+                    className={clsx('shrink-0 text-subtle', !hasChildren && 'invisible')}
                   >
                     {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
 
-                  <span className={clsx('truncate', c.stat ? 'text-slate-200' : 'font-medium text-slate-300')}>
+                  <span className={clsx('truncate', c.stat ? 'text-fg' : 'font-medium text-fg')}>
                     {c.name}
                   </span>
 
-                  {c.stat?.retain && <Pin size={10} className="shrink-0 text-amber-400" />}
+                  {c.stat?.retain && <Pin size={10} className="shrink-0 text-subtle" aria-label="Retained" />}
 
                   {hasChildren && (
-                    <span className="shrink-0 rounded bg-white/5 px-1.5 text-xs text-slate-400">
+                    <span className="shrink-0 rounded border border-line bg-raised px-1 text-xs tabular-nums text-muted">
                       {c.descendants.toLocaleString()}
                     </span>
                   )}
 
                   {c.stat && (
                     <span className="ml-auto flex min-w-0 items-center gap-2">
-                      <span key={c.stat.lastActivity} className="valueflash mono truncate text-xs text-accent-200" style={{ maxWidth: 150 }}>
+                      <span key={c.stat.lastActivity} className="valueflash mono truncate text-xs text-muted" style={{ maxWidth: 150 }}>
                         {formatValue(c.stat.payload)}
                       </span>
-                      <span className="shrink-0 text-xs text-slate-400">{c.stat.messageCount}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-subtle">{Number(c.stat.messageCount || 0).toLocaleString()}</span>
                     </span>
                   )}
                 </div>
@@ -241,8 +241,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
       </div>
 
       {selectedProps && (
-        <div className="border-t border-white/5 px-3 py-2 text-xs">
-          <p className="mb-1 font-medium uppercase tracking-wide text-slate-400">MQTT 5 properties</p>
+        <div className="border-t border-line px-3 py-2 text-xs">
+          <p className="mb-1 font-medium text-muted">MQTT 5 properties</p>
           <div className="space-y-0.5">
             {selectedProps.contentType && <PropRow name="contentType" value={selectedProps.contentType} />}
             {selectedProps.responseTopic && <PropRow name="responseTopic" value={selectedProps.responseTopic} />}
@@ -261,8 +261,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
 function PropRow({ name, value }) {
   return (
     <div className="flex items-baseline gap-2">
-      <span className="shrink-0 text-slate-400">{name}</span>
-      <span className="mono min-w-0 truncate text-slate-300" title={value}>
+      <span className="shrink-0 text-muted">{name}</span>
+      <span className="mono min-w-0 truncate text-fg" title={value}>
         {value}
       </span>
     </div>
@@ -276,11 +276,11 @@ function SortBtn({ active, onClick, icon: Icon, label }) {
       onClick={onClick}
       aria-pressed={active}
       className={clsx(
-        'flex items-center gap-1 rounded px-1.5 py-0.5 transition',
-        active ? 'bg-accent-500/20 text-accent-200' : 'hover:bg-white/5 hover:text-slate-200'
+        'flex h-6 items-center gap-1 rounded px-1.5 font-medium transition-colors',
+        active ? 'bg-raised text-fg shadow-[inset_0_0_0_1px_rgb(var(--border-strong))]' : 'hover:bg-raised hover:text-fg'
       )}
     >
-      <Icon size={12} />
+      <Icon size={12} aria-hidden="true" />
       {label}
     </button>
   );

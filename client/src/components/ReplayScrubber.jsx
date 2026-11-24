@@ -124,16 +124,16 @@ export default function ReplayScrubber({ getMessages, messages, toNodeId, graphR
   };
 
   return (
-    <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-1.5 backdrop-blur" role="group" aria-label="Replay">
+    <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-md border border-line bg-panel py-1 pl-1 pr-2 shadow-overlay" role="group" aria-label="Replay">
       <button
         type="button"
         onClick={playing ? stop : () => play(progress >= 1 ? 0 : progress)}
         disabled={disabled}
         aria-label={playing ? 'Pause replay' : 'Play replay'}
         title={disabled ? 'Not enough buffered messages' : 'Replay buffered activity'}
-        className="grid h-7 w-7 place-items-center rounded-lg bg-accent-500/20 text-accent-200 hover:bg-accent-500/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70 disabled:opacity-40"
+        className="grid h-7 w-7 place-items-center rounded text-fg transition-colors hover:bg-raised disabled:opacity-40"
       >
-        {playing ? <Pause size={13} /> : <Play size={13} />}
+        {playing ? <Pause size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
       </button>
       <div className="flex flex-col">
         <div
@@ -148,16 +148,16 @@ export default function ReplayScrubber({ getMessages, messages, toNodeId, graphR
           aria-disabled={disabled}
           onKeyDown={onTrackKey}
           onPointerDown={onTrackPointer}
-          className="relative h-3 w-32 cursor-pointer rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70 sm:w-40"
+          className="relative h-3 w-32 cursor-pointer rounded-full sm:w-40"
         >
-          <div className="absolute inset-x-0 top-1 h-1.5 overflow-hidden rounded-full bg-white/10">
-            <div className="absolute inset-y-0 left-0 rounded-full bg-accent-500" style={{ width: `${progress * 100}%` }} />
+          <div className="absolute inset-x-0 top-1 h-1 overflow-hidden rounded-full bg-raised">
+            <div className="absolute inset-y-0 left-0 rounded-full bg-accent" style={{ width: `${progress * 100}%` }} />
           </div>
           {[0.25, 0.5, 0.75].map((f) => (
-            <span key={f} aria-hidden="true" className="absolute top-0.5 h-2.5 w-px bg-white/25" style={{ left: `${f * 100}%` }} />
+            <span key={f} aria-hidden="true" className="absolute top-0.5 h-2 w-px bg-line-strong" style={{ left: `${f * 100}%` }} />
           ))}
         </div>
-        <div className="mono flex justify-between text-xs text-slate-400" aria-hidden="true">
+        <div className="mono flex justify-between text-2xs text-subtle" aria-hidden="true">
           <span>{disabled ? '--:--:--' : fmtClock(span.t0)}</span>
           <span>{disabled ? '--:--:--' : fmtClock(span.t1)}</span>
         </div>
@@ -170,11 +170,11 @@ export default function ReplayScrubber({ getMessages, messages, toNodeId, graphR
         }}
         aria-label="Reset replay"
         title="Reset"
-        className="rounded p-1 text-slate-400 hover:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-400/70"
+        className="grid h-7 w-7 place-items-center rounded text-muted transition-colors hover:bg-raised hover:text-fg"
       >
-        <RotateCcw size={13} />
+        <RotateCcw size={13} aria-hidden="true" />
       </button>
-      <span className="text-xs text-slate-400">Replay</span>
+      <span className="text-xs text-muted">Replay</span>
     </div>
   );
 }

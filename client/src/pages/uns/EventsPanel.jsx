@@ -1,22 +1,21 @@
 import { useEffect, useState } from 'react';
-import { History } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
-import PanelHeader from './PanelHeader';
+import { Banner, StatusText, Timestamp } from '@/components/ui';
+import { SidePanel } from '@/components/CanvasChrome';
 
 const EVENT_LABEL = {
-  'topic-added': 'new topic',
-  'edge-birth': 'edge online',
-  'edge-death': 'edge offline',
-  'device-birth': 'device online',
-  'device-death': 'device offline'
+  'topic-added': 'New topic',
+  'edge-birth': 'Edge online',
+  'edge-death': 'Edge offline',
+  'device-birth': 'Device online',
+  'device-death': 'Device offline'
 };
-const EVENT_COLOR = {
-  'topic-added': 'text-sky-400',
-  'edge-birth': 'text-emerald-400',
-  'device-birth': 'text-emerald-400',
-  'edge-death': 'text-red-400',
-  'device-death': 'text-red-400'
+const EVENT_TONE = {
+  'topic-added': 'info',
+  'edge-birth': 'good',
+  'device-birth': 'good',
+  'edge-death': 'bad',
+  'device-death': 'bad'
 };
 
 export default function EventsPanel({ brokers, onJump, onClose }) {
@@ -48,39 +47,50 @@ export default function EventsPanel({ brokers, onJump, onClose }) {
   }, [brokers, attempt]);
 
   return (
-    <aside className="flex max-h-[50%] w-full shrink-0 flex-col border-t border-white/5 bg-surface-900/40 md:max-h-none md:w-80 md:border-l md:border-t-0">
-      <PanelHeader icon={History} title="Namespace events" onClose={onClose} />
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {error && (
-          <div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-rose-500/10 px-2 py-1.5 text-xs text-rose-300">
-            <span>{error}</span>
-            <button onClick={() => setAttempt((v) => v + 1)} className="shrink-0 rounded border border-rose-400/40 px-2 py-0.5 hover:bg-rose-500/20">
-              Retry
-            </button>
-          </div>
-        )}
-        {!events && !error && <p className="text-xs text-slate-400" role="status">Loading…</p>}
-        {events?.length === 0 && <p className="text-xs text-slate-400">No events yet — new topics and Sparkplug BIRTH/DEATH show up here.</p>}
-        {events?.map((e, i) => (
-          <button
-            key={i}
-            onClick={() => e.topic && onJump(e.brokerId, e.topic.split('/').filter(Boolean).join('/'))}
-            className="mb-1 block w-full rounded-lg bg-black/20 px-2 py-1.5 text-left text-xs hover:bg-white/5"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className={`font-semibold ${EVENT_COLOR[e.type] || 'text-slate-300'}`}>
-                {EVENT_LABEL[e.type] || e.type}
-                {e.cascaded ? ' (cascade)' : ''}
-              </span>
-              <span className="shrink-0 text-xs text-slate-400">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
-            </div>
-            <div className="mt-0.5 break-all font-mono text-xs text-slate-400">
-              {e.topic || [e.group, e.edgeNode, e.device].filter(Boolean).join(' / ')}
-            </div>
-          </button>
-        ))}
-      </div>
-    </aside>
+    <SidePanel title="Namespace events" label="Namespace events" onClose={onClose}>
+      {error && (
+        <div className="p-4">
+          <Banner variant="error" title="Could not load events" onRetry={() => setAttempt((v) => v + 1)}>
+            {error}
+          </Banner>
+        </div>
+      )}
+      {!events && !error && (
+        <p className="p-4 text-sm text-muted" role="status">
+          Loading events…
+        </p>
+      )}
+      {events?.length === 0 && <p className="p-4 text-sm text-muted">No events yet. New topics and Sparkplug births and deaths appear here.</p>}
+      {events?.length > 0 && (
+        <ul className="divide-y divide-line">
+          {events.map((e, i) => {
+            const target = e.topic ? e.topic.split('/').filter(Boolean).join('/') : null;
+            const body = (
+              <>
+                <span className="flex items-center justify-between gap-2">
+                  <StatusText tone={EVENT_TONE[e.type] || 'neutral'} className="text-xs">
+                    {EVENT_LABEL[e.type] || e.type}
+                    {e.cascaded ? ' (cascade)' : ''}
+                  </StatusText>
+                  <Timestamp value={e.ts} className="shrink-0 text-xs text-subtle" />
+                </span>
+                <span className="mt-0.5 block break-all font-mono text-xs text-muted">{e.topic || [e.group, e.edgeNode, e.device].filter(Boolean).join(' / ')}</span>
+              </>
+            );
+            return (
+              <li key={i}>
+                {target ? (
+                  <button type="button" onClick={() => onJump(e.brokerId, target)} className="block w-full px-4 py-2 text-left transition-colors hover:bg-raised" title="Show this node on the map">
+                    {body}
+                  </button>
+                ) : (
+                  <div className="px-4 py-2">{body}</div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </SidePanel>
   );
 }
-

@@ -70,6 +70,26 @@ export function formatValue(payload) {
   return String(payload);
 }
 
+const fmtNumber = (n) => (Number.isInteger(n) ? n.toLocaleString() : Number(n.toFixed(Math.abs(n) < 1 ? 3 : 2)).toLocaleString());
+
+/**
+ * A short, readable value for the canvas caption: a value envelope
+ * ({ value|v, unit|u }) shows as "57 C", numbers get at most 3 decimals, other
+ * objects fall back to compact JSON.
+ */
+export function displayValue(payload) {
+  if (typeof payload === 'number') return Number.isFinite(payload) ? fmtNumber(payload) : String(payload);
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    const v = 'value' in payload ? payload.value : 'v' in payload ? payload.v : undefined;
+    if (v !== undefined && (typeof v !== 'object' || v === null)) {
+      const unit = typeof payload.unit === 'string' ? payload.unit : typeof payload.u === 'string' ? payload.u : '';
+      const text = typeof v === 'number' ? fmtNumber(v) : String(v);
+      return unit ? `${text} ${unit}` : text;
+    }
+  }
+  return formatValue(payload);
+}
+
 /**
  * Stamp every ancestor path of an incoming message, count it for per-branch
  * rates, and record the leaf's value + inter-arrival EMA.
@@ -89,7 +109,7 @@ export function recordActivity(msg, now = Date.now()) {
     rateCounters.set(key, (rateCounters.get(key) || 0) + 1);
   }
   const leafKey = `${msg.brokerId}:${path}`;
-  unsValueMap.set(leafKey, { value: formatValue(msg.payload), ts: now });
+  unsValueMap.set(leafKey, { value: formatValue(msg.payload), display: displayValue(msg.payload), ts: now });
   const s = gapStats.get(leafKey);
   if (s) {
     const gap = now - s.lastTs;

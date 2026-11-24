@@ -2,7 +2,8 @@ import { useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 import { groupColor } from '@/graph/buildGraph';
-import { GRAPH_STYLES } from '@/graph/graphStyles';
+import { resolveGraphStyle } from '@/graph/graphStyles';
+import { useCanvasTokens } from '@/graph/canvasTokens';
 
 const ROW_H = 26;
 const OVERSCAN = 8;
@@ -90,7 +91,7 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
     });
   };
 
-  const style = GRAPH_STYLES.constellation;
+  const style = resolveGraphStyle('standard', useCanvasTokens());
   const total = rows.length;
   const tabRow = Math.min(cursor, Math.max(total - 1, 0));
 
@@ -114,7 +115,7 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-white/5 px-3 py-2 text-xs text-subtle">{total.toLocaleString()} rows</div>
+      <div className="border-b border-line px-3 py-2 text-xs tabular-nums text-subtle">{total.toLocaleString()} rows</div>
       <div
         ref={scrollerRef}
         onScroll={(e) => {
@@ -158,8 +159,8 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                     }
                   }}
                   className={clsx(
-                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-white/5',
-                    n.id === selectedId && 'bg-accent-500/15'
+                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-raised',
+                    n.id === selectedId && 'bg-accent/[0.07] shadow-[inset_2px_0_0_rgb(var(--accent))]'
                   )}
                   style={{ top: (start + i) * ROW_H, height: ROW_H, paddingLeft: `${depth * 14 + 8}px` }}
                 >
@@ -180,9 +181,9 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
                     className="h-2 w-2 shrink-0 rounded-full"
                     style={{ background: groupColor(n.group, style.palette) }}
                   />
-                  <span className="truncate text-slate-200">{n.label}</span>
+                  <span className="truncate text-fg">{n.label}</span>
                   {value?.text != null && (
-                    <span key={value.key} className="valueflash mono ml-auto truncate text-xs text-accent-200" style={{ maxWidth: 150 }}>
+                    <span key={value.key} className="valueflash mono ml-auto truncate text-xs text-muted" style={{ maxWidth: 150 }}>
                       {value.text}
                     </span>
                   )}

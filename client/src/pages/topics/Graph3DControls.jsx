@@ -1,61 +1,56 @@
-import { useState } from 'react';
-import { ChevronDown, ChevronUp, Sparkles, RotateCw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, Rotate3d, SlidersHorizontal, Sparkles } from 'lucide-react';
 import clsx from 'clsx';
+import { Toggle } from '@/components/ui';
+import { ToolToggle } from '@/components/CanvasChrome';
 
-// Look-and-feel controls for the 3D view (Beautify + auto-rotate + size/link sliders).
+/** Look-and-feel controls for the 3D view, as toolbar items: depth colouring, spin, and a menu with the size sliders. */
 export default function Graph3DControls({ beautify, onBeautify, autoRotate, onAutoRotate, nodeScale, onNodeScale, linkOpacity, onLinkOpacity }) {
   const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    const onKey = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
   return (
-    <div className="absolute left-4 top-4 z-10 w-52 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-slate-300 backdrop-blur">
-      <div className="flex items-stretch">
-        <button
-          onClick={onBeautify}
-          aria-pressed={beautify}
-          title="Depth-graded colours, glowing links, and a slow spin"
-          className={clsx(
-            'flex flex-1 items-center gap-1.5 px-3 py-2 text-sm font-medium transition',
-            beautify ? 'bg-accent-500/20 text-accent-200' : 'text-slate-300 hover:text-slate-100'
-          )}
-        >
-          <Sparkles size={15} className={beautify ? 'text-accent-300' : ''} /> Beautify
-        </button>
-        <button
-          onClick={() => setOpen((v) => !v)}
-          title="Look and feel"
-          aria-label="Look and feel options"
-          aria-expanded={open}
-          className="border-l border-white/10 px-2.5 text-slate-400 transition hover:text-slate-200"
-        >
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
-      </div>
+    <div ref={ref} className="relative flex items-center gap-0.5">
+      <ToolToggle pressed={beautify} onClick={onBeautify} icon={Sparkles} label="Depth colour" title="Colour nodes by depth and spin slowly" showLabel="lg" />
+      <ToolToggle pressed={autoRotate} onClick={onAutoRotate} icon={Rotate3d} label="Spin" title="Rotate slowly" showLabel="lg" />
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label="Node size and link opacity"
+        className={clsx('inline-flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors', open ? 'bg-raised text-fg' : 'text-muted hover:bg-raised hover:text-fg')}
+      >
+        <SlidersHorizontal size={15} aria-hidden="true" />
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
       {open && (
-        <div className="space-y-3 border-t border-white/5 px-3 py-3">
-          <button
-            onClick={onAutoRotate}
-            aria-pressed={autoRotate}
-            className={clsx(
-              'flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
-              autoRotate ? 'border-accent-500/40 bg-accent-500/15 text-accent-200' : 'border-white/10 text-slate-400 hover:text-slate-200'
-            )}
-          >
-            <RotateCw size={13} className={autoRotate ? 'text-accent-300' : ''} /> Auto-rotate
-          </button>
+        <div role="dialog" aria-label="3D look" className="absolute left-0 top-full z-30 mt-1 w-64 space-y-3 rounded-md border border-line-strong bg-overlay p-3 shadow-overlay">
           <label className="block">
-            <span className="mb-1 flex justify-between text-xs text-slate-400">
-              Node size <span className="tabular-nums text-slate-400">{nodeScale.toFixed(1)}×</span>
+            <span className="mb-1 flex justify-between text-xs font-medium text-muted">
+              Node size <span className="tabular-nums text-fg">{nodeScale.toFixed(1)}×</span>
             </span>
-            <input type="range" min="0.5" max="2" step="0.1" value={nodeScale} onChange={(e) => onNodeScale(Number(e.target.value))} className="w-full accent-accent-500" />
+            <input type="range" min="0.5" max="2" step="0.1" value={nodeScale} onChange={(e) => onNodeScale(Number(e.target.value))} className="w-full accent-accent" />
           </label>
           <label className="block">
-            <span className="mb-1 flex justify-between text-xs text-slate-400">
-              Links <span className="tabular-nums text-slate-400">{Math.round(linkOpacity * 100)}%</span>
+            <span className="mb-1 flex justify-between text-xs font-medium text-muted">
+              Link opacity <span className="tabular-nums text-fg">{Math.round(linkOpacity * 100)} %</span>
             </span>
-            <input type="range" min="0.05" max="0.8" step="0.05" value={linkOpacity} onChange={(e) => onLinkOpacity(Number(e.target.value))} className="w-full accent-accent-500" />
+            <input type="range" min="0.05" max="0.8" step="0.05" value={linkOpacity} onChange={(e) => onLinkOpacity(Number(e.target.value))} className="w-full accent-accent" />
           </label>
+          <Toggle checked={autoRotate} onChange={onAutoRotate} label="Spin" />
         </div>
       )}
     </div>
   );
 }
-
