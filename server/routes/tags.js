@@ -148,6 +148,7 @@ router.post('/bindings', async (req, res) => {
     source,
     target
   });
+  bindings.reconcile(); // reset state if this edited an existing binding
   await bindings.syncMonitors();
   res.status(201).json(saved);
 });
@@ -179,10 +180,11 @@ router.post('/sparkplug/state', async (req, res) => {
 
 // DELETE /api/bindings/:id
 router.delete('/bindings/:id', (req, res) => {
-  const { profiles } = req.app.locals.services;
+  const { profiles, bindings } = req.app.locals.services;
   if (!profiles.removeIn('bindings', req.params.id)) {
     return res.status(404).json({ error: 'Binding not found' });
   }
+  bindings.reconcile(); // drop the binding's last/status state
   res.json({ removed: req.params.id });
 });
 

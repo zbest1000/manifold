@@ -134,13 +134,13 @@ class SparkplugPublisher {
         { name: 'Node Control/Rebirth', value: false }
       ]
     });
-    for (const [deviceId, d] of s.devices) this._deviceBirth(s, deviceId, d);
+    for (const [deviceId, d] of s.devices) if (!d.offline) this._deviceBirth(s, deviceId, d);
   }
 
   _deviceBirth(s, deviceId, d) {
     this._publish(s, `spBv1.0/${s.group}/DBIRTH/${s.edge}/${deviceId}`, {
       seq: this._nextSeq(s),
-      metrics: [...d.lastValues.entries()].map(([name, v]) => ({ name, value: v.value, ts: v.ts }))
+      metrics: [...d.lastValues.entries()].map(([name, v]) => ({ name, value: v.value, ts: v.ts, type: d.types.get(name) }))
     });
     d.birthed = true;
   }
@@ -154,15 +154,18 @@ class SparkplugPublisher {
     const s = this._session(brokerId, group, edge);
     let d = s.devices.get(device);
     if (!d) {
-      d = { metricNames: new Set(), lastValues: new Map(), birthed: false };
+      d = { metricNames: new Set(), lastValues: new Map(), types: new Map(), birthed: false };
       s.devices.set(device, d);
     }
+    d.offline = false;
     let needsBirth = !d.birthed;
     for (const m of metrics) {
       if (!d.metricNames.has(m.name)) {
         d.metricNames.add(m.name);
         needsBirth = true;
       }
+      // The datatype is pinned at first sight so BIRTH and DATA always agree.
+      if (!d.types.has(m.name)) d.types.set(m.name, m.type);
       d.lastValues.set(m.name, { value: m.value, ts: m.ts || Date.now() });
     }
     if (!s.online) return; // values retained in lastValues; birth flows on connect
@@ -172,9 +175,31 @@ class SparkplugPublisher {
     } else {
       this._publish(s, `spBv1.0/${s.group}/DDATA/${s.edge}/${device}`, {
         seq: this._nextSeq(s),
-        metrics: metrics.map((m) => ({ name: m.name, value: m.value, ts: m.ts || Date.now() }))
+        metrics: metrics.map((m) => ({ name: m.name, value: m.value, ts: m.ts || Date.now(), type: d.types.get(m.name) }))
       });
     }
+  }
+
+  /**
+   * Source went offline/online: DDEATH (seq-numbered, only for a birthed
+   * device) or DBIRTH with the last known values. Never opens a session by
+   * itself; returns true if something was published.
+   */
+  setDeviceOnline({ brokerId, group, edge, device, online }) {
+    const s = this.sessions.get(`${brokerId} ${group} ${edge}`);
+    const d = s?.devices.get(device);
+    if (!s || !d || !s.online) return false;
+    if (!online) {
+      if (!d.birthed) return false;
+      d.birthed = false; // next update re-issues DBIRTH before any DDATA
+      d.offline = true;
+      this._publish(s, `spBv1.0/${s.group}/DDEATH/${s.edge}/${device}`, { seq: this._nextSeq(s), metrics: [] });
+      return true;
+    }
+    d.offline = false;
+    if (d.birthed || !d.lastValues.size) return false;
+    this._deviceBirth(s, device, d);
+    return true;
   }
 
   // ---- host application STATE sessions -----------------------------------------
