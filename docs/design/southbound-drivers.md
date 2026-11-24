@@ -544,9 +544,11 @@ Decided
      `server/services/historians.js`], so the outbox must replay spilled
      device samples strictly oldest-first per tag and must not interleave
      live samples ahead of a backlog for the same tag.
-   - The other backends differ: TimescaleDB has a `quality` column, but the
-     InfluxDB line-protocol writer currently drops quality [code]. It needs a
-     `quality` field before InfluxDB is offered as a device-data target.
+   - **InfluxDB is not a device-data target.** Its line-protocol writer
+     drops quality [code], and it is excluded by decision rather than
+     extended. TimescaleDB, which has a `quality` column, remains available
+     as a secondary target. The existing InfluxDB backend for pipelines and
+     recordings is unchanged.
 
 Open
 
