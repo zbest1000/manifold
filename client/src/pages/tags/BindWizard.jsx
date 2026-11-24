@@ -25,6 +25,7 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
   const srcType = editing ? editing.source.type : profileMode ? 'device-profile' : source.type;
   const isProfile = srcType === 'device-profile';
   const [step, setStep] = useState(0);
+  const [attempted, setAttempted] = useState(-1); // highest step the user tried to leave with errors
   const [name, setName] = useState(editing?.name || '');
   const [mode, setMode] = useState(editing?.target?.mode || 'mqtt');
   const [form, setForm] = useState(() => formFromBinding(editing, { brokers, srcType }));
@@ -77,6 +78,11 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
     [srcType, mode, form, effRows, brokers, profile, devicesList, preview, allowEmpty]
   );
   const stepErrors = errors.filter((e) => e.step === step);
+  // An empty required field is not an error until the user tries to continue;
+  // anything else (invalid path, collision) is shown as soon as it exists.
+  const isRequired = (e) => /is required/.test(e.message);
+  const blocking = stepErrors.filter((e) => !isRequired(e));
+  const shownErrors = attempted >= step ? stepErrors : blocking;
   const firstError = errors[0];
   const lastStep = step === STEPS.length - 1;
   const checking = srcType !== 'mqtt' && (preview.status === 'loading' || preview.status === 'error' || preview.status === 'idle');
@@ -152,9 +158,9 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
       </ol>
 
       {data.meta.error && <div className="mb-3"><ErrorBanner title="Could not read the device's tag metadata" message={data.meta.error} onRetry={data.loadMeta} /></div>}
-      {step === 0 && <TargetStep {...{ name, setName, mode, setMode, form, set, brokers, srcType, rows: effRows, pc, errors: stepErrors }} />}
-      {step === 1 && <NamingStep {...{ mode, srcType, form, set, resolved, collisions, rows: effRows, rename, renameable, errors: stepErrors, preview, isProfile }} />}
-      {step === 2 && <OptionsStep {...{ mode, srcType, form, set, errors: stepErrors, hist: data.hist }} />}
+      {step === 0 && <TargetStep {...{ name, setName, mode, setMode, form, set, brokers, srcType, rows: effRows, pc, errors: shownErrors }} />}
+      {step === 1 && <NamingStep {...{ mode, srcType, form, set, resolved, collisions, rows: effRows, rename, renameable, errors: shownErrors, preview, isProfile }} />}
+      {step === 2 && <OptionsStep {...{ mode, srcType, form, set, errors: shownErrors, hist: data.hist }} />}
 
       <p className={clsx(help, 'mt-4')}>Bindings are read-only: Manifold monitors the source and republishes. It never writes to a device.</p>
 
@@ -172,7 +178,11 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
           </Button>
         )}
         {!lastStep ? (
-          <Button onClick={() => setStep(step + 1)} disabled={Boolean(stepErrors[0])} title={stepErrors[0]?.message}>
+          <Button
+            onClick={() => (stepErrors[0] ? setAttempted(step) : setStep(step + 1))}
+            disabled={Boolean(blocking[0])}
+            title={blocking[0]?.message}
+          >
             Next <ArrowRight size={14} aria-hidden="true" />
           </Button>
         ) : (

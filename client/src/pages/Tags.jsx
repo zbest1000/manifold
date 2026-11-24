@@ -186,7 +186,7 @@ export default function Tags() {
     <div className="flex h-full min-w-0 flex-col">
       <PageHeader
         title="Tags"
-        subtitle="browse device tags, bind them into the UNS"
+        subtitle="Browse tags from devices, OPC UA and Sparkplug, and map them into the UNS."
         actions={
           <HelpButton title="What are Tags, and where do they come from?">
             <p>

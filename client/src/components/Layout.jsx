@@ -73,7 +73,7 @@ function Brand({ compact }) {
       {!compact && (
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold leading-tight">Manifold</p>
-          <p className="mono truncate text-2xs text-subtle">UNS · MQTT · OPC UA</p>
+          <p className="mono truncate text-2xs text-subtle">UNS · MQTT · OPC UA · PLCs</p>
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Radio, Cpu, Share2, Radar, ArrowRight, MessageSquare, Workflow, Database, Tag, BellRing } from 'lucide-react';
+import { Radio, Cpu, HardDrive, Share2, Radar, ArrowRight, MessageSquare, Workflow, Database, Tag, BellRing } from 'lucide-react';
 import { useStore } from '@/store/store';
 import { useConnections, useDataTick, useTopicVersionSum } from '@/store/selectors';
 import { totalTopicCount } from '@/graph/topicCount';
@@ -24,6 +24,26 @@ export default function Overview() {
   const [engine, setEngine] = useState(null); // pushed every 2s while anything is connected
   const [alerts, setAlerts] = useState(null); // { rules, recent } — config, polled slowly
   const [alertsError, setAlertsError] = useState(null);
+  const [devices, setDevices] = useState([]); // southbound devices (Modbus, S7, EtherNet/IP)
+  const devicesVersion = useStore((s) => s.devicesVersion);
+  const deviceStates = useStore((s) => s.deviceStates);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .devices()
+      .then((r) => live && setDevices(r.devices || []))
+      .catch(() => live && setDevices([])); // the tile shows 0; the Devices page reports the error
+    return () => {
+      live = false;
+    };
+  }, [devicesVersion]);
+  const deviceStatus = (d) => {
+    if (d.enabled === false) return 'disconnected';
+    const state = deviceStates[d.id]?.state || d.status?.state;
+    return state === 'online' ? 'connected' : 'reconnecting';
+  };
+  const devicesOnline = devices.filter((d) => deviceStatus(d) === 'connected').length;
 
   useEffect(() => {
     socket.on('engine-metrics', setEngine);
@@ -98,6 +118,14 @@ export default function Overview() {
       accent: 'from-violet-400 to-violet-600'
     },
     {
+      label: 'Devices',
+      value: devices.length,
+      sub: `${devicesOnline} online`,
+      icon: HardDrive,
+      to: '/devices',
+      accent: 'from-amber-400 to-orange-600'
+    },
+    {
       label: 'Topics Tracked',
       value: topicCount.toLocaleString(),
       sub: 'across all brokers',
@@ -111,7 +139,7 @@ export default function Overview() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="Overview"
-        subtitle="Live snapshot of your MQTT and OPC UA connections"
+        subtitle="Live snapshot of your brokers, OPC UA servers and devices"
         actions={
           <Link to="/discovery">
             <Button variant="outline">
@@ -137,7 +165,7 @@ export default function Overview() {
             </button>
           </div>
         )}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {stats.map((s) => (
             <Link key={s.label} to={s.to}>
               <Card className="group p-5 transition hover:border-white/10 hover:bg-surface-900/80">
@@ -218,12 +246,15 @@ export default function Overview() {
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Card className="p-5">
             <h2 className="mb-3 text-sm font-semibold text-slate-200">Connections</h2>
-            {brokers.length === 0 && opcua.length === 0 ? (
+            {brokers.length === 0 && opcua.length === 0 && devices.length === 0 ? (
               <div className="space-y-3 py-8 text-center">
                 <p className="text-sm text-slate-400">No active connections yet.</p>
                 <div className="flex flex-wrap justify-center gap-2">
                   <Link to="/brokers">
                     <Button size="sm">Add a broker</Button>
+                  </Link>
+                  <Link to="/devices">
+                    <Button size="sm" variant="outline">Add a device</Button>
                   </Link>
                   <Link to="/discovery">
                     <Button size="sm" variant="outline">Run discovery</Button>
@@ -237,6 +268,16 @@ export default function Overview() {
                 ))}
                 {opcua.map((c) => (
                   <Row key={c.id} icon={Cpu} name={c.name} sub={c.endpointUrl} status={c.status} />
+                ))}
+                {devices.map((d) => (
+                  <Row
+                    key={d.id}
+                    icon={HardDrive}
+                    name={d.name}
+                    sub={`${d.host}:${d.port} · ${d.protocol}`}
+                    status={deviceStatus(d)}
+                    label={d.enabled === false ? 'disabled' : deviceStatus(d) === 'connected' ? 'online' : 'connecting'}
+                  />
                 ))}
               </div>
             )}
@@ -295,7 +336,7 @@ function HealthCard({ to, icon: Icon, label, value, unit, lines = [], warn = fal
   );
 }
 
-function Row({ icon: Icon, name, sub, status }) {
+function Row({ icon: Icon, name, sub, status, label }) {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2.5">
       <div className="grid h-9 w-9 place-items-center rounded-lg bg-white/5 text-slate-300">
@@ -305,7 +346,7 @@ function Row({ icon: Icon, name, sub, status }) {
         <p className="truncate text-sm font-medium text-slate-200">{name}</p>
         <p className="mono truncate text-xs text-slate-400">{sub}</p>
       </div>
-      <Badge status={status} />
+      <Badge status={status}>{label}</Badge>
     </div>
   );
 }

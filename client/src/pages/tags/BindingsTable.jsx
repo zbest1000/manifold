@@ -63,16 +63,16 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <caption className="sr-only">Tag bindings</caption>
-          <thead className="border-b border-white/5 text-slate-400">
+          <thead className="border-b border-white/5 text-slate-400 [&_th]:whitespace-nowrap">
             <tr>
               <th scope="col" className="px-3 py-2 font-medium">Name</th>
               <th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Source</th>
               <th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Target</th>
-              <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Layout</th>
-              <th scope="col" className="hidden px-3 py-2 font-medium xl:table-cell">Deadband / heartbeat</th>
-              <th scope="col" className="hidden px-3 py-2 font-medium xl:table-cell">History</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium 2xl:table-cell">Layout</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium 2xl:table-cell">Deadband / heartbeat</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium 2xl:table-cell">History</th>
               <th scope="col" className="px-3 py-2 text-right font-medium" title="Profile bindings show tags x instances">Tags</th>
-              <th scope="col" className="px-3 py-2 font-medium">Published / suppressed / errors</th>
+              <th scope="col" className="px-3 py-2 font-medium" title="Published / suppressed / errors">Activity</th>
               <th scope="col" className="px-3 py-2 font-medium">Source state</th>
               <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Last publish</th>
               <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Last error</th>
@@ -98,7 +98,7 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
                         className="flex items-center gap-1 text-left hover:text-white"
                       >
                         {isOpen ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
-                        <span className="break-words">{label}</span>
+                        <span className="whitespace-nowrap">{label}</span>
                       </button>
                       {!enabled && <span className="ml-5 block text-xs font-normal text-amber-300">disabled</span>}
                     </th>
@@ -106,18 +106,18 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
                       <span className="mr-1 text-slate-400">{src.type}</span>
                       <span className="break-words">{src.label}</span>
                     </td>
-                    <td className="hidden max-w-[16rem] px-3 py-2 font-mono text-slate-300 md:table-cell">
-                      <span className="break-all">{targetLabel(b)}</span>
+                    <td className="hidden max-w-[22rem] px-3 py-2 font-mono text-slate-300 md:table-cell">
+                      <span className="block truncate" title={targetLabel(b)}>{targetLabel(b)}</span>
                     </td>
-                    <td className="hidden px-3 py-2 text-slate-300 lg:table-cell">{layoutLabel(b)}</td>
-                    <td className="hidden px-3 py-2 text-slate-300 xl:table-cell">{rbeLabel(b) || 'none'}</td>
-                    <td className="hidden px-3 py-2 text-slate-300 xl:table-cell">{b.target?.historian ? historianName(b, historians) : 'none'}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 2xl:table-cell">{layoutLabel(b)}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 2xl:table-cell">{rbeLabel(b) || 'none'}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 2xl:table-cell">{b.target?.historian ? historianName(b, historians) : 'none'}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-200">{tagCount(b, profiles)}</td>
-                    <td className="px-3 py-2 tabular-nums text-slate-200">
+                    <td className="whitespace-nowrap px-3 py-2 tabular-nums text-slate-200" title="Published / suppressed / errors">
                       {s.published || 0} / {s.suppressed || 0} / <span className={s.errors ? 'text-rose-300' : ''}>{s.errors || 0}</span>
                     </td>
                     <td className="px-3 py-2"><StateBadge state={s.sourceState} /></td>
-                    <td className="hidden px-3 py-2 text-slate-300 lg:table-cell">
+                    <td className="hidden whitespace-nowrap px-3 py-2 text-slate-300 lg:table-cell">
                       {s.lastTs ? <time dateTime={new Date(s.lastTs).toISOString()}>{formatDistanceToNow(s.lastTs, { addSuffix: true })}</time> : 'never'}
                     </td>
                     <td className="hidden max-w-[12rem] px-3 py-2 lg:table-cell">
