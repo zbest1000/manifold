@@ -461,6 +461,9 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
 
     let loseExt = null;
     const unhook = registerTestHook('webgl', {
+      get selectedId() {
+        return selectedRef.current ?? null;
+      },
       get transform() {
         return { ...transformRef.current };
       },

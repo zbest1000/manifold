@@ -44,6 +44,6 @@ export default defineConfig({
     { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js', 'devices-protocols.spec.js', 'profiles.spec.js', 'outage.spec.js', 'tags-binding.spec.js', 'auth.spec.js', 'tags-extra.spec.js', 'opcua.spec.js', 'devices-lifecycle.spec.js', 'devices-bulk.spec.js', 'pipelines.spec.js', 'settings.spec.js', 'canvas.spec.js'] },
     // Canvas renderers again at devicePixelRatio 2: backing-store size and hit-testing must hold on HiDPI.
     { name: 'hidpi', use: { ...desktop, deviceScaleFactor: 2 }, testMatch: ['canvas.spec.js'] },
-    { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js'] }
+    { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js', 'canvas.spec.js'] }
   ]
 });

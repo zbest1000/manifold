@@ -83,6 +83,26 @@ export default function ProducerFlows({ broker }) {
   );
   const selectedNode = selected ? graph.nodes.find((n) => n.id === selected) : null;
   const hasSparkplug = topology && topology.summary?.edgeNodes > 0;
+  // Online counts per kind: the registry's summary.online adds edge nodes and
+  // devices together, which read as "8 online of 5 devices".
+  const counts = useMemo(() => {
+    const c = { edges: 0, edgesOnline: 0, devices: 0, devicesOnline: 0 };
+    for (const g of topology?.groups || []) {
+      for (const e of g.edgeNodes || []) {
+        c.edges += 1;
+        if (e.online) c.edgesOnline += 1;
+        for (const d of e.devices || []) {
+          c.devices += 1;
+          if (d.online) c.devicesOnline += 1;
+        }
+      }
+    }
+    if (!topology?.groups && topology?.summary) {
+      c.edges = topology.summary.edgeNodes || 0;
+      c.devices = topology.summary.devices || 0;
+    }
+    return c;
+  }, [topology]);
 
   return (
     <div className="flex h-full w-full flex-col md:flex-row">
@@ -189,11 +209,10 @@ export default function ProducerFlows({ broker }) {
           <>
             <PanelSection title="Sparkplug devices">
               {topology?.summary ? (
-                <StatGroup className="grid-cols-2" label="Sparkplug devices">
+                <StatGroup className="grid-cols-3" label="Sparkplug devices">
                   <Stat label="Groups" value={fmt(topology.summary.groups)} />
-                  <Stat label="Edge nodes" value={fmt(topology.summary.edgeNodes)} />
-                  <Stat label="Devices" value={fmt(topology.summary.devices)} />
-                  <Stat label="Online" value={fmt(topology.summary.online)} tone="good" />
+                  <Stat label="Edge nodes" value={fmt(counts.edges)} sub={`${fmt(counts.edgesOnline)} online`} tone={counts.edgesOnline < counts.edges ? 'warn' : undefined} />
+                  <Stat label="Devices" value={fmt(counts.devices)} sub={`${fmt(counts.devicesOnline)} online`} tone={counts.devicesOnline < counts.devices ? 'warn' : undefined} />
                 </StatGroup>
               ) : (
                 <p className="text-sm text-muted">Waiting for Sparkplug traffic…</p>

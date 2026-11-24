@@ -246,7 +246,7 @@ export default function System() {
   if (!metrics) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="System" />
+        <PageHeader title="System health" />
         <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {error ? (
             <Banner variant="error" title="Could not read /metrics" onRetry={poll}>
@@ -279,7 +279,7 @@ export default function System() {
     <UpdatedAtContext.Provider value={updatedAt ?? 0}>
       <div className="flex h-full flex-col">
         <PageHeader
-          title="System"
+          title="System health"
           subtitle={updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()} · every ${POLL_MS / 1000} s from /metrics` : undefined}
           actions={
             <Button variant="secondary" onClick={poll}>

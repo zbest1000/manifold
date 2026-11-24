@@ -158,9 +158,14 @@ describe('layout guards', () => {
     for (let i = 0; i < 2000; i++) kids.set(`c${i}`, { name: `c${i}`, path: `w/c${i}`, brokerId: 'b', depth: 2, children: new Map(), topicCount: 1 });
     const wide = { name: 'w', path: 'w', brokerId: 'b', depth: 1, children: kids, topicCount: 2000 };
     const root = { name: 'root', path: '', brokerId: 'b', depth: 0, children: new Map([['w', wide]]), topicCount: 2000 };
+    // Paged: the first PAGE_SIZE children by name plus one "N more" row.
     const lay = layoutForest([root], new Set(['b:', 'b:w']));
-    expect(lay.nodes.length).toBe(2002);
-    expect(new Set(lay.nodes.map((l) => `${l.x},${l.y}`)).size).toBe(2002);
+    expect(lay.nodes.length).toBe(2 + 50 + 1);
+    expect(lay.nodes.at(-1).more).toBe(true);
+    expect(lay.nodes.at(-1).node.hidden).toBe(1950);
+    const all = layoutForest([root], new Set(['b:', 'b:w']), new Map([['b:w', 2000]]));
+    expect(all.nodes.length).toBe(2002);
+    expect(new Set(all.nodes.map((l) => `${l.x},${l.y}`)).size).toBe(2002);
     expect(lay.nodes.every((l) => Number.isFinite(l.x) && Number.isFinite(l.y))).toBe(true);
     const f = fitTransform(lay.nodes, (l) => l, { w: 1200, h: 800 });
     expect([f.x, f.y, f.k].every(Number.isFinite)).toBe(true);

@@ -131,6 +131,10 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const autoRotateRef = useRef(false); // read by the render loop each frame
   const nodeScaleRef = useRef(nodeScale); // keeps the selection ring hugging scaled nodes
   const onSelectRef = useRef(onSelect);
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   const linkOpacityRef = useRef(linkOpacity); // initial opacity for a rebuilt scene (the look effect keeps it current)
   useEffect(() => {
     linkOpacityRef.current = linkOpacity;
@@ -342,6 +346,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
 
     const v = new THREE.Vector3();
     const unhook = registerTestHook('graph3d', {
+      get selectedId() {
+        return selectedIdRef.current ?? null;
+      },
       get frames() {
         return frames;
       },

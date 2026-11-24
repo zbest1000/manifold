@@ -310,7 +310,12 @@ export default function Uns() {
             <div className="border-b border-line p-2">
               <Input type="search" aria-label="Filter namespace" value={treeFilter} onChange={(e) => setTreeFilter(e.target.value)} placeholder="Filter namespace" />
             </div>
-            <GraphTree nodes={flat.nodes} links={flat.links} selectedId={selected?.id || null} onSelect={(n) => select(flat.byId.get(n.id) || null)} filter={treeFilter} />
+            <GraphTree nodes={flat.nodes} links={flat.links} selectedId={selected?.id || null} onSelect={(n) => {
+                const node = flat.byId.get(n.id) || null;
+                select(node);
+                // Back on the map, the node is opened up to and centred.
+                if (node) setFocusTarget({ brokerId: node.brokerId, path: node.path });
+              }} filter={treeFilter} />
           </div>
         ) : (
           <div className="relative min-h-0 min-w-0 flex-1">
@@ -363,7 +368,7 @@ function SourceStatus({ rate, brokers, opcua, i3xStatus }) {
   ];
   return (
     <div className="pointer-events-none absolute left-4 right-16 top-3 z-10 flex">
-      <FloatingBar role="group" label="Live sources" className="min-w-0 gap-3 px-2.5 py-1 text-xs text-muted">
+      <FloatingBar data-canvas-overlay role="group" label="Live sources" className="min-w-0 gap-3 px-2.5 py-1 text-xs text-muted">
         <span className="shrink-0 tabular-nums text-fg" data-testid="uns-rate">
           {formatRate(rate)} msg/s
         </span>
@@ -424,12 +429,12 @@ function Legend({ levels }) {
   );
   return (
     <div className="pointer-events-none absolute bottom-4 left-4 right-20 z-10 flex">
-      <div className="pointer-events-auto hidden max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay md:flex" role="group" aria-label="Map key">
+      <div className="pointer-events-auto hidden max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay md:flex" role="group" aria-label="Map key" data-canvas-overlay>
         {items}
       </div>
       <div className="pointer-events-auto flex max-w-full flex-col items-start gap-1 md:hidden">
         {open && (
-          <div id="uns-key" className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay" role="group" aria-label="Map key">
+          <div id="uns-key" data-canvas-overlay className="flex max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay" role="group" aria-label="Map key">
             {items}
           </div>
         )}
@@ -437,6 +442,7 @@ function Legend({ levels }) {
           type="button"
           aria-expanded={open}
           aria-controls="uns-key"
+          data-canvas-overlay
           onClick={() => setOpen((v) => !v)}
           className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-muted shadow-overlay hover:text-fg"
         >

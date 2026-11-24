@@ -16,7 +16,9 @@ import { test, expect } from './fixtures.js';
  * only registered when localStorage['manifold.e2e'] = '1' (or ?e2e=1).
  */
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, isMobile }, testInfo) => {
+  // The mobile project runs only the touch tests of this file.
+  if (isMobile && !testInfo.title.includes('[touch]')) testInfo.skip();
   await page.addInitScript(() => {
     localStorage.setItem('manifold.e2e', '1');
     // Count animation frames the page schedules (wrapped before any app code runs).
@@ -339,5 +341,174 @@ test('theme switch recolours the Topics graph (2D and 3D) without a remount, kee
   await expect.poll(async () => near(await page.evaluate(() => window.__manifoldTest.graph3d.bgPixel()), await surfaceToken(page), 3)).toBe(true);
   await expect(c3).toHaveAttribute('data-mark', 'same');
   expect(await page.evaluate(() => ({ cam: window.__manifoldTest.graph3d.camera, rot: window.__manifoldTest.graph3d.rotation }))).toEqual(cam0);
+  expect(consoleErrors).toEqual([]);
+});
+
+// ---- UNS expansion: reveal, badge, collapse, overlays, streaming -------------
+
+/** UNS hook state: nodes (screen positions), visible viewport, overlays, camera, motion, selection. */
+const unsState = (page) =>
+  page.evaluate(() => {
+    const h = window.__manifoldTest.uns;
+    return { nodes: h.nodes, vp: h.viewport, overlays: h.overlays, t: h.transform, motion: h.motion, sel: h.selectedId };
+  });
+const unsIdle = (page) => page.waitForFunction(() => window.__manifoldTest?.uns && window.__manifoldTest.uns.motion === null, null, { timeout: 20_000 });
+const insideVp = (n, v) => n.sx - n.r >= v.x0 - 1 && n.sx + n.r <= v.x1 + 1 && n.sy - n.r >= v.y0 - 1 && n.sy + n.r <= v.y1 + 1;
+const underOverlay = (n, rects) => rects.some((r) => n.sx + n.r > r.left && n.sx - n.r < r.right && n.sy + n.r > r.top && n.sy - n.r < r.bottom);
+const byPath = (st, p) => st.nodes.find((n) => n.path === p);
+
+async function openUns(page) {
+  await page.goto('/uns?broker=e2e-broker');
+  await page.waitForFunction(() => (window.__manifoldTest?.uns?.nodes || []).some((n) => n.path === 'plant/line1'), null, { timeout: 30_000 });
+  await unsIdle(page);
+  return page.locator('canvas[aria-describedby="uns-canvas-help"]');
+}
+
+/** Pan (as a user would) so that `path` sits at viewport-relative fractions (fx, fy). */
+async function placeNode(page, path, fx, fy) {
+  await page.evaluate(
+    ([p, x, y]) => {
+      const h = window.__manifoldTest.uns;
+      const n = h.nodes.find((q) => q.path === p);
+      const v = h.viewport;
+      const t = h.transform;
+      h.setTransform({ k: t.k, x: t.x + (v.x0 + v.w * x - n.sx), y: t.y + (v.y0 + v.h * y - n.sy) });
+    },
+    [path, fx, fy]
+  );
+}
+
+test('UNS reveal on expand: a branch opened at the right edge brings its children into the visible viewport', async ({ page, consoleErrors }) => {
+  const canvas = await openUns(page);
+  await placeNode(page, 'plant/line1', 0.92, 0.5); // its children would land beyond the right edge
+  const before = await unsState(page);
+  const n = byPath(before, 'plant/line1');
+  expect(n.expanded).toBe(false);
+  const box = await canvas.boundingBox();
+  await page.mouse.dblclick(box.x + n.sx, box.y + n.sy);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line1')?.expanded, null, { timeout: 10_000 });
+  await unsIdle(page);
+  const after = await unsState(page);
+  const kids = after.nodes.filter((q) => q.path.startsWith('plant/line1/'));
+  expect(kids.length).toBe(2);
+  for (const k of kids) {
+    expect(insideVp(k, after.vp), `${k.path} inside the visible viewport`).toBe(true);
+    expect(underOverlay(k, after.overlays), `${k.path} not under an overlay`).toBe(false);
+  }
+  expect(insideVp(byPath(after, 'plant/line1'), after.vp)).toBe(true);
+  expect(after.sel).toBeNull(); // a double-click expands, it does not select
+  // No two nodes overlap.
+  for (let a = 0; a < after.nodes.length; a++) for (let b = a + 1; b < after.nodes.length; b++) {
+    expect(Math.hypot(after.nodes[a].sx - after.nodes[b].sx, after.nodes[a].sy - after.nodes[b].sy)).toBeGreaterThan(after.nodes[a].r * 2);
+  }
+  expect(consoleErrors).toEqual([]);
+});
+
+test('UNS +/- badge toggles without selecting; collapse keeps the node and unrelated branches in place', async ({ page, consoleErrors }) => {
+  const canvas = await openUns(page);
+  await placeNode(page, 'plant/line2', 0.4, 0.5);
+  const box = await canvas.boundingBox();
+  const s0 = await unsState(page);
+  const n = byPath(s0, 'plant/line2');
+  // The badge sits under the node (at +r); its target is at least 24 px.
+  await page.mouse.click(box.x + n.sx, box.y + n.sy + n.r + 4);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line2')?.expanded, null, { timeout: 10_000 });
+  await unsIdle(page);
+  const s1 = await unsState(page);
+  expect(s1.sel).toBeNull();
+  await expect(page.getByRole('complementary', { name: 'Node details' })).toHaveCount(0);
+  // Collapse with the badge again: the node stays under the pointer, other branches do not move.
+  const m = byPath(s1, 'plant/line2');
+  const other = byPath(s1, 'plant/energy');
+  await page.mouse.click(box.x + m.sx, box.y + m.sy + m.r + 4);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line2')?.expanded === false, null, { timeout: 10_000 });
+  await unsIdle(page);
+  const s2 = await unsState(page);
+  const m2 = byPath(s2, 'plant/line2');
+  expect(Math.hypot(m2.sx - m.sx, m2.sy - m.sy)).toBeLessThan(2);
+  const o2 = byPath(s2, 'plant/energy');
+  expect(Math.abs(o2.sx - other.sx)).toBeLessThan(2); // same column, only shifted by the rows the layout removed
+  expect(s2.sel).toBeNull();
+  expect(consoleErrors).toEqual([]);
+});
+
+test('UNS selecting a node half under an overlay pulls it into the visible viewport', async ({ page, consoleErrors }) => {
+  const canvas = await openUns(page);
+  const st = await unsState(page);
+  // The legend sits along the bottom-left; park a node so its lower half is under it.
+  const legend = st.overlays.filter((r) => r.width > r.height && r.top > st.vp.y0).sort((a, b) => b.top - a.top)[0];
+  expect(legend, 'a bottom overlay (legend)').toBeTruthy();
+  const target = 'plant/energy';
+  await page.evaluate(
+    ([p, lg]) => {
+      const h = window.__manifoldTest.uns;
+      const n = h.nodes.find((q) => q.path === p);
+      const t = h.transform;
+      const x = Math.min(lg.right - 40, lg.left + 120);
+      h.setTransform({ k: t.k, x: t.x + (x - n.sx), y: t.y + (lg.top + 2 - n.sy) });
+    },
+    [target, legend]
+  );
+  const s1 = await unsState(page);
+  const n = byPath(s1, target);
+  expect(underOverlay(n, s1.overlays)).toBe(true);
+  const box = await canvas.boundingBox();
+  await page.mouse.click(box.x + n.sx, box.y + n.sy - n.r * 0.6); // the visible upper half
+  await expect(page.getByRole('complementary', { name: 'Node details' })).toContainText('energy');
+  await page.waitForFunction((p) => window.__manifoldTest.uns.selectedId?.endsWith(p), target);
+  await unsIdle(page);
+  const s2 = await unsState(page);
+  const n2 = byPath(s2, target);
+  expect(insideVp(n2, s2.vp)).toBe(true);
+  expect(underOverlay(n2, s2.overlays)).toBe(false);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('UNS live data does not reorder siblings or move the camera after a reveal', async ({ page, consoleErrors }) => {
+  const canvas = await openUns(page);
+  await placeNode(page, 'plant/line1', 0.5, 0.5);
+  const s0 = await unsState(page);
+  const n = byPath(s0, 'plant/line1');
+  const box = await canvas.boundingBox();
+  await page.mouse.dblclick(box.x + n.sx, box.y + n.sy);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line1')?.expanded, null, { timeout: 10_000 });
+  await unsIdle(page);
+  const order = (st) => st.nodes.filter((q) => q.depth >= 2).map((q) => q.path).join('|');
+  const a = await unsState(page);
+  // The e2e broker publishes every topic once a second: wait for three more data
+  // flushes (the live-rate caption updates once per second).
+  const frames0 = await page.evaluate(() => window.__manifoldTest.uns.frames);
+  await page.waitForFunction((f) => window.__manifoldTest.uns.frames >= f + 3, frames0, { timeout: 20_000 });
+  const b = await unsState(page);
+  expect(order(b)).toBe(order(a));
+  expect(b.t).toEqual(a.t);
+  expect(b.motion).toBeNull();
+  expect(consoleErrors).toEqual([]);
+});
+
+test('UNS [touch] double-tap expands and reveals, tap selects, the badge is a 44 px target', async ({ page, isMobile, consoleErrors }) => {
+  test.skip(!isMobile, 'touch behaviour: runs in the mobile project');
+  const canvas = await openUns(page);
+  await placeNode(page, 'plant/line1', 0.85, 0.4);
+  const box = await canvas.boundingBox();
+  const s0 = await unsState(page);
+  const n = byPath(s0, 'plant/line1');
+  await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+  await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line1')?.expanded, null, { timeout: 10_000 });
+  await unsIdle(page);
+  const s1 = await unsState(page);
+  for (const k of s1.nodes.filter((q) => q.path.startsWith('plant/line1/'))) expect(insideVp(k, s1.vp), k.path).toBe(true);
+  expect(s1.sel).toBeNull();
+  // Badge: tap 18 px below the badge centre (inside a 44 px target), not on the node body.
+  const m = byPath(s1, 'plant/line1');
+  await page.touchscreen.tap(box.x + m.sx, box.y + m.sy + m.r + 18);
+  await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line1')?.expanded === false, null, { timeout: 10_000 });
+  // A single tap selects.
+  await unsIdle(page);
+  const s2 = await unsState(page);
+  const e = byPath(s2, 'plant/line2');
+  await page.touchscreen.tap(box.x + e.sx, box.y + e.sy);
+  await expect.poll(() => page.evaluate(() => window.__manifoldTest.uns.selectedId)).toBe('uns:e2e-broker:plant/line2');
   expect(consoleErrors).toEqual([]);
 });

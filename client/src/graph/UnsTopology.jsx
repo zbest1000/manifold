@@ -7,7 +7,21 @@ import { useCanvasTokens } from './canvasTokens';
 import { IconButton } from '@/components/ui';
 import { DEFAULT_LEVELS } from './unsLevels';
 import { recordActivity, rollRates, liveMeta } from './unsLive';
-import { nodeKey, seedExpansion, layoutForest, fitTransform, pickNode, onToggleAffordance } from './unsLayout';
+import {
+  nodeKey,
+  seedExpansion,
+  layoutForest,
+  fitTransform,
+  pickNode,
+  pickBadge,
+  boxOf,
+  viewportRect,
+  insetsFromOverlays,
+  revealTransform,
+  PAGE_SIZE,
+  R,
+  MIN_K
+} from './unsLayout';
 import { drawTopology } from './unsDraw';
 import {
   applyCanvasSize,
@@ -21,25 +35,36 @@ import {
   wheelFactor,
   zoomAround
 } from './canvasKit';
-import { MIN_K } from './unsLayout';
 
 const MAX_K = 3;
-const JUMP_MS = 280; // camera glide to a jump target
-const SETTLE_MS = 1500; // a jump keeps the target centred until node and canvas are this long still
+const GLIDE_MS = 280; // camera glide for jumps and reveals (instant with reduced motion)
+const SETTLE_MS = 1500; // a jump keeps its target centred until node and canvas are this long still
+const DOUBLE_TAP_MS = 350;
+const SELECT_DELAY_MS = 260; // a click waits this long so a double-click does not also select
 
 /**
  * UNS topology renderer: the Unified-Namespace lens on the data fabric.
  *
  * Renders the namespace as a horizontal tidy tree of badge nodes with a level
- * ring + glyph, name and LEVEL caption beneath, "+ / -" expand affordances, and
+ * ring + glyph, name and level caption beneath, "+ / -" expand badges, and
  * edges that animate (dashed, in the good colour) while data flows through the
- * branch. Colours follow the app theme: unsTheme.js derives them from the design
- * tokens, and a theme switch repaints in place (camera, expansion, selection kept).
+ * branch. Colours follow the app theme (unsTheme.js, from the design tokens).
+ *
+ * Camera behaviour (all through ONE motion state machine, see stepMotion):
+ *   - jump:   a deep link / lint finding / event centres its node and keeps it
+ *             centred while the layout or canvas settle;
+ *   - reveal: after an expansion, the expanded node and its new children are
+ *             brought into the visible viewport with the least pan (zooming out
+ *             only as far as labels stay readable); a selection is likewise
+ *             pulled out from under the overlays;
+ *   - anchor: an expanded / collapsed node stays where it was on screen.
+ * Any user camera input cancels a motion. "Visible viewport" is the canvas
+ * minus the overlays floating on it (`[data-canvas-overlay]` in the page plus
+ * the map controls), measured, and shared by Fit, jump, reveal and the tests.
  *
  * The code is split by concern: unsLevels (level naming), unsLive (liveness
- * state), unsTree (tree build), unsLayout (layout/fit/hit-test), unsDraw
- * (canvas drawing). This file is the React shell + pointer interaction.
- * Names other modules and tests import are re-exported below.
+ * state), unsTree (tree build), unsLayout (layout / fit / reveal / hit-test),
+ * unsDraw (canvas drawing). This file is the React shell + interaction.
  */
 export { DEFAULT_LEVELS, levelName, levelColor, nodeLevel } from './unsLevels';
 export { buildUnsTree } from './unsTree';
@@ -55,6 +80,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, [themeTokens]);
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
+  const controlsRef = useRef(null);
   const sizeRef = useRef({ w: 0, h: 0, sx: 1, sy: 1 });
   const schedRef = useRef(null); // frame scheduler (see the animation effect)
   const transformRef = useRef({ x: 130, y: 60, k: 1 });
@@ -66,134 +92,210 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   // Set once the user takes control of the camera (pan / zoom / drag / toggle).
   // Until then the view auto-frames the whole forest as it loads and grows.
   const userMovedRef = useRef(false);
-  // Multi-select: node keys (`${brokerId}:${path}`) the user has box- or
-  // ctrl-selected. Dragging any one moves the whole group. Kept in a ref (the
-  // draw loop reads it every frame); selCount mirrors its size for the hint.
+  // Multi-select: node keys the user has box- or ctrl-selected.
   const selRef = useRef(new Set());
   const boxRef = useRef(null); // active rubber-band box, world coords {x1,y1,x2,y2}
   const [selCount, setSelCount] = useState(0);
   const interactAt = useRef(0); // last pan/zoom/hover — keeps interaction at full fps
-  // Any camera / selection change: note the interaction and ask for a frame.
   const kick = useCallback(() => {
     interactAt.current = Date.now();
     schedRef.current?.request();
   }, []);
   const selectedRef = useRef(selectedId);
-  useEffect(() => {
-    selectedRef.current = selectedId;
-  }, [selectedId]);
+  const reducedRef = useRef(false); // prefers-reduced-motion, kept current by the scheduler effect
 
-  // A moved node is PINNED to an absolute world position, not offset from the
-  // tidy layout: live sources (an OPC-UA mount, streaming topics) rebuild the
-  // forest constantly, and an offset-from-base would drift every time the base
-  // recomputed — the node "fighting" the drag. An absolute pin stays exactly
-  // where dropped until "Auto arrange" clears it.
+  // A moved node is PINNED to an absolute world position (see manualRef).
   const posOf = useCallback((l) => {
     const pin = manualRef.current.get(`${l.node.brokerId}:${l.node.path}`);
     return pin ? { x: pin.x, y: pin.y } : { x: l.x, y: l.y };
   }, []);
 
+  // ---- The visible viewport --------------------------------------------------
+  // Overlays floating on the canvas (marked data-canvas-overlay by the page, plus
+  // our own map controls), measured as canvas-relative rects.
+  const overlayRects = useCallback(() => {
+    const canvas = canvasRef.current;
+    const host = wrapRef.current?.parentElement;
+    if (!canvas || !host) return [];
+    const c = canvas.getBoundingClientRect();
+    const els = [...host.querySelectorAll('[data-canvas-overlay]')];
+    if (controlsRef.current) els.push(controlsRef.current);
+    return els
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ left: r.left - c.left, top: r.top - c.top, right: r.right - c.left, bottom: r.bottom - c.top, width: r.width, height: r.height }));
+  }, []);
+  const viewport = useCallback(() => {
+    const size = sizeRef.current;
+    return viewportRect(size, insetsFromOverlays(size, overlayRects()));
+  }, [overlayRects]);
+  const insets = useCallback(() => insetsFromOverlays(sizeRef.current, overlayRects()), [overlayRects]);
+
   // Fit the framing to the visible arrangement (mounted sources don't count).
   const fitAll = useCallback(() => {
-    const f = fitTransform(visibleRef.current, posOf, sizeRef.current);
+    const f = fitTransform(visibleRef.current, posOf, sizeRef.current, { insets: insets() });
     if (!f) return;
     // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
     Object.assign(transformRef.current, f);
     schedRef.current?.request();
-  }, [posOf]);
+  }, [posOf, insets]);
 
-  // Auto arrange: drop every manual offset and re-frame the tidy layout.
-  const autoArrange = useCallback(() => {
-    manualRef.current.clear();
-    fitAll();
-  }, [fitAll]);
-
-  // ---- Jump to a node (deep link, lint finding, event) ----
-  // A small state machine, stepped on every frame while it is active:
-  //   pending   the target is not laid out yet, or the canvas has no size;
-  //   following the camera glides (instantly with reduced motion) to centre the
-  //             target, and re-centres whenever the target's world position or
-  //             the canvas size changes: topics still streaming in re-lay the
-  //             tidy tree, the details panel opening narrows the canvas;
-  //   done      after the target and the canvas have been still for SETTLE_MS.
-  // Any user camera input (pan, zoom, drag, keys, Fit) cancels it. A one-shot
-  // centre used to run before the layout / size settled and the node then
-  // drifted away from the centre (the intermittent deep-link failure).
-  const reducedRef = useRef(false); // prefers-reduced-motion, kept current by the scheduler effect
-  const jumpRef = useRef(null); // { brokerId, path, phase, anim, lastKey, stillSince }
-  const cancelJump = useCallback(() => {
-    jumpRef.current = null;
+  // ---- Camera motion: jump / reveal --------------------------------------------
+  //   jump:   { kind:'jump', brokerId, path }  pending until laid out and sized,
+  //           then glides to centre and FOLLOWS the node while layout or canvas
+  //           change, done after SETTLE_MS of stillness;
+  //   reveal: { kind:'reveal', keys, anchorKey } pending until those nodes are
+  //           laid out, then ONE minimal move (computed once, so live data does
+  //           not re-run it), glide, done.
+  // Any user camera input cancels (cancelMotion).
+  const motionRef = useRef(null);
+  const [revealNote, setRevealNote] = useState(null); // { shown, total, box } when a reveal had to leave nodes off-screen
+  const cancelMotion = useCallback(() => {
+    motionRef.current = null;
+    setRevealNote(null);
   }, []);
-  const stepJump = useCallback(
+  // Move the camera toward `goal`: a GLIDE_MS ease-out the first time (instant
+  // with reduced motion); once arrived (m.anim === false) later goals apply at once.
+  const glideTo = (m, goal, now) => {
+    const t = transformRef.current;
+    if (m.anim === undefined) m.anim = reducedRef.current ? false : { from: { ...t }, start: now };
+    if (m.anim) {
+      const f = Math.min(1, (now - m.anim.start) / GLIDE_MS);
+      const e = 1 - (1 - f) ** 3;
+      t.k = m.anim.from.k + (goal.k - m.anim.from.k) * e;
+      t.x = m.anim.from.x + (goal.x - m.anim.from.x) * e;
+      t.y = m.anim.from.y + (goal.y - m.anim.from.y) * e;
+      if (f >= 1) m.anim = false;
+    } else Object.assign(t, goal);
+    return m.anim === false; // arrived
+  };
+  const stepMotion = useCallback(
     (now) => {
-      const j = jumpRef.current;
-      if (!j) return;
+      const m = motionRef.current;
+      if (!m) return;
       const { w, h } = sizeRef.current;
-      const target = visibleRef.current.find((l) => l.node.brokerId === j.brokerId && l.node.path === j.path);
-      if (!target || !w || !h) return; // pending
-      const p = posOf(target);
-      const t = transformRef.current;
-      const k = j.k ?? Math.min(1.15, Math.max(t.k, 0.85)); // a readable zoom, never focus while zoomed way out
-      j.k = k;
-      const goal = { k, x: w / 2 - k * p.x, y: h / 2 - k * p.y };
-      const key = `${Math.round(goal.x)},${Math.round(goal.y)},${w}x${h}`;
-      if (key !== j.lastKey) {
-        // New goal (first time, or the node / canvas moved): glide from here.
-        j.lastKey = key;
-        j.stillSince = now;
-        // The first move glides (unless reduced motion); a retarget while gliding
-        // restarts the glide from where the camera is; later drift is corrected
-        // instantly so the target never visibly wanders off.
-        const glide = !reducedRef.current && (j.phase === 'pending' || j.anim);
-        j.anim = glide ? { from: { ...t }, start: now } : null;
-        j.phase = 'following';
+      if (!w || !h) return;
+      const byKey = new Map(visibleRef.current.map((l) => [nodeKey(l.node), l]));
+      if (m.kind === 'jump') {
+        const target = byKey.get(`${m.brokerId}:${m.path}`);
+        if (!target) return; // pending
+        const v = viewport();
+        const p = posOf(target);
+        const t = transformRef.current;
+        m.k ??= Math.min(1.15, Math.max(t.k, 0.85)); // a readable zoom, never focus while zoomed way out
+        const goal = { k: m.k, x: v.x0 + v.w / 2 - m.k * p.x, y: v.y0 + v.h / 2 - m.k * p.y };
+        // A new goal (the node or the canvas moved) restarts the stillness clock.
+        const key = `${Math.round(goal.x)},${Math.round(goal.y)}`;
+        if (key !== m.lastKey) {
+          m.lastKey = key;
+          m.stillSince = now;
+        }
+        glideTo(m, goal, now);
+        m.phase = 'following';
+        if (m.anim === false && now - m.stillSince >= SETTLE_MS) motionRef.current = null;
+        return;
       }
-      if (j.anim) {
-        const f = Math.min(1, (now - j.anim.start) / JUMP_MS);
-        const e = 1 - (1 - f) ** 3;
-        t.k = j.anim.from.k + (goal.k - j.anim.from.k) * e;
-        t.x = j.anim.from.x + (goal.x - j.anim.from.x) * e;
-        t.y = j.anim.from.y + (goal.y - j.anim.from.y) * e;
-        if (f >= 1) j.anim = null;
-      } else {
-        Object.assign(t, goal);
+      // reveal
+      if (!m.goal) {
+        const laid = m.keys.map((k) => byKey.get(k)).filter(Boolean);
+        if (!laid.length) return; // pending (layout not there yet)
+        const box = boxOf(laid, posOf);
+        const anchor = m.anchorKey && byKey.get(m.anchorKey) ? posOf(byKey.get(m.anchorKey)) : null;
+        const v = viewport();
+        const { t, clipped } = revealTransform(transformRef.current, box, v, { anchor });
+        m.goal = t;
+        m.phase = 'moving';
+        if (clipped && laid.length > 1) {
+          const shown = laid.filter((l) => {
+            const p = posOf(l);
+            const sx = p.x * t.k + t.x;
+            const sy = p.y * t.k + t.y;
+            return sx >= v.x0 && sx <= v.x1 && sy >= v.y0 && sy <= v.y1;
+          }).length;
+          setRevealNote({ shown, total: laid.length, box });
+        }
       }
-      if (!j.anim && now - j.stillSince >= SETTLE_MS) jumpRef.current = null; // done
+      if (glideTo(m, m.goal, now)) motionRef.current = null;
     },
-    [posOf]
+    [posOf, viewport]
   );
-  const stepJumpRef = useRef(stepJump);
+  const stepMotionRef = useRef(stepMotion);
   useEffect(() => {
-    stepJumpRef.current = stepJump;
-  }, [stepJump]);
+    stepMotionRef.current = stepMotion;
+  }, [stepMotion]);
+  const startReveal = useCallback((keys, anchorKey = null) => {
+    if (motionRef.current?.kind === 'jump') return; // a deep-link jump owns the camera until it settles
+    motionRef.current = { kind: 'reveal', keys, anchorKey, phase: 'pending' };
+    setRevealNote(null);
+    schedRef.current?.request();
+  }, []);
 
+  // Selection: keep the selected node out from under the overlays.
+  useEffect(() => {
+    selectedRef.current = selectedId;
+    if (!selectedId) return;
+    const l = visibleRef.current.find((x) => x.node.id === selectedId);
+    if (l) startReveal([nodeKey(l.node)]);
+  }, [selectedId, startReveal]);
+
+  // ---- Expansion -------------------------------------------------------------
   const [expanded, setExpanded] = useState(() => new Set());
+  const [limits, setLimits] = useState(() => new Map()); // node key -> children shown (paging)
+  // The node whose expansion changed: it is kept at the same screen position
+  // across the relayout, then (on expand) the new children are revealed.
+  const anchorRef = useRef(null); // { key, sx, sy, reveal: 'children' | 'page' | null, from }
+  const screenOf = (key) => {
+    const l = visibleRef.current.find((x) => nodeKey(x.node) === key);
+    if (!l) return null;
+    const p = posOf(l);
+    const t = transformRef.current;
+    return { sx: p.x * t.k + t.x, sy: p.y * t.k + t.y };
+  };
   const toggle = useCallback((node) => {
     userMovedRef.current = true; // user is exploring — stop re-framing the camera under them
+    motionRef.current = null;
+    setRevealNote(null);
     const key = `${node.brokerId}:${node.path}`;
+    const s = screenOf(key);
     // Collapsing also collapses everything beneath, so re-expanding is tidy.
     const descendantPrefix = node.path === '' ? `${node.brokerId}:` : `${node.brokerId}:${node.path}/`;
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) {
+      const opening = !next.has(key);
+      anchorRef.current = s ? { key, ...s, reveal: opening ? 'children' : null } : null;
+      if (!opening) {
         next.delete(key);
-        for (const k of [...next]) {
-          if (k !== key && k.startsWith(descendantPrefix)) next.delete(k);
-        }
-      } else {
-        next.add(key);
-      }
+        for (const k of [...next]) if (k !== key && k.startsWith(descendantPrefix)) next.delete(k);
+      } else next.add(key);
       return next;
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
   }, []);
+  // "N more" placeholder: show the next page of a long branch.
+  const showMore = useCallback((more) => {
+    userMovedRef.current = true;
+    motionRef.current = null;
+    setRevealNote(null);
+    const parentKey = more.parentKey;
+    const s = screenOf(parentKey);
+    setLimits((prev) => {
+      const next = new Map(prev);
+      const shown = prev.get(parentKey) ?? PAGE_SIZE;
+      next.set(parentKey, shown + PAGE_SIZE);
+      anchorRef.current = s ? { key: parentKey, ...s, reveal: 'page', from: shown } : null;
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
+  }, []);
+  const activate = useCallback((l) => (l.more ? showMore(l.node) : l.hasKids ? toggle(l.node) : null), [showMore, toggle]);
 
   // Expanded paths per broker. Default: namespace + first level open. Seeding is
   // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
-  // still gets auto-expanded, instead of loading collapsed while its siblings
-  // are open. User collapses of already-seeded brokers are preserved.
-  const [seeded, setSeeded] = useState(() => new Set()); // brokers already auto-expanded
-  // Adjusted during render (not in an effect) when a new broker's tree shows up.
-  const freshRoots = roots.filter((r) => !seeded.has(r.brokerId));
+  // still gets auto-expanded. User collapses of already-seeded brokers are kept.
+  const [seeded, setSeeded] = useState(() => new Set());
+  // A broker counts as seeded only once it has children: a root that shows up
+  // empty (topics still loading) would otherwise stay collapsed for good.
+  const freshRoots = roots.filter((r) => !seeded.has(r.brokerId) && r.children.size > 0);
   if (freshRoots.length) {
     setSeeded((prev) => new Set([...prev, ...freshRoots.map((r) => r.brokerId)]));
     setExpanded((prev) => {
@@ -208,10 +310,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     loadIcons();
   }, []);
 
-  // Focus request (from a lint finding / event click): open every ancestor so
-  // the node is on-screen (adjusted during render when the request changes),
-  // then queue a center-on that the layout effect applies once the node has a
-  // laid-out position.
+  // Focus request (deep link / lint finding / event): open every ancestor (in
+  // render, when the request changes), then a jump centres the node.
   const [focusSeen, setFocusSeen] = useState(null);
   if (focusSeen !== focusTarget) {
     setFocusSeen(focusTarget);
@@ -222,7 +322,6 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         next.add(`${brokerId}:`);
         const segs = String(path).split('/').filter(Boolean);
         let acc = '';
-        // Open ancestors only — the node itself need not be expanded to be visible.
         for (let i = 0; i < segs.length - 1; i++) {
           acc = i === 0 ? segs[i] : `${acc}/${segs[i]}`;
           next.add(`${brokerId}:${acc}`);
@@ -233,7 +332,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }
   useEffect(() => {
     if (!focusTarget?.brokerId || focusTarget.path == null) return;
-    jumpRef.current = { brokerId: focusTarget.brokerId, path: String(focusTarget.path), phase: 'pending' };
+    motionRef.current = { kind: 'jump', brokerId: focusTarget.brokerId, path: String(focusTarget.path), phase: 'pending' };
     userMovedRef.current = true; // a deliberate jump — auto-fit must not override it
     schedRef.current?.request();
   }, [focusTarget]);
@@ -252,64 +351,31 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, []);
 
   // ---- Tidy tree layout over the EXPANDED portion of the forest ----
-  const layout = useMemo(() => layoutForest(roots, expanded), [roots, expanded]);
+  const layout = useMemo(() => layoutForest(roots, expanded, limits), [roots, expanded, limits]);
 
   useEffect(() => {
     visibleRef.current = layout.nodes;
-    // Auto-frame the whole forest on load AND as it grows — brokers connect,
-    // topics stream in, async mount roots arrive — until the user takes control
-    // of the camera. A one-shot fit locks onto the first partial forest and
-    // leaves all later growth off-center (the reported "doesn't center on
-    // load"); re-fitting until interaction keeps it centered without ever
-    // fighting manual navigation.
-    if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) {
-      fitAll();
+    // Anchor: the node whose expansion changed stays where it was on screen.
+    const a = anchorRef.current;
+    if (a) {
+      anchorRef.current = null;
+      const now = screenOf(a.key);
+      if (now) {
+        transformRef.current.x += a.sx - now.sx;
+        transformRef.current.y += a.sy - now.sy;
+      }
+      if (a.reveal) {
+        const parent = layout.nodes.find((l) => nodeKey(l.node) === a.key);
+        const kids = layout.edges.filter((e) => e.from === parent).map((e) => nodeKey(e.to.node));
+        if (a.reveal === 'children' && kids.length) startReveal([a.key, ...kids], a.key);
+        if (a.reveal === 'page') startReveal(kids.slice(a.from, a.from + 6), kids[a.from]);
+      }
     }
-    // A pending jump is stepped by the frame loop (see stepJump).
+    // Auto-frame the forest as it loads and grows, until the user takes the camera.
+    if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) fitAll();
     schedRef.current?.request();
-  }, [layout, fitAll, posOf]);
-
-  // Read-only hook for e2e tests (enabled by ?e2e=1 only): world AND screen
-  // (CSS px, canvas-relative) positions of the visible nodes, the camera, the
-  // canvas size, and the paint counter.
-  useEffect(
-    () =>
-      registerTestHook('uns', {
-        get transform() {
-          return { ...transformRef.current };
-        },
-        get size() {
-          return { ...sizeRef.current };
-        },
-        get frames() {
-          return schedRef.current?.stats.frames ?? 0;
-        },
-        get selectedId() {
-          return selectedRef.current;
-        },
-        get theme() {
-          return { mode: themeRef.current.mode, bg: themeRef.current.bg };
-        },
-        get nodes() {
-          const t = transformRef.current;
-          return visibleRef.current.map((l) => {
-            const p = posOf(l);
-            return { name: l.node.name, path: l.node.path, id: l.node.id, x: p.x, y: p.y, sx: p.x * t.k + t.x, sy: p.y * t.k + t.y, open: l.open, hasKids: l.hasKids, depth: l.node.depth };
-          });
-        },
-        fit: () => fitAll(),
-        get jumping() {
-          return jumpRef.current?.phase || null;
-        },
-        setTransform: (t) => {
-          cancelJump();
-          userMovedRef.current = true;
-          Object.assign(transformRef.current, t);
-          schedRef.current?.request();
-        }
-      }),
-    [posOf, fitAll, cancelJump]
-  );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
+  }, [layout, fitAll, posOf, startReveal]);
 
   // ---- Drawing ----
   const draw = useCallback(() => {
@@ -342,11 +408,79 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     schedRef.current?.request();
   }, [draw]);
 
-  // Frame scheduling: full frame rate only while something moves (live traffic
-  // animating the dashes/pulses, or the user interacting); otherwise one paint a
-  // second keeps staleness / rate captions honest. Nothing at all runs while the
-  // tab is hidden or the canvas is scrolled off-screen, and with
-  // prefers-reduced-motion the dashes/pulses stand still (no continuous frames).
+  // Read-only hook for e2e tests (enabled by ?e2e=1 only).
+  useEffect(
+    () =>
+      registerTestHook('uns', {
+        get transform() {
+          return { ...transformRef.current };
+        },
+        get size() {
+          return { ...sizeRef.current };
+        },
+        /** The usable canvas rect (canvas minus floating overlays), CSS px. */
+        get viewport() {
+          return viewport();
+        },
+        get overlays() {
+          return overlayRects();
+        },
+        get frames() {
+          return schedRef.current?.stats.frames ?? 0;
+        },
+        get selectedId() {
+          return selectedRef.current;
+        },
+        get theme() {
+          return { mode: themeRef.current.mode, bg: themeRef.current.bg };
+        },
+        /** Visible nodes with world and screen (canvas-relative CSS px) positions. */
+        get nodes() {
+          const t = transformRef.current;
+          return visibleRef.current.map((l) => {
+            const p = posOf(l);
+            const n = l.node;
+            return {
+              name: n.name,
+              path: n.path,
+              id: n.id,
+              key: nodeKey(n),
+              x: p.x,
+              y: p.y,
+              sx: p.x * t.k + t.x,
+              sy: p.y * t.k + t.y,
+              r: R * t.k,
+              open: l.open,
+              expanded: l.open,
+              hasKids: l.hasKids,
+              hasChildren: l.hasKids,
+              childCount: n.children.size,
+              more: l.more,
+              depth: n.depth
+            };
+          });
+        },
+        /** The motion in progress: 'jump' | 'reveal' | null. */
+        get motion() {
+          return motionRef.current?.kind || null;
+        },
+        get jumping() {
+          return motionRef.current?.kind === 'jump' ? motionRef.current.phase : null;
+        },
+        fit: () => fitAll(),
+        setTransform: (t) => {
+          cancelMotion();
+          userMovedRef.current = true;
+          Object.assign(transformRef.current, t);
+          schedRef.current?.request();
+        }
+      }),
+    [posOf, fitAll, cancelMotion, viewport, overlayRects]
+  );
+
+  // Frame scheduling: full frame rate only while something moves (a camera
+  // motion, live traffic animating the dashes/pulses, or the user interacting);
+  // otherwise one paint a second. Nothing runs while hidden / off-screen.
   useEffect(() => {
     const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     reducedRef.current = prefersReducedMotion();
@@ -355,20 +489,22 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       schedRef.current?.request();
     };
     mq?.addEventListener?.('change', onMq);
-    const sched = createFrameScheduler(() => {
-      stepJumpRef.current(Date.now());
-      drawRef.current();
-    }, {
-      el: wrapRef.current,
-      idleMs: 1000,
-      isActive: () => {
-        const now = Date.now();
-        return Boolean(jumpRef.current) || now - interactAt.current < 1000 || (!reducedRef.current && now - liveMeta.lastDataAt < 3000);
+    const sched = createFrameScheduler(
+      () => {
+        stepMotionRef.current(Date.now());
+        drawRef.current();
+      },
+      {
+        el: wrapRef.current,
+        idleMs: 1000,
+        isActive: () => {
+          const now = Date.now();
+          return Boolean(motionRef.current) || now - interactAt.current < 1000 || (!reducedRef.current && now - liveMeta.lastDataAt < 3000);
+        }
       }
-    });
+    );
     schedRef.current = sched;
     sched.request();
-    // Labels are measured and drawn in the design system's faces: repaint once they load.
     document.fonts?.ready?.then(() => schedRef.current?.request());
     return () => {
       mq?.removeEventListener?.('change', onMq);
@@ -377,26 +513,30 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
   }, []);
 
-  // Sizing + interactions.
+  // Sizing + pointer interactions.
   useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
 
-    // Integer backing store at the current DPR, re-applied on container resize
-    // (window, sidebar collapse, panels) AND on DPR change (monitor move, zoom).
     const unwatch = watchCanvasSize(wrap, ({ w, h, dpr }) => {
       const prev = sizeRef.current;
-      // Once the user (or a jump) owns the camera, a resize (a side panel
-      // opening, the sidebar collapsing) keeps the point at the centre of the
-      // view in the centre, so the selection is never shoved out of sight.
+      // Once the user (or a jump) owns the camera, a resize keeps the point at
+      // the centre of the view in the centre.
       if (userMovedRef.current && prev.w > 0 && prev.h > 0) {
         transformRef.current.x += (w - prev.w) / 2;
         transformRef.current.y += (h - prev.h) / 2;
       }
       sizeRef.current = applyCanvasSize(canvas, w, h, dpr);
-      if (jumpRef.current) stepJumpRef.current(Date.now()); // re-centre for the new size before painting
-      // Until the user takes the camera, keep the forest framed in the new box.
+      if (motionRef.current) stepMotionRef.current(Date.now());
+      else if (userMovedRef.current && selectedRef.current) {
+        // The details panel opening narrows the canvas: keep the selection visible.
+        const l = visibleRef.current.find((x) => x.node.id === selectedRef.current);
+        if (l) {
+          motionRef.current = { kind: 'reveal', keys: [nodeKey(l.node)], phase: 'pending' };
+          schedRef.current?.request();
+        }
+      }
       if (!userMovedRef.current && visibleRef.current.length) fitAll();
       drawRef.current(); // paint synchronously: a resized canvas is cleared
     });
@@ -405,23 +545,26 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const p = clientToLocal(canvas, e.clientX, e.clientY);
       return screenToWorld(transformRef.current, p.x, p.y);
     };
-
     const pick = (pt) => pickNode(visibleRef.current, posOf, pt);
+    // Badge hit radius: 12 px (a 24 px target) for a mouse, 22 px (44 px) for touch.
+    const pickBadgeAt = (pt, touch) => pickBadge(visibleRef.current, posOf, pt, (touch ? 22 : 12) / transformRef.current.k);
 
     // Drag on a node moves THAT node (manual rearrangement); drag on empty
-    // canvas pans the view. Click = select, click on ± (or double-click) =
-    // expand/collapse. "Auto arrange" clears all manual moves.
-    let mode = null; // 'pan' | 'node' | 'box'
-    let grabbed = null; // laid node being moved
+    // canvas pans. Click = select; click on the badge, double-click, or
+    // double-tap = expand / collapse.
+    let mode = null; // 'pan' | 'node' | 'box' | 'badge'
+    let grabbed = null;
     let moved = 0;
     let last = { x: 0, y: 0 };
-    let ctrlToggled = false; // a ctrl/⌘-click that toggled selection — onUp skips select
+    let ctrlToggled = false;
     let pinching = false;
+    let lastTap = { key: null, at: 0 };
+    let touchToggledAt = 0; // a double-tap toggled: ignore the dblclick the browser may synthesize
     const unpinch = attachPinchZoom(
       canvas,
       (factor, cx, cy) => {
         userMovedRef.current = true;
-        cancelJump();
+        cancelMotion();
         Object.assign(transformRef.current, zoomAround(transformRef.current, cx, cy, factor, MIN_K, MAX_K));
         kick();
       },
@@ -437,18 +580,28 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const keyOf = (l) => nodeKey(l.node);
     const onDown = (e) => {
       if (e.button > 0 || pinching) return; // primary button / first finger only
-      // No text selection, no page scroll/zoom gesture, keep keyboard focus here.
+      // No text selection, no page scroll/zoom gesture, keep keyboard focus here
+      // (without a keyboard-style focus ring for a pointer click).
       e.preventDefault();
-      canvas.focus({ preventScroll: true });
+      canvas.focus({ preventScroll: true, focusVisible: false });
       kick();
-      userMovedRef.current = true; // any canvas interaction hands the camera to the user
-      cancelJump();
+      userMovedRef.current = true;
+      cancelMotion();
       moved = 0;
       ctrlToggled = false;
       last = { x: e.clientX, y: e.clientY };
-      grabbed = pick(toWorld(e));
+      const pt = toWorld(e);
+      // The node body wins over a neighbouring badge's enlarged hit area: when
+      // zoomed out, a 44 px touch target around the badge would cover the node.
+      const body = pick(pt);
+      const onBody = body && Math.hypot(pt.x - posOf(body).x, pt.y - posOf(body).y) < R * 0.8;
+      const badge = onBody ? null : pickBadgeAt(pt, e.pointerType === 'touch');
+      grabbed = badge || body;
+      if (badge) {
+        mode = 'badge';
+        return;
+      }
       if (grabbed && (e.ctrlKey || e.metaKey)) {
-        // Ctrl/⌘-click toggles this node in the multi-selection (no move).
         const key = keyOf(grabbed);
         if (selRef.current.has(key)) selRef.current.delete(key);
         else selRef.current.add(key);
@@ -458,23 +611,19 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         mode = null;
         return;
       }
-      if (grabbed) {
-        mode = 'node';
-      } else if (e.shiftKey) {
-        // Shift-drag on empty canvas draws a rubber-band selection box.
+      if (grabbed) mode = 'node';
+      else if (e.shiftKey) {
         const p = toWorld(e);
         boxRef.current = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
         mode = 'box';
-      } else {
-        mode = 'pan';
-      }
+      } else mode = 'pan';
     };
     const onMove = (e) => {
       if (pinching) return;
       if (!mode) {
-        if (e.target !== canvas) return; // hover feedback only over the canvas
-        // hover cursor feedback
-        const over = pick(toWorld(e));
+        if (e.target !== canvas) return;
+        const pt = toWorld(e);
+        const over = pickBadgeAt(pt, false) || pick(pt);
         canvas.style.cursor = over ? 'pointer' : 'default';
         const hk = over ? keyOf(over) : null;
         if (hk !== hoverRef.current) {
@@ -488,7 +637,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const dy = e.clientY - last.y;
       moved += Math.abs(dx) + Math.abs(dy);
       last = { x: e.clientX, y: e.clientY };
-      userMovedRef.current = true; // panning or dragging = user owns the camera now
+      if (mode === 'badge') return; // the badge is a button: no drag
       if (mode === 'pan') {
         transformRef.current.x += dx;
         transformRef.current.y += dy;
@@ -496,15 +645,11 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         const p = toWorld(e);
         boxRef.current.x2 = p.x;
         boxRef.current.y2 = p.y;
-      } else if (grabbed) {
+      } else if (grabbed && !grabbed.more) {
         const k = transformRef.current.k;
         const gkey = keyOf(grabbed);
-        // Grabbing a node that's part of the selection drags the WHOLE group;
-        // otherwise just this node.
         const keys = selRef.current.has(gkey) && selRef.current.size > 1 ? [...selRef.current] : [gkey];
         for (const key of keys) {
-          // Absolute pin: seed from the current tidy position on the first move,
-          // then track the cursor. (See posOf — pins don't drift with re-layout.)
           let cur = manualRef.current.get(key);
           if (!cur) {
             const laid = visibleRef.current.find((l) => keyOf(l) === key);
@@ -518,20 +663,18 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     };
     let pendingSelect = 0;
     const onUp = (e) => {
-      if (!mode && !ctrlToggled) return; // not a gesture that started on this canvas
+      if (!mode && !ctrlToggled) return;
       kick();
       const wasDrag = moved >= 6;
       const hit = grabbed;
-      const wasBox = mode === 'box';
+      const was = mode;
       const box = boxRef.current;
       mode = null;
       grabbed = null;
       boxRef.current = null;
       canvas.style.cursor = 'default';
-      if (ctrlToggled) return; // selection already toggled on pointerdown
-      if (wasBox) {
-        // Finalize the rubber-band: every node whose center is inside joins the
-        // selection (shift keeps the existing selection, else it replaces it).
+      if (ctrlToggled) return;
+      if (was === 'box') {
         const minX = Math.min(box.x1, box.x2);
         const maxX = Math.max(box.x1, box.x2);
         const minY = Math.min(box.y1, box.y2);
@@ -546,50 +689,69 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         return;
       }
       if (wasDrag) return;
+      if (was === 'badge' && hit) {
+        // The +/- badge is a button: toggles, never selects.
+        clearTimeout(pendingSelect);
+        activate(hit);
+        return;
+      }
       if (!hit) {
-        // Plain click on empty canvas clears the multi-selection.
         if (selRef.current.size) {
           selRef.current = new Set();
           setSelCount(0);
         }
         return;
       }
-      // Click near the +/- affordance (below the badge) toggles expansion.
-      const p = toWorld(e);
-      const P = posOf(hit);
-      const nearToggle = onToggleAffordance(hit, P, p);
-      if (nearToggle) {
-        toggle(hit.node);
+      if (hit.more) {
+        activate(hit); // "N more": show the next page
         return;
       }
-      // Plain click on a node makes it the sole selection and opens its detail.
-      selRef.current = new Set([keyOf(hit)]);
-      setSelCount(1);
-      // Defer selection briefly so a double-click (expand) doesn't also select —
-      // opening the detail panel mid-gesture would move the canvas under the
-      // second click.
+      const key = keyOf(hit);
+      if (e.pointerType === 'touch') {
+        // Double-tap toggles (browsers do not reliably fire dblclick for touch).
+        const now = Date.now();
+        if (lastTap.key === key && now - lastTap.at < DOUBLE_TAP_MS) {
+          lastTap = { key: null, at: 0 };
+          touchToggledAt = now;
+          clearTimeout(pendingSelect);
+          activate(hit);
+          return;
+        }
+        lastTap = { key, at: now };
+      }
+      // Defer selection briefly so a double-click (expand) doesn't also select
+      // (not even the selection ring).
       clearTimeout(pendingSelect);
-      pendingSelect = setTimeout(() => onSelect?.(hit.node), 260);
+      pendingSelect = setTimeout(() => {
+        selRef.current = new Set([key]);
+        setSelCount(1);
+        onSelect?.(hit.node);
+        kick();
+      }, SELECT_DELAY_MS);
     };
     const onDbl = (e) => {
+      e.preventDefault();
       clearTimeout(pendingSelect);
-      const hit = pick(toWorld(e));
-      if (hit?.hasKids) toggle(hit.node);
+      if (Date.now() - touchToggledAt < 800) return;
+      const pt = toWorld(e);
+      const body = pick(pt);
+      const onBody = body && Math.hypot(pt.x - posOf(body).x, pt.y - posOf(body).y) < R * 0.8;
+      const hit = !onBody && pickBadgeAt(pt, false) ? null : body; // a badge click already toggled
+      if (hit && (hit.hasKids || hit.more)) activate(hit);
     };
     const onWheel = (e) => {
-      userMovedRef.current = true; // zooming = user owns the camera now
-      cancelJump();
+      userMovedRef.current = true;
+      cancelMotion();
       e.preventDefault();
       const p = clientToLocal(canvas, e.clientX, e.clientY);
       Object.assign(transformRef.current, zoomAround(transformRef.current, p.x, p.y, wheelFactor(e), MIN_K, MAX_K));
       kick();
     };
-
     const onKey = (e) => {
       if (e.key === 'Escape' && selRef.current.size) {
         selRef.current = new Set();
         setSelCount(0);
-        kick(); // prompt a redraw so the rings clear now
+        kick();
       }
     };
 
@@ -612,9 +774,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onSelect, posOf, toggle, fitAll, kick, cancelJump]);
+  }, [onSelect, posOf, activate, fitAll, kick, cancelMotion]);
 
-  const keyboardHint = 'Arrow keys pan, plus and minus zoom, F fits the view.';
+  const keyboardHint =
+    'Arrow down selects the first node. With a node selected: up and down move between siblings, right expands or enters, left collapses or goes to the parent, Enter or Space expands or collapses. Shift and arrow keys pan, plus and minus zoom, F fits the view.';
   const summary = useMemo(() => {
     const total = layout.nodes.length;
     const sel = selectedId ? layout.nodes.find((l) => l.node.id === selectedId)?.node : null;
@@ -625,32 +788,73 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     );
   }, [layout, roots, selectedId]);
 
+  // Keyboard: a tree on the canvas. The selected node is the keyboard focus.
   const onCanvasKey = (e) => {
     const t = transformRef.current;
-    const step = 60;
     const { w, h } = sizeRef.current;
+    const nodes = layout.nodes;
+    const cur = selectedId ? nodes.find((l) => l.node.id === selectedId) : null;
+    const parentOf = (l) => layout.edges.find((ed) => ed.to === l)?.from || null;
+    const kidsOf = (l) => layout.edges.filter((ed) => ed.from === l).map((ed) => ed.to);
+    const choose = (l) => {
+      if (!l) return;
+      if (l.more) return;
+      selRef.current = new Set([nodeKey(l.node)]);
+      setSelCount(1);
+      onSelect?.(l.node); // the selection effect reveals it
+    };
     let handled = true;
-    if (e.key === 'ArrowLeft') t.x += step;
-    else if (e.key === 'ArrowRight') t.x -= step;
-    else if (e.key === 'ArrowUp') t.y += step;
-    else if (e.key === 'ArrowDown') t.y -= step;
-    else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
+    const arrow = e.key.startsWith('Arrow');
+    if (arrow && (e.shiftKey || !cur)) {
+      if (!cur && e.key === 'ArrowDown' && !e.shiftKey) choose(nodes[0]);
+      else {
+        const step = 60;
+        if (e.key === 'ArrowLeft') t.x += step;
+        else if (e.key === 'ArrowRight') t.x -= step;
+        else if (e.key === 'ArrowUp') t.y += step;
+        else t.y -= step;
+        cancelMotion();
+      }
+    } else if (cur && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      const p = parentOf(cur);
+      const sibs = p ? kidsOf(p) : nodes.filter((l) => !parentOf(l));
+      const i = sibs.indexOf(cur);
+      choose(sibs[i + (e.key === 'ArrowDown' ? 1 : -1)]);
+    } else if (cur && e.key === 'ArrowRight') {
+      if (cur.hasKids && !cur.open) activate(cur);
+      else if (cur.open) choose(kidsOf(cur)[0]);
+    } else if (cur && e.key === 'ArrowLeft') {
+      if (cur.open) activate(cur);
+      else choose(parentOf(cur));
+    } else if (cur && (e.key === 'Enter' || e.key === ' ')) {
+      activate(cur);
+    } else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_') {
+      cancelMotion();
       Object.assign(t, zoomAround(t, w / 2, h / 2, e.key === '-' || e.key === '_' ? 0.9 : 1.1, MIN_K, MAX_K));
-    } else if (e.key === 'f' || e.key === 'F') fitAll();
-    else handled = false;
+    } else if (e.key === 'f' || e.key === 'F') {
+      cancelMotion();
+      fitAll();
+    } else handled = false;
     if (handled) {
       e.preventDefault();
-      cancelJump();
       userMovedRef.current = true;
       kick();
     }
   };
 
   const zoomBy = (f) => {
-    cancelJump();
+    cancelMotion();
     const { w, h } = sizeRef.current;
     userMovedRef.current = true;
     Object.assign(transformRef.current, zoomAround(transformRef.current, w / 2, h / 2, f, MIN_K, MAX_K));
+    kick();
+  };
+  const fitBox = (box) => {
+    // "Show all": frame the whole revealed set, zooming below the reading floor.
+    const v = viewport();
+    const { t } = revealTransform(transformRef.current, box, v, { minK: MIN_K });
+    cancelMotion();
+    Object.assign(transformRef.current, t);
     kick();
   };
   return (
@@ -665,24 +869,39 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         tabIndex={0}
         onKeyDown={onCanvasKey}
       />
-      <span id="uns-canvas-help" className="sr-only">{keyboardHint}</span>
-      {selCount > 1 && (
-        <div role="status" className="absolute bottom-4 left-1/2 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-panel py-1 pl-3 pr-1 text-xs text-fg shadow-overlay">
-          <span className="truncate tabular-nums">{selCount} selected · drag one to move them together</span>
-          <button
-            type="button"
-            onClick={() => {
-              selRef.current = new Set();
-              setSelCount(0);
-              kick();
-            }}
-            className="h-7 shrink-0 rounded px-2 font-medium text-muted transition-colors hover:bg-raised hover:text-fg"
-          >
-            Clear <span className="text-subtle">Esc</span>
-          </button>
+      <span id="uns-canvas-help" className="sr-only">
+        {keyboardHint}
+      </span>
+      {(selCount > 1 || revealNote) && (
+        <div role="status" className="absolute bottom-16 left-1/2 z-10 flex max-w-[calc(100%-6rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-panel py-1 pl-3 pr-1 text-xs text-fg shadow-overlay">
+          {selCount > 1 ? (
+            <>
+              <span className="truncate tabular-nums">{selCount} selected · drag one to move them together</span>
+              <button
+                type="button"
+                onClick={() => {
+                  selRef.current = new Set();
+                  setSelCount(0);
+                  kick();
+                }}
+                className="h-7 shrink-0 rounded px-2 font-medium text-muted transition-colors hover:bg-raised hover:text-fg"
+              >
+                Clear <span className="text-subtle">Esc</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="truncate tabular-nums">
+                {(revealNote.total - revealNote.shown).toLocaleString()} more off-screen
+              </span>
+              <button type="button" onClick={() => fitBox(revealNote.box)} className="h-7 shrink-0 rounded px-2 font-medium text-muted transition-colors hover:bg-raised hover:text-fg">
+                Show all
+              </button>
+            </>
+          )}
         </div>
       )}
-      <div role="toolbar" aria-label="Map controls" aria-orientation="vertical" className="absolute bottom-4 right-4 z-10 flex flex-col rounded-md border border-line bg-panel p-0.5 shadow-overlay">
+      <div ref={controlsRef} role="toolbar" aria-label="Map controls" aria-orientation="vertical" className="absolute bottom-4 right-4 z-10 flex flex-col rounded-md border border-line bg-panel p-0.5 shadow-overlay">
         <IconButton icon={Plus} label="Zoom in" side="left" onClick={() => zoomBy(1.25)} />
         <IconButton icon={Minus} label="Zoom out" side="left" onClick={() => zoomBy(0.8)} />
         <span aria-hidden="true" className="mx-1.5 my-0.5 h-px bg-line" />
@@ -691,7 +910,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           label="Fit to view (F)"
           side="left"
           onClick={() => {
-            cancelJump();
+            cancelMotion();
             fitAll();
           }}
         />
@@ -700,8 +919,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           label="Auto arrange: reset moved nodes and fit"
           side="left"
           onClick={() => {
-            cancelJump();
-            autoArrange();
+            cancelMotion();
+            manualRef.current.clear();
+            fitAll();
           }}
         />
       </div>

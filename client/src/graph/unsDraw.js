@@ -137,6 +137,37 @@ export function drawTopology(ctx, st) {
     const n = l.node;
     const P = posOf(l);
     if (!onScreen(P)) continue;
+    if (l.more) {
+      // "N more" page row of a long branch: a dashed ring with a plus.
+      ctx.beginPath();
+      ctx.arc(P.x, P.y, R, 0, Math.PI * 2);
+      ctx.fillStyle = theme.badgeFill;
+      ctx.fill();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = theme.toggleStroke;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = theme.toggleInk;
+      ctx.beginPath();
+      ctx.moveTo(P.x - 6, P.y);
+      ctx.lineTo(P.x + 6, P.y);
+      ctx.moveTo(P.x, P.y - 6);
+      ctx.lineTo(P.x, P.y + 6);
+      ctx.stroke();
+      if (!showName) continue;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = `500 13px ${FONT}`;
+      ctx.fillStyle = theme.name;
+      ctx.fillText(ellipsize(ctx, n.name, LABEL_MAX_W), P.x, P.y + R + 24);
+      if (showCaption) {
+        ctx.font = `400 11px ${FONT}`;
+        ctx.fillStyle = theme.sub;
+        ctx.fillText('Click to show the next page', P.x, P.y + R + 38);
+      }
+      continue;
+    }
     const lvl = nodeLevel(n, levels, tokens || theme.mode);
     const color = lvl.color;
     const last = liveAt(n);

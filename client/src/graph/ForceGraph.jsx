@@ -127,7 +127,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   // servers browsed the wrong (old) server, and style/selection changes didn't
   // repaint on interaction. Refreshed every render, read via cbRef.current.
   const cbRef = useRef({});
-  cbRef.current = { onSelect, onExpand, style, testId };
+  cbRef.current = { onSelect, onExpand, style, testId, selectedId };
 
   const colorFor = useCallback(
     (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
@@ -778,9 +778,31 @@ const ForceGraph = forwardRef(function ForceGraph(
         const initial = zoomIdentity.translate(width / 2, height / 2);
         transformRef.current = initial;
         sel.call(zoomBehavior.transform, initial);
-      }
+      } else keepSelectionVisible();
       drawRef.current(); // a resized canvas is cleared: repaint synchronously
     });
+
+    // A details panel opening beside the graph narrows the canvas: if that left
+    // the selected node outside the usable area (canvas minus the fit insets of
+    // the floating overlays), pan the least distance that brings it back.
+    function keepSelectionVisible() {
+      const id = cbRef.current.selectedId;
+      const n = id ? nodeByIdRef.current.get(id) : null;
+      const { w, h } = sizeRef.current;
+      if (!n || !w || !h) return;
+      const t = transformRef.current;
+      const ins = fitInsetRef.current;
+      const r = nodeRadius(n, cbRef.current.style) * t.k + 8;
+      const sx = n.x * t.k + t.x;
+      const sy = n.y * t.k + t.y;
+      const lo = (a, b) => Math.min(a, b);
+      const dx = sx - r < ins.left ? ins.left - (sx - r) : sx + r > w - ins.right ? lo(0, w - ins.right - (sx + r)) : 0;
+      const dy = sy - r < ins.top ? ins.top - (sy - r) : sy + r > h - ins.bottom ? lo(0, h - ins.bottom - (sy + r)) : 0;
+      if (!dx && !dy) return;
+      const next = zoomIdentity.translate(t.x + dx, t.y + dy).scale(t.k);
+      transformRef.current = next;
+      sel.call(zoomBehavior.transform, next);
+    }
 
     const toGraphCoords = (event) => {
       const rect = canvas.getBoundingClientRect();
@@ -890,6 +912,9 @@ const ForceGraph = forwardRef(function ForceGraph(
       },
       get size() {
         return { ...sizeRef.current };
+      },
+      get selectedId() {
+        return cbRef.current.selectedId ?? null;
       },
       get settled() {
         return !simRef.current || simRef.current.alpha() <= simRef.current.alphaMin();
