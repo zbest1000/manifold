@@ -1,41 +1,73 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  ChevronRight, ChevronDown, FolderClosed, CircleDot, Tags as TagsIcon, Trash2,
-  Plus, Upload, Radio, Cpu, X, Pencil
-} from 'lucide-react';
-import clsx from 'clsx';
-import toast from 'react-hot-toast';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Tags as TagsIcon, Plus, Upload, X, Trash2 } from 'lucide-react';
 import { useStore } from '@/store/store';
-import { api } from '@/lib/api';
 import PageHeader from '@/components/PageHeader';
-import { Card, Button, Input, Field, Badge, EmptyState, HelpButton } from '@/components/ui';
-import { formatDistanceToNow } from 'date-fns';
+import { Card, Button, EmptyState, HelpButton, Tooltip } from '@/components/ui';
+import TagTree from './tags/TagTree';
+import BindWizard from './tags/BindWizard';
+import BindingsTable from './tags/BindingsTable';
+import HostStatePanel from './tags/HostStatePanel';
+import CsvImport from './tags/CsvImport';
+import ErrorBanner, { InfoBanner } from './tags/Banner';
+import { fetchSources, fetchBindings, saveBinding, removeBinding } from './tags/tagsApi';
+import { buildBoundIndex, groupSources, parseSourceParam, sourceKey } from './tags/helpers';
+import { SELECT_CLS } from './tags/wizardModel';
+import toast from 'react-hot-toast';
 
 /**
- * Tags — browse device tags across the drivers Manifold already speaks (OPC UA
- * address space, Sparkplug device registry, MQTT topic trie), select them, and
- * bind them into the UNS: connectivity → selection → publish in one gesture.
- *
- * Bindings are read-only by design: they subscribe/monitor and republish;
- * nothing here writes to a device.
+ * Tags: browse device tags across the drivers Manifold speaks (OPC UA, Sparkplug,
+ * MQTT topics, devices), select them, and bind them into the UNS.
+ * Bindings are read-only by design: they monitor and republish; nothing writes to a device.
+ * `?source=<type>:<id>` preselects a source (the Devices page links here with device:<id>).
  */
 export default function Tags() {
-  const brokers = useStore((s) => s.brokers).filter((b) => b.status === 'connected');
+  const allBrokers = useStore((s) => s.brokers);
+  const brokers = useMemo(() => allBrokers.filter((b) => b.status === 'connected'), [allBrokers]);
+  const [params, setParams] = useSearchParams();
+  const wantedParam = params.get('source');
+
   const [sources, setSources] = useState([]);
-  const [source, setSource] = useState(null); // { type, id, label }
-  const [selection, setSelection] = useState(new Map()); // address -> { name, meta }
-  const [bindings, setBindings] = useState({ bindings: [], status: {} });
+  const [sourcesLoaded, setSourcesLoaded] = useState(false);
+  const [sourcesError, setSourcesError] = useState(null);
+  const [source, setSource] = useState(null);
+  const [selection, setSelection] = useState(() => new Map()); // node id -> { id, address, name, meta }
+  const [bindings, setBindings] = useState({ bindings: [], status: {}, sparkplug: null });
+  const [bindingsLoaded, setBindingsLoaded] = useState(false);
+  const [bindingsError, setBindingsError] = useState(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingBinding, setEditingBinding] = useState(null);
   const [csvOpen, setCsvOpen] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  const wanted = useRef(parseSourceParam(wantedParam));
 
-  const loadSources = useCallback(() => {
-    api.tagSources().then((r) => {
-      setSources(r.sources);
-      setSource((cur) => cur && r.sources.some((s) => s.type === cur.type && s.id === cur.id) ? cur : r.sources[0] || null);
-    }).catch(() => {});
+  const loadSources = useCallback(async () => {
+    try {
+      const list = await fetchSources();
+      setSources(list);
+      setSourcesError(null);
+      setSource((cur) => {
+        if (cur && list.some((s) => sourceKey(s) === sourceKey(cur))) return cur;
+        const w = wanted.current;
+        return (w && list.find((s) => s.type === w.type && s.id === w.id)) || list[0] || null;
+      });
+    } catch (e) {
+      setSourcesError(e.message);
+    } finally {
+      setSourcesLoaded(true);
+    }
   }, []);
-  const loadBindings = useCallback(() => api.listBindings().then(setBindings).catch(() => {}), []);
+
+  const loadBindings = useCallback(async () => {
+    try {
+      setBindings(await fetchBindings());
+      setBindingsError(null);
+    } catch (e) {
+      setBindingsError(e.message);
+    } finally {
+      setBindingsLoaded(true);
+    }
+  }, []);
 
   useEffect(() => {
     loadSources();
@@ -46,154 +78,266 @@ export default function Tags() {
     return () => clearInterval(t);
   }, [loadSources, loadBindings]);
 
-  const toggleTag = (node) => {
-    setSelection((prev) => {
-      const next = new Map(prev);
-      if (next.has(node.address)) next.delete(node.address);
-      else next.set(node.address, { name: node.name, meta: node.meta || {} });
-      return next;
-    });
+  // A link to ?source= while the page is already open (same route) re-targets the picker.
+  useEffect(() => {
+    const w = parseSourceParam(wantedParam);
+    wanted.current = w;
+    if (!w) return;
+    const hit = sources.find((s) => s.type === w.type && s.id === w.id);
+    if (hit) {
+      setSource((cur) => {
+        if (cur && sourceKey(cur) === sourceKey(hit)) return cur;
+        setSelection(new Map());
+        return hit;
+      });
+    }
+  }, [wantedParam, sources]);
+
+  const wantedMissing = Boolean(wantedParam) && sourcesLoaded && !sourcesError && !sources.some((s) => sourceKey(s) === wantedParam);
+
+  const pickSource = (key) => {
+    const s = sources.find((x) => sourceKey(x) === key) || null;
+    setSource(s);
+    setSelection(new Map());
+    const next = new URLSearchParams(params);
+    if (s) next.set('source', sourceKey(s));
+    else next.delete('source');
+    setParams(next, { replace: true });
   };
 
+  const boundIndex = useMemo(() => buildBoundIndex(bindings.bindings), [bindings.bindings]);
+
+  const toggleTag = useCallback((node) => {
+    setSelection((prev) => {
+      const next = new Map(prev);
+      if (next.has(node.id)) next.delete(node.id);
+      else next.set(node.id, { id: node.id, address: node.address, name: node.name, meta: node.meta || {} });
+      return next;
+    });
+  }, []);
+
+  // Returns how many nodes were not already selected (count is from the render the call was made in).
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const addMany = useCallback((nodes) => {
+    const fresh = nodes.filter((n) => !selectionRef.current.has(n.id));
+    setSelection((prev) => {
+      const next = new Map(prev);
+      for (const n of nodes) {
+        if (!next.has(n.id)) next.set(n.id, { id: n.id, address: n.address, name: n.name, meta: n.meta || {} });
+      }
+      return next;
+    });
+    return fresh.length;
+  }, []);
+
+  const toggleEnabled = async (b) => {
+    setBusyId(b.id);
+    try {
+      await saveBinding({ id: b.id, name: b.name || null, enabled: b.enabled === false, source: b.source, target: b.target, ...(b.rbe ? { rbe: b.rbe } : {}) });
+      await loadBindings();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const deleteBinding = async (b) => {
+    setBusyId(b.id);
+    try {
+      await removeBinding(b.id);
+      toast.success('Binding deleted');
+      await loadBindings();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const groups = useMemo(() => groupSources(sources), [sources]);
+  const noneSelected = selection.size === 0;
+  const selectionList = [...selection.values()];
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col">
       <PageHeader
         title="Tags"
         subtitle="browse device tags, bind them into the UNS"
         actions={
-          <div className="flex items-center gap-2">
-            <HelpButton title="What are Tags, and where do they come from?">
-              <p>
-                A <b>tag</b> is one named data point on a device, such as a sensor reading, a setpoint, or a status. This
-                page browses the tags Manifold can already see across the drivers it speaks, so you can bind them into your
-                Unified Namespace.
-              </p>
-              <p>The <b>Source</b> dropdown picks where the tags come from.</p>
-              <ul className="list-disc space-y-1.5 pl-5">
-                <li>
-                  <b>OPC UA</b>: the address space of a connected OPC UA server. You browse its folders and nodes, for
-                  example <code>Objects/DeviceSet/Robot1/AxisTemp</code>. Connect a server under <b>OPC UA</b> first.
-                </li>
-                <li>
-                  <b>Sparkplug</b>: the metrics of a device seen in a broker&apos;s Sparkplug B traffic, arranged as Group,
-                  Edge Node, Device, metric. These are learned from the device&apos;s BIRTH certificate.
-                </li>
-                <li>
-                  <b>MQTT</b>: the plain topic tree observed on a broker, treated as tags.
-                </li>
-              </ul>
-              <p>
-                Tick the tags you want, then press <b>Add to UNS</b> to create a <b>binding</b>. Manifold monitors those tags
-                and republishes them into your namespace as plain values, a TVQ envelope, or a Sparkplug B device, with
-                deadband and quality mapping. Bindings are <b>read-only toward devices</b>. Nothing here writes back to the
-                source.
-              </p>
-              <p className="text-slate-400">
-                No sources listed? Connect a broker (MQTT or Sparkplug) or an OPC UA server first. Tags are discovered from
-                live connections, not configured by hand.
-              </p>
-            </HelpButton>
-            <select
-              value={source ? `${source.type}:${source.id}` : ''}
-              onChange={(e) => {
-                const s = sources.find((x) => `${x.type}:${x.id}` === e.target.value);
-                setSource(s || null);
-                setSelection(new Map());
-              }}
-              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:outline-none"
-            >
-              {sources.length === 0 && <option value="">no browsable sources</option>}
-              {sources.map((s) => (
-                <option key={`${s.type}:${s.id}`} value={`${s.type}:${s.id}`}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-            {source?.type === 'opcua' && (
-              <Button variant="outline" onClick={() => setCsvOpen(true)}>
-                <Upload size={14} className="mr-1" /> Import CSV
-              </Button>
-            )}
-            <Button onClick={() => setWizardOpen(true)} disabled={selection.size === 0}>
-              <Plus size={14} className="mr-1" /> Add to UNS {selection.size > 0 && `(${selection.size})`}
-            </Button>
-          </div>
+          <HelpButton title="What are Tags, and where do they come from?">
+            <p>
+              A <b>tag</b> is one named data point on a device, such as a sensor reading, a setpoint, or a status. This page browses the
+              tags Manifold can already see, so you can bind them into your Unified Namespace.
+            </p>
+            <p>The <b>Source</b> picker chooses where the tags come from.</p>
+            <ul className="list-disc space-y-1.5 pl-5">
+              <li><b>Devices</b>: drivers added on the Devices page. Browse their configured tags.</li>
+              <li><b>OPC UA</b>: the address space of a connected OPC UA server. Connect one under <b>OPC UA</b> first.</li>
+              <li><b>Sparkplug</b>: metrics of devices seen in a broker&apos;s Sparkplug B traffic, learned from BIRTH certificates.</li>
+              <li><b>MQTT</b>: the plain topic tree observed on a broker, treated as tags.</li>
+            </ul>
+            <p>
+              Tick tags, then press <b>Add to UNS</b>. Manifold monitors them and republishes into your namespace as an envelope
+              (value, time, quality), a plain value, or a Sparkplug B device. Bindings are <b>read-only toward devices</b>.
+            </p>
+            <p className="text-slate-400">
+              Keyboard: arrow keys move through the tree, Right and Left expand and collapse, Space selects, Enter expands.
+            </p>
+          </HelpButton>
         }
       />
 
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto p-4">
-          {!source && (
-            <EmptyState
-              icon={TagsIcon}
-              title="Nothing to browse yet"
-              hint="Connect an OPC UA server or an MQTT broker (Sparkplug devices appear automatically) and its tags become browsable here."
-            />
-          )}
-          {source && <TagTree key={`${source.type}:${source.id}`} source={source} selection={selection} onToggle={toggleTag} />}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        {sourcesError && <ErrorBanner title="Could not load the list of sources" message={sourcesError} onRetry={loadSources} />}
+        {wantedMissing && (
+          <InfoBanner>
+            The source <span className="font-mono">{wantedParam}</span> from the link is not connected right now. Showing another source;
+            check that the device or connection is online.
+          </InfoBanner>
+        )}
+
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-0 flex-1 basis-64">
+            <label htmlFor="tag-source" className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Source</label>
+            <select
+              id="tag-source"
+              value={sourceKey(source)}
+              onChange={(e) => pickSource(e.target.value)}
+              disabled={sources.length === 0}
+              className={SELECT_CLS}
+            >
+              {sources.length === 0 && <option value="">{sourcesLoaded ? 'no browsable sources' : 'loading sources...'}</option>}
+              {groups.map((g) => (
+                <optgroup key={g.type} label={g.label}>
+                  {g.items.map((s) => (
+                    <option key={sourceKey(s)} value={sourceKey(s)}>{s.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {source?.type === 'opcua' && (
+              <Button variant="outline" onClick={() => setCsvOpen(true)}>
+                <Upload size={14} aria-hidden="true" /> Import CSV
+              </Button>
+            )}
+            <Tooltip label={noneSelected ? 'Select at least one tag in the tree first' : undefined}>
+              <Button
+                onClick={() => setWizardOpen(true)}
+                disabled={noneSelected}
+                title={noneSelected ? 'Select at least one tag in the tree first' : undefined}
+              >
+                <Plus size={14} aria-hidden="true" /> Add to UNS{!noneSelected && ` (${selection.size})`}
+              </Button>
+            </Tooltip>
+          </div>
         </div>
 
-        <aside className="flex w-96 shrink-0 flex-col gap-3 overflow-y-auto border-l border-white/5 bg-surface-900/30 p-3">
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Selected tags ({selection.size})
-            </h3>
-            {selection.size === 0 && <p className="text-xs text-slate-500">Tick tags in the tree, then “Add to UNS”.</p>}
-            <div className="max-h-48 space-y-0.5 overflow-y-auto">
-              {[...selection.entries()].map(([address, t]) => (
-                <div key={address} className="flex items-center justify-between gap-2 rounded bg-black/20 px-2 py-1 text-[11px]">
-                  <span className="min-w-0 truncate font-mono text-slate-300" title={address}>{t.name}</span>
-                  <button onClick={() => setSelection((p) => { const n = new Map(p); n.delete(address); return n; })} className="text-slate-500 hover:text-rose-300">
-                    <X size={11} />
+        {/* Browse + selection */}
+        {!source ? (
+          sourcesLoaded && !sourcesError ? (
+            <Card className="p-4">
+              <div className="min-h-[16rem]">
+                <EmptyState
+                  icon={TagsIcon}
+                  title="No sources connected"
+                  hint="Tags are discovered from live connections. Connect a broker (Sparkplug devices appear automatically), an OPC UA server, or add a device."
+                  action={
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <Link to="/brokers" className="rounded-xl border border-white/10 px-3 py-1.5 text-sm text-slate-100 hover:bg-white/5">Brokers</Link>
+                      <Link to="/opcua" className="rounded-xl border border-white/10 px-3 py-1.5 text-sm text-slate-100 hover:bg-white/5">OPC UA</Link>
+                      <Link to="/devices" className="rounded-xl border border-white/10 px-3 py-1.5 text-sm text-slate-100 hover:bg-white/5">Devices</Link>
+                    </div>
+                  }
+                />
+              </div>
+            </Card>
+          ) : null
+        ) : (
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <Card className="flex h-[30rem] min-w-0 flex-col p-3 lg:h-[36rem]">
+              <TagTree
+                key={sourceKey(source)}
+                source={source}
+                selection={selection}
+                onToggle={toggleTag}
+                onAddMany={addMany}
+                boundIndex={boundIndex}
+              />
+            </Card>
+
+            <aside aria-label="Selection and advanced settings" className="flex min-w-0 flex-col gap-3">
+              <Card className="p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+                    Selected tags <span aria-live="polite" className="text-slate-100">({selection.size})</span>
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={() => setSelection(new Map())}
+                    disabled={noneSelected}
+                    className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-40"
+                  >
+                    <Trash2 size={11} aria-hidden="true" /> Clear selection
                   </button>
                 </div>
-              ))}
-            </div>
+                {noneSelected && <p className="text-xs text-slate-400">Tick tags in the tree, or use Select all on a folder, then choose Add to UNS.</p>}
+                <ul className="max-h-56 space-y-0.5 overflow-y-auto">
+                  {selectionList.map((t) => (
+                    <li key={t.id} className="flex items-center justify-between gap-2 rounded bg-black/20 px-2 py-1 text-xs">
+                      <span className="min-w-0 truncate font-mono text-slate-200" title={t.address}>{t.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelection((p) => { const n = new Map(p); n.delete(t.id); return n; })}
+                        aria-label={`Remove ${t.name} from selection`}
+                        className="shrink-0 rounded p-0.5 text-slate-300 hover:text-rose-300"
+                      >
+                        <X size={12} aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+              <HostStatePanel
+                brokers={brokers}
+                hosts={bindings.sparkplug?.hosts || {}}
+                onStatus={(sparkplug) => setBindings((prev) => ({ ...prev, sparkplug }))}
+              />
+            </aside>
           </div>
+        )}
 
-          <div>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Bindings</h3>
-            {bindings.bindings.length === 0 && <p className="text-xs text-slate-500">No bindings yet.</p>}
-            <div className="space-y-1.5">
-              {bindings.bindings.map((b) => {
-                const s = bindings.status[b.id] || {};
-                return (
-                  <div key={b.id} className={clsx('rounded-lg bg-black/20 px-2.5 py-2', editingBinding?.id === b.id && 'ring-1 ring-accent-500/40')}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="min-w-0 truncate text-xs font-semibold text-slate-200">{b.name || b.id.slice(0, 8)}</span>
-                      <span className="flex items-center gap-1.5">
-                        <Badge>{b.source.type}→{b.target.mode}</Badge>
-                        <button aria-label="Edit binding" onClick={() => setEditingBinding(b)} className="rounded p-0.5 text-slate-500 hover:text-accent-400">
-                          <Pencil size={12} />
-                        </button>
-                        <button onClick={() => api.deleteBinding(b.id).then(loadBindings)} className="rounded p-0.5 text-slate-500 hover:text-rose-300">
-                          <Trash2 size={12} />
-                        </button>
-                      </span>
-                    </div>
-                    <p className="mt-0.5 truncate font-mono text-[10px] text-slate-500">
-                      {b.source.type === 'opcua' ? `${b.source.tags?.length ?? 0} tag(s)` : `${b.source.group}/${b.source.edge}${b.source.device ? `/${b.source.device}` : ''}`}
-                      {' → '}
-                      {b.target.mode === 'mqtt' ? b.target.pathTemplate : `spBv1.0/${b.target.group}/${b.target.edge}`}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-slate-500">
-                      {s.published || 0} published · {s.suppressed || 0} deadband
-                      {s.errors ? <span className="text-rose-300"> · {s.errors} err</span> : null}
-                      {s.lastTs ? ` · ${formatDistanceToNow(s.lastTs, { addSuffix: true })}` : ''}
-                    </p>
-                    {s.lastError && <p className="truncate text-[10px] text-amber-300">{s.lastError}</p>}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <HostStatePanel
-            brokers={brokers}
-            hosts={bindings.sparkplug?.hosts || {}}
-            onStatus={(sparkplug) => setBindings((prev) => ({ ...prev, sparkplug }))}
-          />
-        </aside>
+        {/* Bindings */}
+        <section aria-labelledby="bindings-heading" className="min-w-0 space-y-2">
+          <h2 id="bindings-heading" className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            Bindings {bindingsLoaded && `(${bindings.bindings.length})`}
+          </h2>
+          {bindingsError && <ErrorBanner title="Could not load bindings" message={bindingsError} onRetry={loadBindings} />}
+          {bindingsLoaded && !bindingsError && bindings.bindings.length === 0 && (
+            <Card className="p-4">
+              <p className="text-sm font-medium text-slate-200">No bindings yet</p>
+              <p className="mt-1 text-xs text-slate-400">
+                A binding publishes selected tags into the UNS. Pick a source, tick tags in the tree, then choose Add to UNS.
+              </p>
+            </Card>
+          )}
+          {bindings.bindings.length > 0 && (
+            <BindingsTable
+              bindings={bindings.bindings}
+              status={bindings.status || {}}
+              sources={sources}
+              editingId={editingBinding?.id}
+              busyId={busyId}
+              onEdit={setEditingBinding}
+              onToggleEnabled={toggleEnabled}
+              onDelete={deleteBinding}
+            />
+          )}
+        </section>
       </div>
 
       {wizardOpen && source && (
@@ -226,402 +370,12 @@ export default function Tags() {
         <CsvImport
           onClose={() => setCsvOpen(false)}
           onImport={(tags) => {
-            setSelection((prev) => {
-              const next = new Map(prev);
-              for (const t of tags) next.set(t.address, { name: t.name, meta: {} });
-              return next;
-            });
+            addMany(tags.map((t) => ({ id: t.address, address: t.address, name: t.name, meta: {} })));
             setCsvOpen(false);
             setWizardOpen(true);
           }}
         />
       )}
-    </div>
-  );
-}
-
-// ---- Sparkplug host application STATE ----------------------------------------
-
-// Manifold as a Sparkplug primary host: a dedicated session publishing retained
-// { online, timestamp } on spBv1.0/STATE/{hostId} with a matching will.
-function HostStatePanel({ brokers, hosts, onStatus }) {
-  const [brokerId, setBrokerId] = useState('');
-  const [hostId, setHostId] = useState('manifold_host');
-  const [busy, setBusy] = useState(false);
-  const active = Object.values(hosts);
-
-  const toggle = async (bId, hId, enabled) => {
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(hId)) {
-      toast.error('Host ID must be 1-64 chars: letters, digits, _ or -');
-      return;
-    }
-    setBusy(true);
-    try {
-      const r = await api.sparkplugState({ brokerId: bId, hostId: hId, enabled });
-      onStatus(r.sparkplug);
-      toast.success(enabled ? `Host STATE online: ${hId}` : `Host STATE stopped: ${hId}`);
-    } catch (e) {
-      toast.error(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Primary host STATE</h3>
-      <p className="mb-2 text-[11px] leading-snug text-slate-500">
-        Publish retained <span className="font-mono">spBv1.0/STATE/&lt;host&gt;</span> so edge nodes see Manifold as a
-        Sparkplug host application (will announces offline).
-      </p>
-      <div className="space-y-1.5">
-        <select
-          value={brokerId || brokers[0]?.id || ''}
-          onChange={(e) => setBrokerId(e.target.value)}
-          className="w-full rounded-lg border border-white/10 bg-surface-900 px-2 py-1.5 text-xs text-slate-200"
-        >
-          {brokers.length === 0 && <option value="">no connected brokers</option>}
-          {brokers.map((b) => (
-            <option key={b.id} value={b.id}>{b.name}</option>
-          ))}
-        </select>
-        <div className="flex gap-1.5">
-          <Input value={hostId} onChange={(e) => setHostId(e.target.value)} placeholder="host id" />
-          <Button
-            size="sm"
-            disabled={busy || !hostId || brokers.length === 0}
-            onClick={() => toggle(brokerId || brokers[0]?.id, hostId, true)}
-          >
-            Enable
-          </Button>
-        </div>
-      </div>
-      {active.length > 0 && (
-        <div className="mt-2 space-y-1">
-          {active.map((h) => (
-            <div key={`${h.brokerId} ${h.hostId}`} className="flex items-center justify-between gap-2 rounded-lg bg-black/20 px-2.5 py-1.5">
-              <span className="flex min-w-0 items-center gap-1.5 text-[11px]">
-                <span className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', h.online ? 'bg-emerald-400' : 'bg-amber-400')} />
-                <span className="min-w-0 truncate font-mono text-slate-200" title={`spBv1.0/STATE/${h.hostId}`}>{h.hostId}</span>
-                <span className="shrink-0 text-slate-500">{h.online ? 'online' : 'connecting'}</span>
-              </span>
-              <button
-                disabled={busy}
-                onClick={() => toggle(h.brokerId, h.hostId, false)}
-                className="shrink-0 text-[11px] text-slate-500 hover:text-rose-300"
-              >
-                disable
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- lazy tag tree -------------------------------------------------------------
-
-function TagTree({ source, selection, onToggle }) {
-  return <TreeLevel source={source} node="" depth={0} selection={selection} onToggle={onToggle} />;
-}
-
-function TreeLevel({ source, node, depth, selection, onToggle }) {
-  const [children, setChildren] = useState(null);
-  const [error, setError] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    api
-      .tagBrowse(source.type, source.id, node)
-      .then((r) => alive && setChildren(r.children))
-      .catch((e) => alive && setError(e.message));
-    return () => {
-      alive = false;
-    };
-  }, [source.type, source.id, node]);
-
-  if (error) return <p className="py-1 pl-4 text-[11px] text-rose-300">{error}</p>;
-  if (!children) return <p className="py-1 pl-4 text-[11px] text-slate-500">loading…</p>;
-  if (!children.length) return depth === 0 ? <p className="text-xs text-slate-500">Nothing under this source yet.</p> : null;
-  return (
-    <div className={depth > 0 ? 'border-l border-white/5 pl-3' : ''}>
-      {children.map((c) => (
-        <TreeNode key={c.id} source={source} node={c} depth={depth} selection={selection} onToggle={onToggle} />
-      ))}
-    </div>
-  );
-}
-
-function TreeNode({ source, node, depth, selection, onToggle }) {
-  const [open, setOpen] = useState(false);
-  const isTag = node.kind === 'tag';
-  const selected = isTag && selection.has(node.address);
-  return (
-    <div>
-      <div
-        className={clsx(
-          'flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 text-xs hover:bg-white/5',
-          selected && 'bg-accent-500/10'
-        )}
-        onClick={() => (isTag ? onToggle(node) : setOpen((v) => !v))}
-      >
-        {isTag ? (
-          <>
-            <input type="checkbox" readOnly checked={selected} className="pointer-events-none" />
-            <CircleDot size={12} className="shrink-0 text-teal-400" />
-          </>
-        ) : (
-          <>
-            {open ? <ChevronDown size={13} className="shrink-0 text-slate-500" /> : <ChevronRight size={13} className="shrink-0 text-slate-500" />}
-            <FolderClosed size={12} className="shrink-0 text-slate-500" />
-          </>
-        )}
-        <span className={clsx('truncate', isTag ? 'font-mono text-slate-200' : 'text-slate-300')}>{node.name}</span>
-        {node.meta?.subtreeCount > 1 && <span className="text-[10px] text-slate-600">{node.meta.subtreeCount}</span>}
-      </div>
-      {open && !isTag && <TreeLevel source={source} node={node.address} depth={depth + 1} selection={selection} onToggle={onToggle} />}
-    </div>
-  );
-}
-
-// ---- bind wizard ------------------------------------------------------------------
-
-function BindWizard({ source, selection, brokers, editing = null, onClose, onDone }) {
-  // Edit mode reuses the wizard: the saved binding seeds every field, the
-  // source stays as stored (browse context isn't needed), and save upserts by id.
-  const srcType = editing ? editing.source.type : source.type;
-  const [name, setName] = useState(editing?.name || '');
-  const [mode, setMode] = useState(editing?.target.mode || 'mqtt'); // 'mqtt' | 'sparkplug'
-  const [form, setForm] = useState({
-    brokerId: editing?.target.brokerId || brokers[0]?.id || '',
-    pathTemplate: editing?.target.pathTemplate || 'uns/imported/{name}',
-    format: editing?.target.format || 'envelope',
-    retain: editing ? editing.target.retain === true : false,
-    qos: editing?.target.qos ?? 0,
-    deadband: editing?.target.deadband ?? '',
-    samplingInterval: editing?.source.samplingInterval ?? 1000,
-    group: editing?.target.group || 'Manifold',
-    edge: editing?.target.edge || 'edge1',
-    device: editing?.target.device || 'imported'
-  });
-  const tags = useMemo(() => [...selection.entries()].map(([address, t]) => ({ address, name: t.name })), [selection]);
-
-  const buildTarget = () =>
-    mode === 'mqtt'
-      ? {
-          mode: 'mqtt',
-          brokerId: form.brokerId,
-          pathTemplate: form.pathTemplate,
-          format: form.format,
-          retain: form.retain,
-          qos: Number(form.qos) || 0,
-          ...(Number(form.deadband) > 0 ? { deadband: Number(form.deadband) } : {})
-        }
-      : { mode: 'sparkplug', brokerId: form.brokerId, group: form.group, edge: form.edge, device: form.device };
-
-  const create = async () => {
-    try {
-      if (editing) {
-        await api.saveBinding({
-          id: editing.id,
-          name: name || null,
-          enabled: editing.enabled !== false,
-          source:
-            srcType === 'opcua'
-              ? { ...editing.source, samplingInterval: Number(form.samplingInterval) || 1000 }
-              : editing.source,
-          target: buildTarget()
-        });
-        toast.success('Binding saved');
-        onDone();
-        return;
-      }
-      if (source.type === 'mqtt') {
-        // MQTT-source tags compile straight into a pipeline route: subscribe
-        // to the selection's common prefix, re-path the tail under the UNS base.
-        const prefix = commonPrefix(tags.map((t) => t.address));
-        const segCount = prefix ? prefix.split('/').filter(Boolean).length : 0;
-        const base = form.pathTemplate.replace(/\/?\{name\}$/, '') || 'uns/imported';
-        await api.savePipeline({
-          name: name || `tags → ${base}`,
-          source: { brokerId: source.id, filter: tags.length === 1 ? tags[0].address : `${prefix}#` },
-          transforms: [
-            { type: 'repath', to: `${base}/{${segCount + 1}-}` },
-            ...(form.format === 'envelope' ? [{ type: 'envelope' }] : [])
-          ],
-          target: { type: 'mqtt', brokerId: form.brokerId, retain: form.retain, qos: Number(form.qos) || 0 }
-        });
-        // MQTT tags compile to a pipeline Route, not a Binding — say so, so it
-        // isn't a mystery when it doesn't appear under Tags.
-        toast.success('Created a pipeline route (see Pipelines → Routes)');
-        onDone();
-        return;
-      } else {
-        const body = {
-          name: name || null,
-          source:
-            source.type === 'opcua'
-              ? { type: 'opcua', connectionId: source.id, tags, samplingInterval: Number(form.samplingInterval) || 1000 }
-              : sparkplugSourceFromSelection(source.id, selection),
-          target: buildTarget()
-        };
-        await api.saveBinding(body);
-      }
-      toast.success('Binding created');
-      onDone();
-    } catch (e) {
-      toast.error(e.message);
-    }
-  };
-
-  return (
-    <div className="absolute inset-0 z-30 grid place-items-center bg-black/50 p-6" onClick={onClose}>
-      <Card className="w-full max-w-xl p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-100">
-            {editing
-              ? `Edit binding ${editing.name || editing.id.slice(0, 8)}`
-              : `Add ${srcType === 'sparkplug' ? 'Sparkplug metrics' : `${selection.size} tag(s)`} to the UNS`}
-          </h3>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
-            <X size={14} />
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Binding name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="line1 motor tags" />
-          </Field>
-          <Field label="Publish as">
-            <select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200">
-              <option value="mqtt">Plain MQTT topics</option>
-              {srcType !== 'mqtt' && <option value="sparkplug">Sparkplug B device (NBIRTH/DDATA)</option>}
-            </select>
-          </Field>
-          <Field label="Target broker">
-            <select value={form.brokerId} onChange={(e) => setForm({ ...form, brokerId: e.target.value })} className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200">
-              {brokers.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </Field>
-          {mode === 'mqtt' ? (
-            <>
-              <Field label="UNS path template">
-                <Input value={form.pathTemplate} onChange={(e) => setForm({ ...form, pathTemplate: e.target.value })} placeholder="site/area/line/{name}" />
-              </Field>
-              <Field label="Format">
-                <select value={form.format} onChange={(e) => setForm({ ...form, format: e.target.value })} className="w-full rounded-lg border border-white/10 bg-surface-900 px-3 py-2 text-sm text-slate-200">
-                  <option value="envelope">TVQ envelope {'{v,t,q}'} (recommended)</option>
-                  <option value="plain">Raw value</option>
-                </select>
-              </Field>
-              {srcType === 'opcua' && (
-                <Field label="Deadband (abs, optional)">
-                  <Input value={form.deadband} onChange={(e) => setForm({ ...form, deadband: e.target.value })} placeholder="0.5" />
-                </Field>
-              )}
-              {srcType === 'opcua' && (
-                <Field label="Sampling (ms)">
-                  <Input type="number" value={form.samplingInterval} onChange={(e) => setForm({ ...form, samplingInterval: e.target.value })} />
-                </Field>
-              )}
-              <label className="flex items-end gap-2 pb-2 text-xs text-slate-300">
-                <input type="checkbox" checked={form.retain} onChange={(e) => setForm({ ...form, retain: e.target.checked })} /> retain
-              </label>
-            </>
-          ) : (
-            <>
-              <Field label="Group"><Input value={form.group} onChange={(e) => setForm({ ...form, group: e.target.value })} /></Field>
-              <Field label="Edge node"><Input value={form.edge} onChange={(e) => setForm({ ...form, edge: e.target.value })} /></Field>
-              <Field label="Device"><Input value={form.device} onChange={(e) => setForm({ ...form, device: e.target.value })} /></Field>
-            </>
-          )}
-        </div>
-        <p className="mt-3 text-[11px] leading-snug text-slate-500">
-          Bindings are read-only: Manifold monitors the source and republishes — it never writes to a device.
-          {mode === 'sparkplug' && ' Sparkplug output uses a dedicated session with proper NBIRTH/NDEATH lifecycle.'}
-        </p>
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={create} disabled={!form.brokerId}>{editing ? 'Save changes' : 'Create binding'}</Button>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function sparkplugSourceFromSelection(brokerId, selection) {
-  // Selected sparkplug tag ids look like "group/edge[/device]//metric" or
-  // "group/edge/device/metric" — reconstruct one (group, edge, device) scope
-  // and the metric list from the first selection's path.
-  const entries = [...selection.entries()];
-  if (entries.length === 0) throw new Error('Select at least one Sparkplug metric first');
-  const meta = entries[0][1].meta || {};
-  // The browse API returns metric nodes with address = metric name and
-  // meta.device set; the tree id carried the scope, so we ask the user's
-  // selection context: all metrics share the source node's scope.
-  return {
-    type: 'sparkplug',
-    brokerId,
-    group: meta.group,
-    edge: meta.edge,
-    device: meta.device || null,
-    metrics: entries.map(([address]) => address)
-  };
-}
-
-function commonPrefix(topics) {
-  if (!topics.length) return '';
-  let prefix = topics[0].split('/');
-  for (const t of topics.slice(1)) {
-    const segs = t.split('/');
-    let i = 0;
-    while (i < prefix.length && prefix[i] === segs[i]) i++;
-    prefix = prefix.slice(0, i);
-  }
-  return prefix.length ? prefix.join('/') + '/' : '';
-}
-
-// ---- CSV import -------------------------------------------------------------------
-
-function CsvImport({ onClose, onImport }) {
-  const [text, setText] = useState('');
-  const parse = () => {
-    const rows = text.split('\n').map((l) => l.trim()).filter(Boolean);
-    const tags = [];
-    for (const row of rows) {
-      const cols = row.split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, ''));
-      if (!cols[0] || /^(nodeid|address|tag)/i.test(cols[0])) continue; // header
-      tags.push({ address: cols[0], name: cols[1] || cols[0].split(/[.;=/]/).pop() });
-    }
-    if (!tags.length) return toast.error('No rows parsed — expected "nodeId,name" lines');
-    onImport(tags);
-  };
-  return (
-    <div className="absolute inset-0 z-30 grid place-items-center bg-black/50 p-6" onClick={onClose}>
-      <Card className="w-full max-w-xl p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-100">Import tag list (CSV)</h3>
-          <button onClick={onClose} className="rounded p-1 text-slate-400 hover:bg-white/10">
-            <X size={14} />
-          </button>
-        </div>
-        <p className="mb-2 text-[11px] text-slate-500">
-          Paste a tag export (Kepware/Ignition-style): one <span className="font-mono">nodeId,name</span> per line. Rows land in the
-          selection so you can bind them like browsed tags.
-        </p>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={10}
-          placeholder={'ns=2;s=Line1.Motor.RPM,Motor RPM\nns=2;s=Line1.Motor.Temp,Motor Temp'}
-          className="w-full rounded-lg border border-white/10 bg-surface-950/60 p-2 font-mono text-[11px] text-slate-200 focus:outline-none"
-        />
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={parse} disabled={!text.trim()}>Parse & select</Button>
-        </div>
-      </Card>
     </div>
   );
 }
