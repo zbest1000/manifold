@@ -3,7 +3,7 @@ import { Button, IconButton, Input } from '@/components/ui';
 import { FormField } from './FormControls';
 
 /** Edit the device's poll groups: an id and an interval each. At least one group must remain. */
-export default function PollGroupsEditor({ groups, onChange, usedIds = new Set(), errors = {} }) {
+export default function PollGroupsEditor({ groups, onChange, usedIds = new Set(), errors = {}, allowEmpty = false }) {
   const set = (i, patch) => onChange(groups.map((g, j) => (j === i ? { ...g, ...patch } : g)));
   const add = () => {
     let n = groups.length + 1;
@@ -28,7 +28,7 @@ export default function PollGroupsEditor({ groups, onChange, usedIds = new Set()
               icon={Trash2}
               side="left"
               label={usedIds.has(g.id) ? `Cannot remove ${g.id}: tags use it` : `Remove poll group ${g.id}`}
-              disabled={groups.length <= 1 || usedIds.has(g.id)}
+              disabled={(!allowEmpty && groups.length <= 1) || usedIds.has(g.id)}
               onClick={() => onChange(groups.filter((_, j) => j !== i))}
               className="mb-0.5"
             />

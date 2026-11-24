@@ -3,15 +3,18 @@ import { X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { Modal, Button, IconButton, Input } from '@/components/ui';
-import { FormField, selectCls, DescriptorFields, PresetButtons } from './FormControls';
+import { FormField, Section, selectCls, DescriptorFields, PresetButtons } from './FormControls';
 import PollGroupsEditor from './PollGroupsEditor';
 import TagTable, { newTagId } from './TagTable';
 import ProbePanel from './ProbePanel';
 import ProtocolNotices from './ProtocolNotices';
 import ConnectionTest from './ConnectionTest';
+import ProfileInstanceSection from './ProfileInstanceSection';
 import { useTagValidation, useDeviceValues } from './hooks';
 import { localTagErrors, ORDER_CODES } from '@/lib/deviceTags';
 import { blankDevice, toPayload, applyPreset, presetActive, browseBlockedReason } from './model';
+import { mergeGroups } from './profileModel';
+import { previewInstance } from '@/lib/deviceProfiles';
 
 const LIMIT_FIELDS = [
   ['requestDeadlineMs', 'Request deadline (ms)', 'A read that takes longer is abandoned and counted as a timeout.'],
@@ -19,22 +22,10 @@ const LIMIT_FIELDS = [
   ['interRequestDelayMs', 'Delay between requests (ms)', 'Raise for slow gateways that choke on back-to-back requests.']
 ];
 
-const withIds = (d) => ({ ...d, tags: (d.tags || []).map((t) => ({ ...t, _id: t._id || newTagId() })) });
+// A profile instance edits only its OWN tags; the profile's arrive as read-only rows.
+const withIds = (d) => ({ ...d, tags: (d.profileId ? d.ownTags || [] : d.tags || []).map((t) => ({ ...t, _id: t._id || newTagId() })) });
 
-function Section({ title, hint, children }) {
-  const id = useId();
-  return (
-    <section aria-labelledby={id} className="space-y-3 border-t border-white/5 pt-4">
-      <div>
-        <h4 id={id} className="text-sm font-semibold text-slate-100">{title}</h4>
-        {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-export default function DeviceForm({ device, protocols, live, onClose, onSaved }) {
+export default function DeviceForm({ device, protocols, profiles = [], live, notice, onClose, onSaved }) {
   const editing = !!device?.id;
   const titleId = useId();
   const [draft, setDraft] = useState(() => withIds(device || blankDevice(protocols[0])));
@@ -44,6 +35,8 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
   const [selectedId, setSelectedId] = useState(null);
 
   const descriptor = protocols.find((p) => p.id === draft.protocol) || protocols[0];
+  const profile = draft.profileId ? profiles.find((p) => p.id === draft.profileId) : null;
+  const groups = useMemo(() => (profile ? mergeGroups(profile.pollGroups, draft.pollGroups) : draft.pollGroups), [profile, draft.pollGroups]);
   const payload = useCallback((d = draft) => toPayload(d, descriptor), [draft, descriptor]);
   if (initial.current === null) initial.current = JSON.stringify(payload());
   const setField = (name, v) => setDraft((d) => ({ ...d, [name]: v }));
@@ -61,6 +54,8 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
     });
     return errs;
   }, [draft.tags, serverErrs]);
+  const preview = useMemo(() => (profile ? previewInstance(profile, draft.params, draft.tags) : null), [profile, draft.params, draft.tags]);
+  const profileRowErrs = useMemo(() => Object.fromEntries([...(device?.profileErrors || []), ...(preview?.errors || [])].filter((e) => e.key).map((e) => [e.key, e.error])), [device, preview]);
   const usedGroups = useMemo(() => new Set(draft.tags.map((t) => t.pollGroup).filter(Boolean)), [draft.tags]);
   const selectedTag = draft.tags.find((t) => t._id === selectedId);
 
@@ -112,7 +107,7 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
   };
 
   const fieldErrs = serverErrs;
-  const quarantined = useMemo(() => new Set(live?.quarantined || []), [live?.quarantined]);
+  const quarantined = useMemo(() => new Set(live?.quarantined || Object.keys(live?.quarantineReasons || {})), [live?.quarantined, live?.quarantineReasons]);
   const effective = useMemo(() => Object.fromEntries(Object.entries(live?.groups || {}).map(([id, g]) => [id, g.effectiveIntervalMs])), [live?.groups]);
   const browse = {
     supported: Boolean(descriptor.capabilities?.browse),
@@ -128,6 +123,7 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
         </div>
 
         <div className="space-y-5 px-5 py-4 sm:px-6">
+          {notice && <p role="status" className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">{notice}</p>}
           <section aria-label="Connection" className="space-y-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormField label="Name" error={fieldErrs.name}>
@@ -175,11 +171,25 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
             </div>
           </Section>
 
-          <Section title="Poll groups" hint="Tags in the same group are read together at the group's interval.">
-            <PollGroupsEditor groups={draft.pollGroups} onChange={(g) => setField('pollGroups', g)} usedIds={usedGroups} />
+          <Section title={profile ? 'Poll group overrides' : 'Poll groups'} hint={profile ? "The profile's poll groups apply; add a group with the same id to change its interval on this device." : "Tags in the same group are read together at the group's interval."}>
+            <PollGroupsEditor groups={draft.pollGroups} onChange={(g) => setField('pollGroups', g)} usedIds={usedGroups} allowEmpty={Boolean(profile)} />
           </Section>
 
-          <Section title="Tags" hint="Paste a block from a spreadsheet into any cell, or import a CSV. Addresses are checked as you type.">
+          {draft.profileId && (
+            <ProfileInstanceSection
+              profile={profile}
+              profileId={draft.profileId}
+              params={draft.params || {}}
+              onParam={(n, v) => setDraft((d) => ({ ...d, params: { ...(d.params || {}), [n]: v } }))}
+              profileErrors={device?.profileErrors}
+              preview={preview || { tags: [], errors: [] }}
+              errors={profileRowErrs}
+              values={editing ? values : undefined}
+              quarantineReasons={live?.quarantineReasons}
+            />
+          )}
+
+          <Section title={profile ? 'Own tags' : 'Tags'} hint={profile ? 'Extra tags on this device only. Their keys must differ from the profile tags above.' : 'Paste a block from a spreadsheet into any cell, or import a CSV. Addresses are checked as you type.'}>
             {editing && valuesError && (
               <div role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 <span>Live values unavailable: {valuesError}</span>
@@ -190,7 +200,7 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
               tags={draft.tags}
               setTags={setTags}
               descriptor={descriptor}
-              pollGroups={draft.pollGroups}
+              pollGroups={groups}
               validation={validation}
               localErrors={localErrors}
               values={values}
@@ -199,6 +209,7 @@ export default function DeviceForm({ device, protocols, live, onClose, onSaved }
               onSelect={setSelectedId}
               deviceName={draft.name}
               quarantined={quarantined}
+              quarantineReasons={live?.quarantineReasons}
               effective={effective}
               browse={browse}
             />

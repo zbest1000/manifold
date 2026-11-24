@@ -1,19 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import {
-  tagTypeNames, typeOptional, extraColumns, cleanFields, applyPreset, presetActive, summarizeNormalized, camelCase, suggestProperty, nodesToTags,
+  tagTypeNames, tagTypeInfo, typeNeedsLength, typeOptional, extraColumns, cleanFields, applyPreset, presetActive, summarizeNormalized, camelCase, suggestProperty, nodesToTags,
   nodeDisabledReason, flattenTree, probeBody, toPayload, blankDevice, browseBlockedReason
 } from '@/pages/devices/model';
 
-const s7 = { id: 's7', tagTypes: [{ name: 'BOOL' }, { name: 'REAL' }, { name: 'STRING', needsLength: true }], deviceFields: [{ name: 'rack', type: 'number', default: 0 }, { name: 'remoteTsap', type: 'text', optional: true }], optionFields: [], presets: [], defaultPort: 102 };
-const eip = { id: 'ethernet-ip', tagTypes: ['DINT', 'REAL'], addressHelp: 'Logix tag names. Type is optional: it is resolved from the controller.', deviceFields: [], optionFields: [{ name: 'maxPacketBytes', type: 'number', optional: true }] };
+const s7 = { id: 's7', tagTypes: ['BOOL', 'REAL', 'STRING'], tagTypeInfo: { STRING: { name: 'STRING', needsLength: true, lengthHelp: 'maximum characters (default 254)' } }, deviceFields: [{ name: 'rack', type: 'number', default: 0 }, { name: 'remoteTsap', type: 'text', optional: true }], optionFields: [], presets: [], defaultPort: 102 };
+const eip = { id: 'ethernet-ip', tagTypes: ['DINT', 'REAL'], tagTypeOptional: true, addressHelp: 'Logix tag names (no mention of optional types here).', deviceFields: [], optionFields: [{ name: 'maxPacketBytes', type: 'number', optional: true }] };
 const modbus = { id: 'modbus-tcp', tagTypes: ['int16'], deviceFields: [], optionFields: [] };
 
 describe('descriptor helpers', () => {
+  it('reads per-type details from tagTypeInfo', () => {
+    expect(tagTypeInfo(s7, 'STRING').needsLength).toBe(true);
+    expect(typeNeedsLength(s7, 'string')).toBe(true);
+    expect(typeNeedsLength(s7, 'REAL')).toBe(false);
+    expect(typeNeedsLength(eip, 'DINT')).toBe(false);
+  });
   it('normalizes tag types from strings or objects', () => {
     expect(tagTypeNames(s7)).toEqual(['BOOL', 'REAL', 'STRING']);
     expect(tagTypeNames(eip)).toEqual(['DINT', 'REAL']);
   });
-  it('only EtherNet/IP allows a blank type', () => {
+  it('the driver flag decides whether a blank type is allowed', () => {
     expect(typeOptional(eip)).toBe(true);
     expect(typeOptional(s7)).toBe(false);
   });

@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { IconButton } from '@/components/ui';
 import { cellCls } from './FormControls';
 import { summarizeNormalized } from './model';
-import { qualityInfo, formatValue } from '@/lib/deviceStatus';
+import { qualityInfo, formatValue, quarantineReasonText } from '@/lib/deviceStatus';
 
 const QUALITY_STYLE = { good: 'text-emerald-300', uncertain: 'text-amber-300', bad: 'text-rose-300' };
 const ORDER_OPTIONS = [['', 'device default'], ['big', 'big'], ['little', 'little']];
@@ -39,7 +39,7 @@ function LiveCell({ sample, stale, quarantined }) {
  * One editable row. Memoised: typing in one row, or a live-value batch for one tag,
  * only re-renders the rows whose props actually changed.
  */
-function TagRowImpl({ tag, index, protocol, types, typeOptional, placeholder, groupIds, validation, localError, sample, stale, quarantined, showLive, cols, advancedOpen, selected, onSelect, onChange, onDelete, onPaste }) {
+function TagRowImpl({ tag, index, protocol, types, typeOptional, typeInfo, placeholder, groupIds, validation, localError, sample, stale, quarantined, quarantineReason, showLive, cols, advancedOpen, selected, onSelect, onChange, onDelete, onPaste }) {
   const n = index + 1;
   const err = localError || (validation && validation.ok === false ? validation.error || 'Invalid' : '');
   const wire = validation && validation.ok ? summarizeNormalized(protocol, validation.normalized) : '';
@@ -54,8 +54,9 @@ function TagRowImpl({ tag, index, protocol, types, typeOptional, placeholder, gr
       {ORDER_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
     </select>
   );
+  const lengthInfo = typeInfo?.[tag.type] || typeInfo?.[String(tag.type || '').toUpperCase()];
   const extra = {
-    length: () => num('length', 'Length'),
+    length: () => num('length', 'Length', { placeholder: lengthInfo?.needsLength ? 'max chars' : '', title: lengthInfo?.lengthHelp, 'aria-required': lengthInfo?.needsLength ? true : undefined }),
     bit: () => num('bit', 'Bit'),
     byteOrder: () => orderSel('byteOrder', 'Byte order override'),
     wordOrder: () => orderSel('wordOrder', 'Word order override')
@@ -73,8 +74,9 @@ function TagRowImpl({ tag, index, protocol, types, typeOptional, placeholder, gr
       <td className="px-1 py-1.5">
         {cell('key', 'Key', { placeholder: 'tag key', 'aria-invalid': err ? true : undefined })}
         {quarantined && (
-          <p className="mt-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1 text-2xs font-semibold text-amber-300" title="The device rejected this tag; it is retried periodically">
-            <AlertTriangle size={10} aria-hidden="true" /> Quarantined
+          <p className="mt-1 flex items-start gap-1 text-2xs text-amber-300" title="The device rejected this tag; it is retried periodically">
+            <AlertTriangle size={10} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span><span className="font-semibold">Quarantined</span>{quarantineReason ? `: ${quarantineReasonText(quarantineReason)}` : ''}</span>
           </p>
         )}
       </td>

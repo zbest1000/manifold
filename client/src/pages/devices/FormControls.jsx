@@ -29,7 +29,21 @@ export function FormField({ label, help, error, className, children }) {
   );
 }
 
-const optValue = (o) => (typeof o === 'object' ? o.value : o);
+/** A titled form section (labelled region) with an optional hint line. */
+export function Section({ title, hint, children }) {
+  const id = useId();
+  return (
+    <section aria-labelledby={id} className="space-y-3 border-t border-white/5 pt-4">
+      <div>
+        <h4 id={id} className="text-sm font-semibold text-slate-100">{title}</h4>
+        {hint && <p className="mt-0.5 text-xs text-slate-500">{hint}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const optValue =(o) => (typeof o === 'object' ? o.value : o);
 const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 
 /** Renders one protocol-descriptor field (number | select | text | boolean). */

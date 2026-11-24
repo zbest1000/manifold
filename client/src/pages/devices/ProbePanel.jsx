@@ -62,7 +62,7 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
       </div>
       {addressHelp && <p className="text-2xs text-slate-500">{addressHelp}</p>}
       {selectedTag?.address && (
-        <button type="button" onClick={() => setAddress(selectedTag.address)} className="text-xs text-accent-300 underline-offset-2 hover:underline">
+        <button type="button" onClick={() => setAddress(selectedTag.address)} className="text-xs text-accent-400 underline-offset-2 hover:underline">
           Use address of {selectedTag.key || 'the selected row'}: <span className="mono">{selectedTag.address}</span>
         </button>
       )}

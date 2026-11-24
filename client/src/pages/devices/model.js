@@ -10,12 +10,21 @@ export function tagTypeNames(descriptor) {
 }
 
 export function tagTypeInfo(descriptor, name) {
-  return (descriptor?.tagTypes || []).find((t) => typeof t === 'object' && t.name === String(name || '').toUpperCase());
+  const n = String(name || '');
+  const map = descriptor?.tagTypeInfo || {};
+  const own = map[n] || map[n.toUpperCase()];
+  if (own) return own;
+  return (descriptor?.tagTypes || []).find((t) => typeof t === 'object' && (t.name === n || t.name === n.toUpperCase()));
 }
 
-/** EtherNet/IP resolves the type from the controller; its address help says so. */
+/** The driver says whether a tag may omit its type (e.g. EtherNet/IP reads it from the controller). */
 export function typeOptional(descriptor) {
-  return /type is optional/i.test(descriptor?.addressHelp || '') || descriptor?.id === 'ethernet-ip';
+  return Boolean(descriptor?.tagTypeOptional);
+}
+
+/** Does this type take a "length" (S7 STRING / WSTRING)? */
+export function typeNeedsLength(descriptor, name) {
+  return Boolean(tagTypeInfo(descriptor, name)?.needsLength);
 }
 
 /** First example in the driver's address help, for input placeholders. */
@@ -33,7 +42,7 @@ export function addressExample(descriptor) {
  */
 export function extraColumns(descriptor) {
   const id = descriptor?.id;
-  const hasLength = (descriptor?.tagTypes || []).some((t) => typeof t === 'object' && t.needsLength);
+  const hasLength = Object.values(descriptor?.tagTypeInfo || {}).some((t) => t?.needsLength) || (descriptor?.tagTypes || []).some((t) => typeof t === 'object' && t.needsLength);
   if (id === 'modbus-tcp') return { always: [], advanced: ['length', 'bit', 'byteOrder', 'wordOrder'] };
   if (hasLength) return { always: ['length'], advanced: [] };
   return { always: [], advanced: [] };
@@ -203,11 +212,12 @@ export function blankDevice(descriptor) {
 
 /** The request body for POST/PUT /devices: no read-only `status`, blank optionals dropped, numbers coerced. */
 export function toPayload(draft, descriptor) {
-  const { status: _status, ...rest } = draft;
+  const { status: _status, ownTags: _own, profileErrors: _errs, paramValues: _pv, ...rest } = draft;
   const top = cleanFields(rest, descriptor?.deviceFields);
   return {
     ...top,
     port: Number(draft.port),
+    ...(draft.profileId ? { params: Object.fromEntries(Object.entries(draft.params || {}).filter(([, v]) => v !== '' && v !== undefined)) } : {}),
     options: cleanFields(draft.options || {}, descriptor?.optionFields),
     limits: Object.fromEntries(Object.entries(draft.limits || {}).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)])),
     pollGroups: (draft.pollGroups || []).map((g) => ({ id: g.id, intervalMs: Number(g.intervalMs) })),

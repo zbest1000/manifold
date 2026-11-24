@@ -128,3 +128,42 @@ const EXC_NAMES = {
 export function exceptionName(protocol, code) {
   return EXC_NAMES[protocol]?.[code] || `Code ${code}`;
 }
+
+/** "5 s ago", "3 min ago", "2 h ago", "4 d ago"; '' for a missing/invalid time. */
+export function relativeTime(ts, now = Date.now()) {
+  const t = typeof ts === 'number' ? ts : Date.parse(ts);
+  if (!Number.isFinite(t)) return '';
+  const s = Math.max(0, Math.round((now - t) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+/**
+ * Quarantined tags with the reason the driver gave: [{ key, code, message, since }].
+ * Falls back to the plain `quarantined` key list from an older server.
+ */
+export function quarantineList(status) {
+  const reasons = status?.quarantineReasons || {};
+  const keys = Array.isArray(status?.quarantined) && status.quarantined.length ? status.quarantined : Object.keys(reasons);
+  return keys.map((key) => ({ key, code: reasons[key]?.code ?? null, message: reasons[key]?.message || null, since: reasons[key]?.since ?? null }));
+}
+
+/** Plain text for one quarantine reason ({ code, message }). */
+export function quarantineReasonText(reason) {
+  if (!reason) return '';
+  return reason.message || (reason.code !== null && reason.code !== undefined ? `code ${reason.code}` : '');
+}
+
+/** One plain sentence for the card: "2 quarantined tags: pressure (illegal data address) and 1 more". */
+export function quarantineSummary(status) {
+  const list = quarantineList(status);
+  if (!list.length) return '';
+  const noun = `${list.length} quarantined tag${list.length === 1 ? '' : 's'}`;
+  const first = list[0];
+  const why = quarantineReasonText(first);
+  const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
+  return `${noun}: ${first.key}${why ? ` (${why})` : ''}${more}`;
+}

@@ -26,7 +26,7 @@ const HEAD = [
   ['Description', 'min-w-[10rem]']
 ];
 const EXTRA_HEAD = {
-  length: ['Length', 'min-w-[4.5rem]'],
+  length: ['Length', 'min-w-[5.5rem]'],
   bit: ['Bit', 'min-w-[4rem]'],
   byteOrder: ['Byte order', 'min-w-[7.5rem]'],
   wordOrder: ['Word order', 'min-w-[7.5rem]']
@@ -37,7 +37,7 @@ const EXTRA_HEAD = {
  * spreadsheet into any cell, import/export CSV, add and delete rows. Validation
  * and live values are passed in so rows stay cheap to render.
  */
-export default function TagTable({ tags, setTags, descriptor, pollGroups, validation, localErrors, values, showLive, selectedId, onSelect, deviceName, quarantined, effective, browse }) {
+export default function TagTable({ tags, setTags, descriptor, pollGroups, validation, localErrors, values, showLive, selectedId, onSelect, deviceName, quarantined, quarantineReasons, effective, browse }) {
   const [advanced, setAdvanced] = useState(false);
   const [importing, setImporting] = useState(false);
   const [browsing, setBrowsing] = useState(false);
@@ -149,7 +149,9 @@ export default function TagTable({ tags, setTags, descriptor, pollGroups, valida
                 typeOptional={typeOptional}
                 placeholder={placeholder}
                 stale={showLive && isStale(values[t.key], intervalOf[t.pollGroup] || 1000, now)}
+                typeInfo={descriptor?.tagTypeInfo}
                 quarantined={Boolean(quarantined?.has(t.key))}
+                quarantineReason={quarantineReasons?.[t.key]}
                 cols={cols}
                 advancedOpen={advanced}
                 groupIds={groupIds}

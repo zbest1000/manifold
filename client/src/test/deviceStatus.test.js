@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isStale, staleAfterMs, exceptionName, deviceBadge, cycleHealth, worstHealth, hostIssues, hostFor, qualityInfo, formatValue, formatMs } from '@/lib/deviceStatus';
+import { isStale, staleAfterMs, exceptionName, deviceBadge, cycleHealth, worstHealth, hostIssues, hostFor, qualityInfo, formatValue, formatMs, relativeTime, quarantineList, quarantineSummary } from '@/lib/deviceStatus';
 
 const dev = { enabled: true };
 
@@ -101,5 +101,35 @@ describe('stale values and exception names', () => {
   it('hostIssues names the affected devices', () => {
     const i = hostIssues({ h: { protocol: 's7', state: 'parked', restarts: 3, deviceIds: ['d1'] } }, [{ id: 'd1', name: 'Filler' }]);
     expect(i[0].text).toContain('Filler');
+  });
+});
+
+describe('relativeTime', () => {
+  const now = 1_000_000_000_000;
+  it('formats ages', () => {
+    expect(relativeTime(now - 1000, now)).toBe('just now');
+    expect(relativeTime(now - 30_000, now)).toBe('30 s ago');
+    expect(relativeTime(now - 5 * 60_000, now)).toBe('5 min ago');
+    expect(relativeTime(now - 3 * 3600_000, now)).toBe('3 h ago');
+    expect(relativeTime(now - 2 * 86400_000, now)).toBe('2 d ago');
+    expect(relativeTime(new Date(now - 60_000).toISOString(), now)).toBe('1 min ago');
+  });
+  it('is empty for missing or invalid input', () => {
+    expect(relativeTime(null, now)).toBe('');
+    expect(relativeTime('nope', now)).toBe('');
+  });
+});
+
+describe('quarantine reasons', () => {
+  const status = { quarantined: ['a', 'b'], quarantineReasons: { a: { code: 2, message: 'Illegal data address', since: 5 }, b: { code: 3, message: null, since: 6 } } };
+  it('lists keys with reasons and falls back to keys only', () => {
+    expect(quarantineList(status)).toEqual([{ key: 'a', code: 2, message: 'Illegal data address', since: 5 }, { key: 'b', code: 3, message: null, since: 6 }]);
+    expect(quarantineList({ quarantined: ['x'] })).toEqual([{ key: 'x', code: null, message: null, since: null }]);
+    expect(quarantineList({})).toEqual([]);
+  });
+  it('summarises in one plain sentence', () => {
+    expect(quarantineSummary(status)).toBe('2 quarantined tags: a (Illegal data address) and 1 more');
+    expect(quarantineSummary({ quarantined: ['x'] })).toBe('1 quarantined tag: x');
+    expect(quarantineSummary({})).toBe('');
   });
 });

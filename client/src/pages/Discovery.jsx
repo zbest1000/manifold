@@ -1,45 +1,39 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radar, Play, Square, Radio, Cpu, Plug, Boxes } from 'lucide-react';
+import { Radar, Play, Square, ListPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
-import { Card, Button, Badge, Input, Field, EmptyState, PageBody, Table, THead, TableSort, Th, Tr, Td } from '@/components/ui';
-import { nextSort, sortRows } from '@/lib/sortRows';
+import { Card, Button, Input, Field, EmptyState, PageBody, Banner } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
-
-const KIND_META = {
-  mqtt: { icon: Radio, cls: 'bg-sky-500/20 text-sky-300', label: 'MQTT broker' },
-  opcua: { icon: Cpu, cls: 'bg-violet-500/20 text-violet-300', label: 'OPC UA server' },
-  i3x: { icon: Boxes, cls: 'bg-teal-500/20 text-teal-300', label: 'i3X server' }
-};
-
-const ACCESSORS = {
-  endpoint: (r) => `${r.host}:${r.port}`,
-  kind: (r) => r.kind,
-  verified: (r) => Boolean(r.verified)
-};
-
-function detailFor(r) {
-  if (r.kind === 'mqtt' && r.verified) return r.anonymousAccess ? 'Anonymous access allowed' : 'Authentication required';
-  if (r.kind === 'i3x') return `${r.serverName ? `${r.serverName} · ` : ''}${r.baseUrl}`;
-  return '';
-}
+import ScanOptions from './discovery/ScanOptions';
+import OtNotice from './discovery/OtNotice';
+import ResultsTable from './discovery/ResultsTable';
+import AddAllDialog from './discovery/AddAllDialog';
+import { startDiscoveryScan } from './devices/devicesApi';
+import { buildScanOptions, draftFromResult, draftsFromResults, parsePorts, SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
 
 export default function Discovery() {
   const discovery = useStore((s) => s.discovery);
   const navigate = useNavigate();
   const [range, setRange] = useState('');
+  const [devicePorts, setDevicePorts] = useState({}); // protocol id -> ports text (absent = not scanned)
   const [busy, setBusy] = useState(false);
-  const [sort, setSort] = useState({ key: 'endpoint', dir: 'asc' });
+  const [scanError, setScanError] = useState('');
+  const [addAll, setAddAll] = useState(false);
+
+  const portProblems = SCAN_PROTOCOLS.some((p) => devicePorts[p.id] !== undefined && parsePorts(devicePorts[p.id]).bad.length > 0);
+  const findDevices = Object.keys(devicePorts).length > 0;
 
   const start = async () => {
+    if (portProblems) return toast.error('Fix the port lists first');
     setBusy(true);
+    setScanError('');
     try {
-      await api.startDiscovery(range ? { range } : {});
+      await startDiscoveryScan(buildScanOptions({ range, selected: devicePorts }));
       toast.success('Scan started');
     } catch (e) {
-      toast.error(e.message);
+      setScanError(e.message || 'The scan could not start');
     } finally {
       setBusy(false);
     }
@@ -71,15 +65,18 @@ export default function Discovery() {
     }
   };
 
+  // The Devices page opens its device form prefilled; nothing is created here.
+  const addDevice = (r) => navigate('/devices', { state: { draft: draftFromResult(r) } });
+
   const { progress, results, scanning } = discovery;
   const pct = progress && progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
-  const rows = sortRows(results, sort, ACCESSORS);
+  const drafts = useMemo(() => draftsFromResults(results), [results]);
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         title="Network Discovery"
-        subtitle="Probe your network for MQTT brokers, OPC UA servers, and i3X endpoints"
+        subtitle="Probe your network for MQTT brokers, OPC UA servers, i3X endpoints and, optionally, PLCs and meters"
         actions={
           scanning ? (
             <Button variant="danger" onClick={stop}>
@@ -94,7 +91,7 @@ export default function Discovery() {
       />
 
       <PageBody>
-        <Card className="p-4 sm:p-5">
+        <Card className="space-y-4 p-4 sm:p-5">
           <div className="flex flex-wrap items-end gap-3">
             <Field label="CIDR range (blank = auto-detect local subnet)" className="min-w-0 flex-1 basis-64">
               <Input value={range} onChange={(e) => setRange(e.target.value)} placeholder="192.168.1.0/24" disabled={scanning} />
@@ -106,8 +103,14 @@ export default function Discovery() {
             )}
           </div>
 
+          <ScanOptions value={devicePorts} onChange={setDevicePorts} disabled={scanning} />
+          {findDevices && <OtNotice />}
+          {!findDevices && <p className="text-xs text-slate-500">PLC and meter probing is off. Tick a protocol to include it; you will see what it sends before you scan.</p>}
+
+          {scanError && <Banner variant="error" title="The scan did not start" onRetry={start} onDismiss={() => setScanError('')}>{scanError}</Banner>}
+
           {scanning && (
-            <div className="mt-4">
+            <div>
               <div className="mb-1.5 flex justify-between text-xs text-muted" aria-live="polite">
                 <span>Scanning… {progress?.found || 0} found</span>
                 <span>{pct}%</span>
@@ -120,15 +123,22 @@ export default function Discovery() {
         </Card>
 
         <section aria-labelledby="discovery-results">
-          <h2 id="discovery-results" className="mb-3 text-sm font-semibold text-slate-200">
-            Results {results.length > 0 && <span className="text-muted">({results.length})</span>}
-          </h2>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 id="discovery-results" className="text-sm font-semibold text-slate-200">
+              Results {results.length > 0 && <span className="text-muted">({results.length})</span>}
+            </h2>
+            {drafts.length > 1 && (
+              <Button size="sm" variant="outline" onClick={() => setAddAll(true)}>
+                <ListPlus size={14} aria-hidden="true" /> Add all {drafts.length} devices…
+              </Button>
+            )}
+          </div>
           {results.length === 0 ? (
             <Card>
               <EmptyState
                 icon={Radar}
                 title={scanning ? 'Probing hosts…' : 'Nothing found yet'}
-                hint={scanning ? 'Results appear here as hosts answer.' : 'Scan your local network (or a CIDR range) for MQTT brokers, OPC UA servers and i3X endpoints, then connect to them in one click.'}
+                hint={scanning ? 'Results appear here as hosts answer.' : 'Scan your local network (or a CIDR range) for MQTT brokers, OPC UA servers, i3X endpoints and, if you tick them, Modbus, S7 and EtherNet/IP devices.'}
                 action={
                   !scanning && (
                     <Button onClick={start} disabled={busy}>
@@ -139,49 +149,11 @@ export default function Discovery() {
               />
             </Card>
           ) : (
-            <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
-              <Table caption="Discovered endpoints">
-                <THead>
-                  <Th sortKey="endpoint">Endpoint</Th>
-                  <Th sortKey="kind">Type</Th>
-                  <Th sortKey="verified">Status</Th>
-                  <Th>Details</Th>
-                  <Th srOnly align="right">Actions</Th>
-                </THead>
-                <tbody>
-                  {rows.map((r) => {
-                    const meta = KIND_META[r.kind] || KIND_META.mqtt;
-                    const Icon = meta.icon;
-                    const detail = detailFor(r);
-                    return (
-                      <Tr key={`${r.host}:${r.port}`}>
-                        <Td header>
-                          <span className="flex items-center gap-3">
-                            <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${meta.cls}`}>
-                              <Icon size={16} aria-hidden="true" />
-                            </span>
-                            <span className="mono text-slate-100">
-                              {r.host}:{r.port}
-                            </span>
-                          </span>
-                        </Td>
-                        <Td className="text-xs text-muted">{meta.label}</Td>
-                        <Td>{r.verified ? <Badge status="connected">verified</Badge> : <Badge>open port</Badge>}</Td>
-                        <Td className="max-w-[18rem] truncate text-xs text-muted">{detail || '—'}</Td>
-                        <Td align="right">
-                          <Button size="sm" variant="subtle" onClick={() => connectResult(r)} aria-label={`Connect to ${r.host}:${r.port}`}>
-                            <Plug size={13} aria-hidden="true" /> Connect
-                          </Button>
-                        </Td>
-                      </Tr>
-                    );
-                  })}
-                </tbody>
-              </Table>
-            </TableSort>
+            <ResultsTable results={results} onConnect={connectResult} onAddDevice={addDevice} />
           )}
         </section>
       </PageBody>
+      {addAll && <AddAllDialog drafts={drafts} onClose={() => setAddAll(false)} onCreated={() => {}} />}
     </div>
   );
 }

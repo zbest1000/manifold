@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { HardDrive, Plus, RefreshCw, OctagonAlert, Loader2 } from 'lucide-react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { HardDrive, Plus, RefreshCw, OctagonAlert, Loader2, FilePlus2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
@@ -7,9 +8,13 @@ import { Button, EmptyState, Modal } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import DeviceCard from './devices/DeviceCard';
 import DeviceForm from './devices/DeviceForm';
+import DevicesTabs from './devices/DevicesTabs';
+import ProfilesTab from './devices/ProfilesTab';
+import PickProfileDialog from './devices/PickProfileDialog';
+import InstantiateDialog from './devices/InstantiateDialog';
+import { useDevicesData } from './devices/useDevicesData';
+import { blankDevice } from './devices/model';
 import { hostIssues, hostFor } from '@/lib/deviceStatus';
-
-const REFRESH_MS = 5000; // cycle statistics only travel over REST; phases arrive live over the socket
 
 function ConfirmDelete({ device, busy, onCancel, onConfirm }) {
   const id = useId();
@@ -17,7 +22,8 @@ function ConfirmDelete({ device, busy, onCancel, onConfirm }) {
     <Modal title="Delete device" labelledBy={id} onClose={onCancel}>
       <h3 id={id} className="text-base font-semibold text-slate-100">Delete {device.name}?</h3>
       <p className="mt-2 text-sm text-slate-400">
-        Polling stops and its {device.tags?.length || 0} tag definitions are removed. UNS mappings that use this device will stop publishing.
+        Polling stops and its {device.profileId ? `${device.ownTags?.length || 0} own tag definitions` : `${device.tags?.length || 0} tag definitions`} are removed
+        {device.profileId ? ' (the profile stays)' : ''}. UNS mappings that use this device will stop publishing.
       </p>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel} data-autofocus>Cancel</Button>
@@ -30,59 +36,61 @@ function ConfirmDelete({ device, busy, onCancel, onConfirm }) {
 }
 
 export default function Devices() {
-  const [data, setData] = useState(null); // { devices, hosts, protocols }
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState(null); // null | 'new' | device
+  const { data, profiles, error, profilesError, loading, load } = useDevicesData();
+  const [editing, setEditing] = useState(null); // null | 'new' | device | draft (no id)
+  const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [picking, setPicking] = useState(false);
+  const [instantiating, setInstantiating] = useState(null);
   const deviceStates = useStore((s) => s.deviceStates);
-  const devicesVersion = useStore((s) => s.devicesVersion);
-  const alive = useRef(true);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await api.devices();
-      if (!alive.current) return;
-      setData({ devices: res.devices || [], hosts: res.hosts || {}, protocols: res.protocols || [] });
-      setError('');
-    } catch (e) {
-      if (alive.current) setError(e.message || 'Could not load devices');
-    } finally {
-      if (alive.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-  useEffect(() => {
-    load();
-  }, [load, devicesVersion]);
-  useEffect(() => {
-    const t = setInterval(load, REFRESH_MS);
-    return () => clearInterval(t);
-  }, [load]);
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tab = params.get('tab') === 'profiles' ? 'profiles' : 'devices';
+  const handled = useRef({ device: null, draft: null });
 
   const protocols = data?.protocols || [];
   const labels = useMemo(() => Object.fromEntries(protocols.map((p) => [p.id, p.label])), [protocols]);
+  const profileById = useMemo(() => Object.fromEntries((profiles || []).map((p) => [p.id, p])), [profiles]);
   const issues = useMemo(() => hostIssues(data?.hosts, data?.devices), [data]);
   const experimental = useMemo(() => new Set(protocols.filter((p) => p.experimental).map((p) => p.id)), [protocols]);
   const editingLive = useMemo(() => {
-    if (!editing || editing === 'new') return null;
+    if (!editing || editing === 'new' || !editing.id) return null;
     const cur = data?.devices.find((d) => d.id === editing.id);
     return { ...(cur?.status || {}), ...(deviceStates[editing.id] || {}) };
   }, [editing, data, deviceStates]);
+  const setTab = (t) => setParams(t === 'profiles' ? { tab: 'profiles' } : {}, { replace: true });
+
+  // Deep links: /devices?device=ID opens that device; a discovery draft arrives in router state.
+  useEffect(() => {
+    const id = params.get('device');
+    if (!id || !data || handled.current.device === id) return;
+    handled.current.device = id;
+    const d = data.devices.find((x) => x.id === id);
+    if (d) setEditing(d);
+    else toast.error('That device no longer exists');
+    const next = new URLSearchParams(params);
+    next.delete('device');
+    setParams(next, { replace: true });
+  }, [params, data, setParams]);
+  useEffect(() => {
+    const drafts = location.state?.draft;
+    if (!drafts || !data || !protocols.length || handled.current.draft === drafts) return;
+    handled.current.draft = drafts;
+    const desc = protocols.find((p) => p.id === drafts.protocol) || protocols[0];
+    setEditing({ ...blankDevice(desc), ...drafts });
+    setNotice(location.state?.notice || 'Prefilled from discovery. Check the details, test the connection and create the device.');
+    navigate(location.pathname + location.search, { replace: true, state: null });
+  }, [location, data, protocols, navigate]);
 
   const toggle = useCallback(
     async (device) => {
       setBusyId(device.id);
       try {
-        const { status, ...cfg } = device;
-        await api.updateDevice(device.id, { ...cfg, enabled: !device.enabled });
+        const { status, ownTags, profileErrors: _pe, ...cfg } = device;
+        void status;
+        await api.updateDevice(device.id, { ...cfg, ...(device.profileId ? { tags: ownTags || [] } : {}), enabled: !device.enabled });
         await load();
       } catch (e) {
         toast.error(`Could not ${device.enabled ? 'disable' : 'enable'} ${device.name}: ${e.message}`);
@@ -111,6 +119,10 @@ export default function Devices() {
   const onEdit = useCallback((d) => setEditing(d), []);
   const onDelete = useCallback((d) => setDeleting(d), []);
   const canAdd = protocols.length > 0;
+  const closeForm = () => {
+    setEditing(null);
+    setNotice('');
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -122,14 +134,18 @@ export default function Devices() {
             <Button variant="outline" onClick={load} aria-label="Refresh device list">
               <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
             </Button>
+            <Button variant="outline" className="whitespace-nowrap" onClick={() => setPicking(true)} disabled={!canAdd}>
+              <FilePlus2 size={14} /> <span className="hidden sm:inline">From profile</span><span className="sm:hidden">Profile</span>
+            </Button>
             <Button className="whitespace-nowrap" onClick={() => setEditing('new')} disabled={!canAdd} title={canAdd ? '' : 'No device protocols available from the server'}>
               <Plus size={14} /> Add device
             </Button>
           </>
         }
       />
+      <DevicesTabs tab={tab} onChange={setTab} counts={{ devices: data?.devices.length, profiles: profiles?.length }} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
         {issues.length > 0 && (
           <div className="mb-4 space-y-2">
             {issues.map((i) => (
@@ -159,12 +175,16 @@ export default function Devices() {
 
         {loading && !data && <p className="py-12 text-center text-sm text-slate-500">Loading devices…</p>}
 
-        {data && data.devices.length === 0 && (
+        {tab === 'profiles' && data && (
+          <ProfilesTab profiles={profiles} error={profilesError} loading={loading} onRetry={load} protocols={protocols} devices={data.devices} labels={labels} focusId={params.get('profile')} onChanged={load} />
+        )}
+
+        {tab === 'devices' && data && data.devices.length === 0 && (
           <div className="py-10">
             <EmptyState
               icon={HardDrive}
               title="Add your first device"
-              hint="Connect a PLC, meter or gateway over Modbus TCP, Siemens S7 or EtherNet/IP, test the connection, list its tags, then map them into the UNS."
+              hint="Connect a PLC, meter or gateway over Modbus TCP, Siemens S7 or EtherNet/IP, test the connection, list its tags, then map them into the UNS. Many identical devices? Define a profile once and create devices from it."
               action={
                 <Button onClick={() => setEditing('new')} disabled={!canAdd}>
                   <Plus size={14} /> Add device
@@ -174,7 +194,7 @@ export default function Devices() {
           </div>
         )}
 
-        {data && data.devices.length > 0 && (
+        {tab === 'devices' && data && data.devices.length > 0 && (
           <ul className="mx-auto max-w-5xl space-y-3">
             {data.devices.map((d) => (
               <li key={d.id}>
@@ -182,6 +202,7 @@ export default function Devices() {
                   device={d}
                   live={deviceStates[d.id]}
                   host={hostFor(d, data.hosts)}
+                  profile={profileById[d.profileId]}
                   protocolLabel={labels[d.protocol] || d.protocol}
                   experimental={experimental.has(d.protocol)}
                   busy={busyId === d.id}
@@ -197,16 +218,21 @@ export default function Devices() {
 
       {editing && (
         <DeviceForm
+          key={editing === 'new' ? 'new' : editing.id || `draft-${editing.host}-${editing.port}`}
           device={editing === 'new' ? null : editing}
           protocols={protocols}
+          profiles={profiles || []}
           live={editingLive}
-          onClose={() => setEditing(null)}
+          notice={notice}
+          onClose={closeForm}
           onSaved={() => {
-            setEditing(null);
+            closeForm();
             load();
           }}
         />
       )}
+      {picking && <PickProfileDialog profiles={profiles || []} labels={labels} onClose={() => setPicking(false)} onPick={(p) => { setPicking(false); setInstantiating(p); }} />}
+      {instantiating && <InstantiateDialog profile={instantiating} protocols={protocols} onClose={() => setInstantiating(null)} onCreated={() => { setInstantiating(null); load(); }} />}
       {deleting && <ConfirmDelete device={deleting} busy={busyId === deleting.id} onCancel={() => setDeleting(null)} onConfirm={remove} />}
     </div>
   );
