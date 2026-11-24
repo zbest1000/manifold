@@ -51,7 +51,7 @@ function Row({ r, index }) {
         <span className="mono ml-2 text-xs text-subtle">{r.address}</span>
         {r.origin === 'profile' && <span className="ml-2 align-middle"><FromProfileBadge /></span>}
       </td>
-      <td className="px-3 text-right align-middle">
+      <td className="max-w-0 truncate px-3 text-right align-middle" title={String(r.display ?? '')}>
         <span data-quality={r.quality} data-stale={r.stale ? 'true' : undefined} className={clsx('mono text-xs tabular-nums', bad ? 'text-subtle line-through decoration-bad/60' : 'text-fg', r.stale && 'opacity-70')}>
           {r.display}
         </span>

@@ -35,7 +35,16 @@ function raw(payload) {
     return String(payload);
   }
 }
-function readable(payload) {
+function readable(payload, msg) {
+  // Sparkplug payloads are protobuf: summarise the decoded metrics, never show base64.
+  if (msg?.sparkplug || msg?.type === 'sparkplug') {
+    const metrics = msg.sparkplug?.metrics;
+    if (Array.isArray(metrics)) {
+      if (metrics.length === 1 && metrics[0]?.name != null) return `${metrics[0].name}: ${num(metrics[0].value)}`;
+      return `Sparkplug · ${metrics.length} metric${metrics.length === 1 ? '' : 's'}`;
+    }
+    return 'Sparkplug payload';
+  }
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     const keys = Object.keys(payload);
     // A value envelope: Manifold's own {v,t,q,u} (plus label/reason/name) or the long-hand {value,…}.
@@ -406,8 +415,8 @@ function LatestPanel({ latest, hasBrokers }) {
                 <Td header className="text-fg">
                   <Path value={m.topic} />
                 </Td>
-                <Td className="mono truncate text-xs tabular-nums text-fg" title={raw(m.payload)}>
-                  {readable(m.payload)}
+                <Td className="mono truncate text-xs tabular-nums text-fg" title={m.sparkplug || m.type === 'sparkplug' ? readable(m.payload, m) : raw(m.payload)}>
+                  {readable(m.payload, m)}
                 </Td>
                 <Td align="right" className="text-xs text-subtle">
                   <Timestamp value={m.timestamp} />

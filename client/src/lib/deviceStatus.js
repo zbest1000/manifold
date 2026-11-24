@@ -88,7 +88,13 @@ export function qualityInfo(q) {
 
 export function formatValue(v) {
   if (v === null || v === undefined) return '—';
-  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(Number(v.toPrecision(7)));
+  if (typeof v === 'number') {
+    // A wrongly decoded float (wrong word order) can be 1e+37: keep it readable
+    // and inside its column instead of printing 38 digits.
+    const a = Math.abs(v);
+    if (a !== 0 && (a >= 1e12 || a < 1e-6)) return v.toExponential(4);
+    return Number.isInteger(v) ? String(v) : String(Number(v.toPrecision(7)));
+  }
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
 }

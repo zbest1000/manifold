@@ -49,7 +49,9 @@ export default function ErrorLog({ collapsed = false }) {
     ? brokers.find((b) => b.id === logBrokerFilter)?.name || logBrokerFilter
     : null;
 
-  const badge = unseen > 0 ? unseen : logs.length;
+  // The idle badge counts what the level chips count; verbose success lines
+  // (every publish/subscribe) would otherwise show a number next to chips reading 0.
+  const badge = unseen > 0 ? unseen : logs.filter((l) => l.level !== 'verbose').length;
 
   return (
     <>
