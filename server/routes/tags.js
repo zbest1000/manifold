@@ -200,6 +200,26 @@ router.post('/bindings/preview', (req, res) => {
   };
   res.json({ valid: true, ...bindingModel.previewBinding({ ...body, id: draft.id }, profiles, { latest }) });
 });
+
+// GET /api/tags/bindings/schema — read-only description of the mapping options
+// (fields, override keys with types/limits, select rules, placeholders, size
+// limits, statesMode values) so forms render from the server's truth.
+router.get('/bindings/schema', (req, res) => {
+  res.json(bindingModel.bindingSchema());
+});
+
+// POST /api/tags/bindings/suggest { source } — read-only: suggested per-tag
+// names (property, else a cleaned key; raw addresses get none) and asset
+// context from the device. Nothing is stored or published.
+router.post('/bindings/suggest', (req, res) => {
+  const { profiles } = req.app.locals.services;
+  try {
+    res.json(bindingModel.suggestMapping(req.body?.source, profiles));
+  } catch (error) {
+    if (error instanceof bindingModel.BindingValidationError) return res.status(400).json({ error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
 // ---- Sparkplug host application STATE -----------------------------------------
 
 // POST /api/tags/sparkplug/state { brokerId, hostId, enabled } — start/stop a

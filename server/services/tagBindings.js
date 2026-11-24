@@ -73,7 +73,6 @@ const SPB_TYPES = {
 };
 
 const MAX_COMPARE_JSON = 64 * 1024;
-const NO_META = Object.freeze({});
 
 /** Equality for change detection: primitives by Object.is, structures by bounded JSON. */
 function sameValue(a, b) {
@@ -117,6 +116,8 @@ class TagBindings {
     this.objects = new Map(); // unitId -> { dirty, pubAt, t, changed:Set(name) } (object-per-asset units)
     this.sigs = new Map(); // bindingId -> config signature (edit detection)
     this.metaSent = new Map(); // unitId -> `${broker} ${topic} ${json}` of the last _meta publish
+    this.spMetaSent = new Map(); // unitId -> signature of the Sparkplug BIRTH properties last seen
+    this._tx = { v: undefined, q: 0, r: undefined }; // reused transform result (no per-sample allocation)
     this.retained = new Map(); // `${broker}\0${topic}` -> { brokerId, topic } owned by the current config
     this.monitored = new Set(); // `${sourceType} ${sourceId} ${address}` monitor requests already made
     this.sourceState = new Map(); // `${sourceType} ${sourceId}` -> { state, since, reason }
@@ -143,7 +144,13 @@ class TagBindings {
           if (unit.error) continue;
           unit.layout = model.layoutOf(b);
           unit.deadband = model.deadbandOf(b);
-          unit.metaByName = new Map(unit.tags.map((t) => [t.name, t.meta]));
+          // Publish plan, compiled once per profile-store revision: field lists,
+          // per-tag transforms/labels/context (frozen) and Sparkplug BIRTH properties.
+          const fp = model.fieldPlan(b);
+          unit.envFields = fp.env;
+          unit.memberFields = fp.member;
+          unit.tagByName = new Map(unit.tags.map((t) => [t.name, t]));
+          if (b.target?.mode === 'sparkplug') for (const t of unit.tags) t.spProps = model.sparkplugProps(t.meta, t);
           units.set(unit.id, unit);
           const sk = `${unit.sourceType} ${unit.sourceId}`;
           if (!bySource.has(sk)) bySource.set(sk, []);
@@ -166,7 +173,9 @@ class TagBindings {
           const [unit] = model.expandUnits(b, this.profiles);
           unit.layout = 'topic-per-tag';
           unit.deadband = model.deadbandOf(b);
-          unit.metaByName = new Map();
+          unit.envFields = model.fieldPlan(b).env;
+          unit.memberFields = null;
+          unit.tagByName = new Map();
           return unit;
         })
     );
@@ -275,10 +284,10 @@ class TagBindings {
     }
     // Per-unit state: drop units that no longer exist or whose binding changed.
     const units = this.index().units;
-    for (const map of [this.last, this.objects, this.metaSent, this._dirtyObjects]) {
+    for (const map of [this.last, this.objects, this.metaSent, this._dirtyObjects, this.spMetaSent]) {
       for (const unitId of [...map.keys()]) {
         if (!units.has(unitId) || changed.has(bindingIdOf(unitId))) {
-          if (map === this.metaSent && units.has(unitId)) continue; // meta compares content itself
+          if ((map === this.metaSent || map === this.spMetaSent) && units.has(unitId)) continue; // meta compares content itself
           map.delete(unitId);
         }
       }
@@ -290,7 +299,35 @@ class TagBindings {
 
     this._syncRetained();
     this._publishMetaAll();
+    this._refreshSparkplugMeta();
     this._publishStatusForNewUnits(changed);
+  }
+
+  /**
+   * Sparkplug targets carry metadata in BIRTH only: when a unit's metric
+   * properties change (binding or device tag edit), ask the publisher for a
+   * DBIRTH with the new properties. The publisher decides whether one can go
+   * out now (session online, device birthed) and keeps its seq rules.
+   */
+  _refreshSparkplugMeta() {
+    if (!this.spb?.refreshMetadata) return;
+    for (const unit of this.index().units.values()) {
+      const target = unit.binding.target || {};
+      if (target.mode !== 'sparkplug') continue;
+      const props = {};
+      for (const t of unit.tags) props[t.name] = t.spProps;
+      const sig = JSON.stringify([target.brokerId, target.group, target.edge, unit.spDevice, props]);
+      const prev = this.spMetaSent.get(unit.id);
+      this.spMetaSent.set(unit.id, sig);
+      if (prev === undefined || prev === sig) continue; // first sight: properties travel with the first BIRTH
+      try {
+        this.spb.refreshMetadata({ brokerId: target.brokerId, group: target.group, edge: target.edge, device: unit.spDevice, properties: props });
+      } catch (error) {
+        const s = this._status(unit.binding.id);
+        s.errors++;
+        s.lastError = error.message;
+      }
+    }
   }
 
   /**
@@ -409,7 +446,13 @@ class TagBindings {
     if (!hits) return;
     const ts = Number(smp.tSource) || Number(smp.tRead) || Date.now();
     for (const { unit, tag } of hits) {
-      this._publishTag(unit, tag.name, smp.v, smp.q, ts, smp.type);
+      if (tag.plan) {
+        // read -> device decode -> scale/offset -> cast; failure = Bad + reason, never a wrong value
+        const r = model.applyTransform(tag.plan, smp.v, smp.q, this._tx);
+        this._publishTag(unit, tag.name, r.v, r.q, ts, tag.outType, r.r, smp.v);
+      } else {
+        this._publishTag(unit, tag.name, smp.v, smp.q, ts, tag.outType || smp.type);
+      }
     }
   }
 
@@ -457,6 +500,7 @@ class TagBindings {
       for (const [name, e] of m) {
         if (e.q === 0) continue;
         e.q = 0;
+        e.r = undefined;
         e.ts = now;
         o.changed.add(name);
         any = true;
@@ -482,6 +526,7 @@ class TagBindings {
     for (const [name, e] of m) {
       if (e.q === 0) continue;
       e.q = 0;
+      e.r = undefined;
       e.pubAt = now;
       this._emit(unit, name, e.v, 0, now, e.type);
     }
@@ -556,7 +601,7 @@ class TagBindings {
       for (const [name, e] of m) {
         if (now - e.pubAt < hb) continue;
         e.pubAt = now;
-        this._emit(unit, name, e.v, e.q, e.ts, e.type, { heartbeat: true });
+        this._emit(unit, name, e.v, e.q, e.ts, e.type, { heartbeat: true, reason: e.r });
       }
     }
   }
@@ -599,7 +644,7 @@ class TagBindings {
     return o;
   }
 
-  _publishTag(unit, tagName, value, quality, ts, type) {
+  _publishTag(unit, tagName, value, quality, ts, type, reason, raw) {
     const binding = unit.binding;
     const s = this._status(binding.id);
     const target = binding.target || {};
@@ -614,9 +659,10 @@ class TagBindings {
 
     // Report by exception on (value, quality): deadband for numerics,
     // structural compare for the rest. A quality change is always a change.
+    const tag = unit.tagByName.get(tagName);
     if (prev) {
-      const range = unit.metaByName.get(tagName)?.range;
-      const same = sameValue(value, prev.v) || model.withinDeadband(unit.deadband, value, prev.v, range);
+      const db = tag && tag.deadband !== undefined ? tag.deadband : unit.deadband; // per-tag override
+      const same = sameValue(value, prev.v) || model.withinDeadband(db, value, prev.v, tag?.meta.range);
       if (same) {
         if (prev.q === quality) {
           s.suppressed++;
@@ -634,6 +680,12 @@ class TagBindings {
       prev.type = type;
       prev.ts = ts;
       prev.pubAt = now;
+      if (tag?.plan) {
+        prev.r = reason;
+        prev.raw = raw;
+      }
+    } else if (tag?.plan) {
+      m.set(tagName, { v: value, q: quality, type, ts, pubAt: now, r: reason, raw });
     } else {
       m.set(tagName, { v: value, q: quality, type, ts, pubAt: now });
     }
@@ -646,7 +698,7 @@ class TagBindings {
       this._scheduleObjectFlush();
       return;
     }
-    this._emit(unit, tagName, value, quality, ts, type);
+    this._emit(unit, tagName, value, quality, ts, type, { reason });
   }
 
   // ---- object-per-asset ----------------------------------------------------------
@@ -670,7 +722,7 @@ class TagBindings {
     const target = b.target || {};
     const s = this._status(b.id);
     const values = {};
-    for (const [name, e] of m) values[slug(name)] = model.objectMember(e, unit.metaByName.get(name)?.unit);
+    for (const [name, e] of m) values[slug(name)] = model.memberPayload(unit.memberFields, unit.tagByName.get(name), e);
     const payload = { t: o.t || Date.now(), values };
     const body = JSON.stringify(payload);
     const cap = model.objectCapOf(b);
@@ -697,7 +749,7 @@ class TagBindings {
     if (!heartbeat) {
       for (const name of changed) {
         const e = m.get(name);
-        if (e) this._toHistorian(unit, model.valueTopicOf(unit, name), e.v, e.q, e.ts);
+        if (e) this._toHistorian(unit, model.valueTopicOf(unit, name), model.formatValue(unit.tagByName.get(name), e.v), e.q, e.ts);
       }
     }
   }
@@ -716,11 +768,12 @@ class TagBindings {
     }
   }
 
-  _emit(unit, tagName, value, quality, ts, type, { heartbeat = false } = {}) {
+  _emit(unit, tagName, value, quality, ts, type, { heartbeat = false, reason } = {}) {
     const binding = unit.binding;
     const s = this._status(binding.id);
     const target = binding.target || {};
-    const meta = unit.metaByName.get(tagName) || NO_META;
+    const tag = unit.tagByName.get(tagName);
+    const out = tag ? model.formatValue(tag, value) : value; // precision + states 'replace'
     s.lastTs = Date.now();
 
     if (target.mode === 'sparkplug') {
@@ -730,20 +783,28 @@ class TagBindings {
           group: target.group,
           edge: target.edge,
           device: unit.spDevice,
-          metrics: [{ name: tagName, value, ts, type: type && type !== 'unknown' ? type : undefined, properties: model.sparkplugProps(meta) }]
+          metrics: [{ name: tagName, value: out, ts, type: type && type !== 'unknown' ? type : undefined, properties: tag ? tag.spProps : undefined }]
         });
         s.published++;
       } catch (error) {
         s.errors++;
         s.lastError = error.message;
       }
-      if (!heartbeat) this._toHistorian(unit, `${target.group}/${target.edge}/${unit.spDevice}/${tagName}`, value, quality, ts);
+      if (!heartbeat) this._toHistorian(unit, `${target.group}/${target.edge}/${unit.spDevice}/${tagName}`, out, quality, ts);
       return;
     }
 
     // mqtt target
     const topic = model.valueTopicOf(unit, tagName);
-    const payload = target.format === 'envelope' ? model.envelope(value, ts, quality, meta.unit) : value;
+    if (reason !== undefined && target.format !== 'envelope') {
+      // A plain payload cannot carry quality: a failed cast is not published
+      // (a wrong value never is); history still records the Bad sample.
+      s.errors++;
+      s.lastError = `${tagName}: ${reason}`;
+      if (!heartbeat) this._toHistorian(unit, topic, null, quality, ts);
+      return;
+    }
+    const payload = model.tagPayload(target.format, unit.envFields, tag, value, ts, quality, reason);
     this.manager
       .publish(target.brokerId, topic, payload, { qos: target.qos || 0, retain: Boolean(target.retain) })
       .then(() => {
@@ -753,13 +814,16 @@ class TagBindings {
         s.errors++;
         s.lastError = error.message;
       });
-    if (!heartbeat) this._toHistorian(unit, topic, value, quality, ts);
+    if (!heartbeat) this._toHistorian(unit, topic, out, quality, ts);
   }
 
   /** Newest known sample for a unit's tag (preview): { v, q, t, type } or null. */
   latest(unitId, tagName) {
     const e = this.last.get(unitId)?.get(tagName);
-    return e ? { v: e.v, q: e.q, t: e.ts, type: e.type } : null;
+    if (!e) return null;
+    // Transformed tags remember the raw value so a preview can re-apply a (changed) transform.
+    if (Object.hasOwn(e, 'raw')) return { v: e.raw, q: e.r !== undefined ? 192 : e.q, t: e.ts, type: e.type };
+    return { v: e.v, q: e.q, t: e.ts, type: e.type };
   }
 
   getStatus() {

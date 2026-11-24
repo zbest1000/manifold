@@ -2,6 +2,7 @@
 
 const profilesModel = require('./deviceProfiles');
 const { looksLikeRawAddress } = require('./unsLint');
+const cx = require('./bindingContext');
 
 /**
  * Binding model - the pure half of tag bindings (docs/design/southbound-drivers.md
@@ -59,6 +60,23 @@ const { looksLikeRawAddress } = require('./unsLint');
  * store-and-forward outbox as { tag: <resolved topic>, ts, value, quality }.
  * Only Timebase and TimescaleDB historians are accepted; InfluxDB is excluded
  * by project decision because it drops quality.
+ *
+ * Choosing what to map and adding context (all optional, defaults keep the
+ * behaviour above byte for byte; helpers in ./bindingContext.js):
+ *   source.tags[i]      { address, name?, enabled? (default true), ...overrides }; a
+ *                       disabled entry is kept but not monitored/published/listed/retained
+ *   source.select       rules for tags: 'all' (device, device-profile):
+ *                       { include?, exclude?, pollGroups?, types?, withProperty? }
+ *   source.overrides    { <tagKey>: overrides } for rule-selected (or listed) tags
+ *   overrides           name displayName description unit range dataType scale offset
+ *                       precision states statesMode limits deadband context enabled;
+ *                       each falls back to the device tag definition (context merges,
+ *                       mapping wins key by key; entry wins over source.overrides)
+ *   target.fields       envelope / object-member field list (v t q u name src ctx)
+ *   target.metaFields   _meta fields (type unit description range source context
+ *                       displayName limits states), default all
+ *   target.context      asset context with {device} {deviceId} {protocol} {host} {param:x}
+ *   target.contextMode  'meta' (default) | 'payload' (also `ctx` in payloads) | 'none'
  */
 
 const DEFAULT_OBJECT_CAP = 64 * 1024;
@@ -181,17 +199,113 @@ function substituteVars(template, vars) {
   });
 }
 
+const contextModeOf = (b) => (cx.CONTEXT_MODES.includes(b?.target?.contextMode) ? b.target.contextMode : 'meta');
+const hasVal = (x) => x !== undefined && x !== null && x !== '';
+const overridesOf = (src) => (cx.isPlainObject(src?.overrides) ? src.overrides : null);
+
+/**
+ * One unit tag: { address, name, meta } exactly as before, plus - only when
+ * configured - displayName, limits, states/statesMode/labels, transform/plan/
+ * outType, precision, deadband, context (tag level, device merged with
+ * mapping) and ctx (asset + tag context, frozen; absent with contextMode
+ * 'none'). `dt` is the device tag definition (null for OPC UA entries), `e`
+ * the binding entry, `ov` source.overrides[key]. Mapping beats device.
+ */
+function buildTag(address, dt, e, ov, unit, details) {
+  const ent = e || {};
+  const mv = (k) => (hasVal(ent[k]) ? ent[k] : ov && hasVal(ov[k]) ? ov[k] : undefined);
+  const dv = (k) => (dt && cx.validDeviceField(k, dt[k]) ? dt[k] : undefined);
+  const tag = { address, name: ent.name || ov?.name || dt?.property || address, meta: pickMeta(dt, ov, ent) };
+
+  const displayName = mv('displayName') ?? dv('displayName');
+  const limits = mv('limits') ?? dv('limits');
+  const states = mv('states') ?? dv('states');
+  const dataType = mv('dataType');
+  const scale = mv('scale');
+  const offset = mv('offset');
+  const precision = mv('precision');
+  const deadband = cx.normDeadband(ent.deadband ?? ov?.deadband);
+  const devCtx = dt ? cx.sanitizeDeviceContext(dt.context).context : null;
+  const mapCtx = cx.isPlainObject(ov?.context) || cx.isPlainObject(ent.context) ? { ...(ov?.context || {}), ...(ent.context || {}) } : null;
+  const tagCtx = devCtx || (mapCtx && Object.keys(mapCtx).length) ? { ...(devCtx || {}), ...(mapCtx || {}) } : null;
+
+  if (displayName !== undefined) tag.displayName = displayName;
+  if (limits !== undefined) tag.limits = limits;
+  if (states !== undefined) {
+    tag.states = states;
+    tag.statesMode = mv('statesMode') || 'label-field';
+    tag.labels = new Map(Object.entries(states));
+  }
+  const plan = cx.transformPlan({ scale, offset, dataType });
+  if (plan) {
+    tag.plan = plan;
+    tag.transform = {
+      ...(plan.linear ? { scale: plan.scale, offset: plan.offset } : {}),
+      ...(dataType ? { dataType } : {})
+    };
+    tag.outType = dataType ? cx.OUT_TYPES[dataType] : 'float64';
+  }
+  if (tag.states && tag.statesMode === 'replace') tag.outType = 'string';
+  if (precision !== undefined) tag.precision = precision;
+  if (deadband !== undefined) tag.deadband = deadband;
+  if (tagCtx) tag.context = Object.freeze(tagCtx);
+  if (unit.ctxMode !== 'none' && (unit.assetContext || tag.context)) tag.ctx = Object.freeze({ ...(unit.assetContext || {}), ...(tag.context || {}) });
+
+  if (details) {
+    const o = { name: hasVal(ent.name) || hasVal(ov?.name) ? 'mapping' : dt?.property ? 'device' : 'default' };
+    for (const f of ['type', 'unit', 'description', 'range']) o[f] = hasVal(ent[f]) || hasVal(ov?.[f]) ? 'mapping' : hasVal(dt?.[f]) ? 'device' : 'default';
+    for (const f of ['displayName', 'limits', 'states']) o[f] = mv(f) !== undefined ? 'mapping' : dv(f) !== undefined ? 'device' : 'default';
+    for (const f of ['statesMode', 'dataType', 'scale', 'offset', 'precision', 'deadband']) o[f] = mv(f) !== undefined ? 'mapping' : 'default';
+    o.context = mapCtx && Object.keys(mapCtx).length ? 'mapping' : devCtx ? 'device' : 'default';
+    tag.origins = o;
+    const co = {};
+    for (const k of Object.keys(unit.assetContext || {})) co[k] = 'asset';
+    for (const k of Object.keys(devCtx || {})) co[k] = 'device';
+    for (const k of Object.keys(mapCtx || {})) co[k] = 'mapping';
+    tag.contextOrigins = co;
+  }
+  return tag;
+}
+
+/** Resolve the asset context of a unit (throws naming the key on a missing placeholder value). */
+function assignAssetContext(unit, target, vars) {
+  unit.ctxMode = contextModeOf(unit.binding);
+  unit.assetContext = null;
+  if (unit.ctxMode === 'none' || !cx.isPlainObject(target.context)) return;
+  unit.assetContext = cx.resolveContext(target.context, vars);
+}
+
 /**
  * Expand a binding into units:
  *   { id, binding, sourceType, sourceId, deviceId?, base, template, spDevice,
- *     tags: [{ address, name, meta }], error? }
+ *     assetContext, ctxMode, tags: [{ address, name, meta, ... }], error? }
  * `base` is the asset path (null for a legacy template unit). Units with an
- * `error` (unresolvable asset path) are skipped by the runtime and reported.
+ * `error` (unresolvable asset path or context placeholder) are skipped by the
+ * runtime and reported.
+ * opts.selection: an array that receives one row per candidate tag
+ *   { unitId, key, property, matched, rule?, pattern? } (preview);
+ * opts.details: add origins/contextOrigins to each tag (preview).
  */
-function expandUnits(b, profiles) {
+function expandUnits(b, profiles, opts = {}) {
   const src = b?.source || {};
   const target = b?.target || {};
   const spDefault = target.device || slug(b.name || b.id);
+  const overrides = overridesOf(src);
+  const sel = opts.selection;
+  const details = Boolean(opts.details);
+  const ruleSet = tagEntries(src) === 'all' ? cx.compileSelect(src.select) : null;
+  /** enabled + rules -> keep? (records a selection row when asked) */
+  const keep = (unit, key, tag, e, isAll) => {
+    const ov = overrides?.[key];
+    const row = sel ? { unitId: unit.id, key, property: tag?.property || null } : null;
+    let verdict = { matched: true };
+    if (!tag && isAll) verdict = { matched: false, rule: 'missing' };
+    else if ((e.enabled ?? ov?.enabled) === false) verdict = { matched: false, rule: 'disabled' };
+    else if (isAll && ruleSet) verdict = cx.selectTag(ruleSet, tag);
+    if (row && !tag && unit.sourceType === 'device') row.missing = true; // a listed key the device no longer has
+    if (row) sel.push({ ...row, ...verdict });
+    return verdict.matched;
+  };
   if (src.type === 'device-profile') {
     const profile = profiles.getIn('deviceProfiles', src.profileId);
     if (!profile) return [];
@@ -218,15 +332,25 @@ function expandUnits(b, profiles) {
       } catch (error) {
         unit.error = error.message;
       }
+      try {
+        assignAssetContext(unit, target, cx.contextVars(eff, values));
+      } catch (error) {
+        unit.error = unit.error || `${d.name || d.id}: ${error.message}`;
+      }
       // Raw profile key -> this instance's substituted tag.
       const { tags: expanded } = profilesModel.expandProfileTags(profile, values);
       const byRaw = new Map();
       (profile.tags || []).forEach((t, i) => expanded[i] && byRaw.set(t.key, expanded[i]));
-      const list = entries === 'all' ? (profile.tags || []).map((t) => ({ address: t.key })) : entries;
+      const isAll = entries === 'all';
+      const list = isAll ? (profile.tags || []).map((t) => ({ address: t.key })) : entries;
       for (const e of list) {
         const tag = byRaw.get(e.address) || (eff.tags || []).find((t) => t.key === e.address);
-        if (!tag) continue;
-        unit.tags.push({ address: tag.key, name: e.name || tag.property || tag.key, meta: pickMeta(tag, e) });
+        if (!tag) {
+          if (sel && !isAll) sel.push({ unitId: unit.id, key: e.address, property: null, matched: false, rule: 'missing' });
+          continue;
+        }
+        if (!keep(unit, e.address, tag, e, isAll)) continue;
+        unit.tags.push(buildTag(tag.key, tag, e, overrides?.[e.address], unit, details));
       }
       units.push(unit);
     }
@@ -252,19 +376,29 @@ function expandUnits(b, profiles) {
       unit.template = target.pathTemplate || 'uns/{name}';
     }
   }
+  const eff = src.type === 'device' ? effectiveOf(profiles, src.deviceId) : null;
+  try {
+    assignAssetContext(unit, target, cx.contextVars(eff, null));
+  } catch (error) {
+    unit.error = unit.error || error.message;
+  }
   if (src.type === 'device') {
     unit.deviceId = src.deviceId;
-    const eff = effectiveOf(profiles, src.deviceId);
     const byKey = new Map((eff?.tags || []).map((t) => [t.key, t]));
     const entries = tagEntries(src);
-    const list = entries === 'all' ? (eff?.tags || []).map((t) => ({ address: t.key })) : entries;
+    const isAll = entries === 'all';
+    const list = isAll ? (eff?.tags || []).map((t) => ({ address: t.key })) : entries;
     for (const e of list) {
       const tag = byKey.get(e.address);
-      unit.tags.push({ address: e.address, name: e.name || tag?.property || e.address, meta: pickMeta(tag, e) });
+      if (!keep(unit, e.address, tag, e, isAll)) continue;
+      unit.tags.push(buildTag(e.address, tag, e, overrides?.[e.address], unit, details));
     }
   } else if (src.type !== 'sparkplug') {
     const entries = tagEntries(src);
-    for (const e of entries === 'all' ? [] : entries) unit.tags.push({ address: e.address, name: e.name || e.address, meta: pickMeta(e) });
+    for (const e of entries === 'all' ? [] : entries) {
+      if (!keep(unit, e.address, null, e, false)) continue;
+      unit.tags.push(buildTag(e.address, null, e, null, unit, details));
+    }
   }
   return [unit];
 }
@@ -295,18 +429,78 @@ function objectMember(e, unit) {
   return m;
 }
 
+/**
+ * Field lists of a binding: { env, member } where null means the legacy
+ * default shapes (envelope v,t,q,u / member v,q,u). contextMode 'payload'
+ * adds 'ctx' to whichever list is in use.
+ */
+function fieldPlan(b) {
+  const target = b?.target || {};
+  const payloadCtx = contextModeOf(b) === 'payload';
+  const given = Array.isArray(target.fields) && target.fields.length ? target.fields.filter((f) => cx.FIELD_OPTIONS.includes(f)) : null;
+  const withCtx = (list) => (payloadCtx && !list.includes('ctx') ? [...list, 'ctx'] : list);
+  if (given) {
+    const list = withCtx(given);
+    if (contextModeOf(b) === 'none') return { env: list.filter((f) => f !== 'ctx'), member: list.filter((f) => f !== 'ctx') };
+    return { env: list, member: list };
+  }
+  if (payloadCtx) return { env: withCtx([...cx.DEFAULT_FIELDS]), member: withCtx([...cx.DEFAULT_MEMBER_FIELDS]) };
+  return { env: null, member: null };
+}
+
+/** True when a tag needs no new-style formatting (no transform, precision or states). */
+const plainTag = (tag) => !tag || (!tag.plan && tag.precision === undefined && !tag.labels);
+
+/**
+ * mqtt payload for one tag sample: the bare (formatted) value for `plain`,
+ * the legacy envelope object for an unchanged binding, else built from the
+ * field list. `fields` = fieldPlan(b).env.
+ */
+function tagPayload(format, fields, tag, value, ts, quality, reason) {
+  if (format !== 'envelope') return cx.formatValue(tag, value);
+  if (!fields && plainTag(tag) && reason === undefined) return envelope(value, ts, quality, tag?.meta?.unit);
+  return cx.buildFields(fields || cx.DEFAULT_FIELDS, tag, value, ts, quality, reason);
+}
+
+/** Object member for one tag (`e` = { v, q, ts, r? }); `fields` = fieldPlan(b).member. */
+function memberPayload(fields, tag, e) {
+  if (!fields && plainTag(tag) && e.r === undefined) return objectMember(e, tag?.meta?.unit);
+  return cx.buildFields(fields || cx.DEFAULT_MEMBER_FIELDS, tag, e.v, e.ts, e.q, e.r);
+}
+
+/** metaFields of a binding as a Set, or null (= all). */
+function metaFieldSet(b) {
+  const mf = b?.target?.metaFields;
+  return Array.isArray(mf) ? new Set(mf) : null;
+}
+
 /** The _meta document (without updatedAt; the runtime stamps it on publish). */
 function metaDoc(unit) {
   const properties = {};
   const b = unit.binding;
+  const allow = metaFieldSet(b);
+  const ok = (f) => !allow || allow.has(f);
+  const ctxOk = unit.ctxMode !== 'none' && ok('context');
   for (const t of unit.tags) {
     const p = { ...t.meta };
-    if (b.source.type === 'opcua') p.source = { connectionId: unit.sourceId, address: t.address };
-    else p.source = { deviceId: unit.deviceId ?? unit.sourceId, address: t.address };
-    if (b.source.type === 'device-profile') p.source.profileId = b.source.profileId;
+    if (allow) for (const f of META_FIELDS) if (!allow.has(f)) delete p[f];
+    if (t.transform && ok('type')) Object.assign(p, t.transform);
+    if (t.precision !== undefined && ok('type')) p.precision = t.precision;
+    if (t.displayName !== undefined && ok('displayName')) p.displayName = t.displayName;
+    if (t.limits !== undefined && ok('limits')) p.limits = t.limits;
+    if (t.states !== undefined && ok('states')) {
+      p.states = t.states;
+      p.statesMode = t.statesMode;
+    }
+    if (t.context && ctxOk) p.context = t.context;
+    if (ok('source')) {
+      if (b.source.type === 'opcua') p.source = { connectionId: unit.sourceId, address: t.address };
+      else p.source = { deviceId: unit.deviceId ?? unit.sourceId, address: t.address };
+      if (b.source.type === 'device-profile') p.source.profileId = b.source.profileId;
+    }
     properties[slug(t.name)] = p;
   }
-  return { properties };
+  return unit.assetContext && ctxOk ? { context: unit.assetContext, properties } : { properties };
 }
 
 // ---- sizing ---------------------------------------------------------------------
@@ -327,11 +521,30 @@ function memberBytes(tag) {
   return JSON.stringify(slug(tag.name)).length + 1 + 5 + valueBytes(tag.meta?.type) + 8 + unit + 2;
 }
 
+/** Worst-case member bytes under a field list (null = legacy shape). */
+function memberBytesFor(fields, tag) {
+  if (!fields && plainTag(tag)) return memberBytes(tag);
+  return JSON.stringify(slug(tag.name)).length + 1 + cx.fieldBytes(fields || cx.DEFAULT_MEMBER_FIELDS, tag, valueBytes) + 1;
+}
+
+/** Worst-case bytes of one topic-per-tag payload. */
+function payloadBytesFor(b, tag) {
+  const target = b?.target || {};
+  if (target.mode !== 'mqtt' || target.format !== 'envelope') {
+    let n = valueBytes(tag.outType || tag.meta?.type);
+    if (tag.labels && tag.statesMode === 'replace') for (const l of tag.labels.values()) n = Math.max(n, JSON.stringify(l).length);
+    return n;
+  }
+  const fields = fieldPlan(b).env;
+  return cx.fieldBytes(fields || cx.DEFAULT_FIELDS, tag, valueBytes);
+}
+
 function objectEstimate(unit) {
   let worst = 0;
   let total = OBJECT_ENVELOPE_BYTES;
+  const fields = fieldPlan(unit.binding).member;
   for (const t of unit.tags) {
-    const m = memberBytes(t);
+    const m = memberBytesFor(fields, t);
     total += m;
     if (m > worst) worst = m;
   }
@@ -400,13 +613,15 @@ function validateBinding(draft, { profiles }) {
     fail('source.type must be "device", "device-profile", "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)');
   }
   const entries = tagEntries(source);
+  // Disabled entries may name a tag the device no longer has (they only remember settings).
+  const enabledEntries = entries === 'all' ? entries : entries.filter((t) => t.enabled !== false);
   if (source.type === 'device') {
     const device = effectiveOf(profiles, source.deviceId);
     if (!device) fail('device source needs an existing deviceId');
     if (entries !== 'all') {
       if (!entries.length) fail('device source needs tags[] (or "all")');
       const keys = new Set((device.tags || []).map((t) => t.key));
-      const missing = entries.filter((t) => !keys.has(t.address)).map((t) => t.address);
+      const missing = enabledEntries.filter((t) => !keys.has(t.address)).map((t) => t.address);
       if (missing.length) fail(`device has no tag(s): ${missing.slice(0, 5).join(', ')}`);
     }
   }
@@ -416,7 +631,7 @@ function validateBinding(draft, { profiles }) {
     if (entries !== 'all') {
       if (!entries.length) fail('device-profile source needs tags[] (profile tag keys, or "all")');
       const keys = new Set((profile.tags || []).map((t) => t.key));
-      const missing = entries.filter((t) => !keys.has(t.address)).map((t) => t.address);
+      const missing = enabledEntries.filter((t) => !keys.has(t.address)).map((t) => t.address);
       if (missing.length) fail(`profile has no tag(s): ${missing.slice(0, 5).join(', ')}`);
     }
   }
@@ -477,6 +692,8 @@ function validateBinding(draft, { profiles }) {
     if (!HISTORIAN_TYPES.has(h.type)) fail(`historian type "${h.type}" is not supported as a direct target (allowed: timebase, timescaledb)`);
   }
 
+  validateMappingOptions(source, target, profiles, fail);
+
   let rbeOut;
   if (rbe && typeof rbe === 'object') {
     rbeOut = {};
@@ -501,6 +718,28 @@ function validateBinding(draft, { profiles }) {
     ...(rbeOut ? { rbe: rbeOut } : {})
   };
 
+  // Payload context cap (contextMode 'payload' / fields with 'ctx'): per tag, after placeholders.
+  const fp = fieldPlan(binding);
+  const ctxInPayload = target.mode === 'mqtt' && ((fp.env && fp.env.includes('ctx') && (target.format === 'envelope' || layoutOf(binding) === 'object-per-asset')));
+  if (ctxInPayload || (target.mode === 'sparkplug' && cx.isPlainObject(target.context))) {
+    for (const unit of expandUnits({ ...binding, id: draft.id || 'draft' }, profiles)) {
+      if (unit.assetContext) {
+        const bytes = cx.bytesOf(unit.assetContext);
+        if (bytes > cx.MAX_CONTEXT_BYTES) fail(`target.context resolves to ${bytes} bytes for ${unit.id}; at most ${cx.MAX_CONTEXT_BYTES} bytes are allowed`);
+      }
+      if (!ctxInPayload) continue;
+      for (const t of unit.tags) {
+        const bytes = t.ctx ? cx.bytesOf(t.ctx) : 0;
+        if (bytes > cx.MAX_PAYLOAD_CONTEXT_BYTES) {
+          fail(
+            `tag "${t.address}": payload context (ctx) is ${bytes} bytes, over the ${cx.MAX_PAYLOAD_CONTEXT_BYTES}-byte cap for context in payloads; ` +
+              'keep it in _meta (contextMode "meta"), drop keys or shorten values'
+          );
+        }
+      }
+    }
+  }
+
   // Size cap for object payloads: per unit, tag count x worst-case member size.
   if (layoutOf(binding) === 'object-per-asset') {
     const cap = objectCapOf(binding);
@@ -516,6 +755,63 @@ function validateBinding(draft, { profiles }) {
     }
   }
   return binding;
+}
+
+/** Validation of the "choose what to map" / "context" options; calls fail(msg) on the first error. */
+function validateMappingOptions(source, target, profiles, fail) {
+  const entries = tagEntries(source);
+  const listSource = source.type === 'device' || source.type === 'device-profile';
+  if (Array.isArray(source.tags)) {
+    for (const t of source.tags) {
+      if (!t || typeof t !== 'object') continue;
+      const err = cx.overrideError(t, `tag "${t.address}"`);
+      if (err) fail(err);
+    }
+  }
+  if (source.select !== undefined && source.select !== null) {
+    if (!listSource || entries !== 'all') fail('source.select applies only to device and device-profile sources with tags: "all"');
+    const err = cx.selectError(source.select);
+    if (err) fail(err);
+  }
+  if (source.overrides !== undefined && source.overrides !== null) {
+    if (!listSource) fail('source.overrides applies only to device and device-profile sources');
+    if (!cx.isPlainObject(source.overrides)) fail('source.overrides must be an object { <tagKey>: { ...overrides } }');
+    for (const [k, o] of Object.entries(source.overrides)) {
+      const err = cx.overrideError(o, `source.overrides["${k}"]`, { strict: true });
+      if (err) fail(err);
+    }
+  }
+  if (target.contextMode !== undefined && !cx.CONTEXT_MODES.includes(target.contextMode)) fail(`target.contextMode must be one of ${cx.CONTEXT_MODES.join(', ')}`);
+  if (target.fields !== undefined && target.fields !== null) {
+    if (target.mode !== 'mqtt') fail('target.fields applies to mqtt targets only');
+    const f = target.fields;
+    if (!Array.isArray(f) || !f.length) fail(`target.fields must be a non-empty array of ${cx.FIELD_OPTIONS.join(', ')}`);
+    const bad = f.filter((x) => !cx.FIELD_OPTIONS.includes(x));
+    if (bad.length) fail(`target.fields has unknown field(s) ${bad.map((x) => JSON.stringify(x)).join(', ')} (allowed: ${cx.FIELD_OPTIONS.join(', ')})`);
+    if (new Set(f).size !== f.length) fail('target.fields lists a field twice');
+    if (!f.includes('v')) fail('target.fields must include "v" (the value)');
+    if (f.includes('ctx') && target.contextMode === 'none') fail('target.fields includes "ctx" but target.contextMode is "none"');
+  }
+  if (target.metaFields !== undefined && target.metaFields !== null) {
+    const f = target.metaFields;
+    if (!Array.isArray(f)) fail(`target.metaFields must be an array of ${cx.META_FIELD_OPTIONS.join(', ')}`);
+    const bad = f.filter((x) => !cx.META_FIELD_OPTIONS.includes(x));
+    if (bad.length) fail(`target.metaFields has unknown field(s) ${bad.map((x) => JSON.stringify(x)).join(', ')} (allowed: ${cx.META_FIELD_OPTIONS.join(', ')})`);
+  }
+  if (target.context !== undefined && target.context !== null) {
+    const err = cx.contextError(target.context, 'target.context');
+    if (err) fail(err);
+    const profile = source.type === 'device-profile' ? profiles.getIn('deviceProfiles', source.profileId) : null;
+    const allowed = cx.allowedPlaceholders(source.type, profile);
+    for (const [token, key] of cx.contextPlaceholders(target.context)) {
+      if (!allowed.includes(token)) {
+        fail(
+          `target.context.${key} uses unknown placeholder {${token}} ` +
+            `(allowed for a ${source.type} source: ${allowed.length ? allowed.map((p) => `{${p}}`).join(', ') : 'none'})`
+        );
+      }
+    }
+  }
 }
 
 // ---- warnings & preview -----------------------------------------------------------
@@ -536,12 +832,82 @@ function topicOwners(profiles, excludeId) {
 }
 
 /**
+ * Warnings for the selection/fields/context options (none for a binding that
+ * uses none of them). Each: { type, message, tag?, key?, topic: null }.
+ */
+function mappingWarnings(b, profiles, push) {
+  const src = b?.source || {};
+  const target = b?.target || {};
+  const fields = Array.isArray(target.fields) ? target.fields : null;
+  if (fields && target.mode === 'mqtt') {
+    if (!fields.includes('q')) {
+      push({ type: 'no-quality', topic: null, message: 'target.fields drops "q": consumers cannot tell a dead value from a live one' });
+    }
+    if (target.format !== 'envelope' && layoutOf(b) !== 'object-per-asset') {
+      push({ type: 'fields-ignored', topic: null, message: 'target.fields applies to the envelope format and object-per-asset members; plain payloads are the bare value' });
+    }
+  }
+  const credential = (ctx, where) => {
+    for (const k of cx.credentialLikeKeys(ctx)) {
+      push({ type: 'credential-like-context', topic: null, key: k, message: `${where} key "${k}" looks like a credential; context is published to the broker in clear text` });
+    }
+  };
+  credential(target.context, 'target.context');
+  const listed = Array.isArray(src.tags) ? src.tags.filter((t) => t && typeof t === 'object') : [];
+  for (const t of listed) credential(t.context, `tag "${t.address}" context`);
+  for (const [k, o] of Object.entries(overridesOf(src) || {})) credential(o?.context, `source.overrides["${k}"].context`);
+
+  // Keys / entries that name no tag.
+  let keys = null;
+  if (src.type === 'device') keys = new Set((effectiveOf(profiles, src.deviceId)?.tags || []).map((t) => t.key));
+  if (src.type === 'device-profile') keys = new Set((profiles.getIn('deviceProfiles', src.profileId)?.tags || []).map((t) => t.key));
+  if (keys) {
+    for (const k of Object.keys(overridesOf(src) || {})) {
+      if (!keys.has(k)) push({ type: 'unknown-override', topic: null, tag: k, message: `source.overrides["${k}"] names no tag of the ${src.type === 'device' ? 'device' : 'profile'}; it applies if such a tag is added` });
+    }
+    for (const t of listed) {
+      if (t.enabled === false && !keys.has(t.address)) push({ type: 'disabled-missing', topic: null, tag: t.address, message: `disabled entry "${t.address}" names no tag of the ${src.type === 'device' ? 'device' : 'profile'}` });
+    }
+    // Device-level context that cannot be used.
+    const devTags = src.type === 'device' ? effectiveOf(profiles, src.deviceId)?.tags || [] : profiles.getIn('deviceProfiles', src.profileId)?.tags || [];
+    for (const dt of devTags) {
+      if (dt?.context === undefined) continue;
+      const { context, ignored } = cx.sanitizeDeviceContext(dt.context);
+      if (ignored.length) push({ type: 'device-context', topic: null, tag: dt.key, message: `device tag "${dt.key}" context key(s) ${ignored.slice(0, 5).join(', ')} are invalid and not published` });
+      credential(context, `device tag "${dt.key}" context`);
+    }
+  }
+
+  if (src.type === 'sparkplug') return;
+  const units = expandUnits(b, profiles);
+  for (const unit of units) {
+    if (!unit.tags.length && !unit.error) {
+      const why = src.select ? 'the selection rules match no tag' : 'every tag entry is disabled or the source has no tags';
+      push({ type: 'no-tags', topic: null, unitId: unit.id, message: `${unit.id}: nothing to publish (${why})` });
+    }
+    const seen = new Map();
+    for (const t of unit.tags) {
+      const s = slug(t.name);
+      if (seen.has(s) && seen.get(s) !== t.address) {
+        push({ type: 'duplicate-name', topic: null, name: t.name, message: `tags "${seen.get(s)}" and "${t.address}" both publish as "${s}" in ${unit.id}` });
+      } else seen.set(s, t.address);
+      if (target.mode === 'sparkplug' && t.ctx) {
+        for (const k of Object.keys(t.ctx)) {
+          if (cx.SPARKPLUG_STANDARD_PROPS.has(k)) push({ type: 'sparkplug-context-collision', topic: null, key: k, message: `context key "${k}" collides with a standard Sparkplug metric property and is not sent in BIRTH` });
+        }
+      }
+    }
+  }
+}
+
+/**
  * Non-blocking save-time warnings: names that look like raw device addresses
  * and topics another binding already publishes. -> [{ type, topic, message, ... }]
  */
 function bindingWarnings(b, profiles, { owners } = {}) {
   const warnings = [];
   const push = (w) => warnings.length < MAX_WARNINGS && warnings.push(w);
+  mappingWarnings(b, profiles, push);
   if (b?.target?.mode !== 'mqtt') return warnings;
   const own = owners || topicOwners(profiles, b.id);
   for (const unit of expandUnits(b, profiles)) {
@@ -572,16 +938,34 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
   const target = b.target || {};
   const layout = layoutOf(b);
   const owners = topicOwners(profiles, b.id);
-  const units = expandUnits(b, profiles);
+  const selectionRows = [];
+  const units = expandUnits(b, profiles, { selection: selectionRows, details: true });
+  const warnings = bindingWarnings(b, profiles, { owners });
+  const fp = fieldPlan(b);
+  const bindingDeadband = deadbandOf(b);
   const now = Date.now();
   const tags = [];
+  const members = [];
   const objects = [];
   const meta = [];
   const status = [];
+  const contexts = [];
+  const tx = {};
   let totalTags = 0;
+  let exampleBytes = 0;
+  let worstPayload = 0;
+  let worstCycle = 0;
+  const tagWarnings = (tag, topic) =>
+    warnings.filter((w) => (w.tag !== undefined && w.tag === tag.address) || (w.name !== undefined && w.name === tag.name && (!w.topic || w.topic === topic)));
+  const detail = (tag) => ({
+    metadata: effectiveMetadata(tag, bindingDeadband),
+    origins: tag.origins,
+    contextOrigins: tag.contextOrigins
+  });
   for (const unit of units) {
     totalTags += unit.tags.length;
     if (unit.error) continue;
+    if (contexts.length < PREVIEW_MAX_TAGS) contexts.push({ unitId: unit.id, context: unit.assetContext || null });
     if (target.mode === 'mqtt') {
       if (target.statusTopic !== false) status.push(statusTopicOf(unit));
       if (target.metaTopic !== false && unit.tags.length && meta.length < 10) meta.push({ topic: metaTopicOf(unit), payload: { ...metaDoc(unit), updatedAt: now } });
@@ -590,36 +974,72 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
     let t = 0;
     for (const tag of unit.tags) {
       const smp = latest(unit, tag.address, tag.name);
-      const e = smp ? { v: smp.v, q: smp.q ?? 192 } : { v: null, q: 0 };
+      if (smp) cx.applyTransform(tag.plan, smp.v, smp.q ?? 192, tx);
+      const e = smp ? { v: tx.v, q: tx.q, ts: smp.t || now, r: tx.r } : { v: null, q: 0, ts: now, r: undefined };
       if (smp?.t > t) t = smp.t;
       if (layout === 'object-per-asset') {
-        values[slug(tag.name)] = objectMember(e, tag.meta.unit);
+        const member = memberPayload(fp.member, tag, e);
+        values[slug(tag.name)] = member;
+        if (members.length < PREVIEW_MAX_TAGS) {
+          const topic = objectTopicOf(unit);
+          members.push({
+            name: tag.name,
+            address: tag.address,
+            unitId: unit.id,
+            hasValue: Boolean(smp),
+            topic,
+            member: slug(tag.name),
+            payload: member,
+            bytes: Buffer.byteLength(JSON.stringify(member)),
+            worstCaseBytes: memberBytesFor(fp.member, tag),
+            ...detail(tag),
+            warnings: tagWarnings(tag, topic)
+          });
+        }
         continue;
+      }
+      let worst = null;
+      if (target.mode === 'mqtt') {
+        worst = payloadBytesFor(b, tag);
+        worstCycle += worst;
+        if (worst > worstPayload) worstPayload = worst;
       }
       if (tags.length >= PREVIEW_MAX_TAGS) continue;
       const entry = { name: tag.name, address: tag.address, unitId: unit.id, hasValue: Boolean(smp) };
       if (target.mode === 'sparkplug') {
         entry.topic = `spBv1.0/${target.group}/DDATA/${target.edge}/${unit.spDevice}`;
         entry.metric = tag.name;
-        entry.payload = { name: tag.name, value: e.v, type: smp?.type || tag.meta.type || null, properties: sparkplugProps(tag.meta) };
+        entry.payload = { name: tag.name, value: cx.formatValue(tag, e.v), type: tag.outType || smp?.type || tag.meta.type || null, properties: sparkplugProps(tag.meta, tag) };
       } else {
         entry.topic = valueTopicOf(unit, tag.name);
-        entry.payload = target.format === 'envelope' ? envelope(e.v, smp?.t || now, e.q, tag.meta.unit) : e.v;
+        entry.payload = tagPayload(target.format, fp.env, tag, e.v, smp?.t || now, e.q, e.r);
         const hit = owners.get(`${target.brokerId}\u0000${entry.topic}`);
         if (hit) entry.collisions = hit;
+        const bytes = Buffer.byteLength(typeof entry.payload === 'string' ? entry.payload : JSON.stringify(entry.payload ?? null));
+        entry.bytes = bytes;
+        entry.worstCaseBytes = worst;
+        exampleBytes += bytes;
       }
+      Object.assign(entry, detail(tag));
+      entry.warnings = tagWarnings(tag, entry.topic);
       tags.push(entry);
     }
-    if (layout === 'object-per-asset' && objects.length < PREVIEW_MAX_TAGS) {
-      const payload = { t: t || now, values };
-      const topic = objectTopicOf(unit);
+    if (layout === 'object-per-asset') {
       const est = objectEstimate(unit);
-      const o = { topic, unitId: unit.id, payload, bytes: Buffer.byteLength(JSON.stringify(payload)), worstCaseBytes: est.total, capBytes: objectCapOf(b) };
-      const hit = owners.get(`${target.brokerId}\u0000${topic}`);
-      if (hit) o.collisions = hit;
-      objects.push(o);
+      worstCycle += est.total;
+      if (est.total > worstPayload) worstPayload = est.total;
+      if (objects.length < PREVIEW_MAX_TAGS) {
+        const payload = { t: t || now, values };
+        const topic = objectTopicOf(unit);
+        const o = { topic, unitId: unit.id, payload, bytes: Buffer.byteLength(JSON.stringify(payload)), worstCaseBytes: est.total, capBytes: objectCapOf(b) };
+        const hit = owners.get(`${target.brokerId}\u0000${topic}`);
+        if (hit) o.collisions = hit;
+        exampleBytes += o.bytes;
+        objects.push(o);
+      }
     }
   }
+  const SELECTION_MAX = 500;
   return {
     layout,
     format: target.mode === 'mqtt' ? target.format || 'plain' : 'sparkplug',
@@ -631,12 +1051,39 @@ function previewBinding(b, profiles, { latest = () => null } = {}) {
     objects,
     meta,
     status: status.slice(0, PREVIEW_MAX_TAGS),
-    warnings: bindingWarnings(b, profiles, { owners })
+    warnings,
+    members,
+    selection: {
+      matched: selectionRows.filter((r) => r.matched).length,
+      excluded: selectionRows.filter((r) => !r.matched).length,
+      truncated: selectionRows.length > SELECTION_MAX,
+      rows: selectionRows.slice(0, SELECTION_MAX)
+    },
+    contexts,
+    fields: { envelope: target.mode === 'mqtt' && target.format === 'envelope' ? fp.env || [...cx.DEFAULT_FIELDS] : null, member: layout === 'object-per-asset' ? fp.member || [...cx.DEFAULT_MEMBER_FIELDS] : null },
+    contextMode: contextModeOf(b),
+    sizes: target.mode === 'mqtt' ? { exampleBytes, worstCasePayloadBytes: worstPayload, worstCaseCycleBytes: worstCycle } : null
   };
 }
 
-/** Sparkplug metric properties from tag metadata (conventional keys engUnit/engLow/engHigh/description). */
-function sparkplugProps(meta) {
+/** The effective (merged) metadata of one tag, as the preview reports it. */
+function effectiveMetadata(tag, bindingDeadband) {
+  const m = { name: tag.name, ...tag.meta };
+  for (const f of ['displayName', 'limits', 'states', 'statesMode', 'precision']) if (tag[f] !== undefined) m[f] = tag[f];
+  if (tag.transform) Object.assign(m, tag.transform);
+  m.deadband = tag.deadband !== undefined ? tag.deadband : bindingDeadband;
+  if (tag.context) m.context = tag.context;
+  return m;
+}
+
+/**
+ * Sparkplug metric properties (BIRTH only) from tag metadata: conventional keys
+ * engUnit/engLow/engHigh/description, then displayName, limitLoLo/limitLo/
+ * limitHi/limitHiHi (Double), then the merged asset + tag context as String
+ * properties (keys are already restricted to A-Z a-z 0-9 _ . -; a context key
+ * equal to a standard property is skipped). `tag` is optional.
+ */
+function sparkplugProps(meta, tag) {
   if (!meta) return undefined;
   const p = {};
   if (meta.unit) p.engUnit = String(meta.unit);
@@ -645,7 +1092,79 @@ function sparkplugProps(meta) {
     p.engLow = Number(meta.range.min);
     p.engHigh = Number(meta.range.max);
   }
+  if (tag) {
+    if (tag.displayName) p.displayName = String(tag.displayName);
+    if (tag.limits) {
+      for (const [k, prop] of [['lolo', 'limitLoLo'], ['lo', 'limitLo'], ['hi', 'limitHi'], ['hihi', 'limitHiHi']]) {
+        if (Number.isFinite(tag.limits[k])) p[prop] = tag.limits[k];
+      }
+    }
+    if (tag.ctx) for (const [k, v] of Object.entries(tag.ctx)) if (!cx.SPARKPLUG_STANDARD_PROPS.has(k)) p[k] = String(v);
+  }
   return Object.keys(p).length ? p : undefined;
+}
+
+/**
+ * Suggestions for the mapping wizard (POST /api/tags/bindings/suggest):
+ * names from `property`, else a cleaned key; asset context from the device.
+ * Nothing is guessed beyond that (no units, no AI).
+ */
+function suggestMapping(source, profiles) {
+  const src = source || {};
+  let tags = [];
+  let context = null;
+  if (src.type === 'device') {
+    const eff = effectiveOf(profiles, src.deviceId);
+    if (!eff) throw new BindingValidationError('device source needs an existing deviceId');
+    tags = eff.tags || [];
+    context = { suggested: { deviceName: '{device}', protocol: '{protocol}' }, resolved: { deviceName: eff.name || eff.id, protocol: eff.protocol } };
+  } else if (src.type === 'device-profile') {
+    const profile = profiles.getIn('deviceProfiles', src.profileId);
+    if (!profile) throw new BindingValidationError('device-profile source needs an existing profileId');
+    tags = profile.tags || [];
+    const first = profiles
+      .listIn('devices')
+      .filter((d) => d.profileId === profile.id)
+      .sort((a, c) => String(a.id).localeCompare(String(c.id)))[0];
+    context = {
+      suggested: { deviceName: '{device}', protocol: '{protocol}' },
+      resolved: first ? { deviceName: first.name || first.id, protocol: profile.protocol } : null,
+      resolvedFor: first ? first.id : null
+    };
+  } else if (src.type === 'opcua') {
+    const entries = tagEntries(src);
+    tags = (entries === 'all' ? [] : entries).map((e) => ({ key: e.address }));
+    context = { suggested: {}, resolved: {} };
+  } else {
+    throw new BindingValidationError('suggest supports device, device-profile and opcua sources');
+  }
+  const byName = new Map();
+  const out = tags.map((t) => {
+    const s = cx.suggestName(t);
+    const row = {
+      address: t.key,
+      property: t.property || null,
+      type: t.type || null,
+      unit: t.unit || null,
+      description: t.description || null,
+      suggestedName: s.name,
+      basis: s.basis,
+      rawAddress: s.reason === 'raw-address' || looksLikeRawAddress(String(t.key || ''))
+    };
+    if (s.reason) row.reason = s.reason;
+    if (s.name) {
+      const k = slug(s.name).toLowerCase();
+      if (byName.has(k)) row.duplicateOf = byName.get(k);
+      else byName.set(k, t.key);
+    }
+    return row;
+  });
+  return {
+    sourceType: src.type,
+    tags: out,
+    entries: out.filter((r) => r.suggestedName).map((r) => ({ address: r.address, name: r.suggestedName })),
+    context
+  };
 }
 
 module.exports = {
@@ -680,5 +1199,17 @@ module.exports = {
   topicOwners,
   bindingWarnings,
   previewBinding,
-  sparkplugProps
+  sparkplugProps,
+  suggestMapping,
+  applyTransform: cx.applyTransform,
+  formatValue: cx.formatValue,
+  fieldPlan,
+  tagPayload,
+  memberPayload,
+  payloadBytesFor,
+  memberBytesFor,
+  contextModeOf,
+  effectiveMetadata,
+  bindingSchema: () =>
+    cx.bindingSchema({ defaultObjectCap: DEFAULT_OBJECT_CAP, minObjectCap: MIN_OBJECT_CAP, maxObjectCap: MAX_OBJECT_CAP, previewMaxTags: PREVIEW_MAX_TAGS })
 };

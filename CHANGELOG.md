@@ -141,6 +141,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets require `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
 - **Security headers and a general rate limit** (`helmet` + `express-rate-limit`)
   on the API, plus `GET /api/whoami` so the UI can show a read-only badge.
+- **Choose what to map (server API).** Binding tag entries take
+  `enabled: false` (kept, but not monitored, published, listed in `_meta` or
+  retained; turning one off clears its retained topic). `tags: "all"` on device
+  and profile sources takes `source.select` rules (include/exclude globs on key
+  and property, poll groups, types, with/without property), picks up matching
+  tags added later, and `source.overrides` gives rule-selected tags per-tag
+  settings. `target.fields` chooses the envelope / object-member fields
+  (`v t q u name src ctx`; dropping `q` warns) and `target.metaFields` the
+  `_meta` fields (e.g. keep source addresses off the broker).
+- **Context on tags (server API).** Per-tag overrides with device fallback:
+  name, displayName, description, unit, range, `dataType` cast, `scale`/`offset`,
+  `precision`, `states` (label field or replace), `limits` (metadata only, no
+  alarm engine), per-tag `deadband` and free-form `context`. A failed scale or
+  cast publishes Bad quality with a `reason`, never a wrong value. Asset-level
+  `target.context` with `{device}`, `{deviceId}`, `{protocol}`, `{host}` and
+  `{param:<name>}` placeholders; `target.contextMode` `meta` (default, in
+  `_meta`), `payload` (also `ctx` in payloads, 1 KB cap) or `none`. Device tags
+  may carry `context`, `displayName`, `states` and `limits`. Sparkplug targets
+  send displayName, limits and context as BIRTH metric properties and re-BIRTH
+  when metadata changes. Context keys are validated (charset, 32 keys, 256-char
+  values, 4 KB); credential-like keys warn.
+- **Mapping API for the wizard.** `GET /api/tags/bindings/schema`,
+  `POST /api/tags/bindings/suggest` (read-only name and context suggestions),
+  and a richer preview: effective metadata with the origin of each field,
+  selection result per tag, per-tag warnings, payload sizes. Bindings that use
+  none of the new options publish byte-for-byte what they did before.
 
 ### Changed
 

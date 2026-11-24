@@ -213,6 +213,69 @@ test('bindings: profile binding save returns warnings; preview is read-only', as
   assert.strictEqual(r.status, 200, 'profile instances are not pinned by profile bindings');
 });
 
+test('mapping context: device tag context survives save + profile substitution; schema, suggest and preview over HTTP', async () => {
+  // B5: unknown tag fields (context, displayName, states, limits) pass through the device API unchanged
+  const ctxTag = { key: 'p', address: 'holding:5', type: 'uint16', property: 'pressure', displayName: 'Line pressure', states: { 0: 'Off' }, limits: { hi: 9 }, context: { pid: 'PT-1' } };
+  let r = await api('POST', '/api/devices', { name: 'Ctx', protocol: 'modbus-tcp', host: '10.0.0.30', tags: [ctxTag] });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  const dev = r.body;
+  r = await api('GET', '/api/devices');
+  assert.deepStrictEqual(r.body.devices.find((d) => d.id === dev.id).tags[0], ctxTag);
+  r = await api('POST', '/api/devices/profiles', { name: 'Ctx profile', protocol: 'modbus-tcp', params: [{ name: 'n', default: 1 }], tags: [{ ...ctxTag, key: 'q', address: 'holding:{n}' }] });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  const pid = r.body.id;
+  r = await api('POST', `/api/devices/profiles/${pid}/instantiate`, { name: 'Ctx inst', host: '10.0.0.31', params: { n: 7 } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  const effTag = ctx.devices.effectiveTags(r.body.id)[0];
+  assert.deepStrictEqual([effTag.address, effTag.context, effTag.displayName, effTag.limits], ['holding:7', { pid: 'PT-1' }, 'Line pressure', { hi: 9 }]);
+
+  // schema: read-only GET with the server's limits
+  r = await api('GET', '/api/tags/bindings/schema');
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(r.body.target.fields.options, ['v', 't', 'q', 'u', 'name', 'src', 'ctx']);
+  assert.deepStrictEqual(r.body.target.contextMode.values, ['meta', 'payload', 'none']);
+  assert.strictEqual(r.body.limits.maxContextKeys, 32);
+  assert.deepStrictEqual(r.body.overrides.statesMode.values, ['label-field', 'replace']);
+  assert.ok(r.body.placeholders['device-profile'].includes('{param:<name>}'));
+
+  // suggest: read-only POST
+  const before = ctx.mqtt.all.length;
+  r = await api('POST', '/api/tags/bindings/suggest', { source: { type: 'device', deviceId: dev.id } });
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(r.body.entries, [{ address: 'p', name: 'pressure' }]);
+  assert.deepStrictEqual(r.body.context.resolved, { deviceName: 'Ctx', protocol: 'modbus-tcp' });
+  r = await api('POST', '/api/tags/bindings/suggest', { source: { type: 'device', deviceId: 'nope' } });
+  assert.strictEqual(r.status, 400);
+
+  // preview: selection, origins and context
+  r = await api('POST', '/api/tags/bindings/preview', {
+    source: { type: 'device-profile', profileId: pid, tags: 'all', select: { include: ['press*'] }, overrides: { q: { unit: 'bar' } } },
+    target: { mode: 'mqtt', brokerId: 'br', format: 'envelope', assetPathTemplate: 'acme/{device}', context: { line: '{param:n}', asset: '{device}' } }
+  });
+  assert.strictEqual(r.body.valid, true, JSON.stringify(r.body));
+  assert.strictEqual(r.body.selection.rows[0].matched, true);
+  assert.strictEqual(r.body.tags[0].origins.unit, 'mapping');
+  assert.strictEqual(r.body.tags[0].origins.displayName, 'device');
+  assert.deepStrictEqual(r.body.meta[0].payload.context, { line: '7', asset: 'Ctx inst' });
+  r = await api('POST', '/api/tags/bindings/preview', {
+    source: { type: 'device', deviceId: dev.id, tags: [{ address: 'p', scale: 0 }] },
+    target: { mode: 'mqtt', brokerId: 'br', assetPath: 'a/b' }
+  });
+  assert.deepStrictEqual([r.body.valid, r.body.error], [false, 'tag "p".scale must be a non-zero finite number']);
+  assert.strictEqual(ctx.mqtt.all.length, before, 'schema, suggest and preview publish nothing');
+
+  // save: warnings for the new options
+  r = await api('POST', '/api/tags/bindings', {
+    id: 'ctxb',
+    source: { type: 'device', deviceId: dev.id, tags: ['p'] },
+    target: { mode: 'mqtt', brokerId: 'br', format: 'envelope', assetPath: 'acme/ctx', fields: ['v', 't'], context: { secretKey: 'x' } }
+  });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.deepStrictEqual(r.body.warnings.map((w) => w.type).sort(), ['credential-like-context', 'no-quality']);
+  assert.strictEqual(ctx.profiles.getIn('bindings', 'ctxb').target.context.secretKey, 'x', 'nothing is redacted silently');
+  await api('DELETE', '/api/tags/bindings/ctxb');
+});
+
 test('lint: raw-address leaves are flagged; spBv1.0 and $ roots skip hierarchy-shape rules', () => {
   const trieOf = (topics) => {
     const t = new TopicTrie();

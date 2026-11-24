@@ -280,6 +280,375 @@ binding. The limits, so nothing surprises you:
 - Only topics published by a binding are cleaned. Anything a pipeline or another
   client retained under the same path is not.
 
+## Choosing what to map
+
+Everything in this section is optional. A binding that uses none of it
+publishes exactly what it published before (the test suite compares topics,
+payloads and `_meta` byte for byte against fixtures captured from the earlier
+code).
+
+The examples below were produced by running the code against an S7 filler
+(`deviceId: filler4`) with these tags: `DB10_speed` (property `speed`, `bpm`,
+range 0..600), `DB10_temp` (`productTemp`, `degC`), `DB10_state` (`state`,
+device-level states `0 Stopped / 1 Running / 2 Faulted`), `DB10_count`
+(`goodCount`, poll group `slow`) and `DB10_spare` (no property). The asset path
+is `acme/dallas/packaging/line4/filler`.
+
+### Tick tags on and off
+
+An entry of `source.tags` may be an object with `enabled`:
+
+```json
+"tags": [
+  { "address": "DB10_speed" },
+  { "address": "DB10_count", "name": "goodCount", "enabled": false }
+]
+```
+
+A disabled entry stays in the stored binding (the wizard shows it unticked and
+remembers its name and settings) but it is **not monitored, not published, not
+counted, not listed in `_meta`, and not retained**. Turning a retained tag off
+clears its retained topic, as a rename does. A disabled entry may even name a
+tag the device no longer has (the save warns, `disabled-missing`); an enabled
+one may not.
+
+### Rules instead of a list
+
+For `tags: "all"` on a device or a device profile, `source.select` picks tags
+by rule, and tags added to the device later are picked up automatically when
+they match:
+
+```json
+"source": {
+  "type": "device", "deviceId": "filler4", "tags": "all",
+  "select": { "include": ["*"], "exclude": ["*spare*"], "pollGroups": ["default"] },
+  "overrides": { "DB10_temp": { "unit": "degF" } }
+}
+```
+
+| Rule | Meaning |
+|---|---|
+| `include: [glob]` | keep tags whose key **or** property matches one pattern (omitted = all) |
+| `pollGroups: [id]` | keep tags in these poll groups (a tag without one is in `default`) |
+| `types: [type]` | keep tags of these device types (`float32`, `int16`, ...; case-insensitive) |
+| `withProperty: true / false` | keep only tags with / without a property name |
+| `exclude: [glob]` | drop tags whose key or property matches one pattern |
+
+Globs use `*` (any run) and `?` (one character), case-insensitive. The order is
+include, then the filters, then exclude. `source.overrides` gives rule-selected
+tags per-tag settings (the keys of [Adding context](#adding-context)); an
+override with `"enabled": false` deselects a tag the rules matched. An override
+key that names no tag is kept and warns (`unknown-override`): it applies when
+such a tag is added.
+
+The preview reports the result for every candidate tag:
+
+```json
+"selection": {
+  "matched": 3, "excluded": 2, "truncated": false,
+  "rows": [
+    { "unitId": "filler", "key": "DB10_speed", "property": "speed", "matched": true },
+    { "unitId": "filler", "key": "DB10_temp", "property": "productTemp", "matched": true },
+    { "unitId": "filler", "key": "DB10_state", "property": "state", "matched": true },
+    { "unitId": "filler", "key": "DB10_count", "property": "goodCount", "matched": false, "rule": "pollGroups" },
+    { "unitId": "filler", "key": "DB10_spare", "property": null, "matched": false, "rule": "exclude", "pattern": "*spare*" }
+  ]
+}
+```
+
+`rule` is `include`, `pollGroups`, `types`, `withProperty`, `exclude`,
+`disabled` (an entry or override with `enabled: false`) or `missing`.
+
+### Which fields a payload carries
+
+`target.fields` chooses and orders the fields of an `envelope` payload and of
+each `object-per-asset` member:
+
+| Field | Value |
+|---|---|
+| `v` | the value (required) |
+| `t` | timestamp, ms (source time when the driver has one, else read time) |
+| `q` | quality: 192 good, 0 bad |
+| `u` | engineering unit, when the tag has one |
+| `name` | the published property name |
+| `src` | the source address (the device tag key or the OPC UA node id) |
+| `ctx` | the tag's merged context (see [Adding context](#adding-context)) |
+
+Default: `v, t, q, u` for envelopes and `v, q, u` for object members, exactly
+as before. With `"fields": ["v", "t", "q", "u", "name", "src"]`:
+
+```json
+acme/dallas/packaging/line4/filler/speed
+{"v":412.3456,"t":1729999999980,"q":192,"u":"bpm","name":"speed","src":"DB10_speed"}
+```
+
+Leaving out `q` is allowed but warns (`no-quality`): consumers cannot tell a
+dead value from a live one. `fields` does not apply to `plain` topic-per-tag
+payloads (the bare value); setting it there warns (`fields-ignored`).
+
+### Which documents are published
+
+`target.statusTopic: false` and `target.metaTopic: false` still switch the
+retained `_status` and `_meta` documents off. `target.metaFields` chooses what
+`_meta` lists per property: any of `type`, `unit`, `description`, `range`,
+`source`, `context`, `displayName`, `limits`, `states` (default: all). Leave
+out `source` to keep device addresses off the broker; with `"metaFields":
+["type", "unit", "description", "displayName", "limits", "context"]` the
+`_meta` of the context example below becomes:
+
+```json
+{
+  "context": { "site": "dallas", "line": "line4", "equipmentClass": "Filler", "equipmentId": "filler4", "host": "10.20.4.11" },
+  "properties": {
+    "productTemp": {
+      "type": "int16", "unit": "degC", "description": "Product temperature",
+      "scale": 0.1, "offset": 0, "displayName": "Product temperature",
+      "limits": { "lo": 4, "hi": 30, "hihi": 35 },
+      "context": { "measurementType": "temperature", "pidTag": "TT-401" }
+    },
+    "state": { "type": "int16" }
+  },
+  "updatedAt": 1730000000000
+}
+```
+
+`type` also governs the transform fields (`scale`, `offset`, `dataType`,
+`precision`), `states` also governs `statesMode`, and `context` governs both the
+asset and the tag context.
+
+## Adding context
+
+### Per-tag overrides
+
+A tag entry, or `source.overrides[<tagKey>]`, may override how a tag is
+published. Each key falls back to the device tag definition when absent; the
+entry wins over `source.overrides`.
+
+| Key | Type | Notes |
+|---|---|---|
+| `name` | string, at most 128 | published property name; default the tag's property, else its key |
+| `displayName` | string, at most 128 | metadata only |
+| `description`, `unit` | string, at most 512 | `unit` is `u` in payloads |
+| `range` | `{ min, max }` | finite, `min < max`, in engineering units (after scale/offset); used by the percent deadband |
+| `dataType` | `number`, `integer`, `boolean`, `string` | cast of the published value |
+| `scale`, `offset` | finite number (scale non-zero) | `value * scale + offset` |
+| `precision` | integer 0..10 | decimal places, publishing only |
+| `states` | `{ "<raw>": "<label>" }`, at most 256 | enumeration labels |
+| `statesMode` | `label-field` (default), `replace` | see below |
+| `limits` | `{ lolo?, lo?, hi?, hihi? }` | ordered `lolo <= lo <= hi <= hihi`; **metadata only** |
+| `deadband` | number (absolute) or `{ type, value }` | this tag's report-by-exception band; `0` turns the binding's band off for it |
+| `context` | `{ key: string \| number \| boolean }` | merged over the device tag's context, mapping wins key by key |
+
+**Limits are carried as context, not evaluated.** Manifold has no alarm engine:
+a value beyond `hi` publishes like any other. Consumers that alarm read the
+limits from `_meta` (or the Sparkplug BIRTH).
+
+**Value pipeline.** read, device decode, mapping `scale`/`offset`, cast
+(`dataType`), deadband / report by exception, then the published form
+(`precision` rounding and `states`). Change detection uses the unrounded,
+unlabelled value, so with a precision and no deadband two publishes can look
+identical; give such a tag a deadband. A value that cannot be scaled or cast
+publishes **Bad quality with a reason and value `null`, never a wrong value**:
+
+```json
+{"v":null,"t":1729999999980,"q":0,"reason":"cannot cast \"abc\" to integer"}
+```
+
+A `plain` payload cannot carry quality, so a failed cast is not published there
+(the binding's `lastError` says why, and a direct historian target still records
+the Bad sample). `integer` rounds to the nearest whole number, half away from
+zero; `boolean` accepts booleans, numbers (0 is false) and the strings
+`true/false/1/0/on/off/yes/no`; `string` turns structures into JSON.
+
+With `{ "address": "DB10_speed", "precision": 1 }`,
+`{ "address": "DB10_temp", "scale": 0.1, "dataType": "number", "precision": 1, "deadband": 0.2 }`
+and the device-level states of `DB10_state` (raw values 412.3456, 2215 and 1):
+
+```json
+acme/dallas/packaging/line4/filler/speed        {"v":412.3,"t":1729999999980,"q":192,"u":"bpm"}
+acme/dallas/packaging/line4/filler/productTemp  {"v":221.5,"t":1729999999980,"q":192,"u":"degC"}
+acme/dallas/packaging/line4/filler/state        {"v":1,"label":"Running","t":1729999999980,"q":192}
+```
+
+**States.** In `label-field` mode the raw value is published and its label
+follows `v` as `label` (envelope and object members; a raw value without a label
+has no `label`). In `replace` mode the label **is** the value, which also works
+in `plain` format (`acme/dallas/packaging/line4/filler/state` publishes
+`"Running"`) and makes the Sparkplug metric a String. A raw value without a
+label publishes unchanged.
+
+Overrides on a profile binding are keyed by the **profile's** tag keys.
+
+### Asset context
+
+`target.context` describes the asset: site, area, line, equipment id, serial
+number, equipment class, maintenance id, anything a consumer needs. String
+values may use placeholders that resolve per unit:
+
+| Placeholder | Value | Sources |
+|---|---|---|
+| `{device}` | device name | device, device-profile |
+| `{deviceId}` | device id | device, device-profile |
+| `{protocol}` | driver protocol | device, device-profile |
+| `{host}` | device host | device, device-profile |
+| `{param:<name>}` | the instance's profile parameter | device-profile |
+
+An unknown placeholder is a validation error naming the key, e.g.
+`target.context.tag uses unknown placeholder {param:nope} (allowed for a
+device-profile source: {device}, {deviceId}, {protocol}, {host}, {param:line},
+{param:serial})`. OPC UA and Sparkplug sources take no placeholders.
+
+### Context on the device
+
+A device tag (or a profile tag) may carry `context`, `displayName`, `states` and
+`limits` next to `unit`, `description`, `property` and `range`; the device API
+stores them as given and profile instances inherit them (they are not
+parameter-substituted: use `{param:...}` in `target.context` for per-instance
+values). Mapping-level values override device-level ones key by key. Invalid
+device-level context keys are not published and the binding save warns
+(`device-context`).
+
+### Where context goes
+
+`target.contextMode`:
+
+- **`meta`** (default): asset context and per-tag context appear in the
+  retained `_meta` document only.
+- **`payload`**: additionally, the tag's merged context (asset, then device tag,
+  then mapping) rides in every envelope and object member as `ctx`. Bounded: a
+  tag whose `ctx` would exceed **1024 bytes** is rejected at save time with the
+  number, and `ctx` counts toward `maxObjectBytes`.
+- **`none`**: no context anywhere (and `"ctx"` in `fields` is a validation error).
+
+With
+
+```json
+"tags": [
+  { "address": "DB10_temp", "scale": 0.1, "displayName": "Product temperature",
+    "limits": { "lo": 4, "hi": 30, "hihi": 35 },
+    "context": { "measurementType": "temperature", "pidTag": "TT-401" } },
+  { "address": "DB10_state" }
+],
+"context": { "site": "dallas", "line": "line4", "equipmentClass": "Filler", "equipmentId": "{deviceId}", "host": "{host}" }
+```
+
+the retained `acme/dallas/packaging/line4/filler/_meta` is:
+
+```json
+{
+  "context": { "site": "dallas", "line": "line4", "equipmentClass": "Filler", "equipmentId": "filler4", "host": "10.20.4.11" },
+  "properties": {
+    "productTemp": {
+      "type": "int16", "unit": "degC", "description": "Product temperature",
+      "scale": 0.1, "offset": 0,
+      "displayName": "Product temperature",
+      "limits": { "lo": 4, "hi": 30, "hihi": 35 },
+      "context": { "measurementType": "temperature", "pidTag": "TT-401" },
+      "source": { "deviceId": "filler4", "address": "DB10_temp" }
+    },
+    "state": {
+      "type": "int16",
+      "states": { "0": "Stopped", "1": "Running", "2": "Faulted" },
+      "statesMode": "label-field",
+      "source": { "deviceId": "filler4", "address": "DB10_state" }
+    }
+  },
+  "updatedAt": 1730000000000
+}
+```
+
+`type` stays the device type; a mapping cast adds `dataType`. With
+`"contextMode": "payload"` and `"context": { "site": "dallas", "equipmentId": "{deviceId}" }`
+the value topics carry `ctx`:
+
+```json
+acme/dallas/packaging/line4/filler/productTemp
+{"v":221.5,"t":1729999999980,"q":192,"u":"degC","ctx":{"site":"dallas","equipmentId":"filler4","measurementType":"temperature","pidTag":"TT-401"}}
+acme/dallas/packaging/line4/filler/state
+{"v":1,"label":"Running","t":1729999999980,"q":192,"ctx":{"site":"dallas","equipmentId":"filler4"}}
+```
+
+and an `object-per-asset` binding (`"fields": ["v", "q", "u"]`, context
+`{ "site": "dallas" }`) publishes:
+
+```json
+{
+  "t": 1729999999980,
+  "values": {
+    "productTemp": { "v": 221.5, "q": 192, "u": "degC", "ctx": { "site": "dallas", "measurementType": "temperature", "pidTag": "TT-401" } },
+    "state": { "v": 1, "label": "Running", "q": 192, "ctx": { "site": "dallas" } }
+  }
+}
+```
+
+### Limits on context
+
+| Limit | Value |
+|---|---|
+| key | 1-64 characters of `A-Z a-z 0-9 _ . -`, starting with a letter |
+| keys per context object | 32 |
+| string value | 256 characters (numbers must be finite; booleans allowed; no nesting) |
+| one context object as JSON | 4096 bytes (also checked after placeholders resolve) |
+| `ctx` in a payload | 1024 bytes per tag |
+
+Nothing is redacted silently: a context key that looks like a credential
+(`password`, `token`, `secret`, `key`, `apiToken`, ...; the audit-log heuristic)
+is published as configured and the save warns (`credential-like-context`),
+because context goes to the broker in clear text.
+
+### Context on a Sparkplug target
+
+Sparkplug metrics carry metadata in BIRTH only. Next to `engUnit`,
+`description`, `engLow` and `engHigh` a binding sends `displayName` (String),
+`limitLoLo`, `limitLo`, `limitHi`, `limitHiHi` (Double) and every key of the
+tag's merged context as a **String** property (context keys are already
+restricted to a safe charset; a key equal to one of the standard properties is
+skipped and warns, `sparkplug-context-collision`). `contextMode: "none"` sends
+no context. The DBIRTH metric for the example above:
+
+```json
+{"name":"productTemp","type":"float64","properties":{"engUnit":"degC","description":"Product temperature","displayName":"Product temperature","limitLo":4,"limitHi":30,"limitHiHi":35,"site":"dallas","measurementType":"temperature","pidTag":"TT-401"}}
+```
+
+A scaled tag is published as `float64` (a cast picks `float64`, `int64`, `bool`
+or `string`). When a binding's or a device tag's metadata changes, the next
+reconcile re-issues the DBIRTH with the last values and the new properties
+(seq continues; only for a device that is born and online, otherwise the new
+properties travel with the next BIRTH), so hosts see the change without
+waiting for a value to move.
+
+### Suggestions and the option schema
+
+`POST /api/tags/bindings/suggest { "source": { "type": "device", "deviceId": "filler4" } }`
+is read-only and returns per-tag name suggestions and an asset context
+suggestion:
+
+```json
+{
+  "sourceType": "device",
+  "tags": [
+    { "address": "DB10_speed", "property": "speed", "type": "float32", "unit": "bpm", "description": null,
+      "suggestedName": "speed", "basis": "property", "rawAddress": false },
+    { "address": "DB10_spare", "property": null, "type": "int16", "unit": null, "description": null,
+      "suggestedName": "spare", "basis": "key", "rawAddress": false }
+  ],
+  "entries": [ { "address": "DB10_speed", "name": "speed" }, { "address": "DB10_spare", "name": "spare" } ],
+  "context": { "suggested": { "deviceName": "{device}", "protocol": "{protocol}" }, "resolved": { "deviceName": "Filler 4", "protocol": "s7" } }
+}
+```
+
+A name comes from the tag's `property`, else from a cleaned key (address-like
+prefixes such as `DB10_` or `holding_` stripped, camelCase). A key that is a raw
+address (`DB10.DBD4`, `40012`, `MW10`, `%IX0.1`, `Program:...`) gets
+`suggestedName: null` with `reason: "raw-address"`: nothing is invented, and
+units are never guessed. A suggestion that clashes with an earlier one carries
+`duplicateOf`. Device, device-profile and OPC UA sources are supported.
+
+`GET /api/tags/bindings/schema` returns the option catalogue the wizard renders
+from: field options and defaults, override keys with types and limits, select
+rules, placeholders per source type, context limits, `statesMode` values and the
+value pipeline.
+
 ## Preview and warnings
 
 `POST /api/tags/bindings/preview` takes a binding draft (the same body as a save)
@@ -294,6 +663,11 @@ step and shows the result; viewers may call it. It returns, for up to 50 tags
 | `meta[]`, `status[]` | the `_meta` documents (at most 10) and `_status` topics that would be published |
 | `units`, `unitErrors[]`, `totalTags`, `truncated` | how many assets, which could not resolve a path, how many tags in all |
 | `warnings[]` | the same non-blocking warnings a save returns |
+| per tag (in `tags[]` and `members[]`) | `metadata` (effective name, type, unit, description, range, displayName, limits, states, transform, deadband, context), `origins` (`device`, `mapping` or `default` per field), `contextOrigins` (`asset`, `device` or `mapping` per context key), `warnings` (this tag's), `bytes` and `worstCaseBytes`; the example `payload` applies fields, transform, states and context to the latest raw value |
+| `members[]` | object-per-asset only: one entry per member with `topic` (the object topic), `member` and the per-tag fields above |
+| `selection` | `{ matched, excluded, truncated, rows: [{ unitId, key, property, matched, rule?, pattern?, missing? }] }`, at most 500 rows |
+| `contexts[]`, `fields`, `contextMode` | the resolved asset context per unit, the field lists in use, the context mode |
+| `sizes` | mqtt only: `exampleBytes` (the shown payloads), `worstCasePayloadBytes`, `worstCaseCycleBytes` (every payload of one full publish of all units) |
 
 An invalid draft returns `200` with `{ "valid": false, "error": "...", "details": ... }`
 so the wizard can show the reason inline. A save (`POST /api/tags/bindings`)
@@ -305,7 +679,15 @@ Warnings (at most 50, **never blocking**):
 |---|---|
 | `raw-address` | a published name looks like a raw device address (`DB10.DBD4`, `40012`, `ns=2;s=...`, `Program:...`); give the tag a property name |
 | `collision` | a topic is already published by another **enabled** binding on the same broker |
-| `asset-path` | a profile instance's asset path could not be resolved |
+| `asset-path` | a profile instance's asset path (or context placeholder) could not be resolved |
+| `no-quality` | `target.fields` leaves out `q` |
+| `fields-ignored` | `target.fields` on a plain topic-per-tag binding |
+| `credential-like-context` | a context key looks like a credential |
+| `unknown-override`, `disabled-missing` | an override or a disabled entry names no tag |
+| `device-context` | a device tag's context has invalid keys (not published) |
+| `no-tags` | a unit publishes nothing (all entries disabled, or rules match nothing) |
+| `duplicate-name` | two tags of one unit publish under the same name |
+| `sparkplug-context-collision` | a context key equals a standard Sparkplug property |
 
 Collisions are checked against other bindings only. A pipeline, a client, or a
 topic that merely exists in the namespace is not compared, and the preview does
@@ -323,7 +705,9 @@ DEATH lifecycle (see [Tags and Sparkplug](Tags-and-Sparkplug)).
   is seen, so BIRTH and DATA agree. A value that cannot be represented as that
   type is sent as a null metric, never with a changed type. When a tag's type
   is unknown, the older behaviour (Int64 or Double by value) applies.
-- **Metadata in the BIRTH:** `engUnit`, `description`, `engLow`, `engHigh`.
+- **Metadata in the BIRTH:** `engUnit`, `description`, `engLow`, `engHigh`,
+  plus `displayName`, limits and context (see
+  [Context on a Sparkplug target](#context-on-a-sparkplug-target)).
 - **No per-metric quality.** Metrics do not carry `q`. A device going offline
   is expressed by DDEATH. Use `envelope` if you need per-tag quality.
 - **Never opens a session by itself.** DDEATH/DBIRTH only go out on a session
@@ -435,6 +819,34 @@ optionally `"maxObjectBytes"`) for the object form, `"historian": {
     "format": "envelope"
   },
   "rbe": { "heartbeatMs": 10000 }
+}
+```
+
+A binding that picks tags by rule and adds context:
+
+```json
+{
+  "name": "Filler 4 to UNS",
+  "source": {
+    "type": "device",
+    "deviceId": "filler4",
+    "tags": "all",
+    "select": { "exclude": ["*spare*"], "withProperty": true },
+    "overrides": {
+      "DB10_temp": { "scale": 0.1, "precision": 1, "limits": { "hi": 30 }, "context": { "pidTag": "TT-401" } },
+      "DB10_state": { "states": { "0": "Stopped", "1": "Running" } }
+    }
+  },
+  "target": {
+    "mode": "mqtt",
+    "brokerId": "<broker id>",
+    "assetPath": "acme/dallas/packaging/line4/filler",
+    "format": "envelope",
+    "fields": ["v", "t", "q", "u"],
+    "metaFields": ["type", "unit", "description", "range", "displayName", "limits", "states", "context"],
+    "context": { "site": "dallas", "equipmentId": "{deviceId}" },
+    "contextMode": "meta"
+  }
 }
 ```
 

@@ -243,6 +243,34 @@ class SparkplugPublisher {
   }
 
   /**
+   * Metadata (BIRTH properties) of known metrics changed - e.g. a unit, range,
+   * limit or context edited on the binding or the device tag - while values may
+   * not change for a while: re-issue DBIRTH with the last values so hosts see
+   * it now. `properties` = { <metric name>: props | undefined } (undefined drops
+   * them). Never opens a session or declares new metrics (updateDevice does
+   * that). Only a birthed, online device is re-birthed; otherwise the new
+   * properties are stored and travel with the next BIRTH. Same seq rules as
+   * every other node message. Returns true if a DBIRTH was published.
+   */
+  refreshMetadata({ brokerId, group, edge, device, properties }) {
+    const s = this.sessions.get(`${brokerId} ${group} ${edge}`);
+    const d = s?.devices.get(device);
+    if (!s || !d || !properties) return false;
+    if (!d.props) d.props = new Map();
+    let changed = false;
+    for (const [name, p] of Object.entries(properties)) {
+      if (!d.metricNames.has(name)) continue;
+      if (JSON.stringify(d.props.get(name)) === JSON.stringify(p)) continue;
+      if (p === undefined) d.props.delete(name);
+      else d.props.set(name, p);
+      changed = true;
+    }
+    if (!changed || !s.online || !d.birthed || d.offline) return false;
+    this._deviceBirth(s, device, d);
+    return true;
+  }
+
+  /**
    * Source went offline/online: DDEATH (seq-numbered, only for a birthed
    * device) or DBIRTH with the last known values. Never opens a session by
    * itself; returns true if something was published.

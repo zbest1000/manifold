@@ -76,7 +76,9 @@ function metricValue(m) {
  * Metric PropertySet from a plain object. Strings -> String (12), finite
  * numbers -> Double (10), booleans -> Boolean (11); other values are skipped.
  * Conventional keys used by bindings (as Ignition and other Sparkplug hosts
- * read them): engUnit, engLow, engHigh, description.
+ * read them): engUnit, engLow, engHigh, description; bindings also send
+ * displayName (String), limitLoLo/limitLo/limitHi/limitHiHi (Double) and the
+ * tag's merged context keys as String properties (bindingModel.sparkplugProps).
  */
 function propertySet(props) {
   if (!props || typeof props !== 'object') return null;

@@ -430,7 +430,54 @@ target: { mode: 'mqtt', brokerId,
           historian?: { historianId } }   // direct store-and-forward target (Timebase, TimescaleDB)
       | { mode: 'sparkplug', brokerId, group, edge, device /* profile: may use {device}, {param} */, historian? }
 rbe:    { heartbeatMs?, deadband?: { type: 'absolute' | 'percent', value } }   // legacy target.deadband = absolute
+
+// Choosing what to map and adding context (all optional; services/bindingContext.js):
+tags[i]:  <address> | { address, name?, enabled? /* default true */, ...overrides }
+source:   { ..., select?: { include?, exclude?, pollGroups?, types?, withProperty? },   // tags: 'all' only
+                 overrides?: { <tagKey>: overrides } }
+overrides: { name, displayName, description, unit, range, dataType, scale, offset, precision,
+             states, statesMode, limits, deadband, context, enabled }
+target:   { ..., fields?: ['v','t','q','u','name','src','ctx'], metaFields?: [...],
+                 context?: { key: value /* {device} {deviceId} {protocol} {host} {param:x} */ },
+                 contextMode?: 'meta' | 'payload' | 'none' }
 ```
+
+**Choosing what to map.** A tag entry with `enabled: false` stays in the stored
+binding but is dropped at expansion, so it is not monitored, published, counted,
+listed in `_meta` or part of the retained set (turning it off clears its retained
+topic through the normal retained-set diff). `source.select` filters
+`tags: 'all'` per unit against the effective (profile-substituted) tags: include
+globs on key and property, then pollGroups/types/withProperty, then exclude
+globs; because units are re-expanded on every profile-store revision, a tag
+added to the device later joins automatically. `source.overrides[key]` gives
+rule-selected tags per-tag settings; an entry's own keys win over it.
+
+**Adding context.** Each override falls back to the device tag (devices and
+profile tags may carry `context`, `displayName`, `states` and `limits`, which the
+device API stores as given). Context objects merge key by key: asset
+(`target.context`, placeholders resolved per unit), then device tag, then
+mapping. The value pipeline is read, device decode, scale/offset, cast, deadband
+(per-tag override or the binding's), then the published form (precision,
+states); a failed scale or cast publishes `q: 0`, `v: null` and a `reason`
+(not published at all in `plain`). `contextMode: 'meta'` (default) puts context
+in `_meta` (`{ context, properties: { name: { ..., displayName, limits, states,
+statesMode, context } }, updatedAt }`), `'payload'` also adds `ctx` (capped at
+1024 bytes per tag, counted toward `maxObjectBytes`), `'none'` drops it.
+`target.fields` picks envelope / object-member fields (`v` required, dropping `q`
+warns); `target.metaFields` picks `_meta` fields. Sparkplug targets put
+displayName, limits (`limitLoLo`..`limitHiHi`) and context (String properties)
+into BIRTH; `reconcile()` compares each unit's BIRTH properties and calls
+`SparkplugPublisher.refreshMetadata`, which re-issues DBIRTH for a born, online
+device with the normal seq rules. With none of these options a binding's topics,
+payloads and `_meta` are byte-for-byte what they were
+(`test/fixtures/mapping-legacy.json`).
+
+**Compiled publish plan.** The compiled index (rebuilt on profile-store
+revision) holds per unit the field lists and a `tagByName` map whose tags carry
+their transform plan, labels map, precision, per-tag deadband, frozen merged
+context and precomputed Sparkplug properties. The hot path does one map lookup
+per sample (as before) and reuses a single transform scratch object; tags that
+use none of the options take the legacy payload path unchanged.
 
 **Units.** A binding expands into **units**, one per (source, asset) pair: a plain
 binding is one unit; a `device-profile` binding is one unit per instance of the
@@ -516,6 +563,14 @@ Semantics (covered by `bindings-v2.test.js`, `mapping-phase4.test.js`,
   outbox either. The Bad sample on source loss is enqueued for envelope, object
   and plain bindings (plain cannot carry it on the wire, history can), but not
   for Sparkplug targets.
+- **Mapping API for the wizard.** `GET /api/tags/bindings/schema` (option
+  catalogue: fields, override keys with types and limits, select rules,
+  placeholders, context limits) and the read-only
+  `POST /api/tags/bindings/suggest { source }` (names from `property`, else a
+  cleaned key; raw addresses get none; device context). The preview adds, per
+  tag, the effective metadata with the origin of each field (`device`,
+  `mapping`, `default`), the selection result per candidate tag, per-tag
+  warnings and payload sizes.
 - **Preview and warnings.** `bindingModel.previewBinding` and
   `POST /api/tags/bindings/preview` resolve topics and example payloads from the
   latest known values without storing or publishing anything; `bindingWarnings`
