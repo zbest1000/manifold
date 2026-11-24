@@ -9,8 +9,11 @@ const router = express.Router();
 
 // GET /api/tags/sources — what can be browsed right now
 router.get('/sources', (req, res) => {
-  const { mqttManager, opcuaManager } = req.app.locals.services;
+  const { mqttManager, opcuaManager, devices } = req.app.locals.services;
   const sources = [];
+  for (const d of devices?.list() || []) {
+    sources.push({ type: 'device', id: d.id, label: `${d.name} · ${d.protocol}`, state: d.status?.state });
+  }
   for (const c of opcuaManager.getConnections()) {
     if (c.status === 'connected') sources.push({ type: 'opcua', id: c.id, label: c.name || c.endpointUrl });
   }
@@ -25,9 +28,28 @@ router.get('/sources', (req, res) => {
 
 // GET /api/tags/browse?type=&id=&node= — one level of children under `node`
 router.get('/browse', async (req, res) => {
-  const { mqttManager, opcuaManager } = req.app.locals.services;
+  const { mqttManager, opcuaManager, profiles } = req.app.locals.services;
   const { type, id, node = '' } = req.query;
   try {
+    if (type === 'device') {
+      // Configured tags, grouped by poll group when a device has more than one.
+      const device = profiles.getIn('devices', id);
+      if (!device) return res.status(404).json({ error: 'Device not found' });
+      const tags = device.tags || [];
+      const groups = [...new Set(tags.map((t) => t.pollGroup || 'default'))];
+      const asNode = (t) => ({
+        id: t.key,
+        name: t.property || t.key,
+        kind: 'tag',
+        address: t.key,
+        meta: { deviceAddress: t.address, type: t.type, unit: t.unit || null, description: t.description || null }
+      });
+      if (!node && groups.length > 1) {
+        return res.json({ children: groups.map((g) => ({ id: `group:${g}`, name: g, kind: 'folder', address: `group:${g}` })) });
+      }
+      const group = node.startsWith('group:') ? node.slice(6) : null;
+      return res.json({ children: tags.filter((t) => !group || (t.pollGroup || 'default') === group).map(asNode) });
+    }
     if (type === 'opcua') {
       const result = await opcuaManager.browse(id, node || undefined);
       return res.json({
@@ -104,7 +126,7 @@ router.get('/browse', async (req, res) => {
         }))
       });
     }
-    res.status(400).json({ error: 'type must be opcua, sparkplug, or mqtt' });
+    res.status(400).json({ error: 'type must be device, opcua, sparkplug, or mqtt' });
   } catch (error) {
     res.status(502).json({ error: error.message });
   }
@@ -126,8 +148,16 @@ router.get('/bindings', (req, res) => {
 router.post('/bindings', async (req, res) => {
   const { profiles, bindings } = req.app.locals.services;
   const { id, name, enabled, source, target } = req.body || {};
-  if (!source?.type || !['opcua', 'sparkplug'].includes(source.type)) {
-    return res.status(400).json({ error: 'source.type must be "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)' });
+  if (!source?.type || !['opcua', 'sparkplug', 'device'].includes(source.type)) {
+    return res.status(400).json({ error: 'source.type must be "device", "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)' });
+  }
+  if (source.type === 'device') {
+    const device = profiles.getIn('devices', source.deviceId);
+    if (!device) return res.status(400).json({ error: 'device source needs an existing deviceId' });
+    if (!Array.isArray(source.tags) || !source.tags.length) return res.status(400).json({ error: 'device source needs tags[]' });
+    const keys = new Set((device.tags || []).map((t) => t.key));
+    const missing = source.tags.filter((t) => !keys.has(t.address)).map((t) => t.address);
+    if (missing.length) return res.status(400).json({ error: `device has no tag(s): ${missing.slice(0, 5).join(', ')}` });
   }
   if (source.type === 'opcua' && (!source.connectionId || !Array.isArray(source.tags) || !source.tags.length)) {
     return res.status(400).json({ error: 'opcua source needs connectionId and tags[]' });

@@ -40,6 +40,18 @@ function describe() {
     tables: Object.keys(TABLES),
     addressForms: ['holding:100', '40001', '400001'],
     capabilities: { browse: false, subscribe: false, maxInFlight: 1 },
+    deviceFields: [
+      { name: 'unitId', label: 'Unit ID', type: 'number', default: 255, help: '255 (or 0) for a direct TCP device; 1-247 selects a slave behind a TCP-to-RTU gateway. Some devices require a specific value.' },
+    ],
+    optionFields: [
+      { name: 'byteOrder', label: 'Byte order', type: 'select', default: 'big', options: ['big', 'little'], help: 'Order of the two bytes inside each 16-bit register.' },
+      { name: 'wordOrder', label: 'Word order', type: 'select', default: 'big', options: ['big', 'little'], help: 'Order of registers in 32/64-bit values. "little" is the common word-swapped (CDAB) layout. Use Probe to check.' },
+      { name: 'addressBase', label: 'Address base', type: 'select', default: 0, options: [0, 1], help: '0 when the manual lists wire offsets; 1 when it counts registers from 1. Applies to table:offset addresses.' },
+      { name: 'maxRegisters', label: 'Max registers per read', type: 'number', default: 125, help: 'Protocol maximum is 125; many devices accept fewer.' },
+      { name: 'maxGap', label: 'Max gap to bridge', type: 'number', default: 0, help: 'Unused registers a block read may span. Keep 0 unless the device answers reads over unmapped registers.' },
+    ],
+    addressHelp: 'holding:100, input:0, coil:5, discrete:12, or Modicon notation 40001 / 400001',
+    prerequisites: 'Modbus TCP has no authentication. Manifold only sends read requests (function codes 1-4); for a hard guarantee, restrict the network path as well.',
   };
 }
 

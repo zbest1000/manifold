@@ -27,6 +27,7 @@ const { AuditLog, redact } = require('./services/auditLog');
 const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
+const { DeviceManager } = require('./services/deviceManager');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -41,6 +42,7 @@ const recorderRoutes = require('./routes/recorder');
 const contractRoutes = require('./routes/contracts');
 const modelRoutes = require('./routes/models');
 const tagRoutes = require('./routes/tags');
+const deviceRoutes = require('./routes/devices');
 
 const app = express();
 const server = http.createServer(app);
@@ -197,11 +199,15 @@ const models = new ModelEngine({ mqttManager, profiles });
 const audit = new AuditLog();
 const sparkplugPublisher = new SparkplugPublisher({ profiles });
 const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher });
+// Southbound device drivers run in supervised child processes; the manager is
+// the tag source the binding engine sees.
+const devices = new DeviceManager({ profiles, io });
+bindings.registerSource('device', devices);
 
 app.locals.services = {
   mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings
+  outbox, audit, sparkplugPublisher, bindings, devices
 };
 
 // Every mutating API call lands in the audit trail (role, ip, route, outcome).
@@ -260,6 +266,7 @@ recorder.start();
 contracts.start();
 models.start();
 bindings.start();
+devices.start().catch((error) => console.warn(`devices: ${error.message}`));
 
 // Engine metrics stream over the socket the client already holds — the UI
 // shouldn't have to poll REST for numbers we can push.
@@ -288,6 +295,7 @@ app.use('/api/recorder', recorderRoutes);
 app.use('/api/contracts', contractRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/tags', tagRoutes);
+app.use('/api/devices', deviceRoutes);
 
 // GET /api/whoami — lets the client discover whether auth is on and what role
 // the caller holds, so the UI can render a read-only badge and disable mutation
@@ -493,6 +501,7 @@ const shutdown = async () => {
   contracts.stop();
   models.stop();
   bindings.stop();
+  await devices.stop().catch(() => {}); // stops driver host processes
   await sparkplugPublisher.stop().catch(() => {}); // clean NDEATHs, not broker-side wills
   await require('./services/historians').closePools().catch(() => {});
   audit.close();
