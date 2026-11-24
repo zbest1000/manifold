@@ -1,20 +1,24 @@
-import { CheckCircle2, XCircle, Loader2, CircleDashed } from 'lucide-react';
+import { StatusDot, Spinner } from '@/components/ui';
+import clsx from 'clsx';
 
 const STYLES = {
-  created: ['text-emerald-300', CheckCircle2, 'Created'],
-  error: ['text-rose-300', XCircle, 'Failed'],
-  invalid: ['text-rose-300', XCircle, 'Problem'],
-  running: ['text-sky-300', Loader2, 'Creating…'],
-  ready: ['text-slate-400', CircleDashed, 'Ready']
+  created: ['good', 'Created'],
+  error: ['bad', 'Failed'],
+  invalid: ['bad', 'Problem'],
+  running: ['neutral', 'Creating…'],
+  ready: ['neutral', 'Ready']
 };
 
-/** Result of one row of a bulk create: icon + word (never colour alone) + the server's message. */
+/** Result of one row of a bulk create: dot + word (never colour alone) + the server's message. */
 export default function RowStatus({ status, message }) {
-  const [cls, Icon, label] = STYLES[status] || STYLES.ready;
+  const [tone, label] = STYLES[status] || STYLES.ready;
   return (
-    <span className={`flex items-start gap-1.5 text-xs ${cls}`}>
-      <Icon size={13} className={`mt-0.5 shrink-0 ${status === 'running' ? 'animate-spin' : ''}`} aria-hidden="true" />
-      <span className="min-w-0 break-words"><span className="font-medium">{label}</span>{message ? `: ${message}` : ''}</span>
+    <span className="flex items-start gap-1.5 text-sm">
+      {status === 'running' ? <Spinner size={12} className="mt-1 text-muted" /> : <StatusDot tone={tone} className="mt-[7px]" />}
+      <span className="min-w-0 break-words">
+        <span className={clsx('font-medium', tone === 'bad' ? 'text-bad' : 'text-fg')}>{label}</span>
+        {message ? <span className="text-muted">: {message}</span> : null}
+      </span>
     </span>
   );
 }

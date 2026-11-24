@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown, FolderClosed, CircleDot, Loader2, Ban } from 'lucide-react';
 import clsx from 'clsx';
-import { Button } from '@/components/ui';
+import { Banner, Badge } from '@/components/ui';
 import { treeKeyAction } from '@/pages/tags/treeNav';
 import { browseDevice } from './devicesApi';
 import { flattenTree, nodeDisabledReason } from './model';
@@ -94,17 +94,20 @@ export default function BrowseTree({ deviceId, selection, onToggle, takenAddress
   const failed = Object.entries(errors).filter(([, m]) => m);
   return (
     <div className="min-h-0 flex-1 space-y-2">
-      <p className="text-xs text-slate-400">Keys: arrows move, Right/Left expand or collapse, Space selects, Enter expands. Folders and UDTs load when opened.</p>
+      <p className="helper">Keys: arrows move, Right/Left expand or collapse, Space selects, Enter expands. Folders and UDTs load when opened.</p>
       {failed.map(([k, msg]) => (
-        <div key={k || 'root'} role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-          <span>Could not load {k ? `"${k}"` : 'the controller'}: {msg}</span>
-          <Button type="button" size="sm" variant="outline" onClick={() => load(k, true)}>Retry</Button>
-        </div>
+        <Banner key={k || 'root'} variant="error" title={`Could not load ${k ? `"${k}"` : 'the controller'}`} onRetry={() => load(k, true)}>
+          {msg}
+        </Banner>
       ))}
-      {!nodes[''] && !errors[''] && <p className="flex items-center gap-2 py-3 text-xs text-slate-400"><Loader2 size={13} className="animate-spin" /> Reading the controller's tag list…</p>}
-      {nodes[''] && nodes[''].length === 0 && <p className="py-3 text-xs text-slate-400">The controller reported no tags.</p>}
+      {!nodes[''] && !errors[''] && (
+        <p className="flex items-center gap-2 py-3 text-sm text-muted">
+          <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Reading the controller's tag list…
+        </p>
+      )}
+      {nodes[''] && nodes[''].length === 0 && <p className="py-3 text-sm text-muted">The controller reported no tags.</p>}
       {items.length > 0 && (
-        <div role="tree" aria-label="Controller tags" aria-multiselectable="true" className="max-h-[48vh] overflow-y-auto rounded-xl border border-white/10 bg-black/10 p-1">
+        <div role="tree" aria-label="Controller tags" aria-multiselectable="true" className="max-h-[48vh] overflow-y-auto rounded-lg border border-line bg-app p-1">
           {items.map((item) => {
             const { node } = item;
             const isTag = node.kind === 'tag';
@@ -132,26 +135,44 @@ export default function BrowseTree({ deviceId, selection, onToggle, takenAddress
                 }}
                 style={{ paddingLeft: `${(item.level - 1) * 16 + 6}px` }}
                 title={reason || node.address}
-                className={clsx('flex items-center gap-1.5 rounded-lg py-1.5 pr-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-accent-400', reason ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-white/5', selected && 'bg-accent-500/10')}
+                className={clsx(
+                  'flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]',
+                  reason ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-raised',
+                  selected && 'bg-accent/[0.08]'
+                )}
               >
                 {item.isFolder ? (
-                  <button type="button" tabIndex={-1} aria-label={item.expanded ? `Collapse ${node.name}` : `Expand ${node.name}`} onClick={(e) => { e.stopPropagation(); setOpen(item, !item.expanded); }} className="shrink-0 rounded p-0.5 hover:bg-white/10">
-                    {loading.has(node.id) ? <Loader2 size={13} className="animate-spin text-slate-400" /> : item.expanded ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronRight size={13} className="text-slate-400" />}
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={item.expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpen(item, !item.expanded);
+                    }}
+                    className="shrink-0 rounded p-0.5 text-subtle hover:bg-raised hover:text-fg"
+                  >
+                    {loading.has(node.id) ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : item.expanded ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
                   </button>
                 ) : (
                   <span className="w-[17px] shrink-0" />
                 )}
                 {isTag ? (
                   <>
-                    <input type="checkbox" tabIndex={-1} checked={selected} disabled={Boolean(reason)} onChange={() => onToggle(node)} onClick={(e) => e.stopPropagation()} aria-label={`Select ${node.name}`} className="h-3.5 w-3.5 shrink-0 accent-accent-500" />
-                    {reason ? <Ban size={12} className="shrink-0 text-rose-300" aria-hidden="true" /> : <CircleDot size={12} className="shrink-0 text-teal-400" aria-hidden="true" />}
+                    <input type="checkbox" tabIndex={-1} checked={selected} disabled={Boolean(reason)} onChange={() => onToggle(node)} onClick={(e) => e.stopPropagation()} aria-label={`Select ${node.name}`} className="h-3.5 w-3.5 shrink-0 accent-accent" />
+                    {reason ? <Ban size={12} className="shrink-0 text-bad" aria-hidden="true" /> : <CircleDot size={12} className="shrink-0 text-faint" aria-hidden="true" />}
                   </>
                 ) : (
-                  <FolderClosed size={12} className="shrink-0 text-slate-400" aria-hidden="true" />
+                  <FolderClosed size={12} className="shrink-0 text-faint" aria-hidden="true" />
                 )}
-                <span className="mono min-w-0 truncate text-slate-100">{node.name}</span>
-                {m.dataType && <span className="shrink-0 rounded bg-white/5 px-1 text-2xs text-slate-300">{m.dataType}{m.dims?.length ? `[${m.dims.join(',')}]` : ''}</span>}
-                {reason && <span className="min-w-0 truncate text-2xs text-rose-300">{reason}</span>}
+                <span className="mono min-w-0 truncate text-xs text-fg">{node.name}</span>
+                {m.dataType && (
+                  <Badge className="shrink-0">
+                    {m.dataType}
+                    {m.dims?.length ? `[${m.dims.join(',')}]` : ''}
+                  </Badge>
+                )}
+                {reason && <span className="min-w-0 truncate text-xs text-bad">{reason}</span>}
               </div>
             );
           })}

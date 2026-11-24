@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { startS7, startEip, unique, cleanup } from './support.js';
+import { startS7, startEip, unique, cleanup, deviceRow, openDevice } from './support.js';
 
 /**
  * Devices: a Siemens S7 device built with a preset and an EtherNet/IP device, each polled from
@@ -7,75 +7,70 @@ import { startS7, startEip, unique, cleanup } from './support.js';
  * then imported through the "Import from controller" browse dialog.
  */
 
-const card = (page, name) => page.locator('li', { has: page.getByRole('heading', { level: 2, name, exact: true }) });
-
 async function openAddDevice(page) {
   await page.goto('/devices');
   await page.getByRole('button', { name: 'Add device' }).first().click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('heading', { name: 'Add device' })).toBeVisible();
-  return dialog;
+  await expect(page.getByRole('heading', { level: 1, name: 'Add device' })).toBeVisible();
 }
 
-async function fillConnection(dialog, { name, port, protocol }) {
-  await dialog.getByLabel('Name', { exact: true }).fill(name);
-  if (protocol) await dialog.getByLabel('Protocol', { exact: true }).selectOption(protocol);
-  await dialog.getByLabel('Host', { exact: true }).fill('127.0.0.1');
-  await dialog.getByLabel('Port', { exact: true }).fill(String(port));
+async function fillConnection(page, { name, port, protocol }) {
+  await page.getByLabel('Name', { exact: true }).fill(name);
+  if (protocol) await page.getByLabel('Protocol', { exact: true }).selectOption(protocol);
+  await page.getByLabel('Host', { exact: true }).fill('127.0.0.1');
+  await page.getByLabel('Port', { exact: true }).fill(String(port));
 }
 
-async function openEditor(page, name) {
-  await page.getByRole('button', { name: `Edit ${name}` }).click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('heading', { name: `Edit ${name}` })).toBeVisible();
-  return dialog;
-}
-
-/** The live cell of a tag row in the edit dialog. */
-const liveCell = (dialog, key) => dialog.locator(`tr[data-tag-key="${key}"] [data-quality]`);
+/** The live cell of a tag row in a device's detail. */
+const liveCell = (scope, key) => scope.locator(`tr[data-tag-key="${key}"] [data-quality]`);
 
 test('S7 device from a preset goes online with live values', async ({ page, consoleErrors }) => {
   const name = unique('E2E S7 ');
   const sim = await startS7();
   try {
-    const dialog = await openAddDevice(page);
-    await fillConnection(dialog, { name, port: sim.port, protocol: 's7' });
+    await openAddDevice(page);
+    await fillConnection(page, { name, port: sim.port, protocol: 's7' });
 
-    // The preset sets rack/slot for the CPU family; the pressed state shows which one is active.
-    const s7300 = dialog.getByRole('button', { name: 'S7-300 / S7-400' });
+    // The experimental status is stated quietly, before the first connect.
+    await expect(page.getByRole('note').filter({ hasText: 'Verified only against a simulator' })).toBeVisible();
+    await expect(page.getByRole('region', { name: /Before you connect: Siemens S7/ })).toBeVisible();
+
+    // The preset sets rack/slot for the CPU family; the selected segment shows which one is active.
+    const s7300 = page.getByRole('radio', { name: 'S7-300 / S7-400' });
     await s7300.click();
-    await expect(s7300).toHaveAttribute('aria-pressed', 'true');
-    await expect(dialog.getByRole('button', { name: 'S7-1200 / S7-1500' })).toHaveAttribute('aria-pressed', 'false');
-    await expect(dialog.getByLabel('Slot')).toHaveValue('2');
+    await expect(s7300).toBeChecked();
+    await expect(page.getByRole('radio', { name: 'S7-1200 / S7-1500' })).not.toBeChecked();
+    await expect(page.getByLabel('Slot')).toHaveValue('2');
 
-    await dialog.getByRole('button', { name: 'Add tag' }).click();
-    await dialog.getByLabel('Key, row 1').fill('level');
-    await dialog.getByLabel('Address, row 1').fill('DB1.DBW0');
-    await dialog.getByLabel('Type, row 1').selectOption('INT');
-    await dialog.getByRole('button', { name: 'Add tag' }).click();
-    await dialog.getByLabel('Key, row 2').fill('pressure');
-    await dialog.getByLabel('Address, row 2').fill('DB1.DBD2');
-    await dialog.getByLabel('Type, row 2').selectOption('REAL');
+    await page.getByRole('button', { name: 'Add tag' }).click();
+    await page.getByLabel('Key, row 1').fill('level');
+    await page.getByLabel('Address, row 1').fill('DB1.DBW0');
+    await page.getByLabel('Type, row 1').selectOption('INT');
+    await page.getByRole('button', { name: 'Add tag' }).click();
+    await page.getByLabel('Key, row 2').fill('pressure');
+    await page.getByLabel('Address, row 2').fill('DB1.DBD2');
+    await page.getByLabel('Type, row 2').selectOption('REAL');
 
     // A STRING tag's length is optional: the form says what happens when it is blank.
-    await dialog.getByRole('button', { name: 'Add tag' }).click();
-    await dialog.getByLabel('Type, row 3').selectOption('STRING');
-    const length = dialog.getByLabel('Length, row 3');
+    await page.getByRole('button', { name: 'Add tag' }).click();
+    await page.getByLabel('Type, row 3').selectOption('STRING');
+    const length = page.getByLabel('Length, row 3');
     await expect(length).toHaveAttribute('placeholder', 'default 254');
     await expect(length).toHaveAttribute('title', /Defaults to 254 when blank/);
     await expect(length).not.toHaveAttribute('aria-required', 'true');
-    await dialog.getByLabel('Delete row 3').click();
+    await page.getByLabel('Delete row 3').click();
 
-    await dialog.getByRole('button', { name: 'Create device' }).click();
-    await expect(dialog).toBeHidden();
+    await page.getByRole('button', { name: 'Create device' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Devices' })).toBeVisible();
 
-    await expect(card(page, name).getByText('Online', { exact: true })).toBeVisible();
-    await expect(card(page, name)).toContainText('rack 0 / slot 2');
+    const row = deviceRow(page, name);
+    await expect(row.getByText('Online', { exact: true })).toBeVisible();
+    await expect(row).toContainText('rack 0 / slot 2');
+    await expect(row.getByText('Experimental')).toBeVisible();
 
-    const editor = await openEditor(page, name);
-    await expect(liveCell(editor, 'level')).toHaveText(/^\s*123(?!\d)/);
-    await expect(liveCell(editor, 'level')).toHaveAttribute('data-quality', 'good');
-    await expect(liveCell(editor, 'pressure')).toHaveText(/^\s*6\.5(?!\d)/);
+    const drawer = await openDevice(page, name, 'Tags');
+    await expect(liveCell(drawer, 'level')).toHaveText(/^\s*123(?!\d)/);
+    await expect(liveCell(drawer, 'level')).toHaveAttribute('data-quality', 'good');
+    await expect(liveCell(drawer, 'pressure')).toHaveText(/^\s*6\.5(?!\d)/);
     expect(consoleErrors).toEqual([]);
   } finally {
     await cleanup({ devices: [name] });
@@ -87,20 +82,19 @@ test('EtherNet/IP device: live value, then import a tag from the controller', as
   const name = unique('E2E EIP ');
   const sim = await startEip();
   try {
-    const dialog = await openAddDevice(page);
-    await fillConnection(dialog, { name, port: sim.port, protocol: 'ethernet-ip' });
-    await dialog.getByRole('button', { name: 'Add tag' }).click();
-    await dialog.getByLabel('Key, row 1').fill('real');
-    await dialog.getByLabel('Address, row 1').fill('RealTag');
-    await dialog.getByRole('button', { name: 'Create device' }).click();
-    await expect(dialog).toBeHidden();
+    await openAddDevice(page);
+    await fillConnection(page, { name, port: sim.port, protocol: 'ethernet-ip' });
+    await page.getByRole('button', { name: 'Add tag' }).click();
+    await page.getByLabel('Key, row 1').fill('real');
+    await page.getByLabel('Address, row 1').fill('RealTag');
+    await page.getByRole('button', { name: 'Create device' }).click();
 
-    await expect(card(page, name).getByText('Online', { exact: true })).toBeVisible();
-    let editor = await openEditor(page, name);
-    await expect(liveCell(editor, 'real')).toHaveText(/^\s*3\.5(?!\d)/);
+    await expect(deviceRow(page, name).getByText('Online', { exact: true })).toBeVisible();
+    let drawer = await openDevice(page, name, 'Tags');
+    await expect(liveCell(drawer, 'real')).toHaveText(/^\s*3\.5(?!\d)/);
 
-    // Import from the controller's own tag list; the dialog is a tree, driven here by the keyboard.
-    await editor.getByRole('button', { name: 'Import from controller' }).click();
+    // Import from the controller's own tag list (from the detail, straight into the editor); the dialog is a tree, driven here by the keyboard.
+    await drawer.getByRole('button', { name: 'Import from controller' }).click();
     const browse = page.getByRole('dialog', { name: /Import tags from/ });
     const tree = browse.getByRole('tree', { name: 'Controller tags' });
     const folder = tree.getByRole('treeitem', { name: /Controller tags/ });
@@ -118,16 +112,16 @@ test('EtherNet/IP device: live value, then import a tag from the controller', as
     await expect(browse).toBeHidden();
 
     // The imported row is in the table with a generated key and the controller's data type...
-    await expect(editor.locator('tr[data-tag-key="DintTag"]')).toBeVisible();
-    await expect(editor.getByLabel('Address, row 2')).toHaveValue('DintTag');
-    await expect(editor.getByLabel('Type, row 2')).toHaveValue('DINT');
+    await expect(page.locator('tr[data-tag-key="DintTag"]')).toBeVisible();
+    await expect(page.getByLabel('Address, row 2')).toHaveValue('DintTag');
+    await expect(page.getByLabel('Type, row 2')).toHaveValue('DINT');
 
     // ...and once the device is saved it reads live.
-    await editor.getByRole('button', { name: 'Save changes' }).click();
-    await expect(editor).toBeHidden();
-    editor = await openEditor(page, name);
-    await expect(liveCell(editor, 'DintTag')).toHaveText(/^\s*123456(?!\d)/);
-    await expect(liveCell(editor, 'DintTag')).toHaveAttribute('data-quality', 'good');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Devices' })).toBeVisible();
+    drawer = await openDevice(page, name, 'Tags');
+    await expect(liveCell(drawer, 'DintTag')).toHaveText(/^\s*123,456(?!\d)/);
+    await expect(liveCell(drawer, 'DintTag')).toHaveAttribute('data-quality', 'good');
     expect(consoleErrors).toEqual([]);
   } finally {
     await cleanup({ devices: [name] });

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { startModbus, createModbusDevice, unique, cleanup } from './support.js';
+import { startModbus, createModbusDevice, unique, cleanup, deviceRow, openDevice } from './support.js';
 
 /**
  * A Modbus outage: the device vanishes (the simulator stops listening and resets its
@@ -20,12 +20,11 @@ test('a Modbus outage shows Bad quality rows and recovers', async ({ page }) => 
     });
 
     await page.goto('/devices');
-    const card = page.locator('li', { has: page.getByRole('heading', { level: 2, name, exact: true }) });
-    await expect(card.getByText('Online', { exact: true })).toBeVisible();
+    const row = deviceRow(page, name);
+    await expect(row.getByText('Online', { exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: `Edit ${name}` }).click();
-    const editor = page.getByRole('dialog').filter({ hasText: `Edit ${name}` });
-    const cell = (key) => editor.locator(`tr[data-tag-key="${key}"] [data-quality]`);
+    const drawer = await openDevice(page, name, 'Tags');
+    const cell = (key) => drawer.locator(`tr[data-tag-key="${key}"] [data-quality]`);
     for (const key of ['first', 'second']) await expect(cell(key)).toHaveAttribute('data-quality', 'good');
     await expect(cell('first')).toHaveText(/^\s*11(?!\d)/);
     // A value changing proves the live (socket) path is flowing before the outage starts.
@@ -36,16 +35,19 @@ test('a Modbus outage shows Bad quality rows and recovers', async ({ page }) => 
     await sim.outage();
     for (const key of ['first', 'second']) {
       await expect(cell(key)).toHaveAttribute('data-quality', 'bad', { timeout: 45_000 });
-      await expect(cell(key)).toContainText('Bad');
+      // A Bad row says so in words, not only in colour, and is told apart from the good ones.
+      await expect(drawer.locator(`tr[data-tag-key="${key}"]`)).toContainText('Bad');
+      await expect(drawer.locator(`tr[data-tag-key="${key}"]`)).toHaveAttribute('data-row-state', 'bad');
     }
-    await expect(card.getByText('Online', { exact: true })).toHaveCount(0);
+    await expect(row.getByText('Online', { exact: true })).toHaveCount(0);
+    await expect(drawer.getByText('Online', { exact: true })).toHaveCount(0);
 
     // --- and comes back with a new value ----------------------------------------------------
     sim.set(14);
     await sim.restore();
     for (const key of ['first', 'second']) await expect(cell(key)).toHaveAttribute('data-quality', 'good', { timeout: 60_000 });
     await expect(cell('first')).toHaveText(/^\s*14(?!\d)/);
-    await expect(card.getByText('Online', { exact: true })).toBeVisible();
+    await expect(row.getByText('Online', { exact: true })).toBeVisible();
   } finally {
     await cleanup({ devices: [name] });
     await sim.close();

@@ -1,41 +1,55 @@
-import { FlaskConical, ShieldAlert } from 'lucide-react';
+import { useId, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
+import clsx from 'clsx';
+import { Banner } from '@/components/ui';
+import { ExperimentalBadge } from './FormControls';
 
-export function ExperimentalBadge({ className = '' }) {
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide text-amber-200 ring-1 ring-inset ring-amber-500/30 ${className}`}>
-      <FlaskConical size={11} aria-hidden="true" /> Experimental
-    </span>
-  );
-}
+export { ExperimentalBadge };
 
 /**
- * What to know before the first connect: the experimental notice and the
- * driver's `prerequisites` text, shown in full (it can carry a security warning).
- * Lines starting with "Warning" are emphasised.
+ * What to know before the first connect: the driver's `prerequisites` text, shown in full (it can
+ * carry a security warning) behind a quiet disclosure, open by default while creating a device.
+ * Lines that start with "Warning" become a warning banner. The experimental status is one line.
  */
-export default function ProtocolNotices({ descriptor }) {
+export default function ProtocolNotices({ descriptor, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const bodyId = useId();
   if (!descriptor) return null;
   const lines = String(descriptor.prerequisites || '').split('\n').filter(Boolean);
   return (
     <div className="space-y-2">
       {descriptor.experimental && (
-        <div role="note" className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-          <ExperimentalBadge className="mt-px shrink-0" />
-          <p>Verified only against a simulator. Verify on your own hardware before relying on this driver.</p>
-        </div>
+        <p role="note" className="flex flex-wrap items-center gap-2 text-xs text-muted">
+          <ExperimentalBadge />
+          Verified only against a simulator. Check it on your own hardware before relying on it.
+        </p>
       )}
       {lines.length > 0 && (
-        <section aria-label={`Before you connect: ${descriptor.label}`} className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2.5 text-xs text-sky-50">
-          <h4 className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-sky-100">
-            <ShieldAlert size={15} aria-hidden="true" /> Before you connect ({descriptor.label})
-          </h4>
-          <div className="space-y-1.5 leading-relaxed">
-            {lines.map((line, i) => (
-              <p key={i} className={/^warning/i.test(line) ? 'rounded-md bg-rose-500/15 px-2 py-1.5 font-medium text-rose-100 ring-1 ring-inset ring-rose-500/30' : ''}>
-                {line}
-              </p>
-            ))}
-          </div>
+        <section aria-label={`Before you connect: ${descriptor.label}`}>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-controls={bodyId}
+            className="-ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-sm font-medium text-fg transition-colors hover:text-accent-text"
+          >
+            <ChevronRight size={14} aria-hidden="true" className={clsx('text-subtle transition-transform duration-150', open && 'rotate-90')} />
+            On the {descriptor.label} side
+            <span className="hidden font-normal text-subtle sm:inline">what to enable before the first connect</span>
+          </button>
+          {open && (
+            <div id={bodyId} className="mt-2 space-y-2 border-l-2 border-line pl-4 text-sm leading-relaxed text-muted">
+              {lines.map((line, i) =>
+                /^warning/i.test(line) ? (
+                  <Banner key={i} variant="warn">
+                    {line}
+                  </Banner>
+                ) : (
+                  <p key={i}>{line}</p>
+                )
+              )}
+            </div>
+          )}
         </section>
       )}
     </div>

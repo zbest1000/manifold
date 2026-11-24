@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { startModbus, unique, cleanup } from './support.js';
+import { startModbus, unique, cleanup, deviceRow, openDevice } from './support.js';
 
 /**
  * Device profiles: define a profile with a parameter ({reg} in a tag address), create one device
@@ -39,6 +39,8 @@ test('create a profile with a parameter, instantiate a device from it, see it on
     // --- one device from it -------------------------------------------------------------
     await row.getByRole('button', { name: `New device from ${profileName}` }).click();
     const inst = page.getByRole('dialog').filter({ hasText: `New device from profile` });
+    await inst.getByRole('button', { name: 'Create device' }).click(); // nothing typed yet: the fields say what is missing, nothing is sent
+    await expect(inst.getByText('Give the device a name')).toBeVisible();
     await inst.getByLabel('Name', { exact: true }).fill(deviceName);
     await inst.getByLabel('Host', { exact: true }).fill('127.0.0.1');
     await inst.getByLabel('Port', { exact: true }).fill(String(sim.port));
@@ -54,14 +56,21 @@ test('create a profile with a parameter, instantiate a device from it, see it on
 
     // ...and the device is online on the Devices tab, reading the register through {reg}.
     await page.getByRole('tab', { name: /^Devices/ }).click();
-    const card = page.locator('li', { has: page.getByRole('heading', { level: 2, name: deviceName, exact: true }) });
-    await expect(card.getByText('Online', { exact: true })).toBeVisible();
-    await expect(card).toContainText('from profile');
-    await expect(card).toContainText('reg=40101');
+    const deviceR = deviceRow(page, deviceName);
+    await expect(deviceR.getByText('Online', { exact: true })).toBeVisible();
+    await expect(deviceR).toContainText(`from ${profileName}`);
 
-    await page.getByRole('button', { name: `Edit ${deviceName}` }).click();
-    const editor = page.getByRole('dialog').filter({ hasText: `Edit ${deviceName}` });
-    await expect(editor.locator('tr[data-tag-key="count"] td').nth(5)).toHaveText('7OK');
+    const drawer = await openDevice(page, deviceName);
+    await expect(drawer.getByText('Parameter reg')).toBeVisible();
+    await expect(drawer.getByText('40101', { exact: true })).toBeVisible();
+    await drawer.getByRole('tab', { name: /^Tags/ }).click();
+    await expect(drawer.locator('tr[data-tag-key="count"] [data-quality]')).toHaveText('7');
+
+    // In the editor the profile's tag is a read-only row marked "Profile", with its live value.
+    await drawer.getByRole('button', { name: 'Edit device' }).click();
+    const profileRow = page.locator('tr[data-tag-key="count"][data-origin="profile"]');
+    await expect(profileRow).toContainText('Profile');
+    await expect(profileRow.locator('[data-quality]')).toHaveText(/^\s*7(?!\d)/);
     expect(consoleErrors).toEqual([]);
   } finally {
     await cleanup({ devices: [deviceName], profiles: [profileName] });

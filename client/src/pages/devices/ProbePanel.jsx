@@ -1,16 +1,15 @@
 import { useState } from 'react';
-import { Microscope, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { Button, Input } from '@/components/ui';
+import { Button, Input, Banner } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { FormField } from './FormControls';
 import ProbeResult from './ProbeResult';
 import { probeSpec, probeBody } from './model';
 
 /**
- * Commissioning probe: read raw data from the saved device. Inputs follow the
- * protocol (Modbus: registers + unit id, S7: byte count, EtherNet/IP: tag only);
- * the result shows the raw bytes and every decoding.
+ * Commissioning probe: read raw data from the saved device. Inputs follow the protocol (Modbus:
+ * registers + unit id, S7: byte count, EtherNet/IP: tag only); the result shows the raw bytes and
+ * every decoding. `onApply` (optional) lets the editor copy a byte/word order to a tag or the device.
  */
 export default function ProbePanel({ deviceId, protocol, defaultUnitId, selectedTag, onApply, addressHelp }) {
   const spec = probeSpec(protocol);
@@ -23,7 +22,7 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
   const [result, setResult] = useState(null);
 
   if (!deviceId) {
-    return <p className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-3 text-xs text-slate-400">Save the device first. The probe reads from the saved configuration, and the device must be online.</p>;
+    return <Banner variant="info">Save the device first. The probe reads from the saved configuration, and the device must be online.</Banner>;
   }
 
   const run = async (e) => {
@@ -62,21 +61,22 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
             {(a) => <Input {...a} onKeyDown={onEnter} type="number" min={0} max={255} value={unitId} onChange={(e) => setUnitId(e.target.value)} placeholder={defaultUnitId !== undefined ? String(defaultUnitId) : ''} />}
           </FormField>
         )}
-        <Button type="button" onClick={run} disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} className="col-span-2 sm:col-span-1">
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Microscope size={14} />} Read
-        </Button>
+        <span title={readOnly ? READ_ONLY_REASON : undefined} className="col-span-2 sm:col-span-1">
+          <Button type="button" variant="secondary" onClick={run} loading={busy} disabled={readOnly} className="w-full">
+            Read
+          </Button>
+        </span>
       </div>
-      {addressHelp && <p className="text-2xs text-slate-500">{addressHelp}</p>}
+      {addressHelp && <p className="helper">{addressHelp}</p>}
       {selectedTag?.address && (
-        <button type="button" onClick={() => setAddress(selectedTag.address)} className="text-xs text-accent-400 underline-offset-2 hover:underline">
+        <button type="button" onClick={() => setAddress(selectedTag.address)} className="text-xs text-accent-text underline-offset-2 hover:underline">
           Use address of {selectedTag.key || 'the selected row'}: <span className="mono">{selectedTag.address}</span>
         </button>
       )}
       {error && (
-        <div role="alert" className="flex items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-          <span>{error}</span>
-          <Button type="button" size="sm" variant="outline" onClick={run}>Retry</Button>
-        </div>
+        <Banner variant="error" title="The probe failed" onRetry={run}>
+          {error}
+        </Banner>
       )}
       {result && <ProbeResult protocol={protocol} result={result} selectedTag={selectedTag} onApply={onApply} />}
     </div>

@@ -1,19 +1,19 @@
 import { useState } from 'react';
-import { Plug, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Plug } from 'lucide-react';
 import { api } from '@/lib/api';
-import { Button } from '@/components/ui';
+import { Button, Banner, KeyValue } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 
-function infoText(info) {
-  if (!info) return '';
-  if (typeof info === 'string') return info;
+/** The device's self-description as [label, value] pairs (scalars only). */
+function infoItems(info) {
+  if (!info) return [];
+  if (typeof info === 'string') return [['Device', info]];
   return Object.entries(info)
     .filter(([, v]) => v !== null && v !== undefined && v !== '' && typeof v !== 'object')
-    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
-    .join(' · ');
+    .map(([k, v]) => [k, String(v)]);
 }
 
-/** "Test connection": a one-off connect with the unsaved configuration. */
+/** "Test connection": a one-off connect with the unsaved configuration, and a result panel. */
 export default function ConnectionTest({ buildConfig, disabled }) {
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState(null);
@@ -30,25 +30,27 @@ export default function ConnectionTest({ buildConfig, disabled }) {
       setTesting(false);
     }
   };
+  const items = test?.ok ? infoItems(test.info) : [];
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <Button type="button" variant="outline" onClick={run} disabled={testing || disabled || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
-        {testing ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
-      </Button>
-      <div aria-live="polite" className="min-w-0 text-xs">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <span title={readOnly ? READ_ONLY_REASON : undefined}>
+          <Button type="button" variant="secondary" onClick={run} loading={testing} disabled={disabled || readOnly}>
+            <Plug size={14} aria-hidden="true" /> Test connection
+          </Button>
+        </span>
+        <span className="helper">Opens one connection with these settings. Nothing is saved.</span>
+      </div>
+      <div aria-live="polite">
         {test?.ok && (
-          <span className="inline-flex items-start gap-1.5 text-emerald-300">
-            <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-            <span>
-              Connected{test.latencyMs !== undefined ? ` in ${test.latencyMs} ms` : ''}
-              {test.info ? <span className="text-slate-400"> · {infoText(test.info)}</span> : null}
-            </span>
-          </span>
+          <Banner variant="success" title={`Connected${test.latencyMs !== undefined ? ` in ${test.latencyMs} ms` : ''}`}>
+            {items.length > 0 ? <KeyValue columns={2} items={items} className="mt-2 text-xs" /> : 'The device answered.'}
+          </Banner>
         )}
         {test && !test.ok && (
-          <span className="inline-flex items-start gap-1.5 text-rose-300">
-            <AlertTriangle size={14} className="mt-0.5 shrink-0" /> <span className="break-words">{test.error || 'Connection failed'}</span>
-          </span>
+          <Banner variant="error" title="Could not connect">
+            <span className="mono break-words text-xs">{test.error || 'Connection failed'}</span>
+          </Banner>
         )}
       </div>
     </div>

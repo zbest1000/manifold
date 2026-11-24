@@ -38,7 +38,9 @@ export function hostIssues(hosts, devices = []) {
   for (const [id, h] of Object.entries(hosts || {})) {
     if (h.state !== 'parked' && h.state !== 'backoff') continue;
     const ids = Array.isArray(h.deviceIds) ? h.deviceIds : [];
-    const who = ids.length ? ` Affects: ${ids.map((d) => names.get(d) || d).join(', ')}.` : '';
+    const MAX_NAMED = 5; // a host with 50 devices must not turn the banner into a wall of names
+    const named = ids.slice(0, MAX_NAMED).map((d) => names.get(d) || d).join(', ');
+    const who = ids.length ? ` Affects: ${named}${ids.length > MAX_NAMED ? ` and ${ids.length - MAX_NAMED} more` : ''}.` : '';
     if (h.state === 'parked') out.push({ id, level: 'error', deviceIds: ids, text: `Driver host ${id} (${h.protocol}) is parked after ${h.restarts} restarts. Its devices are not polling until it is restarted.${who}` });
     else out.push({ id, level: 'warn', deviceIds: ids, text: `Driver host ${id} (${h.protocol}) is restarting (attempt ${h.restarts}).${who}` });
   }
@@ -166,4 +168,83 @@ export function quarantineSummary(status) {
   const why = quarantineReasonText(first);
   const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
   return `${noun}: ${first.key}${why ? ` (${why})` : ''}${more}`;
+}
+
+// ---------------------------------------------------------------- list / detail view helpers
+
+const PROBLEM_RANK = { parked: 0, backoff: 1, connecting: 2, stopped: 3, online: 4, disabled: 5 };
+
+/**
+ * What the list and the detail show for a device's state: the short word, its tone, the reason
+ * (why it is not online) and a sort rank (ascending = the worst first). `deviceBadge` stays the
+ * source of truth; this only shortens "Backoff: ECONNREFUSED" into a word plus a reason line.
+ */
+export function deviceStateView(device, status, live, host) {
+  const b = deviceBadge(device, status, live, host);
+  const s = { ...(status || {}), ...(live || {}) };
+  const word = { backoff: 'Backoff', online: 'Online', connecting: 'Connecting', parked: 'Driver parked', disabled: 'Disabled', stopped: s.state === 'offline' ? 'Offline' : 'Stopped' }[b.key] || b.label;
+  const tone = b.key === 'online' ? 'good' : b.key === 'parked' ? 'bad' : b.key === 'disabled' ? 'neutral' : b.key === 'stopped' ? (s.lastError ? 'bad' : 'neutral') : 'warn';
+  return { key: b.key, label: word, tone, reason: b.detail || '', since: s.since || null, rank: PROBLEM_RANK[b.key] ?? 3 };
+}
+
+/** The last driver error as text and time: { message, at } or null. */
+export function lastErrorInfo(status) {
+  const le = status?.lastError;
+  if (!le) return null;
+  const message = typeof le === 'object' ? le.message || JSON.stringify(le) : String(le);
+  return { message, at: status?.lastErrorAt ?? null };
+}
+
+/**
+ * The poll group that matters most for a one-line summary: slowed beats overrunning beats ok, then
+ * the highest cycle/interval ratio. null when the driver has reported no cycles yet.
+ */
+export function pollSummary(status) {
+  const groups = Object.entries(status?.groups || {});
+  if (!groups.length) return null;
+  const rank = { ok: 0, overrun: 1, slowed: 2 };
+  let worst = null;
+  for (const [id, g] of groups) {
+    const h = cycleHealth(g);
+    if (!worst || rank[h.level] > rank[worst.h.level] || (rank[h.level] === rank[worst.h.level] && h.ratio > worst.h.ratio)) worst = { id, h };
+  }
+  return { groupId: worst.id, groups: groups.length, ...worst.h };
+}
+
+/** Plain words for a cycle level: '' when healthy. */
+export function cycleLevelText(h) {
+  if (h.level === 'slowed') return `Slowed to ${formatMs(h.effective)}`;
+  if (h.level === 'overrun') return 'Overrunning';
+  return '';
+}
+
+/** A reading for display: at most 3 fraction digits, grouped thousands; the raw value belongs in the tooltip. */
+export function formatReading(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'number') return Number.isFinite(v) ? v.toLocaleString(undefined, { maximumFractionDigits: 3 }) : String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+/** Age of a sample: "0.4 s", "12 s", "3 min", "2 h"; '' when unknown. */
+export function formatAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 60000) return `${Math.round(ms / 1000)} s`;
+  if (ms < 3600000) return `${Math.round(ms / 60000)} min`;
+  return `${Math.round(ms / 3600000)} h`;
+}
+
+/** "3 of 50 online · 2 with problems" for the page header. */
+export function fleetSummary(views) {
+  const total = views.length;
+  if (!total) return '';
+  const online = views.filter((v) => v.key === 'online').length;
+  const problems = views.filter((v) => v.key !== 'online' && v.key !== 'disabled').length;
+  const disabled = views.filter((v) => v.key === 'disabled').length;
+  const parts = [`${online} of ${total} online`];
+  if (problems) parts.push(`${problems} with problems`);
+  if (disabled) parts.push(`${disabled} disabled`);
+  return parts.join(' · ');
 }

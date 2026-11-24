@@ -47,14 +47,15 @@ export function addressExample(descriptor) {
 
 /**
  * Columns beyond the common set. `always` ones are shown inline, `advanced` ones
- * behind the toggle. Byte/word order and bit are Modbus register concepts only.
+ * behind the toggle (the free-text description is one of them, so the usual columns fit a laptop).
+ * Byte/word order and bit are Modbus register concepts only.
  */
 export function extraColumns(descriptor) {
   const id = descriptor?.id;
   const hasLength = Object.values(descriptor?.tagTypeInfo || {}).some((t) => t?.needsLength) || (descriptor?.tagTypes || []).some((t) => typeof t === 'object' && t.needsLength);
-  if (id === 'modbus-tcp') return { always: [], advanced: ['length', 'bit', 'byteOrder', 'wordOrder'] };
-  if (hasLength) return { always: ['length'], advanced: [] };
-  return { always: [], advanced: [] };
+  if (id === 'modbus-tcp') return { always: [], advanced: ['length', 'bit', 'byteOrder', 'wordOrder', 'description'] };
+  if (hasLength) return { always: ['length'], advanced: ['description'] };
+  return { always: [], advanced: ['description'] };
 }
 
 /** Defaults for a descriptor field list (booleans included). */

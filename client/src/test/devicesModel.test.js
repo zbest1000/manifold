@@ -26,9 +26,9 @@ describe('descriptor helpers', () => {
     expect(typeOptional(s7)).toBe(false);
   });
   it('Modbus-only columns; S7 shows length inline', () => {
-    expect(extraColumns(modbus).advanced).toEqual(['length', 'bit', 'byteOrder', 'wordOrder']);
-    expect(extraColumns(s7)).toEqual({ always: ['length'], advanced: [] });
-    expect(extraColumns(eip)).toEqual({ always: [], advanced: [] });
+    expect(extraColumns(modbus).advanced).toEqual(['length', 'bit', 'byteOrder', 'wordOrder', 'description']);
+    expect(extraColumns(s7)).toEqual({ always: ['length'], advanced: ['description'] });
+    expect(extraColumns(eip)).toEqual({ always: [], advanced: ['description'] });
   });
   it('drops blank optional fields and coerces numbers', () => {
     expect(cleanFields({ rack: '1', remoteTsap: '' }, s7.deviceFields)).toEqual({ rack: 1 });

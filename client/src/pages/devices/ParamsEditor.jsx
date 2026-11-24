@@ -1,7 +1,9 @@
 import { Plus, Trash2 } from 'lucide-react';
-import { Button, IconButton } from '@/components/ui';
+import { Button, IconButton, Banner, Code } from '@/components/ui';
 import { cellCls } from './FormControls';
 import { blankParam, paramDeclErrors } from '@/lib/deviceProfiles';
+
+const TH = 'h-8 whitespace-nowrap px-1.5 text-left align-middle text-xs font-medium text-muted';
 
 /**
  * Declared parameters of a profile: name, default and description. A tag may use
@@ -12,47 +14,53 @@ export default function ParamsEditor({ params, onChange, undeclared = [] }) {
   const set = (i, patch) => onChange(params.map((p, j) => (j === i ? { ...p, ...patch } : p)));
   const missing = [...new Set(undeclared.flatMap((u) => u.names))];
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {missing.length > 0 && (
-        <div role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-          <span>
-            Used in tags but not declared:{' '}
-            {missing.map((n) => (
-              <span key={n} className="mono mr-1 rounded bg-rose-500/20 px-1">{`{${n}}`}</span>
-            ))}
-          </span>
-          <Button type="button" size="sm" variant="outline" onClick={() => onChange([...params.filter((p) => p.name), ...missing.map((name) => ({ ...blankParam(), name }))])}>
-            Declare {missing.length === 1 ? 'it' : 'them'}
-          </Button>
-        </div>
+        <Banner
+          variant="error"
+          title="Used in tags but not declared"
+          action={
+            <Button type="button" size="sm" variant="secondary" onClick={() => onChange([...params.filter((p) => p.name), ...missing.map((name) => ({ ...blankParam(), name }))])}>
+              Declare {missing.length === 1 ? 'it' : 'them'}
+            </Button>
+          }
+        >
+          {missing.map((n) => (
+            <Code key={n} className="mr-1">{`{${n}}`}</Code>
+          ))}
+        </Banner>
       )}
       {params.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border border-white/10">
+        <div className="overflow-x-auto rounded-lg border border-line bg-panel">
           <table className="w-full border-collapse text-left">
             <caption className="sr-only">Profile parameters</caption>
-            <thead className="bg-white/[0.03] text-2xs uppercase tracking-wide text-slate-400">
+            <thead className="border-b border-line">
               <tr>
-                <th scope="col" className="min-w-[8rem] px-2 py-2 font-medium">Name</th>
-                <th scope="col" className="min-w-[8rem] px-2 py-2 font-medium">Default</th>
-                <th scope="col" className="min-w-[12rem] px-2 py-2 font-medium">Description</th>
-                <th scope="col" className="w-10 px-1 py-2"><span className="sr-only">Remove</span></th>
+                <th scope="col" className={`${TH} min-w-[8rem] pl-3`}>Name</th>
+                <th scope="col" className={`${TH} min-w-[8rem]`}>Default</th>
+                <th scope="col" className={`${TH} min-w-[12rem]`}>Description</th>
+                <th scope="col" className={`${TH} w-10`}><span className="sr-only">Remove</span></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5">
+            <tbody>
               {params.map((p, i) => (
-                <tr key={i} className="align-top">
-                  <td className="px-1 py-1.5">
+                <tr key={i} className="border-t border-line align-top first:border-t-0">
+                  <td className="py-1.5 pl-3 pr-1.5">
                     <input className={`${cellCls} mono`} aria-label={`Parameter name, row ${i + 1}`} aria-invalid={errs[i] ? true : undefined} value={p.name} placeholder="base" onChange={(e) => set(i, { name: e.target.value.trim() })} />
-                    {errs[i] && <p role="alert" className="mt-1 text-2xs text-rose-300">{errs[i]}</p>}
+                    {errs[i] && (
+                      <p role="alert" className="mt-1 text-xs text-bad">
+                        {errs[i]}
+                      </p>
+                    )}
                   </td>
-                  <td className="px-1 py-1.5">
+                  <td className="px-1.5 py-1.5">
                     <input className={cellCls} aria-label={`Default value, row ${i + 1}`} value={p.default ?? ''} placeholder="required per device" onChange={(e) => set(i, { default: e.target.value })} />
                   </td>
-                  <td className="px-1 py-1.5">
+                  <td className="px-1.5 py-1.5">
                     <input className={cellCls} aria-label={`Description, row ${i + 1}`} value={p.description ?? ''} placeholder="What the value means" onChange={(e) => set(i, { description: e.target.value })} />
                   </td>
-                  <td className="px-1 py-1">
-                    <IconButton icon={Trash2} side="left" label={`Remove parameter ${p.name || i + 1}`} onClick={() => onChange(params.filter((_, j) => j !== i))} />
+                  <td className="px-1 py-1.5">
+                    <IconButton icon={Trash2} side="left" size={14} className="h-7 w-7 hover:bg-bad/10 hover:text-bad" label={`Remove parameter ${p.name || i + 1}`} onClick={() => onChange(params.filter((_, j) => j !== i))} />
                   </td>
                 </tr>
               ))}
@@ -60,8 +68,8 @@ export default function ParamsEditor({ params, onChange, undeclared = [] }) {
           </table>
         </div>
       )}
-      <Button type="button" size="sm" variant="outline" onClick={() => onChange([...params, blankParam()])}>
-        <Plus size={14} /> Add parameter
+      <Button type="button" size="sm" variant="secondary" onClick={() => onChange([...params, blankParam()])}>
+        <Plus size={14} aria-hidden="true" /> Add parameter
       </Button>
     </div>
   );

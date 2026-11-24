@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Radar, Play, Square, ListPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { api } from '@/lib/api';
-import { Card, Button, Input, Field, EmptyState, PageBody, Banner } from '@/components/ui';
+import { usePolled } from '@/lib/usePolled';
+import { Panel, Button, Input, Field, EmptyState, PageBody, Banner } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import ScanOptions from './discovery/ScanOptions';
 import OtNotice from './discovery/OtNotice';
@@ -15,6 +15,10 @@ import AddAllDialog from './discovery/AddAllDialog';
 import { startDiscoveryScan } from './devices/devicesApi';
 import { isAlreadyConnected, buildScanOptions, draftFromResult, draftsFromResults, parsePorts, SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
 
+/**
+ * Discovery: one primary action (Start scan), the scan options as a compact form, the OT-network
+ * warning as a banner when devices are ticked, and the results as a table.
+ */
 export default function Discovery() {
   const discovery = useStore((s) => s.discovery);
   const brokers = useStore((s) => s.brokers);
@@ -27,18 +31,22 @@ export default function Discovery() {
   const [busy, setBusy] = useState(false);
   const [scanError, setScanError] = useState('');
   const [addAll, setAddAll] = useState(false);
+  const { progress, results, scanning } = discovery;
+
+  // The devices Manifold already has, so a found PLC at a known address says so. Reloaded when a scan ends.
+  const { data: deviceList } = usePolled(() => api.devices(), { deps: [scanning] });
+  const knownDevices = useMemo(() => new Set((deviceList?.devices || []).map((d) => `${d.host}:${d.port}`)), [deviceList]);
 
   const portProblems = SCAN_PROTOCOLS.some((p) => devicePorts[p.id] !== undefined && parsePorts(devicePorts[p.id]).bad.length > 0);
   const findDevices = Object.keys(devicePorts).length > 0;
 
   const start = async () => {
-    if (readOnly || busy) return;
-    if (portProblems) return toast.error('Fix the port lists first');
+    if (readOnly || busy || scanning) return;
+    if (portProblems) return setScanError('Fix the port lists below first.');
     setBusy(true);
     setScanError('');
     try {
       await startDiscoveryScan(buildScanOptions({ range, selected: devicePorts }));
-      toast.success('Scan started');
     } catch (e) {
       setScanError(e.message || 'The scan could not start');
     } finally {
@@ -78,24 +86,31 @@ export default function Discovery() {
   // A found endpoint that is already connected must not be connected a second time (the server would
   // happily open a duplicate connection and the lists would then show the same broker twice).
   const alreadyConnected = (r) => isAlreadyConnected(r, { brokers, opcua });
+  const alreadyDevice = (r) => knownDevices.has(`${r.host}:${r.port}`);
 
-  const { progress, results, scanning } = discovery;
   const pct = progress && progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
   const drafts = useMemo(() => draftsFromResults(results), [results]);
+  const scanned = Boolean(progress) || results.length > 0;
+
+  const subtitle = scanning
+    ? `Scanning${progress?.range ? ` ${progress.range}` : ''}: ${pct}% done, ${progress?.found || 0} found`
+    : scanned
+      ? `Last scan found ${results.length} endpoint${results.length === 1 ? '' : 's'}`
+      : 'Find MQTT brokers, OPC UA servers, i3X endpoints and, if you ask, PLCs and meters';
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        title="Network Discovery"
-        subtitle="Probe your network for MQTT brokers, OPC UA servers, i3X endpoints and, optionally, PLCs and meters"
+        title="Discovery"
+        subtitle={subtitle}
         actions={
           scanning ? (
-            <Button variant="danger" onClick={stop} {...ro}>
-              <Square size={15} aria-hidden="true" /> Stop scan
+            <Button variant="secondary" onClick={stop} {...ro}>
+              Stop scan
             </Button>
           ) : (
-            <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
-              <Play size={15} aria-hidden="true" /> Start scan
+            <Button onClick={start} loading={busy} disabled={readOnly} title={ro.title}>
+              Start scan
             </Button>
           )
         }
@@ -103,65 +118,62 @@ export default function Discovery() {
 
       <PageBody>
         <ReadOnlyNote className="" />
-        <Card className="space-y-4 p-4 sm:p-5">
-          <div className="flex flex-wrap items-end gap-3">
-            <Field label="CIDR range (blank = auto-detect local subnet)" className="min-w-0 flex-1 basis-64">
-              <Input value={range} onChange={(e) => setRange(e.target.value)} placeholder="192.168.1.0/24" disabled={scanning} />
+
+        <Panel title="Scan options">
+          <div className="space-y-4">
+            <Field label="Range (CIDR)" help="Leave blank to scan the local subnet." className="max-w-sm">
+              <Input className="mono" value={range} onChange={(e) => setRange(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && start()} placeholder="192.168.1.0/24" disabled={scanning} />
             </Field>
-            {!scanning && (
-              <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
-                <Radar size={15} aria-hidden="true" /> Scan
-              </Button>
-            )}
+            <ScanOptions value={devicePorts} onChange={setDevicePorts} disabled={scanning} />
+            {!findDevices && <p className="helper">PLC and meter probing is off. Tick a protocol to include it; you will see what it sends before you scan.</p>}
           </div>
+        </Panel>
 
-          <ScanOptions value={devicePorts} onChange={setDevicePorts} disabled={scanning} />
-          {findDevices && <OtNotice />}
-          {!findDevices && <p className="text-xs text-slate-500">PLC and meter probing is off. Tick a protocol to include it; you will see what it sends before you scan.</p>}
+        {findDevices && <OtNotice />}
+        {scanError && (
+          <Banner variant="error" title="The scan did not start" onRetry={start} onDismiss={() => setScanError('')}>
+            {scanError}
+          </Banner>
+        )}
 
-          {scanError && <Banner variant="error" title="The scan did not start" onRetry={start} onDismiss={() => setScanError('')}>{scanError}</Banner>}
-
-          {scanning && (
-            <div>
-              <div className="mb-1.5 flex justify-between text-xs text-muted" aria-live="polite">
-                <span>Scanning… {progress?.found || 0} found</span>
-                <span>{pct}%</span>
-              </div>
-              <div role="progressbar" aria-label="Scan progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} className="h-2 overflow-hidden rounded-full bg-white/5">
-                <div className="h-full rounded-full bg-gradient-to-r from-accent-400 to-accent-600 transition-all" style={{ width: `${pct}%` }} />
-              </div>
+        {scanning && (
+          <div aria-live="polite">
+            <div className="mb-1.5 flex justify-between text-xs text-muted">
+              <span>Scanning… {progress?.found || 0} found</span>
+              <span className="tabular-nums">{pct}%</span>
             </div>
-          )}
-        </Card>
+            <div role="progressbar" aria-label="Scan progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} className="h-1 overflow-hidden rounded-full bg-raised">
+              <div className="h-full rounded-full bg-accent transition-[width] duration-150" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        )}
 
-        <section aria-labelledby="discovery-results">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h2 id="discovery-results" className="text-sm font-semibold text-slate-200">
-              Results {results.length > 0 && <span className="text-muted">({results.length})</span>}
+        <section aria-labelledby="discovery-results" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="discovery-results" className="flex items-baseline gap-2 text-sm font-medium text-fg">
+              Results {results.length > 0 && <span className="font-mono text-xs font-normal text-subtle">{results.length}</span>}
             </h2>
             {drafts.length > 1 && (
-              <Button size="sm" variant="outline" onClick={() => setAddAll(true)} {...ro}>
-                <ListPlus size={14} aria-hidden="true" /> Add all {drafts.length} devices…
+              <Button size="sm" variant="secondary" onClick={() => setAddAll(true)} {...ro}>
+                Add all {drafts.length} devices…
               </Button>
             )}
           </div>
           {results.length === 0 ? (
-            <Card>
+            <div className="rounded-lg border border-line bg-panel">
               <EmptyState
-                icon={Radar}
-                title={scanning ? 'Probing hosts…' : 'Nothing found yet'}
-                hint={scanning ? 'Results appear here as hosts answer.' : 'Scan your local network (or a CIDR range) for MQTT brokers, OPC UA servers, i3X endpoints and, if you tick them, Modbus, S7 and EtherNet/IP devices.'}
-                action={
-                  !scanning && (
-                    <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
-                      <Play size={15} aria-hidden="true" /> Start a network scan
-                    </Button>
-                  )
+                title={scanning ? 'Probing hosts…' : scanned ? 'Nothing found' : 'No scan yet'}
+                hint={
+                  scanning
+                    ? 'Results appear here as hosts answer.'
+                    : scanned
+                      ? 'No endpoint answered. Check the range, or tick a PLC protocol above to look for devices too.'
+                      : 'Start a scan to look for MQTT brokers, OPC UA servers and i3X endpoints on your network. Tick Modbus, S7 or EtherNet/IP above to find PLCs and meters as well.'
                 }
               />
-            </Card>
+            </div>
           ) : (
-            <ResultsTable results={results} onConnect={connectResult} onAddDevice={addDevice} readOnly={readOnly} alreadyConnected={alreadyConnected} />
+            <ResultsTable results={results} onConnect={connectResult} onAddDevice={addDevice} readOnly={readOnly} alreadyConnected={alreadyConnected} alreadyDevice={alreadyDevice} />
           )}
         </section>
       </PageBody>

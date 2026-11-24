@@ -235,3 +235,20 @@ export async function startAuthBackend() {
     }
   };
 }
+
+// ---- Devices page ----------------------------------------------------------------------
+
+/** The table row of a device on /devices (found by its name button). */
+export const deviceRow = (page, name) => page.getByRole('row').filter({ has: page.getByRole('button', { name, exact: true }) });
+
+/**
+ * Open a device's detail drawer from the table, optionally on one of its tabs ("Overview", "Tags", "Probe").
+ * Returns the drawer (a dialog named after the device).
+ */
+export async function openDevice(page, name, tab) {
+  await page.getByRole('button', { name, exact: true }).click();
+  const drawer = page.getByRole('dialog', { name });
+  await drawer.waitFor();
+  if (tab) await drawer.getByRole('tab', { name: new RegExp(`^${tab}`) }).click();
+  return drawer;
+}
