@@ -396,7 +396,7 @@ function BindWizard({ source, selection, brokers, editing = null, onClose, onDon
     brokerId: editing?.target.brokerId || brokers[0]?.id || '',
     pathTemplate: editing?.target.pathTemplate || 'uns/imported/{name}',
     format: editing?.target.format || 'envelope',
-    retain: editing ? editing.target.retain !== false : true,
+    retain: editing ? editing.target.retain === true : false,
     qos: editing?.target.qos ?? 0,
     deadband: editing?.target.deadband ?? '',
     samplingInterval: editing?.source.samplingInterval ?? 1000,
