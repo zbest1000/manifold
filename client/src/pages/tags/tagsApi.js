@@ -1,12 +1,56 @@
-// Thin wrappers over the shared api client for the Tags page. lib/api.js keeps
-// its low-level request helper private, so every call here goes through the
-// existing `api` methods (no new endpoints are needed).
-import { api } from '@/lib/api';
+// Thin wrappers for the Tags page. lib/api.js keeps its low-level request helper private, so
+// methods that already exist there go through `api`; the few new endpoints use `call` below,
+// which attaches the same bearer token.
+import { api, getAuthToken } from '@/lib/api';
+
+async function call(path, { method = 'GET', body, signal } = {}) {
+  const token = getAuthToken();
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      signal,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e;
+    throw new Error('Could not reach the server. Check that Manifold is running.');
+  }
+  const text = await res.text();
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    json = {};
+  }
+  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  return json;
+}
 
 export const fetchSources = () => api.tagSources().then((r) => r.sources || []);
 export const browse = (source, node = '') => api.tagBrowse(source.type, source.id, node).then((r) => r.children || []);
 export const fetchBindings = () => api.listBindings();
-export const saveBinding = (b) => api.saveBinding(b);
+export const saveBinding = (b) => api.saveBinding(b); // -> stored binding + { warnings }
 export const removeBinding = (id) => api.deleteBinding(id);
 export const savePipeline = (p) => api.savePipeline(p);
 export const setHostState = (body) => api.sparkplugState(body);
+
+/** POST /api/tags/bindings/preview -> { valid, error? | resolved topics, payloads, warnings }. Read-only. */
+export const previewBinding = (draft, signal) => call('/api/tags/bindings/preview', { method: 'POST', body: draft, signal });
+
+export const fetchHistorians = () => api.listHistorians().then((r) => r.historians || []);
+export const fetchProfiles = () => call('/api/devices/profiles').then((r) => r.profiles || []);
+export const fetchDevices = () => api.devices().then((r) => r.devices || []);
+
+/** One level of the observed topic tree under `prefix` (same API the Flows view uses) -> { children, truncated }. */
+export const topicChildren = (brokerId, prefix = '') => api.topicTree(brokerId, prefix, 300);
+
+/** Effective tags of a device with their metadata (property, unit, type), flattening poll-group folders. */
+export async function fetchDeviceTags(deviceId) {
+  const src = { type: 'device', id: deviceId };
+  const top = await browse(src, '');
+  const folders = top.filter((n) => n.kind === 'folder');
+  const nested = await Promise.all(folders.map((f) => browse(src, f.address)));
+  return [...top.filter((n) => n.kind === 'tag'), ...nested.flat().filter((n) => n.kind === 'tag')];
+}

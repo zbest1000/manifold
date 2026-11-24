@@ -3,9 +3,15 @@ import { ChevronRight, ChevronDown, Pencil, Trash2, Power } from 'lucide-react';
 import clsx from 'clsx';
 import { formatDistanceToNow } from 'date-fns';
 import { Modal, Button, Badge, Card } from '@/components/ui';
+import BindingDetail from './BindingDetail';
+import { layoutLabel, rbeLabel, instanceCount } from './bindingView';
 
-function sourceLabel(b, sources) {
+function sourceLabel(b, sources, profiles = []) {
   const s = b.source || {};
+  if (s.type === 'device-profile') {
+    const p = profiles.find((x) => x.id === s.profileId);
+    return { type: 'profile', label: p ? p.name : s.profileId || '?', connected: Boolean(p) };
+  }
   const id = s.type === 'opcua' ? s.connectionId : s.type === 'sparkplug' ? s.brokerId : s.deviceId ?? s.connectionId;
   const found = sources.find((x) => x.type === s.type && x.id === id);
   const scope = s.type === 'sparkplug' ? ` ${s.group}/${s.edge}${s.device ? `/${s.device}` : ''}` : '';
@@ -14,14 +20,20 @@ function sourceLabel(b, sources) {
 
 function targetLabel(b) {
   const t = b.target || {};
-  return t.mode === 'sparkplug' ? `spBv1.0/${t.group}/*/${t.edge}/${t.device || '(binding name)'}` : t.pathTemplate || '';
+  return t.mode === 'sparkplug' ? `spBv1.0/${t.group}/*/${t.edge}/${t.device || '(binding name)'}` : t.assetPath || t.assetPathTemplate || t.pathTemplate || (t.assetPaths ? '(per-instance paths)' : '');
 }
 
-function tagCount(b) {
+function tagCount(b, profiles) {
   const s = b.source || {};
-  if (Array.isArray(s.tags)) return s.tags.length;
-  if (Array.isArray(s.metrics)) return s.metrics.length;
-  return 'all';
+  const n = Array.isArray(s.tags) ? s.tags.length : Array.isArray(s.metrics) ? s.metrics.length : 'all';
+  if (s.type !== 'device-profile') return n;
+  const inst = instanceCount(b, profiles);
+  return `${n}${inst === null ? '' : ` x ${inst}`}`;
+}
+
+function historianName(b, historians) {
+  const h = historians.find((x) => x.id === b.target.historian.historianId);
+  return h ? h.name || h.id : `${b.target.historian.historianId} (missing)`;
 }
 
 function StateBadge({ state }) {
@@ -35,7 +47,7 @@ function StateBadge({ state }) {
 }
 
 /** Bindings as a real table. The expander row shows full source/target and the last error. */
-export default function BindingsTable({ bindings, status, sources, editingId, onEdit, onToggleEnabled, onDelete, busyId }) {
+export default function BindingsTable({ bindings, status, sources, profiles = [], historians = [], editingId, onEdit, onToggleEnabled, onDelete, busyId }) {
   const [open, setOpen] = useState(() => new Set());
   const [confirm, setConfirm] = useState(null);
   const toggleOpen = (id) =>
@@ -56,7 +68,10 @@ export default function BindingsTable({ bindings, status, sources, editingId, on
               <th scope="col" className="px-3 py-2 font-medium">Name</th>
               <th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Source</th>
               <th scope="col" className="hidden px-3 py-2 font-medium md:table-cell">Target</th>
-              <th scope="col" className="px-3 py-2 text-right font-medium">Tags</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Layout</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium xl:table-cell">Deadband / heartbeat</th>
+              <th scope="col" className="hidden px-3 py-2 font-medium xl:table-cell">History</th>
+              <th scope="col" className="px-3 py-2 text-right font-medium" title="Profile bindings show tags x instances">Tags</th>
               <th scope="col" className="px-3 py-2 font-medium">Published / suppressed / errors</th>
               <th scope="col" className="px-3 py-2 font-medium">Source state</th>
               <th scope="col" className="hidden px-3 py-2 font-medium lg:table-cell">Last publish</th>
@@ -67,7 +82,7 @@ export default function BindingsTable({ bindings, status, sources, editingId, on
           <tbody>
             {bindings.map((b) => {
               const s = status[b.id] || {};
-              const src = sourceLabel(b, sources);
+              const src = sourceLabel(b, sources, profiles);
               const isOpen = open.has(b.id);
               const enabled = b.enabled !== false;
               const label = b.name || b.id.slice(0, 8);
@@ -94,7 +109,10 @@ export default function BindingsTable({ bindings, status, sources, editingId, on
                     <td className="hidden max-w-[16rem] px-3 py-2 font-mono text-slate-300 md:table-cell">
                       <span className="break-all">{targetLabel(b)}</span>
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-slate-200">{tagCount(b)}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 lg:table-cell">{layoutLabel(b)}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 xl:table-cell">{rbeLabel(b) || 'none'}</td>
+                    <td className="hidden px-3 py-2 text-slate-300 xl:table-cell">{b.target?.historian ? historianName(b, historians) : 'none'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-200">{tagCount(b, profiles)}</td>
                     <td className="px-3 py-2 tabular-nums text-slate-200">
                       {s.published || 0} / {s.suppressed || 0} / <span className={s.errors ? 'text-rose-300' : ''}>{s.errors || 0}</span>
                     </td>
@@ -135,23 +153,8 @@ export default function BindingsTable({ bindings, status, sources, editingId, on
                   </tr>
                   {isOpen && (
                     <tr id={`binding-detail-${b.id}`} className="border-b border-white/5 bg-black/20">
-                      <td colSpan={9} className="px-3 py-2.5">
-                        <dl className="grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]">
-                          <dt className="text-slate-400">Source</dt>
-                          <dd className="break-all text-slate-200">{src.type}: {src.label}{!src.connected && ' (not connected)'}</dd>
-                          <dt className="text-slate-400">Target</dt>
-                          <dd className="break-all font-mono text-slate-200">
-                            {b.target?.mode === 'mqtt' ? `${targetLabel(b)} (${b.target.format || 'plain'}${b.target.retain ? ', retained' : ''}, QoS ${b.target.qos || 0})` : targetLabel(b)}
-                          </dd>
-                          <dt className="text-slate-400">Last publish</dt>
-                          <dd className="text-slate-200">{s.lastTs ? new Date(s.lastTs).toLocaleString() : 'never'}</dd>
-                          <dt className="text-slate-400">Source state</dt>
-                          <dd className="text-slate-200">
-                            {s.sourceState ? `${s.sourceState.state}${s.sourceState.reason ? ` (${s.sourceState.reason})` : ''}` : 'unknown'}
-                          </dd>
-                          <dt className="text-slate-400">Last error</dt>
-                          <dd className={clsx('break-words', s.lastError ? 'text-amber-300' : 'text-slate-400')}>{s.lastError || 'none'}</dd>
-                        </dl>
+                      <td colSpan={12} className="px-3 py-2.5">
+                        <BindingDetail binding={b} status={s} src={src} historians={historians} profiles={profiles} />
                       </td>
                     </tr>
                   )}

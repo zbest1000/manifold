@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Tags as TagsIcon, Plus, Upload, X, Trash2 } from 'lucide-react';
+import { Tags as TagsIcon, Plus, Upload, X, Trash2, Layers } from 'lucide-react';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
 import { Card, Button, EmptyState, HelpButton, Tooltip } from '@/components/ui';
@@ -9,8 +9,8 @@ import BindWizard from './tags/BindWizard';
 import BindingsTable from './tags/BindingsTable';
 import HostStatePanel from './tags/HostStatePanel';
 import CsvImport from './tags/CsvImport';
-import ErrorBanner, { InfoBanner } from './tags/Banner';
-import { fetchSources, fetchBindings, saveBinding, removeBinding } from './tags/tagsApi';
+import ErrorBanner, { InfoBanner, WarningsBanner } from './tags/Banner';
+import { fetchSources, fetchBindings, saveBinding, removeBinding, fetchProfiles, fetchHistorians } from './tags/tagsApi';
 import { buildBoundIndex, groupSources, parseSourceParam, sourceKey } from './tags/helpers';
 import { SELECT_CLS } from './tags/wizardModel';
 import toast from 'react-hot-toast';
@@ -38,6 +38,10 @@ export default function Tags() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editingBinding, setEditingBinding] = useState(null);
   const [csvOpen, setCsvOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profiles, setProfiles] = useState([]);
+  const [historians, setHistorians] = useState([]);
+  const [warnings, setWarnings] = useState([]); // non-blocking warnings from the last save
   const [busyId, setBusyId] = useState(null);
   const wanted = useRef(parseSourceParam(wantedParam));
 
@@ -69,14 +73,23 @@ export default function Tags() {
     }
   }, []);
 
+  // Profiles and historians only decorate the page (entry point, table columns); failures stay quiet here and
+  // surface, with a Retry, inside the wizard that actually needs them.
+  const loadExtras = useCallback(async () => {
+    const [p, h] = await Promise.allSettled([fetchProfiles(), fetchHistorians()]);
+    if (p.status === 'fulfilled') setProfiles(p.value);
+    if (h.status === 'fulfilled') setHistorians(h.value);
+  }, []);
+
   useEffect(() => {
     loadSources();
     loadBindings();
+    loadExtras();
     const t = setInterval(() => {
       if (document.visibilityState === 'visible') loadBindings();
     }, 5000);
     return () => clearInterval(t);
-  }, [loadSources, loadBindings]);
+  }, [loadSources, loadBindings, loadExtras]);
 
   // A link to ?source= while the page is already open (same route) re-targets the picker.
   useEffect(() => {
@@ -134,7 +147,8 @@ export default function Tags() {
   const toggleEnabled = async (b) => {
     setBusyId(b.id);
     try {
-      await saveBinding({ id: b.id, name: b.name || null, enabled: b.enabled === false, source: b.source, target: b.target, ...(b.rbe ? { rbe: b.rbe } : {}) });
+      const saved = await saveBinding({ id: b.id, name: b.name || null, enabled: b.enabled === false, source: b.source, target: b.target, ...(b.rbe ? { rbe: b.rbe } : {}) });
+      setWarnings(saved?.warnings || []);
       await loadBindings();
     } catch (e) {
       toast.error(e.message);
@@ -191,6 +205,7 @@ export default function Tags() {
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {sourcesError && <ErrorBanner title="Could not load the list of sources" message={sourcesError} onRetry={loadSources} />}
+        <WarningsBanner warnings={warnings} onDismiss={() => setWarnings([])} />
         {wantedMissing && (
           <InfoBanner>
             The source <span className="font-mono">{wantedParam}</span> from the link is not connected right now. Showing another source;
@@ -223,6 +238,11 @@ export default function Tags() {
             {source?.type === 'opcua' && (
               <Button variant="outline" onClick={() => setCsvOpen(true)}>
                 <Upload size={14} aria-hidden="true" /> Import CSV
+              </Button>
+            )}
+            {profiles.length > 0 && (
+              <Button variant="outline" onClick={() => setProfileOpen(true)}>
+                <Layers size={14} aria-hidden="true" /> Map a device profile
               </Button>
             )}
             <Tooltip label={noneSelected ? 'Select at least one tag in the tree first' : undefined}>
@@ -330,6 +350,8 @@ export default function Tags() {
               bindings={bindings.bindings}
               status={bindings.status || {}}
               sources={sources}
+              profiles={profiles}
+              historians={historians}
               editingId={editingBinding?.id}
               busyId={busyId}
               onEdit={setEditingBinding}
@@ -346,9 +368,23 @@ export default function Tags() {
           selection={selection}
           brokers={brokers}
           onClose={() => setWizardOpen(false)}
-          onDone={() => {
+          onDone={(saved) => {
             setWizardOpen(false);
             setSelection(new Map());
+            setWarnings(saved?.warnings || []);
+            loadBindings();
+          }}
+        />
+      )}
+      {profileOpen && (
+        <BindWizard
+          profileMode
+          profiles={profiles}
+          brokers={brokers}
+          onClose={() => setProfileOpen(false)}
+          onDone={(saved) => {
+            setProfileOpen(false);
+            setWarnings(saved?.warnings || []);
             loadBindings();
           }}
         />
@@ -359,9 +395,11 @@ export default function Tags() {
           source={source}
           selection={selection}
           brokers={brokers}
+          profiles={profiles}
           onClose={() => setEditingBinding(null)}
-          onDone={() => {
+          onDone={(saved) => {
             setEditingBinding(null);
+            setWarnings(saved?.warnings || []);
             loadBindings();
           }}
         />
