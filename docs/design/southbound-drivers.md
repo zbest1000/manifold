@@ -539,11 +539,48 @@ Decided
    is a TVQ (value, read timestamp, quality) and Timebase stores TVQs
    natively, so Good/Bad transitions — including the Bad sample published on
    disconnect — are kept without translation. The existing Timebase backend
-   already writes `q` [code]. Two things to handle:
-   - Timebase ignores TVQs older than a tag's newest point [code comment in
-     `server/services/historians.js`], so the outbox must replay spilled
-     device samples strictly oldest-first per tag and must not interleave
-     live samples ahead of a backlog for the same tag.
+   already writes `q` [code]. What Timebase's own product pages state
+   (read November 2026 from `timebase.flow-software.com`):
+   - The Historian is free with no tag limit. Its collectors cover OPC UA,
+     Sparkplug, MQTT, Ignition, Telegraf, SQL and other historians, plus a
+     REST API for datasets, tags and writes. **No Modbus, S7 or EtherNet/IP
+     collector is listed**, so these drivers fill a gap rather than
+     duplicate one.
+   - That gives two delivery paths, and the broker-first decision uses the
+     first by default:
+     1. *Via the broker* — Manifold publishes to the UNS (plain or
+        Sparkplug B) and Timebase's own MQTT/Sparkplug collector ingests it.
+        No Manifold historian configuration is needed, and Timebase's
+        collector brings its own store-and-forward.
+     2. *Direct REST write* — the opt-in target for history that must
+        survive a broker outage, through Manifold's outbox.
+   - Duplicates: the Historian is "first-in-wins" on a tag's timestamp and
+     discards a second identical timestamp/value pair. Outbox retries after
+     an ambiguous failure are therefore safe to resend.
+   - Feed loss: Timebase's own collectors write a null value at the moment a
+     feed is interrupted. Manifold's Bad-quality sample on disconnect is the
+     same idea and should be written to the direct target too.
+   - Metadata: tags carry "Fields" (key/value), and a Topic Definition can
+     map each topic level to a named attribute. The mapping's ISA-95
+     `assetPath` levels and the tag's units should be delivered so they land
+     as Fields — by topic structure on the broker path.
+   - Timebase 2.0 is current; this repository's CI integration test runs
+     against `timebase/historian:1.3.4` [code] and should be moved to 2.x
+     before the direct target is relied on.
+
+   Still to verify against the REST API reference, which could not be read
+   from the research environment (the URL cited in
+   `server/services/historians.js` now returns 404):
+   - Ordering. The existing code comment says the Historian ignores TVQs
+     older than a tag's newest point. If that holds in 2.x, the outbox must
+     replay spilled samples strictly oldest-first per tag and never let live
+     samples overtake a backlog for the same tag.
+   - Resolution. The product page says storage is lossless "down to 500ms
+     resolution". Whether samples closer together than that are kept needs
+     confirming before poll groups faster than 500 ms are offered with a
+     Timebase target.
+   - Quality code semantics, batch limits, authentication (Timebase Pulse
+     tokens) and the tag/Field management endpoints.
    - **InfluxDB is not a device-data target.** Its line-protocol writer
      drops quality [code], and it is excluded by decision rather than
      extended. TimescaleDB, which has a `quality` column, remains available
