@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { X, AlertTriangle, Check, ArrowLeft, ArrowRight } from 'lucide-react';
 import clsx from 'clsx';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { Modal, Button } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import ErrorBanner from './Banner';
 import TargetStep from './TargetStep';
 import NamingStep from './NamingStep';
@@ -34,8 +36,18 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
   const [rows, setRows] = useState(() => (isProfile ? [] : editing ? rowsFromBinding(editing) : rowsFromSelection(selection, srcType)));
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
+  const readOnly = useReadOnly();
   const data = useWizardData({ srcType, editing });
-  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const touched = useRef(false); // the user typed or chose something: closing now would throw it away
+  const set = (patch) => {
+    touched.current = true;
+    setForm((f) => ({ ...f, ...patch }));
+  };
+  const requestClose = () => {
+    const dirty = touched.current || step > 0;
+    // Esc and a click outside the dialog land here too, so a half-built binding is not lost by accident.
+    if (!dirty || window.confirm('Discard this binding? What you entered will be lost.')) onClose();
+  };
 
   // Profile source: every profile tag is a row; the stored binding overlays names and selection.
   // Adjusted while rendering, once per profile object (remembered in state), instead of in an effect.
@@ -64,7 +76,10 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
   const effRows = useMemo(() => (isProfile ? rows.filter((r) => selected.has(r.key)) : rows), [isProfile, rows, selected]);
   const allTags = isProfile ? selected.size === rows.length : editing?.source?.tags === 'all';
   const devicesList = data.devices.list;
-  const rename = (key, value) => setRows((rs) => rs.map((r) => (r.key === key ? renameRow(r, value, srcType === 'opcua') : r)));
+  const rename = (key, value) => {
+    touched.current = true;
+    setRows((rs) => rs.map((r) => (r.key === key ? renameRow(r, value, srcType === 'opcua') : r)));
+  };
   const renameable = srcType === 'opcua' || srcType === 'device' || isProfile;
 
   const draftArgs = { name, mode, form, rows: effRows, srcType, source, editing, allTags, profileId, devices: devicesList };
@@ -86,9 +101,10 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
   const firstError = errors[0];
   const lastStep = step === STEPS.length - 1;
   const checking = srcType !== 'mqtt' && (preview.status === 'loading' || preview.status === 'error' || preview.status === 'idle');
-  const submitBlocked = firstError ? `Step ${firstError.step + 1} (${STEPS[firstError.step]}): ${firstError.message}` : checking ? (preview.status === 'error' ? 'The server preview failed. Retry it on the Naming step before saving.' : 'Waiting for the server to check this binding.') : null;
+  const submitBlocked = readOnly ? READ_ONLY_REASON : firstError ? `Step ${firstError.step + 1} (${STEPS[firstError.step]}): ${firstError.message}` : checking ? (preview.status === 'error' ? 'The server preview failed. Retry it on the Naming step before saving.' : 'Waiting for the server to check this binding.') : null;
 
   const submit = async () => {
+    if (busy || readOnly) return;
     setBusy(true);
     try {
       if (srcType === 'mqtt' && !editing) {
@@ -100,7 +116,15 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
           transforms: [{ type: 'repath', to: `${m.base}/{${segCount + 1}-}` }, ...(form.format === 'envelope' ? [{ type: 'envelope' }] : [])],
           target: { type: 'mqtt', brokerId: form.brokerId, retain: form.retain, qos: Number(form.qos) || 0 }
         });
-        toast.success('Created a pipeline route (see Pipelines, Routes)');
+        toast.success(
+          (t) => (
+            <span>
+              Created a pipeline route.{' '}
+              <Link to="/pipelines" onClick={() => toast.dismiss(t.id)} className="underline">Open Pipelines, Routes</Link>
+            </span>
+          ),
+          { duration: 8000 }
+        );
         onDone(null);
         return;
       }
@@ -113,7 +137,15 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
     }
   };
 
-  const toggleKey = (k) => setSelected((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const toggleKey = (k) => {
+    touched.current = true;
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+  };
   const pc = {
     profile,
     devices: devicesList,
@@ -128,13 +160,13 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
 
   const title = editing
     ? `Edit binding ${editing.name || editing.id.slice(0, 8)}`
-    : isProfile ? 'Map a device profile to the UNS' : `Add ${rows.length} ${srcType === 'sparkplug' ? 'Sparkplug metric' : 'tag'}${rows.length === 1 ? '' : 's'} to the UNS`;
+    : isProfile ? 'Map a device profile to the UNS' : srcType === 'mqtt' ? `Create a pipeline route for ${rows.length} topic${rows.length === 1 ? '' : 's'}` : `Add ${rows.length} ${srcType === 'sparkplug' ? 'Sparkplug metric' : 'tag'}${rows.length === 1 ? '' : 's'} to the UNS`;
 
   return (
-    <Modal title={title} onClose={onClose} className="max-w-3xl p-4 sm:p-5">
+    <Modal title={title} onClose={requestClose} className="max-w-3xl p-4 sm:p-5">
       <div className="mb-3 flex items-start justify-between gap-3">
         <h3 className="text-base font-semibold text-slate-100">{title}</h3>
-        <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10">
+        <button type="button" onClick={requestClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10">
           <X size={16} aria-hidden="true" />
         </button>
       </div>
@@ -158,7 +190,7 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
       </ol>
 
       {data.meta.error && <div className="mb-3"><ErrorBanner title="Could not read the device's tag metadata" message={data.meta.error} onRetry={data.loadMeta} /></div>}
-      {step === 0 && <TargetStep {...{ name, setName, mode, setMode, form, set, brokers, srcType, rows: effRows, pc, errors: shownErrors }} />}
+      {step === 0 && <TargetStep {...{ name, setName: (v) => { touched.current = true; setName(v); }, mode, setMode: (v) => { touched.current = true; setMode(v); }, form, set, brokers, srcType, rows: effRows, pc, errors: shownErrors }} />}
       {step === 1 && <NamingStep {...{ mode, srcType, form, set, resolved, collisions, rows: effRows, rename, renameable, errors: shownErrors, preview, isProfile }} />}
       {step === 2 && <OptionsStep {...{ mode, srcType, form, set, errors: shownErrors, hist: data.hist }} />}
 
@@ -171,7 +203,7 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
             <span>{submitBlocked}</span>
           </p>
         )}
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="ghost" onClick={requestClose}>Cancel</Button>
         {step > 0 && (
           <Button variant="outline" onClick={() => setStep(step - 1)}>
             <ArrowLeft size={14} aria-hidden="true" /> Back
@@ -187,7 +219,7 @@ export default function BindWizard({ source, selection, brokers, profiles = [], 
           </Button>
         ) : (
           <Button onClick={submit} disabled={busy || Boolean(submitBlocked)}>
-            {editing ? 'Save changes' : 'Create binding'}
+            {editing ? 'Save changes' : srcType === 'mqtt' ? 'Create pipeline route' : 'Create binding'}
           </Button>
         )}
       </div>

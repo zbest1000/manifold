@@ -32,6 +32,7 @@ export async function jsonRequest(path, { method = 'GET', body } = {}) {
     if (Array.isArray(data.details)) err.details = data.details;
     if (Array.isArray(data.instances)) err.instances = data.instances;
     if (Array.isArray(data.bindings)) err.bindings = data.bindings;
+    if (Array.isArray(data.rows)) err.rows = data.rows;
     throw err;
   }
   return data;
@@ -52,6 +53,12 @@ export const createProfile = (profile) => jsonRequest('/api/devices/profiles', {
 export const updateProfile = (id, profile) => jsonRequest(`/api/devices/profiles/${enc(id)}`, { method: 'PUT', body: profile });
 export const deleteProfile = (id) => jsonRequest(`/api/devices/profiles/${enc(id)}`, { method: 'DELETE' });
 export const instantiateProfile = (id, body) => jsonRequest(`/api/devices/profiles/${enc(id)}/instantiate`, { method: 'POST', body });
+
+/**
+ * POST /api/devices/bulk: all-or-nothing. Rejects with `err.rows` [{ index, name, error, details }]
+ * (index into `devices`) when any row is invalid; then nothing was created.
+ */
+export const bulkCreateDevices = (devices, profileId) => jsonRequest('/api/devices/bulk', { method: 'POST', body: { devices, ...(profileId ? { profileId } : {}) } });
 
 /** POST /api/system/discovery/start; the server's refusal text is shown verbatim. */
 export const startDiscoveryScan = (options) => jsonRequest('/api/system/discovery/start', { method: 'POST', body: options });

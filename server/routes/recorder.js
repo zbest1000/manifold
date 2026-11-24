@@ -1,6 +1,7 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const { filterProblem } = require('../services/mqttMatch');
 
 // Recordings (time-series capture) + replay control.
 
@@ -36,6 +37,8 @@ router.post('/', (req, res) => {
   const { profiles } = req.app.locals.services;
   const { id, name, brokerId, filter, target, maxBytes, enabled } = req.body || {};
   if (!brokerId || !filter) return res.status(400).json({ error: 'brokerId and filter are required' });
+  const fp = filterProblem(filter);
+  if (fp) return res.status(400).json({ error: `filter "${filter}" ${fp}` });
   if (target && target.type === 'historian' && !target.historianId) {
     return res.status(400).json({ error: 'target.historianId is required for historian targets' });
   }

@@ -12,6 +12,18 @@ export const BLANK_FORM = {
   trustServer: false
 };
 
+/** Why this connection form cannot be submitted yet, or '' when it can. */
+export function formProblem(form) {
+  const url = String(form.endpointUrl || '').trim();
+  if (!url) return 'Endpoint URL is required';
+  if (!/^opc\.tcp:\/\/[^/\s]+/i.test(url)) return 'The endpoint URL must look like opc.tcp://host:4840';
+  const mode = form.securityMode || 'None';
+  const policy = form.securityPolicy || 'None';
+  if (mode !== 'None' && policy === 'None') return `Security mode ${mode} needs a security policy (for example Basic256Sha256)`;
+  if (mode === 'None' && policy !== 'None') return `Security policy ${policy} needs a security mode of Sign or SignAndEncrypt`;
+  return '';
+}
+
 export const SECURITY_MODES = ['None', 'Sign', 'SignAndEncrypt'];
 // Only the policies node-opcua actually supports for client connections.
 export const SECURITY_POLICIES = ['None', 'Basic256Sha256', 'Aes128_Sha256_RsaOaep', 'Aes256_Sha256_RsaPss'];

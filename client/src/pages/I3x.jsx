@@ -16,8 +16,10 @@ import { useStore } from '@/store/store';
 import { Card, Button, Badge, Input, Field, EmptyState, Banner, LoadingState, Skeleton, PageBody, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import ViewTab from '@/components/ViewTab';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 
-const formatValue = (v) => (typeof v === 'object' ? JSON.stringify(v) : String(v));
+const formatValue = (v) => (v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v));
 
 export default function I3x() {
   const graphStyle = useStore((s) => s.graphStyle);
@@ -68,10 +70,14 @@ export default function I3x() {
   }, [connected, server, objects]);
   const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
 
-  const connect = async () => {
+  const readOnly = useReadOnly();
+  const connect = async (e) => {
+    e?.preventDefault();
+    if (busy || readOnly || !form.baseUrl.trim()) return;
+    if (!/^https?:\/\/[^/\s]+/i.test(form.baseUrl.trim())) return toast.error('The base URL must start with http:// or https://');
     setBusy(true);
     try {
-      const s = await api.i3xConnect({ baseUrl: form.baseUrl, token: form.token || undefined });
+      const s = await api.i3xConnect({ baseUrl: form.baseUrl.trim(), token: form.token || undefined });
       setStatus(s);
       toast.success(`Connected to i3X (${s.info?.serverName || s.baseUrl})`);
     } catch (e) {
@@ -102,6 +108,7 @@ export default function I3x() {
       <div className="flex h-full flex-col">
         <PageHeader title="i3X" subtitle="Discover and visualize a Common Contextual Manufacturing Information (i3X) server" actions={<Badge>not connected</Badge>} />
         <PageBody>
+          <ReadOnlyNote />
           {statusError && !status && (
             <Banner variant="error" title="Could not read the i3X connection status" onRetry={reloadStatus}>
               {statusError.message}
@@ -122,6 +129,7 @@ export default function I3x() {
                     </p>
                   </div>
                 </div>
+                <form onSubmit={connect}>
                 <div className="space-y-4">
                   <Field label="Base URL">
                     <Input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.i3x.dev/v1" />
@@ -131,10 +139,11 @@ export default function I3x() {
                   </Field>
                 </div>
                 <div className="mt-5 flex justify-end">
-                  <Button onClick={connect} disabled={busy || !form.baseUrl}>
+                  <Button type="submit" disabled={busy || !form.baseUrl.trim() || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                     <Plug size={15} aria-hidden="true" /> {busy ? 'Verifying…' : 'Connect to i3X'}
                   </Button>
                 </div>
+                </form>
                 <p className="helper mt-4">Tip: run a network scan on the Discovery page to auto-detect i3X servers on your network.</p>
               </Card>
             </div>
@@ -149,7 +158,7 @@ export default function I3x() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="i3X"
-        subtitle={`${server.info?.serverName || server.baseUrl} · ${objects.length} objects · ${namespaces.length} namespaces`}
+        subtitle={`${server.info?.serverName || server.baseUrl} · ${objects.length} object${objects.length === 1 ? '' : 's'} · ${namespaces.length} namespace${namespaces.length === 1 ? '' : 's'}`}
         actions={
           <>
             <div role="group" aria-label="Explorer view" className="flex overflow-hidden rounded-xl border border-white/10">
@@ -158,7 +167,7 @@ export default function I3x() {
               <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
             </div>
             <Badge status="connected">i3X {server.info?.specVersion || ''}</Badge>
-            <Button variant="outline" onClick={disconnect}>
+            <Button variant="outline" onClick={disconnect} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               <LogOut size={15} aria-hidden="true" /> Disconnect
             </Button>
           </>

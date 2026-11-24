@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Tags as TagsIcon, Plus, Upload, X, Trash2, Layers } from 'lucide-react';
 import { useStore } from '@/store/store';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 import PageHeader from '@/components/PageHeader';
 import { Card, Button, EmptyState, HelpButton, Tooltip } from '@/components/ui';
 import TagTree from './tags/TagTree';
@@ -26,6 +28,7 @@ const clearSelection = () => NO_SELECTION;
  */
 export default function Tags() {
   const allBrokers = useStore((s) => s.brokers);
+  const readOnly = useReadOnly();
   const brokers = useMemo(() => allBrokers.filter((b) => b.status === 'connected'), [allBrokers]);
   const [params, setParams] = useSearchParams();
   const wantedParam = params.get('source');
@@ -212,6 +215,7 @@ export default function Tags() {
       />
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        <ReadOnlyNote className="" />
         {sourcesError && <ErrorBanner title="Could not load the list of sources" message={sourcesError} onRetry={loadSources} />}
         <WarningsBanner warnings={warnings} onDismiss={() => setWarnings([])} />
         {wantedMissing && (
@@ -244,26 +248,34 @@ export default function Tags() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {source?.type === 'opcua' && (
-              <Button variant="outline" onClick={() => setCsvOpen(true)}>
+              <Button variant="outline" onClick={() => setCsvOpen(true)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                 <Upload size={14} aria-hidden="true" /> Import CSV
               </Button>
             )}
             {profiles.length > 0 && (
-              <Button variant="outline" onClick={() => setProfileOpen(true)}>
+              <Button variant="outline" onClick={() => setProfileOpen(true)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                 <Layers size={14} aria-hidden="true" /> Map a device profile
               </Button>
             )}
-            <Tooltip label={noneSelected ? 'Select at least one tag in the tree first' : undefined}>
+            <Tooltip label={readOnly ? READ_ONLY_REASON : noneSelected ? 'Select at least one tag in the tree first' : undefined}>
               <Button
                 onClick={() => setWizardOpen(true)}
-                disabled={noneSelected}
-                title={noneSelected ? 'Select at least one tag in the tree first' : undefined}
+                disabled={noneSelected || readOnly}
+                title={readOnly ? READ_ONLY_REASON : noneSelected ? 'Select at least one tag in the tree first' : undefined}
               >
-                <Plus size={14} aria-hidden="true" /> Add to UNS{!noneSelected && ` (${selection.size})`}
+                <Plus size={14} aria-hidden="true" /> {source?.type === 'mqtt' ? 'Create pipeline route' : 'Add to UNS'}{!noneSelected && ` (${selection.size})`}
               </Button>
             </Tooltip>
           </div>
         </div>
+
+        {source?.type === 'mqtt' && (
+          <InfoBanner>
+            <b>MQTT topics are mapped with a pipeline route, not a binding.</b> A route re-publishes the topics under your UNS path, but it has none of the binding
+            features: no deadband or heartbeat, no per-tag renaming or units, no Sparkplug B output, no direct historian target, and no entry in the Bindings table below
+            (it is listed on <Link to="/pipelines" className="underline">Pipelines, Routes</Link>). For those, bind tags from a device, OPC UA or Sparkplug source.
+          </InfoBanner>
+        )}
 
         {/* Browse + selection */}
         {!source ? (
@@ -365,6 +377,7 @@ export default function Tags() {
               onEdit={setEditingBinding}
               onToggleEnabled={toggleEnabled}
               onDelete={deleteBinding}
+              readOnly={readOnly}
             />
           )}
         </section>

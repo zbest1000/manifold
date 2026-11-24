@@ -1,12 +1,13 @@
-import { useState } from 'react';
-import { BellRing, Plus, Check } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { BellRing, Plus, Check, Pencil, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 import { useStore } from '@/store/store';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Field, Select, Banner, LoadingState, RowActions, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
+import { Card, Button, Input, Field, Select, Banner, LoadingState, IconButton, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { EMPTY_RULE_FORM, RULE_LABEL, VALUE_OPS, alertStatusClass, formFromRule, ruleBody, ruleScope } from './helpers';
 
 // Alert rules: watch the namespace actively — a branch going quiet, a specific
@@ -17,6 +18,8 @@ export default function AlertRulesCard() {
   const brokers = useStore((s) => s.brokers);
   const [form, setForm] = useState(EMPTY_RULE_FORM);
   const [busy, setBusy] = useState(false);
+  const readOnly = useReadOnly();
+  const formRef = useRef(null);
   const [confirm, confirmDialog] = useConfirm();
   const connected = brokers.filter((b) => b.status === 'connected');
 
@@ -28,6 +31,7 @@ export default function AlertRulesCard() {
 
   const save = async (e) => {
     e.preventDefault();
+    if (busy || readOnly) return;
     setBusy(true);
     try {
       await api.saveAlertRule(ruleBody(form, connected[0]?.id));
@@ -48,9 +52,19 @@ export default function AlertRulesCard() {
       await api.deleteAlertRule(r.id);
       if (form.id === r.id) setForm(EMPTY_RULE_FORM);
       rulesQ.reload();
+      toast.success('Alert rule deleted');
     } catch (err) {
       toast.error(err.message);
     }
+  };
+
+  // The editor sits below the table: bring it into view and focus it, or "Edit" appears to do nothing.
+  const editRule = (r) => {
+    setForm(formFromRule(r));
+    setTimeout(() => {
+      formRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      formRef.current?.querySelector('select, input')?.focus();
+    }, 0);
   };
 
   const brokerName = (id) => brokers.find((b) => b.id === id)?.name || id?.slice(0, 8) || '—';
@@ -91,7 +105,10 @@ export default function AlertRulesCard() {
                   {r.webhookUrl && ' · webhook'}
                 </Td>
                 <Td align="right">
-                  <RowActions what={`alert rule ${r.name || RULE_LABEL[r.type]}`} onEdit={() => setForm(formFromRule(r))} onDelete={() => remove(r)} />
+                  <span className="inline-flex items-center justify-end gap-1">
+                    <IconButton icon={Pencil} size={14} label={`${readOnly ? 'View' : 'Edit'} alert rule ${r.name || RULE_LABEL[r.type]}`} onClick={() => editRule(r)} />
+                    <IconButton icon={Trash2} size={14} label={`Delete alert rule ${r.name || RULE_LABEL[r.type]}`} className="hover:bg-rose-500/10 hover:text-rose-300" onClick={() => remove(r)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined} />
+                  </span>
                 </Td>
               </Tr>
             ))}
@@ -99,7 +116,7 @@ export default function AlertRulesCard() {
         </Table>
       )}
 
-      <form onSubmit={save} aria-label={form.id ? 'Edit alert rule' : 'Add alert rule'} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <form ref={formRef} onSubmit={save} aria-label={form.id ? 'Edit alert rule' : 'Add alert rule'} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Select label="Type" value={form.type} onChange={(e) => set({ type: e.target.value })}>
           {Object.entries(RULE_LABEL).map(([k, v]) => (
             <option key={k} value={k}>
@@ -159,7 +176,7 @@ export default function AlertRulesCard() {
           <Input placeholder="https://hooks.example.com/…" value={form.webhookUrl} onChange={(e) => set({ webhookUrl: e.target.value })} />
         </Field>
         <div className="flex items-end gap-2">
-          <Button type="submit" disabled={busy || connected.length === 0}>
+          <Button type="submit" disabled={busy || connected.length === 0 || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
             {form.id ? (
               <>
                 <Check size={14} aria-hidden="true" /> Save rule
@@ -195,7 +212,7 @@ export default function AlertRulesCard() {
                   <span className="text-slate-300">{e.ruleName}</span>
                   <span className="ml-2 text-muted">{e.detail}</span>
                 </span>
-                <span className="shrink-0 text-subtle">{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
+                <span className="shrink-0 text-subtle" title={`${new Date(e.ts).toLocaleString()} (local) · ${new Date(e.ts).toISOString()}`}>{formatDistanceToNow(e.ts, { addSuffix: true })}</span>
               </li>
             ))}
           </ul>

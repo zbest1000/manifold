@@ -2,6 +2,7 @@ import { useId, useMemo, useRef, useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Modal, Button, IconButton, Input } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { FormField, Section, selectCls, DescriptorFields } from './FormControls';
 import PollGroupsEditor from './PollGroupsEditor';
 import ParamsEditor from './ParamsEditor';
@@ -21,6 +22,7 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
   const titleId = useId();
   const [draft, setDraft] = useState(() => withIds(profile || blankProfile(protocols[0])));
   const [saving, setSaving] = useState(false);
+  const readOnly = useReadOnly();
   const [saveError, setSaveError] = useState(null);
   const descriptor = protocols.find((p) => p.id === draft.protocol) || protocols[0];
   const initial = useRef(null);
@@ -56,6 +58,7 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
 
   const save = async (e) => {
     e.preventDefault();
+    if (readOnly || saving) return;
     if (!draft.name.trim()) return setSaveError({ message: 'Give the profile a name.' });
     const bad = Object.keys(localErrors).length;
     if (bad) return setSaveError({ message: `${bad} tag row${bad === 1 ? ' has' : 's have'} problems. Fix the highlighted rows.` });
@@ -131,7 +134,7 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
           <ProfileSaveErrors error={saveError} />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={requestClose}>Cancel</Button>
-            <Button type="submit" disabled={saving}>{saving && <Loader2 size={14} className="animate-spin" />} {editing ? 'Save profile' : 'Create profile'}</Button>
+            <Button type="submit" disabled={saving || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>{saving && <Loader2 size={14} className="animate-spin" />} {editing ? 'Save profile' : 'Create profile'}</Button>
           </div>
         </div>
       </form>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Microscope, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Input } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { FormField } from './FormControls';
 import ProbeResult from './ProbeResult';
 import { probeSpec, probeBody } from './model';
@@ -17,6 +18,7 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
   const [count, setCount] = useState(spec.count?.def ?? '');
   const [unitId, setUnitId] = useState('');
   const [busy, setBusy] = useState(false);
+  const readOnly = useReadOnly();
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
 
@@ -60,7 +62,7 @@ export default function ProbePanel({ deviceId, protocol, defaultUnitId, selected
             {(a) => <Input {...a} onKeyDown={onEnter} type="number" min={0} max={255} value={unitId} onChange={(e) => setUnitId(e.target.value)} placeholder={defaultUnitId !== undefined ? String(defaultUnitId) : ''} />}
           </FormField>
         )}
-        <Button type="button" onClick={run} disabled={busy} className="col-span-2 sm:col-span-1">
+        <Button type="button" onClick={run} disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} className="col-span-2 sm:col-span-1">
           {busy ? <Loader2 size={14} className="animate-spin" /> : <Microscope size={14} />} Read
         </Button>
       </div>

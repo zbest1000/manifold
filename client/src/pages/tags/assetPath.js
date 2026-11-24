@@ -61,3 +61,20 @@ export function visibleRows(childrenOf, expanded) {
   return out;
 }
 
+
+/**
+ * Deep link to a binding's place on the UNS page. The UNS page reads `?broker=<brokerId>&path=<asset path>`
+ * (path = slash-separated topic path of the node; broker optional). A template path is cut at its first
+ * placeholder, so the link opens the deepest branch that is the same for every instance.
+ */
+export function unsLink(b) {
+  const t = b?.target || {};
+  const full = bindingAssetPath(b);
+  if (!full) return null;
+  const segs = full.split('/');
+  const firstTemplated = segs.findIndex((seg) => seg.includes('{'));
+  const prefix = (firstTemplated === -1 ? segs : segs.slice(0, firstTemplated)).join('/');
+  if (!prefix) return null;
+  const q = new URLSearchParams({ ...(t.brokerId ? { broker: t.brokerId } : {}), path: prefix });
+  return { to: `/uns?${q.toString()}`, path: prefix, partial: prefix !== full };
+}

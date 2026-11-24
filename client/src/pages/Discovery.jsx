@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Radar, Play, Square, ListPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { api } from '@/lib/api';
 import { Card, Button, Input, Field, EmptyState, PageBody, Banner } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
@@ -11,10 +13,14 @@ import OtNotice from './discovery/OtNotice';
 import ResultsTable from './discovery/ResultsTable';
 import AddAllDialog from './discovery/AddAllDialog';
 import { startDiscoveryScan } from './devices/devicesApi';
-import { buildScanOptions, draftFromResult, draftsFromResults, parsePorts, SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
+import { isAlreadyConnected, buildScanOptions, draftFromResult, draftsFromResults, parsePorts, SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
 
 export default function Discovery() {
   const discovery = useStore((s) => s.discovery);
+  const brokers = useStore((s) => s.brokers);
+  const opcua = useStore((s) => s.opcua);
+  const readOnly = useReadOnly();
+  const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
   const navigate = useNavigate();
   const [range, setRange] = useState('');
   const [devicePorts, setDevicePorts] = useState({}); // protocol id -> ports text (absent = not scanned)
@@ -26,6 +32,7 @@ export default function Discovery() {
   const findDevices = Object.keys(devicePorts).length > 0;
 
   const start = async () => {
+    if (readOnly || busy) return;
     if (portProblems) return toast.error('Fix the port lists first');
     setBusy(true);
     setScanError('');
@@ -68,6 +75,10 @@ export default function Discovery() {
   // The Devices page opens its device form prefilled; nothing is created here.
   const addDevice = (r) => navigate('/devices', { state: { draft: draftFromResult(r) } });
 
+  // A found endpoint that is already connected must not be connected a second time (the server would
+  // happily open a duplicate connection and the lists would then show the same broker twice).
+  const alreadyConnected = (r) => isAlreadyConnected(r, { brokers, opcua });
+
   const { progress, results, scanning } = discovery;
   const pct = progress && progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
   const drafts = useMemo(() => draftsFromResults(results), [results]);
@@ -79,11 +90,11 @@ export default function Discovery() {
         subtitle="Probe your network for MQTT brokers, OPC UA servers, i3X endpoints and, optionally, PLCs and meters"
         actions={
           scanning ? (
-            <Button variant="danger" onClick={stop}>
+            <Button variant="danger" onClick={stop} {...ro}>
               <Square size={15} aria-hidden="true" /> Stop scan
             </Button>
           ) : (
-            <Button onClick={start} disabled={busy}>
+            <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
               <Play size={15} aria-hidden="true" /> Start scan
             </Button>
           )
@@ -91,13 +102,14 @@ export default function Discovery() {
       />
 
       <PageBody>
+        <ReadOnlyNote className="" />
         <Card className="space-y-4 p-4 sm:p-5">
           <div className="flex flex-wrap items-end gap-3">
             <Field label="CIDR range (blank = auto-detect local subnet)" className="min-w-0 flex-1 basis-64">
               <Input value={range} onChange={(e) => setRange(e.target.value)} placeholder="192.168.1.0/24" disabled={scanning} />
             </Field>
             {!scanning && (
-              <Button onClick={start} disabled={busy}>
+              <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
                 <Radar size={15} aria-hidden="true" /> Scan
               </Button>
             )}
@@ -128,7 +140,7 @@ export default function Discovery() {
               Results {results.length > 0 && <span className="text-muted">({results.length})</span>}
             </h2>
             {drafts.length > 1 && (
-              <Button size="sm" variant="outline" onClick={() => setAddAll(true)}>
+              <Button size="sm" variant="outline" onClick={() => setAddAll(true)} {...ro}>
                 <ListPlus size={14} aria-hidden="true" /> Add all {drafts.length} devices…
               </Button>
             )}
@@ -141,7 +153,7 @@ export default function Discovery() {
                 hint={scanning ? 'Results appear here as hosts answer.' : 'Scan your local network (or a CIDR range) for MQTT brokers, OPC UA servers, i3X endpoints and, if you tick them, Modbus, S7 and EtherNet/IP devices.'}
                 action={
                   !scanning && (
-                    <Button onClick={start} disabled={busy}>
+                    <Button onClick={start} disabled={busy || readOnly} title={ro.title}>
                       <Play size={15} aria-hidden="true" /> Start a network scan
                     </Button>
                   )
@@ -149,7 +161,7 @@ export default function Discovery() {
               />
             </Card>
           ) : (
-            <ResultsTable results={results} onConnect={connectResult} onAddDevice={addDevice} />
+            <ResultsTable results={results} onConnect={connectResult} onAddDevice={addDevice} readOnly={readOnly} alreadyConnected={alreadyConnected} />
           )}
         </section>
       </PageBody>

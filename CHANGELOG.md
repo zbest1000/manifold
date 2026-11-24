@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Functional QA pass over Tags, Devices, Discovery, Pipelines, OPC UA, CESMII, i3X and Settings.**
+  `POST /api/devices/bulk` creates devices all-or-nothing (every row validated first, per-row errors
+  on failure) and both bulk dialogs use it; device names are unique; a device the driver could never
+  run (bad options, S7 without rack/slot) is refused at save time; the device form has an Advanced
+  section for Modbus unmapped register ranges and per-device process isolation; Tags says plainly
+  that MQTT-topic tags become pipeline routes; a historian route from a `{v,t,q}` topic offers the
+  numeric-on-`v` transform; bindings link to the UNS page (`/uns?broker=&path=`); viewer sessions
+  see disabled controls with the reason instead of 403s; Settings shows the session and can sign out.
+  Fixes: historians still used by a route, recording or binding can no longer be deleted; pipeline,
+  model and recorder topics are validated; a stale inferred contract could be locked under another
+  topic; the OPC UA form left a ghost "connecting" row after a refused connection; Discovery offered
+  to connect brokers that were already connected; importing the same config file twice did nothing.
+
 - **Southbound device drivers, read-only.** Modbus TCP, Siemens S7 (S7comm) and
   EtherNet/IP (Logix) devices can be polled directly. **S7 and EtherNet/IP are
   experimental**: they were checked only against in-process simulators written

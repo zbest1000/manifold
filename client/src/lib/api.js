@@ -39,6 +39,12 @@ async function request(path, options = {}) {
   } catch {
     body = { raw: text };
   }
+  if (res.status === 401 && token) {
+    // The stored token was rejected (rotated or revoked while the page was open): forget it and reload,
+    // which brings up the unlock screen instead of leaving every control failing with "Unauthorized".
+    setAuthToken('');
+    window.location.reload();
+  }
   if (!res.ok) {
     const raw = body.error || `Request failed (${res.status})`;
     const h = humanizeError(raw);

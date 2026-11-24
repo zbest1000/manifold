@@ -93,3 +93,10 @@ export function draftsFromResults(results) {
   }
   return out.sort((a, b) => a.host.localeCompare(b.host, undefined, { numeric: true }) || a.port - b.port);
 }
+
+/** Is this discovered MQTT broker / OPC UA server already one of the configured connections? */
+export function isAlreadyConnected(r, { brokers = [], opcua = [] } = {}) {
+  if (r?.kind === 'mqtt') return brokers.some((b) => b.host === r.host && Number(b.port) === Number(r.port));
+  if (r?.kind === 'opcua') return opcua.some((c) => c.endpointUrl === (r.endpointUrl || `opc.tcp://${r.host}:${r.port}`));
+  return false;
+}

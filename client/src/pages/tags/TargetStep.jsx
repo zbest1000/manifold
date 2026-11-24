@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { Link } from 'react-router-dom';
 import { Input, Field } from '@/components/ui';
 import AssetPathField from './AssetPathField';
 import { ProfileSource, ProfileDestination } from './ProfileParts';
@@ -90,7 +91,10 @@ export default function TargetStep({ name, setName, mode, setMode, form, set, br
         <p className={help}>Sparkplug output uses a dedicated session with a proper NBIRTH/NDEATH lifecycle. Group, edge node and device are set in the next step.</p>
       )}
       {srcType === 'mqtt' && (
-        <p className={help}>MQTT-source tags compile into a pipeline route (re-pathed under your base path), not a binding. Deadband and heartbeat do not apply.</p>
+        <p role="note" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-snug text-amber-100">
+          <b>This creates a pipeline route, not a binding.</b> The topics are re-published under your base path by the pipeline engine, so deadband, heartbeat, per-tag names and units, Sparkplug
+          output and a direct historian target are not available, and the result is managed under <Link to="/pipelines" className="underline">Pipelines, Routes</Link> (not in the Bindings table).
+        </p>
       )}
       {!isProfile && <p className={help}>{rows.length} selected.</p>}
       <FieldError errors={otherErrors} />

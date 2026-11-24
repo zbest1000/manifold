@@ -190,7 +190,7 @@ export const SOURCE_GROUPS = [
   { type: 'device', label: 'Devices' },
   { type: 'opcua', label: 'OPC UA servers' },
   { type: 'sparkplug', label: 'Sparkplug (via MQTT broker)' },
-  { type: 'mqtt', label: 'MQTT topics' }
+  { type: 'mqtt', label: 'MQTT topics (mapped with a pipeline route)' }
 ];
 
 export function groupSources(sources) {

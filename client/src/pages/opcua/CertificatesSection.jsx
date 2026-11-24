@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import { Button, Banner, Skeleton } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { fmtDate } from './helpers';
 
 /**
@@ -36,6 +37,7 @@ function CertificatesBody() {
     const [cert, trust] = await Promise.all([api.opcuaCertificate(), api.opcuaTrustList()]);
     return { cert, trust };
   });
+  const readOnly = useReadOnly();
   const cert = data?.cert;
   const trust = data?.trust;
 
@@ -86,7 +88,7 @@ function CertificatesBody() {
                     <p className="truncate text-slate-300">{c.subject || c.file}</p>
                     <p className="mono helper truncate">{c.thumbprint}</p>
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => trustOne(c.thumbprint)} aria-label={`Trust certificate ${c.subject || c.file}`}>
+                  <Button type="button" size="sm" variant="outline" disabled={readOnly} title={readOnly ? READ_ONLY_REASON : 'Move this certificate to the trusted list'} onClick={() => trustOne(c.thumbprint)} aria-label={`Trust certificate ${c.subject || c.file}`}>
                     <ShieldCheck size={13} aria-hidden="true" /> Trust
                   </Button>
                 </li>

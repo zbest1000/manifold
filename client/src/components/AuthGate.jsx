@@ -90,7 +90,7 @@ export default function AuthGate({ children }) {
             value={token}
             onChange={(e) => setToken(e.target.value)}
           />
-          {error && <p className="text-xs text-rose-300">{error}</p>}
+          {error && <p role="alert" className="text-xs text-rose-300">{error}</p>}
           <Button type="submit" disabled={!token.trim()} className="w-full">
             <KeyRound size={14} className="mr-1.5" /> Unlock
           </Button>

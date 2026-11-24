@@ -4,18 +4,21 @@ import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import { Card, Button, Input, Field, Select, Badge, IconButton, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { BrokerSelect, ListState } from './shared';
-import { RowActions } from '@/components/ui';
+import { BrokerSelect, ListState, RowButtons, useRo } from './shared';
 import { blankModel, brokerName, cleanModel, cloneModel, modelSaveable } from './helpers';
 
 export default function ModelsTab({ brokers }) {
   const [draft, setDraft] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
+  const [saving, setSaving] = useState(false);
+  const ro = useRo();
   const { data, error, loading, reload } = usePolled(() => api.listModels(), { interval: 5000 });
   const models = data?.models || [];
   const status = data?.status || {};
 
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       await api.saveModel(cleanModel(draft));
       setDraft(null);
@@ -23,6 +26,8 @@ export default function ModelsTab({ brokers }) {
       toast.success('Model saved');
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -32,6 +37,7 @@ export default function ModelsTab({ brokers }) {
     try {
       await api.deleteModel(m.id);
       reload();
+      toast.success('Model deleted');
     } catch (e) {
       toast.error(e.message);
     }
@@ -56,7 +62,7 @@ export default function ModelsTab({ brokers }) {
                 title: 'No models yet',
                 hint: 'A model binds attributes from many raw topics (even across brokers) and publishes them as one merged object at a clean UNS path — ten raw topics become one Pump-7.',
                 action: (
-                  <Button onClick={newModel}>
+                  <Button onClick={newModel} {...ro}>
                     <Plus size={15} aria-hidden="true" /> Create the first model
                   </Button>
                 )
@@ -93,7 +99,7 @@ export default function ModelsTab({ brokers }) {
                     {s.errors ? <span className="text-rose-300"> · {s.errors} err</span> : null}
                   </Td>
                   <Td align="right">
-                    <RowActions what={`model ${name}`} onEdit={() => setDraft(cloneModel(m))} onDelete={() => remove(m)} />
+                    <RowButtons what={`model ${name}`} onEdit={() => setDraft(cloneModel(m))} onDelete={() => remove(m)} />
                   </Td>
                 </Tr>
               );
@@ -103,7 +109,7 @@ export default function ModelsTab({ brokers }) {
       </ListState>
 
       {!draft && models.length > 0 && (
-        <Button variant="outline" onClick={newModel}>
+        <Button variant="outline" onClick={newModel} {...ro}>
           <Plus size={14} aria-hidden="true" /> New model
         </Button>
       )}
@@ -162,7 +168,7 @@ export default function ModelsTab({ brokers }) {
             </Button>
           </div>
           <div className="mt-4 flex gap-2">
-            <Button onClick={save} disabled={!modelSaveable(draft)}>
+            <Button onClick={save} disabled={!modelSaveable(draft) || saving || Boolean(ro.disabled)} title={ro.title}>
               {draft.id ? 'Save changes' : 'Save model'}
             </Button>
             <Button variant="ghost" onClick={() => setDraft(null)}>

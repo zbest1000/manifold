@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { Button, Input } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { setHostState } from './tagsApi';
 
 // Manifold as a Sparkplug primary host: a dedicated session publishing retained
@@ -11,6 +12,7 @@ export default function HostStatePanel({ brokers, hosts, onStatus }) {
   const [brokerId, setBrokerId] = useState('');
   const [hostId, setHostId] = useState('manifold_host');
   const [busy, setBusy] = useState(false);
+  const readOnly = useReadOnly();
   const hostFieldId = useId();
   const active = Object.values(hosts);
 
@@ -59,7 +61,7 @@ export default function HostStatePanel({ brokers, hosts, onStatus }) {
             <label htmlFor={hostFieldId}>Host ID</label>
             <Input id={hostFieldId} value={hostId} onChange={(e) => setHostId(e.target.value)} placeholder="host id" className="mt-1" />
           </div>
-          <Button size="sm" disabled={busy || !hostId || brokers.length === 0} onClick={() => toggle(brokerId || brokers[0]?.id, hostId, true)}>
+          <Button size="sm" disabled={busy || !hostId || brokers.length === 0 || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} onClick={() => toggle(brokerId || brokers[0]?.id, hostId, true)}>
             Enable
           </Button>
         </div>
@@ -70,7 +72,7 @@ export default function HostStatePanel({ brokers, hosts, onStatus }) {
               <span className="min-w-0 truncate font-mono text-slate-200" title={`spBv1.0/STATE/${h.hostId}`}>{h.hostId}</span>
               <span className="shrink-0 text-slate-400">{h.online ? 'online' : 'connecting'}</span>
             </span>
-            <button disabled={busy} onClick={() => toggle(h.brokerId, h.hostId, false)} className="shrink-0 text-xs text-slate-300 hover:text-rose-300">
+            <button disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} onClick={() => toggle(h.brokerId, h.hostId, false)} className="shrink-0 text-xs text-slate-300 hover:text-rose-300">
               disable
             </button>
           </div>

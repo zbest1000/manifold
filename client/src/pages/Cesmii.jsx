@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Factory, Plug, LogOut, Search, LineChart, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
@@ -6,8 +6,19 @@ import { usePolled } from '@/lib/usePolled';
 import { Card, Button, Badge, Input, Field, EmptyState, Banner, LoadingState, Skeleton, PageBody, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { Sparkline as ChartSparkline, fmtNum } from '@/components/charts';
 import PageHeader from '@/components/PageHeader';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 
 const BLANK = { endpoint: '', authenticator: '', role: '', userName: '', secret: '' };
+
+// SMIP expects 'YYYY-MM-DD HH:MM:SS+00' (UTC).
+const SMIP_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$/;
+
+// 'YYYY-MM-DD HH:MM:SS.mmm+00' -> 'YYYY-MM-DD HH:MM:SS' (UTC): short enough that the Value column stays in view.
+function fmtTs(ts) {
+  const d = new Date(String(ts).replace(' ', 'T').replace(/\+00(:?00)?$/, 'Z'));
+  return Number.isNaN(d.getTime()) ? String(ts) : d.toISOString().slice(0, 19).replace('T', ' ');
+}
 
 function isoDaysAgo(days) {
   // Build a SMIP-friendly timestamp without relying on Date.now at module load
@@ -29,6 +40,9 @@ export default function Cesmii() {
   const [samples, setSamples] = useState(null);
   const [historyError, setHistoryError] = useState(null);
   const [range, setRange] = useState({ startTime: isoDaysAgo(7), endTime: isoDaysAgo(0), maxSamples: 100 });
+  const rangeTouched = useRef(false); // an untouched range follows "now" each time history is (re)loaded
+  const historyReq = useRef(0);
+  const readOnly = useReadOnly();
   const [confirm, confirmDialog] = useConfirm();
 
   const connected = Boolean(status?.configured && status?.authenticated);
@@ -47,7 +61,9 @@ export default function Cesmii() {
   const listError = connected ? lists.error : null;
   const loadLists = lists.reload;
 
-  const connect = async () => {
+  const connect = async (e) => {
+    e?.preventDefault();
+    if (busy || readOnly || !form.endpoint) return;
     setBusy(true);
     try {
       const s = await api.cesmiiConfig(form);
@@ -78,15 +94,26 @@ export default function Cesmii() {
   };
 
   const loadHistory = async (attr) => {
+    const req = (historyReq.current += 1); // only the latest request may write its result (a slow earlier one must not overwrite it)
+    const r = rangeTouched.current ? range : { ...range, startTime: isoDaysAgo(7), endTime: isoDaysAgo(0) };
     setSelected(attr);
     setSamples(null);
     setHistoryError(null);
-    try {
-      const r = await api.cesmiiHistory({ ids: [attr.id], ...range });
-      setSamples(r.samples);
-    } catch (e) {
-      setHistoryError(e);
+    if (!SMIP_TIME.test(r.startTime.trim()) || !SMIP_TIME.test(r.endTime.trim())) {
+      setHistoryError(new Error('Start and End must be UTC timestamps like 2025-01-31 08:00:00+00.'));
+      return;
     }
+    if (!rangeTouched.current) setRange(r);
+    try {
+      const res = await api.cesmiiHistory({ ids: [attr.id], ...r });
+      if (req === historyReq.current) setSamples(res.samples);
+    } catch (e) {
+      if (req === historyReq.current) setHistoryError(e);
+    }
+  };
+  const editRange = (patch) => {
+    rangeTouched.current = true;
+    setRange((r) => ({ ...r, ...patch }));
   };
 
   const filteredAttributes = useMemo(() => {
@@ -104,7 +131,7 @@ export default function Cesmii() {
           connected ? (
             <>
               <Badge status="connected">authenticated</Badge>
-              <Button variant="outline" onClick={disconnect}>
+              <Button variant="outline" onClick={disconnect} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                 <LogOut size={15} aria-hidden="true" /> Disconnect
               </Button>
             </>
@@ -115,6 +142,7 @@ export default function Cesmii() {
       />
 
       <PageBody>
+        <ReadOnlyNote />
         {statusError && !status && (
           <Banner variant="error" title="Could not read the SMIP connection status" onRetry={reloadStatus}>
             {statusError.message}
@@ -134,6 +162,7 @@ export default function Cesmii() {
                   <p className="helper">Credentials are used server-side for the JWT handshake and are not stored on disk.</p>
                 </div>
               </div>
+              <form onSubmit={connect}>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="GraphQL endpoint" className="sm:col-span-2">
                   <Input value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })} placeholder="https://demo.cesmii.net/graphql" />
@@ -152,10 +181,11 @@ export default function Cesmii() {
                 </Field>
               </div>
               <div className="mt-5 flex justify-end">
-                <Button onClick={connect} disabled={busy || !form.endpoint}>
+                <Button type="submit" disabled={busy || !form.endpoint || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                   <Plug size={15} aria-hidden="true" /> {busy ? 'Authenticating…' : 'Connect to SMIP'}
                 </Button>
               </div>
+              </form>
             </Card>
           </div>
         )}
@@ -236,11 +266,11 @@ export default function Cesmii() {
               <Card className="p-4">
                 <h2 className="mb-3 text-sm font-semibold text-slate-100">{selected ? selected.displayName : 'Time series'}</h2>
                 <div className="mb-3 grid grid-cols-1 gap-2">
-                  <Field label="Start">
-                    <Input value={range.startTime} onChange={(e) => setRange({ ...range, startTime: e.target.value })} />
+                  <Field label="Start (UTC)" help="Format 2025-01-31 08:00:00+00">
+                    <Input value={range.startTime} onChange={(e) => editRange({ startTime: e.target.value })} />
                   </Field>
-                  <Field label="End">
-                    <Input value={range.endTime} onChange={(e) => setRange({ ...range, endTime: e.target.value })} />
+                  <Field label="End (UTC)">
+                    <Input value={range.endTime} onChange={(e) => editRange({ endTime: e.target.value })} />
                   </Field>
                   {selected && (
                     <Button size="sm" variant="subtle" onClick={() => loadHistory(selected)}>
@@ -268,7 +298,7 @@ export default function Cesmii() {
                     <Sparkline samples={samples} />
                     <Table caption="Most recent samples" wrapperClassName="mt-2 max-h-40 overflow-y-auto rounded-xl" className="min-w-0">
                       <THead>
-                        <Th>Time</Th>
+                        <Th>Time (UTC)</Th>
                         <Th align="right">Value</Th>
                       </THead>
                       <tbody>
@@ -277,7 +307,7 @@ export default function Cesmii() {
                           .reverse()
                           .map((s, i) => (
                             <Tr key={i}>
-                              <Td className="py-1.5 text-xs text-muted">{s.ts}</Td>
+                              <Td className="whitespace-nowrap py-1.5 text-xs text-muted">{fmtTs(s.ts)}</Td>
                               <Td align="right" className="mono py-1.5 text-xs text-slate-200">
                                 {s.floatvalue ?? s.stringvalue}
                               </Td>

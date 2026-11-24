@@ -12,6 +12,11 @@
  * specs are independent of each other and of the order they run in.
  */
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -154,5 +159,79 @@ export async function subscribe(filter) {
   return {
     messages,
     close: () => new Promise((resolve) => client.end(true, {}, resolve))
+  };
+}
+
+// ---- extra servers ---------------------------------------------------------------------
+
+/**
+ * A tiny HTTP server standing in for a Timebase historian (POST /api/datasets/<name>/data).
+ * It is a STUB: it records what it receives and answers 200, or `status` while `fail(status)` is set.
+ * Returns { url, received: [{ url, body }], fail(status|null), close() }.
+ */
+export async function startHistorianStub() {
+  const received = [];
+  let failing = null;
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      let body = raw;
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        /* keep text */
+      }
+      received.push({ url: req.url, body });
+      res.statusCode = failing || 200;
+      res.end(failing ? 'stub failure' : '{}');
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    received,
+    fail: (status) => {
+      failing = status;
+    },
+    close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
+
+/**
+ * A second, real backend with authentication on (admin token + viewer token) serving the built client,
+ * on its own data directory and port. Returns { url, admin, viewer, stop() }.
+ */
+export async function startAuthBackend() {
+  const admin = 'e2e-admin-token';
+  const viewer = 'e2e-viewer-token';
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-e2e-auth-'));
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const child = spawn(process.execPath, ['index.js'], {
+    cwd: serverDir,
+    env: { ...process.env, PORT: String(port), MANIFOLD_DATA_DIR: dataDir, MANIFOLD_ALLOW_LOOPBACK_DEVICES: '1', MANIFOLD_AUTH_TOKEN: admin, MANIFOLD_VIEWER_TOKEN: viewer },
+    stdio: 'ignore'
+  });
+  const url = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 100; i++) {
+    try {
+      if ((await fetch(`${url}/health`)).ok) break;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return {
+    url,
+    admin,
+    viewer,
+    async stop() {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => (child.exitCode !== null ? resolve() : child.once('exit', resolve)));
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
   };
 }

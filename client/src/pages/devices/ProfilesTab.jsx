@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Pencil, Trash2, CopyPlus, Layers, FilePlus2, RefreshCw, Rows3 } from 'lucide-react';
 import { Button, EmptyState, IconButton, Table, THead, Th, Tr, Td } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import ProfileForm from './ProfileForm';
 import InstantiateDialog from './InstantiateDialog';
 import BulkInstantiateDialog from './BulkInstantiateDialog';
@@ -10,12 +11,14 @@ import FromDeviceDialog from './FromDeviceDialog';
 import { profileFromDevice } from './profileModel';
 
 function ProfileActions({ p, open }) {
+  const ro = useReadOnly();
+  const why = ro ? { disabled: true, title: READ_ONLY_REASON } : {};
   return (
     <span className="inline-flex items-center gap-1">
-      <Button size="sm" variant="subtle" onClick={() => open('instance', p)} aria-label={`New device from ${p.name}`}><FilePlus2 size={13} aria-hidden="true" /> New device</Button>
-      <IconButton icon={Rows3} label={`Create several devices from ${p.name}`} onClick={() => open('bulk', p)} />
-      <IconButton icon={Pencil} label={`Edit profile ${p.name}`} onClick={() => open('edit', p)} />
-      <IconButton icon={Trash2} label={`Delete profile ${p.name}`} onClick={() => open('delete', p)} />
+      <Button size="sm" variant="subtle" onClick={() => open('instance', p)} aria-label={`New device from ${p.name}`} {...why}><FilePlus2 size={13} aria-hidden="true" /> New device</Button>
+      <IconButton icon={Rows3} label={`Create several devices from ${p.name}`} onClick={() => open('bulk', p)} {...why} />
+      <IconButton icon={Pencil} label={`${ro ? 'View' : 'Edit'} profile ${p.name}`} onClick={() => open('edit', p)} />
+      <IconButton icon={Trash2} label={`Delete profile ${p.name}`} onClick={() => open('delete', p)} {...why} />
     </span>
   );
 }
@@ -24,6 +27,7 @@ function ProfileActions({ p, open }) {
 export default function ProfilesTab({ profiles, error, loading, onRetry, protocols, devices, labels, focusId, onChanged }) {
   const [dialog, setDialog] = useState(null); // { kind: 'edit'|'new'|'pick'|'instance'|'bulk'|'delete', profile? }
   const close = () => setDialog(null);
+  const readOnly = useReadOnly();
   const canAdd = protocols.length > 0;
   const done = () => {
     close();
@@ -40,8 +44,8 @@ export default function ProfilesTab({ profiles, error, loading, onRetry, protoco
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="max-w-2xl text-sm text-slate-400">A profile describes one kind of device once: its tags (with <span className="mono">{'{param}'}</span> placeholders), poll groups and options. Create as many devices from it as you need; editing the profile updates all of them.</p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => open('pick')} disabled={!canAdd || devices.length === 0}><CopyPlus size={14} /> Create from device</Button>
-          <Button onClick={() => open('new')} disabled={!canAdd}><Plus size={14} /> New profile</Button>
+          <Button variant="outline" onClick={() => open('pick')} disabled={!canAdd || devices.length === 0 || readOnly} title={readOnly ? READ_ONLY_REASON : devices.length === 0 ? 'Add a device first' : undefined}><CopyPlus size={14} /> Create from device</Button>
+          <Button onClick={() => open('new')} disabled={!canAdd || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}><Plus size={14} /> New profile</Button>
         </div>
       </div>
 
@@ -58,7 +62,7 @@ export default function ProfilesTab({ profiles, error, loading, onRetry, protoco
           icon={Layers}
           title="No device profiles yet"
           hint="Define a meter, drive or PLC type once with parameters for the parts that differ (a base register, a DB number), then create devices from it."
-          action={<Button onClick={() => open('new')} disabled={!canAdd}><Plus size={14} /> New profile</Button>}
+          action={<Button onClick={() => open('new')} disabled={!canAdd || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}><Plus size={14} /> New profile</Button>}
         />
       )}
 

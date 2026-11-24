@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { HardDrive, Plus, RefreshCw, OctagonAlert, Loader2, FilePlus2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { Button, EmptyState, Modal } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import DeviceCard from './devices/DeviceCard';
@@ -18,18 +20,37 @@ import { hostIssues, hostFor } from '@/lib/deviceStatus';
 
 const NO_PROTOCOLS = [];
 
-function ConfirmDelete({ device, busy, onCancel, onConfirm }) {
+function ConfirmDelete({ device, busy, error, onCancel, onConfirm }) {
   const id = useId();
+  const readOnly = useReadOnly();
+  // The server refuses to delete a device that bindings still read from, so say so BEFORE the click
+  // instead of promising something else and failing afterwards.
+  const [bindings, setBindings] = useState(null); // null = loading, [] = none
+  useEffect(() => {
+    let live = true;
+    api.listBindings().then((r) => live && setBindings(r.bindings || []), () => live && setBindings([]));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const used = (bindings || []).filter((b) => b.source?.type === 'device' && b.source.deviceId === device.id);
   return (
     <Modal title="Delete device" labelledBy={id} onClose={onCancel}>
       <h3 id={id} className="text-base font-semibold text-slate-100">Delete {device.name}?</h3>
       <p className="mt-2 text-sm text-slate-400">
         Polling stops and its {device.profileId ? `${device.ownTags?.length || 0} own tag definitions` : `${device.tags?.length || 0} tag definitions`} are removed
-        {device.profileId ? ' (the profile stays)' : ''}. UNS mappings that use this device will stop publishing.
+        {device.profileId ? ' (the profile stays)' : ''}. This cannot be undone.
       </p>
+      {used.length > 0 && (
+        <p role="alert" className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          This device cannot be deleted yet: {used.length} binding{used.length === 1 ? '' : 's'} read{used.length === 1 ? 's' : ''} from it ({used.slice(0, 5).map((b) => b.name || b.id.slice(0, 8)).join(', ')}).
+          {' '}Delete {used.length === 1 ? 'it' : 'them'} on the <Link to={`/tags?source=device:${encodeURIComponent(device.id)}`} className="underline">Tags page</Link> first.
+        </p>
+      )}
+      {error && <p role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">Could not delete: {error}</p>}
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel} data-autofocus>Cancel</Button>
-        <Button variant="danger" onClick={onConfirm} disabled={busy}>
+        <Button variant="danger" onClick={onConfirm} disabled={busy || used.length > 0 || readOnly} title={readOnly ? READ_ONLY_REASON : used.length ? 'Delete the bindings that use this device first' : undefined}>
           {busy && <Loader2 size={14} className="animate-spin" />} Delete device
         </Button>
       </div>
@@ -42,10 +63,12 @@ export default function Devices() {
   const [editing, setEditing] = useState(null); // null | 'new' | device | draft (no id)
   const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [picking, setPicking] = useState(false);
   const [instantiating, setInstantiating] = useState(null);
   const deviceStates = useStore((s) => s.deviceStates);
+  const readOnly = useReadOnly();
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -111,6 +134,7 @@ export default function Devices() {
 
   const remove = async () => {
     const d = deleting;
+    setDeleteError('');
     setBusyId(d.id);
     try {
       await api.deleteDevice(d.id);
@@ -118,14 +142,17 @@ export default function Devices() {
       setDeleting(null);
       await load();
     } catch (e) {
-      toast.error(`Could not delete ${d.name}: ${e.message}`);
+      setDeleteError(e.message); // shown inside the dialog, next to the button that was pressed
     } finally {
       setBusyId(null);
     }
   };
 
   const onEdit = useCallback((d) => setEditing(d), []);
-  const onDelete = useCallback((d) => setDeleting(d), []);
+  const onDelete = useCallback((d) => {
+    setDeleteError('');
+    setDeleting(d);
+  }, []);
   const canAdd = protocols.length > 0;
   const closeForm = () => {
     setEditing(null);
@@ -142,10 +169,10 @@ export default function Devices() {
             <Button variant="outline" onClick={load} aria-label="Refresh device list">
               <RefreshCw size={14} /> <span className="hidden sm:inline">Refresh</span>
             </Button>
-            <Button variant="outline" className="whitespace-nowrap" onClick={() => setPicking(true)} disabled={!canAdd}>
+            <Button variant="outline" className="whitespace-nowrap" onClick={() => setPicking(true)} disabled={!canAdd || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               <FilePlus2 size={14} /> <span className="hidden sm:inline">From profile</span><span className="sm:hidden">Profile</span>
             </Button>
-            <Button className="whitespace-nowrap" onClick={() => setEditing('new')} disabled={!canAdd} title={canAdd ? '' : 'No device protocols available from the server'}>
+            <Button className="whitespace-nowrap" onClick={() => setEditing('new')} disabled={!canAdd || readOnly} title={readOnly ? READ_ONLY_REASON : canAdd ? '' : 'No device protocols available from the server'}>
               <Plus size={14} /> Add device
             </Button>
           </>
@@ -154,6 +181,7 @@ export default function Devices() {
       <DevicesTabs tab={tab} onChange={setTab} counts={{ devices: data?.devices.length, profiles: profiles?.length }} />
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+        <ReadOnlyNote />
         {issues.length > 0 && (
           <div className="mb-4 space-y-2">
             {issues.map((i) => (
@@ -194,7 +222,7 @@ export default function Devices() {
               title="Add your first device"
               hint="Connect a PLC, meter or gateway over Modbus TCP, Siemens S7 or EtherNet/IP, test the connection, list its tags, then map them into the UNS. Many identical devices? Define a profile once and create devices from it."
               action={
-                <Button onClick={() => setEditing('new')} disabled={!canAdd}>
+                <Button onClick={() => setEditing('new')} disabled={!canAdd || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
                   <Plus size={14} /> Add device
                 </Button>
               }
@@ -214,6 +242,7 @@ export default function Devices() {
                   protocolLabel={labels[d.protocol] || d.protocol}
                   experimental={experimental.has(d.protocol)}
                   busy={busyId === d.id}
+                  readOnly={readOnly}
                   onEdit={onEdit}
                   onDelete={onDelete}
                   onToggle={toggle}
@@ -241,7 +270,7 @@ export default function Devices() {
       )}
       {picking && <PickProfileDialog profiles={profiles || []} labels={labels} onClose={() => setPicking(false)} onPick={(p) => { setPicking(false); setInstantiating(p); }} />}
       {instantiating && <InstantiateDialog profile={instantiating} protocols={protocols} onClose={() => setInstantiating(null)} onCreated={() => { setInstantiating(null); load(); }} />}
-      {deleting && <ConfirmDelete device={deleting} busy={busyId === deleting.id} onCancel={() => setDeleting(null)} onConfirm={remove} />}
+      {deleting && <ConfirmDelete device={deleting} busy={busyId === deleting.id} error={deleteError} onCancel={() => setDeleting(null)} onConfirm={remove} />}
     </div>
   );
 }

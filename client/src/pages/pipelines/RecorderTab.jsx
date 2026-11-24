@@ -1,12 +1,11 @@
 import { useState } from 'react';
-import { CircleDot, Play, Square, Eye } from 'lucide-react';
+import { CircleDot, Play, Square, Eye, Pause } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import { Card, Button, Input, Field, Select, Checkbox, Badge, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { BrokerSelect, ListState } from './shared';
-import { RowActions } from '@/components/ui';
+import { BrokerSelect, ListState, RowButtons, useRo } from './shared';
 import { brokerName, formatKb, recordingBody, recordingStatusLabel } from './helpers';
 
 export default function RecorderTab({ brokers }) {
@@ -14,6 +13,8 @@ export default function RecorderTab({ brokers }) {
   const [peek, setPeek] = useState(null); // { id, points }
   const [replayForm, setReplayForm] = useState({ speed: 1, loop: false, topicPrefix: 'replay/' });
   const [confirm, confirmDialog] = useConfirm();
+  const [saving, setSaving] = useState(false);
+  const ro = useRo();
 
   const { data, error, loading, reload } = usePolled(
     async () => {
@@ -27,6 +28,8 @@ export default function RecorderTab({ brokers }) {
   const historians = data?.historians || [];
 
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       await api.saveRecording(recordingBody(form, brokers));
       setForm((f) => ({ ...f, name: '', filter: '' }));
@@ -34,6 +37,19 @@ export default function RecorderTab({ brokers }) {
       toast.success('Recording started');
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Pause keeps everything captured so far; Resume continues appending to the same recording.
+  const togglePaused = async (rec) => {
+    try {
+      await api.saveRecording({ id: rec.id, name: rec.name, brokerId: rec.brokerId, filter: rec.filter, target: rec.target, maxBytes: rec.maxBytes, enabled: !rec.enabled });
+      reload();
+      toast.success(rec.enabled ? 'Recording paused: captured data is kept' : 'Recording resumed');
+    } catch (e) {
+      toast.error(`Could not ${rec.enabled ? 'pause' : 'resume'} the recording: ${e.message}`);
     }
   };
 
@@ -41,6 +57,7 @@ export default function RecorderTab({ brokers }) {
     try {
       await api.startReplay({ recordingId: rec.id, brokerId: rec.brokerId, ...replayForm, speed: Number(replayForm.speed) || 1 });
       reload();
+      toast.success('Replay started');
     } catch (e) {
       toast.error(e.message);
     }
@@ -75,6 +92,7 @@ export default function RecorderTab({ brokers }) {
     try {
       await api.deleteRecording(rec.id);
       reload();
+      toast.success('Recording deleted');
     } catch (e) {
       toast.error(e.message);
     }
@@ -89,7 +107,7 @@ export default function RecorderTab({ brokers }) {
               <Play size={14} aria-hidden="true" className="text-accent-300" /> Replaying · {replayState.index}/{replayState.total} · {replayState.published} published
               {replayState.errors > 0 && <span className="text-rose-300">· {replayState.errors} errors</span>}
             </span>
-            <Button size="sm" variant="outline" onClick={stopReplay}>
+            <Button size="sm" variant="outline" onClick={stopReplay} {...ro}>
               <Square size={12} aria-hidden="true" /> Stop
             </Button>
           </div>
@@ -146,18 +164,21 @@ export default function RecorderTab({ brokers }) {
                     )}
                   </Td>
                   <Td align="right">
-                    <RowActions what={`recording ${name}`} onDelete={() => remove(rec)}>
+                    <RowButtons what={`recording ${name}`} onDelete={() => remove(rec)}>
+                      <Button size="sm" variant="ghost" onClick={() => togglePaused(rec)} aria-label={`${rec.enabled ? 'Pause' : 'Resume'} recording ${name}`} {...ro}>
+                        {rec.enabled ? <Pause size={12} aria-hidden="true" /> : <Play size={12} aria-hidden="true" />} {rec.enabled ? 'Pause' : 'Resume'}
+                      </Button>
                       {!toHistorian && (
                         <>
                           <Button size="sm" variant="ghost" onClick={() => showPeek(rec)} aria-label={`Peek at ${name}`}>
                             <Eye size={12} aria-hidden="true" /> Peek
                           </Button>
-                          <Button size="sm" variant="outline" onClick={() => replay(rec)} disabled={replayState.running || !rec.status.points} aria-label={`Replay ${name}`}>
+                          <Button size="sm" variant="outline" onClick={() => replay(rec)} disabled={replayState.running || !rec.status.points || Boolean(ro.disabled)} title={ro.title || (replayState.running ? 'A replay is already running' : !rec.status.points ? 'Nothing captured yet' : 'Publishes the captured messages back to the broker under the topic prefix')} aria-label={`Replay ${name}`}>
                             <Play size={12} aria-hidden="true" /> Replay
                           </Button>
                         </>
                       )}
-                    </RowActions>
+                    </RowButtons>
                   </Td>
                 </Tr>
               );
@@ -192,7 +213,7 @@ export default function RecorderTab({ brokers }) {
           )}
         </div>
         <div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-3">
-          <Button onClick={save} disabled={!form.filter || (form.targetType === 'historian' && !form.historianId)}>
+          <Button onClick={save} disabled={!form.filter || (form.targetType === 'historian' && !form.historianId) || saving || Boolean(ro.disabled)} title={ro.title}>
             <CircleDot size={14} aria-hidden="true" /> Start recording
           </Button>
           <fieldset className="flex flex-wrap items-end gap-x-4 gap-y-2">

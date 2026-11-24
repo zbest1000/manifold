@@ -1,6 +1,7 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const { topicProblem } = require('../services/mqttMatch');
 
 // Models: multi-source attribute bindings published as one merged object at a
 // UNS path (the contextualization layer).
@@ -16,6 +17,8 @@ router.post('/', (req, res) => {
   const { profiles, models } = req.app.locals.services;
   const { id, name, enabled, target, publishMode, intervalMs, attributes } = req.body || {};
   if (!target?.brokerId || !target?.topic) return res.status(400).json({ error: 'target.brokerId and target.topic are required' });
+  const tp = topicProblem(target.topic);
+  if (tp) return res.status(400).json({ error: `target.topic "${target.topic}" ${tp}` });
   if (!Array.isArray(attributes) || attributes.length === 0) {
     return res.status(400).json({ error: 'attributes[] is required' });
   }

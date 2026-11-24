@@ -7,6 +7,8 @@ import PageHeader from '@/components/PageHeader';
 import AlertRulesCard from './settings/AlertRulesCard';
 import ConfigCard from './settings/ConfigCard';
 import AuditCard from './settings/AuditCard';
+import SessionCard from './settings/SessionCard';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 
 const MCP_SNIPPET = `{
   "mcpServers": {
@@ -30,6 +32,8 @@ export default function Settings() {
       <PageHeader title="Settings" subtitle="Graph appearance and integrations" />
 
       <PageBody className="space-y-6">
+        <ReadOnlyNote className="" />
+        <SessionCard />
         <Card className="p-4 sm:p-5">
           <h2 className="mb-4 flex items-center gap-2 text-sm font-semibold text-slate-100">
             <Palette size={16} className="text-accent-400" aria-hidden="true" /> Default graph style

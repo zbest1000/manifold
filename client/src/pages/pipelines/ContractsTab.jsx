@@ -5,16 +5,20 @@ import { formatDistanceToNow } from 'date-fns';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import { Card, Button, Input, Field, Badge, Banner, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { BrokerSelect, ListState } from './shared';
-import { RowActions } from '@/components/ui';
+import { BrokerSelect, ListState, RowButtons, useRo } from './shared';
 import { brokerName } from './helpers';
 
 const PROBLEM_COLOR = { 'type-changed': 'text-amber-300', 'missing-field': 'text-rose-300' };
 
 export default function ContractsTab({ brokers }) {
   const [form, setForm] = useState({ brokerId: '', topic: '', name: '' });
-  const [inferred, setInferred] = useState(null); // { topic, schema }
+  const [inferredFor, setInferred] = useState(null); // { forKey, topic, schema }
   const [confirm, confirmDialog] = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const ro = useRo();
+  // The inferred schema belongs to the broker+topic it was inferred from; editing either hides it, so
+  // "Lock contract" can never lock one topic's schema under another topic's filter.
+  const inferred = inferredFor && inferredFor.forKey === `${form.brokerId || brokers[0]?.id}|${form.topic}` ? inferredFor : null;
 
   const { data, error, loading, reload } = usePolled(
     async () => {
@@ -29,13 +33,17 @@ export default function ContractsTab({ brokers }) {
 
   const infer = async () => {
     try {
-      setInferred(await api.inferContract(form.brokerId || brokers[0]?.id, form.topic));
+      const brokerId = form.brokerId || brokers[0]?.id;
+      setInferred({ ...(await api.inferContract(brokerId, form.topic)), forKey: `${brokerId}|${form.topic}` });
     } catch (e) {
+      setInferred(null);
       toast.error(e.message);
     }
   };
 
   const lock = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       await api.saveContract({ name: form.name || null, brokerId: form.brokerId || brokers[0]?.id, filter: form.topic, schema: inferred.schema });
       setInferred(null);
@@ -44,6 +52,8 @@ export default function ContractsTab({ brokers }) {
       toast.success('Contract locked');
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -53,6 +63,7 @@ export default function ContractsTab({ brokers }) {
     try {
       await api.deleteContract(c.id);
       reload();
+      toast.success('Contract deleted');
     } catch (e) {
       toast.error(e.message);
     }
@@ -96,7 +107,7 @@ export default function ContractsTab({ brokers }) {
                     </p>
                   </Td>
                   <Td align="right">
-                    <RowActions what={`contract ${name}`} onDelete={() => remove(c)} />
+                    <RowButtons what={`contract ${name}`} onDelete={() => remove(c)} />
                   </Td>
                 </Tr>
               );
@@ -120,7 +131,7 @@ export default function ContractsTab({ brokers }) {
           <Button variant="outline" onClick={infer} disabled={!form.topic}>
             Infer schema from latest payload
           </Button>
-          {inferred && <Button onClick={lock}>Lock contract</Button>}
+          {inferred && <Button onClick={lock} disabled={busy || Boolean(ro.disabled)} title={ro.title}>Lock contract</Button>}
         </div>
         {inferred && (
           <pre tabIndex={0} role="region" aria-label="Inferred schema" className="mono mt-3 max-h-48 overflow-auto rounded-xl border border-white/10 bg-surface-950/60 p-3 text-xs text-slate-300">

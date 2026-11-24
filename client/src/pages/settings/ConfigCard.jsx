@@ -3,6 +3,7 @@ import { FileDown, FileUp } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { Card, Button, Banner, useConfirm } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { importSummary } from './helpers';
 
 // Config as code: the whole DataOps configuration (routes, models, historians,
@@ -12,6 +13,7 @@ export default function ConfigCard() {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
+  const readOnly = useReadOnly();
 
   const doExport = async () => {
     try {
@@ -69,9 +71,22 @@ export default function ConfigCard() {
         <Button variant="outline" onClick={doExport}>
           <FileDown size={14} aria-hidden="true" /> Export config
         </Button>
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 px-3.5 py-2 text-sm text-slate-200 focus-within:outline focus-within:outline-2 focus-within:outline-accent-400 hover:bg-white/5">
+        <label
+          title={readOnly ? READ_ONLY_REASON : undefined}
+          className={`inline-flex items-center gap-2 rounded-xl border border-white/10 px-3.5 py-2 text-sm text-slate-200 focus-within:outline focus-within:outline-2 focus-within:outline-accent-400 ${readOnly || importing ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:bg-white/5'}`}
+        >
           <FileUp size={14} aria-hidden="true" /> {importing ? 'Importing…' : 'Import config'}
-          <input type="file" accept=".json" className="sr-only" onChange={(e) => e.target.files?.[0] && doImport(e.target.files[0])} />
+          <input
+            type="file"
+            accept=".json"
+            className="sr-only"
+            disabled={readOnly || importing}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = ''; // picking the same file again must fire onChange again
+              if (f) doImport(f);
+            }}
+          />
         </label>
       </div>
       {result && (

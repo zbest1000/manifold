@@ -3,7 +3,7 @@ import { CheckCircle2, XCircle, Loader2, CircleDashed } from 'lucide-react';
 const STYLES = {
   created: ['text-emerald-300', CheckCircle2, 'Created'],
   error: ['text-rose-300', XCircle, 'Failed'],
-  invalid: ['text-rose-300', XCircle, 'Not sent'],
+  invalid: ['text-rose-300', XCircle, 'Problem'],
   running: ['text-sky-300', Loader2, 'Creating…'],
   ready: ['text-slate-400', CircleDashed, 'Ready']
 };

@@ -41,7 +41,7 @@ export default defineConfig({
     colorScheme: 'dark'
   },
   projects: [
-    { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js', 'devices-protocols.spec.js', 'profiles.spec.js', 'outage.spec.js', 'tags-binding.spec.js'] },
+    { name: 'desktop', use: desktop, testMatch: ['routes.spec.js', 'device-flow.spec.js', 'devices-protocols.spec.js', 'profiles.spec.js', 'outage.spec.js', 'tags-binding.spec.js', 'auth.spec.js', 'tags-extra.spec.js', 'opcua.spec.js', 'devices-lifecycle.spec.js', 'devices-bulk.spec.js', 'pipelines.spec.js', 'settings.spec.js'] },
     { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js'] }
   ]
 });

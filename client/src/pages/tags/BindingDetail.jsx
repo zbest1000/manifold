@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Network } from 'lucide-react';
 import clsx from 'clsx';
 import ErrorBanner from './Banner';
 import { previewBinding } from './tagsApi';
-import { bindingAssetPath } from './assetPath';
+import { Link } from 'react-router-dom';
+import { bindingAssetPath, unsLink } from './assetPath';
 import { detailFacts } from './bindingView';
 
 async function copyText(text) {
@@ -76,6 +77,7 @@ export default function BindingDetail({ binding: b, status: s, src, historians, 
         : { state: 'loading', data: null, error: null };
 
   const asset = bindingAssetPath(b);
+  const uns = unsLink(b);
   const d = view.data;
   const topics = d?.valid ? (d.layout === 'object-per-asset' ? d.objects.map((o) => o.topic) : d.tags.map((t) => t.topic)) : [];
   return (
@@ -89,6 +91,11 @@ export default function BindingDetail({ binding: b, status: s, src, historians, 
             <dd className="flex min-w-0 flex-wrap items-center gap-2 text-slate-200">
               <span className="break-all font-mono">{asset}</span>
               <CopyButton text={asset} label={`Copy asset path ${asset}`} />
+              {uns && (
+                <Link to={uns.to} className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-accent-300 hover:bg-white/10" title={uns.partial ? `Opens ${uns.path}, the part of the template that is the same for every instance` : `Open ${uns.path} on the UNS page`}>
+                  <Network size={12} aria-hidden="true" /> Show in UNS
+                </Link>
+              )}
             </dd>
           </>
         )}

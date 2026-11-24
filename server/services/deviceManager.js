@@ -38,11 +38,21 @@ const DRIVER_MODULES = {
 };
 
 const MAX_TAGS_PER_DEVICE = 20000;
+const MAX_BULK_DEVICES = 200;
 const MIN_INTERVAL_MS = 100;
 const KEY_RE = /^[A-Za-z0-9_.\-:[\]]{1,128}$/;
 const VALUE_FLUSH_MS = 250;
 
 const MAX_META_TEXT = 512;
+
+/** Control characters and bidirectional overrides (C0/C1, U+202A-202E, U+2066-2069). */
+function hasUnsafeNameChar(text) {
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    if (c < 0x20 || (c >= 0x7f && c <= 0x9f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) return true;
+  }
+  return false;
+}
 
 class DeviceValidationError extends Error {
   constructor(message, details) {
@@ -304,6 +314,11 @@ class DeviceManager extends EventEmitter {
     const protocol = profile ? profile.protocol : d.protocol;
     const driver = this.drivers[protocol];
     if (!driver) throw new DeviceValidationError(`protocol must be one of: ${Object.keys(this.drivers).join(', ')}`);
+    // Names appear in lists, binding labels and prompts: control characters and bidirectional overrides
+    // (which can make one name read as another) have no business in them.
+    if (d.name !== undefined && d.name !== null && hasUnsafeNameChar(String(d.name))) {
+      throw new DeviceValidationError('name must not contain control or text-direction override characters');
+    }
     if (typeof d.host !== 'string' || !d.host.trim() || /[\s/]/.test(d.host)) {
       throw new DeviceValidationError('host is required (hostname or IP address, no scheme)');
     }
@@ -358,6 +373,16 @@ class DeviceManager extends EventEmitter {
       }
     }
     if (details.length) throw new DeviceValidationError(`${details.length} invalid tag(s)`, details);
+    // Device-level settings (options, limits, rack/slot, ...) are only checked by the driver itself.
+    // Constructing it does no I/O (the connection is lazy); a throw here means "this device could never
+    // run", which must fail the save instead of surfacing later as a device stuck offline.
+    try {
+      const probe = driver.mod.createDriver(eff);
+      Promise.resolve(probe?.close?.()).catch(() => {});
+    } catch (error) {
+      const own = Array.isArray(error.details) ? error.details.filter((x) => !x.key).map((x) => x.error) : [];
+      throw new DeviceValidationError(own.length ? own.join('; ') : error.message);
+    }
     return device;
   }
 
@@ -519,9 +544,51 @@ class DeviceManager extends EventEmitter {
   async save(input, id) {
     const device = this.normalize(input, id);
     await this.guard(device.host); // refuse to store an unreachable-by-policy target
+    const clash = this.profiles.listIn('devices').find((d) => d.id !== device.id && d.name === device.name);
+    if (clash) throw new DeviceValidationError(`name "${device.name}" is already used by another device; pick a different name`);
     const saved = this.profiles.upsertIn('devices', device.id, device);
     await this.apply();
     return saved;
+  }
+
+  /**
+   * Create several devices all-or-nothing. EVERY row is validated first (config, egress policy,
+   * name unique within the batch and against stored devices); if any row fails nothing is
+   * stored and the per-row errors come back as a DeviceValidationError whose `details` is
+   * [{ index, name, error, details }]. Rows may carry `profileId` (or take `defaults.profileId`).
+   */
+  async saveBulk(rows, defaults = {}) {
+    if (!Array.isArray(rows) || !rows.length) throw new DeviceValidationError('devices must be a non-empty array');
+    if (rows.length > MAX_BULK_DEVICES) throw new DeviceValidationError(`at most ${MAX_BULK_DEVICES} devices per request`);
+    const taken = new Set(this.profiles.listIn('devices').map((d) => String(d.name)));
+    const failures = [];
+    const devices = [];
+    for (let index = 0; index < rows.length; index++) {
+      const { id: _ignored, ...row } = rows[index] && typeof rows[index] === 'object' ? rows[index] : {};
+      const input = { ...row, ...(row.profileId || !defaults.profileId ? {} : { profileId: defaults.profileId }) };
+      try {
+        const device = this.normalize(input);
+        await this.guard(device.host);
+        if (taken.has(device.name)) throw new DeviceValidationError(`name "${device.name}" is already used by another device`);
+        taken.add(device.name);
+        devices.push(device);
+      } catch (error) {
+        const known = error instanceof DeviceValidationError || error?.name === 'EgressBlockedError';
+        failures.push({ index, name: input.name ?? null, error: error.message, details: known ? error.details : undefined });
+      }
+    }
+    if (failures.length) {
+      throw new DeviceValidationError(`${failures.length} of ${rows.length} device(s) are invalid; nothing was created`, failures);
+    }
+    const stored = [];
+    try {
+      for (const d of devices) stored.push(this.profiles.upsertIn('devices', d.id, d));
+    } catch (error) {
+      for (const d of stored) this.profiles.removeIn('devices', d.id);
+      throw error;
+    }
+    await this.apply();
+    return stored;
   }
 
   async remove(id) {

@@ -46,3 +46,13 @@ export const useTopicVersion = (brokerId) => useStore((s) => s.topicVersion[brok
 /** Sum of the structure versions of several brokers (changes when any set changes). */
 export const useTopicVersionSum = (brokerIds) =>
   useStore((s) => brokerIds.reduce((n, id) => n + (s.topicVersion[id] || 0), 0));
+
+/** Why a mutating control is disabled for a read-only (viewer) session. */
+export const READ_ONLY_REASON = 'Read-only session: your token is a viewer token and cannot make changes. Ask an administrator for the admin token.';
+
+/**
+ * True for a viewer (read-only) session. Mutating controls are disabled with READ_ONLY_REASON as
+ * their tooltip instead of failing with a 403 after the click. A null/unknown role (auth off or
+ * not yet known) counts as writable: the server stays the authority.
+ */
+export const useReadOnly = () => useStore((s) => s.authRole === 'viewer');

@@ -63,6 +63,20 @@ router.post('/', (req, res) => {
 // DELETE /api/historians/:id
 router.delete('/:id', (req, res) => {
   const { profiles } = req.app.locals.services;
+  // Refuse while something still writes to it: the route / recording / binding would otherwise keep
+  // running and silently lose every point ("historian missing").
+  const id = req.params.id;
+  const users = [
+    ...profiles.listIn('pipelines').filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `route "${r.name || r.source?.filter}"`),
+    ...profiles.listIn('recordings').filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `recording "${r.name || r.filter}"`),
+    ...profiles.listIn('bindings').filter((b) => b.target?.historian?.historianId === id).map((b) => `binding "${b.name || b.id}"`)
+  ];
+  if (users.length && profiles.getIn('historians', id)) {
+    return res.status(409).json({
+      error: `Historian is still used by ${users.length} item(s): ${users.slice(0, 5).join(', ')}${users.length > 5 ? ', …' : ''}. Point them elsewhere or delete them first.`,
+      usedBy: users
+    });
+  }
   if (!profiles.removeIn('historians', req.params.id)) {
     return res.status(404).json({ error: 'Historian not found' });
   }

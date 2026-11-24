@@ -53,7 +53,9 @@ export default async function globalSetup() {
     'plant/line1/pressure': { value: 100 + (n % 7), unit: 'kPa' },
     'plant/line2/status': { state: n % 2 ? 'running' : 'idle' },
     'plant/line2/count': { value: n },
-    'plant/energy/kwh': { value: 1000 + n }
+    'plant/energy/kwh': { value: 1000 + n },
+    // a value/time/quality envelope, as many gateways (and Manifold's own bindings) publish it
+    'plant/env/tvq': { v: 12.5 + (n % 3), t: Date.now(), q: 192 }
   });
   const publishAll = () => {
     tick += 1;

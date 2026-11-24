@@ -2,11 +2,13 @@ import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { Modal, Button, IconButton, Input } from '@/components/ui';
 import { FormField, Section, selectCls, DescriptorFields, PresetButtons } from './FormControls';
 import PollGroupsEditor from './PollGroupsEditor';
 import TagTable, { newTagId } from './TagTable';
 import ProbePanel from './ProbePanel';
+import AdvancedDeviceOptions from './AdvancedDeviceOptions';
 import ProtocolNotices from './ProtocolNotices';
 import ConnectionTest from './ConnectionTest';
 import ProfileInstanceSection from './ProfileInstanceSection';
@@ -33,6 +35,7 @@ export default function DeviceForm({ device, protocols, profiles = [], live, not
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null); // { message, details }
   const [selectedId, setSelectedId] = useState(null);
+  const readOnly = useReadOnly();
 
   const descriptor = protocols.find((p) => p.id === draft.protocol) || protocols[0];
   const profile = draft.profileId ? profiles.find((p) => p.id === draft.profileId) : null;
@@ -74,6 +77,7 @@ export default function DeviceForm({ device, protocols, profiles = [], live, not
 
   const save = async (e) => {
     e.preventDefault();
+    if (readOnly || saving) return;
     const badRow = Object.keys(localErrors).length;
     if (!draft.name.trim()) return setSaveError({ message: 'Give the device a name.' });
     if (!draft.host.trim()) return setSaveError({ message: 'Enter the host name or IP address.' });
@@ -123,6 +127,7 @@ export default function DeviceForm({ device, protocols, profiles = [], live, not
         </div>
 
         <div className="space-y-5 px-5 py-4 sm:px-6">
+          {readOnly && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{READ_ONLY_REASON} You can inspect this device; nothing can be saved, tested or probed.</p>}
           {notice && <p role="status" className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">{notice}</p>}
           <section aria-label="Connection" className="space-y-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -159,6 +164,7 @@ export default function DeviceForm({ device, protocols, profiles = [], live, not
 
           <Section title="Protocol options" hint="Defaults for every tag on this device.">
             <DescriptorFields fields={descriptor.optionFields} values={draft.options} onChange={setOption} errors={fieldErrs} />
+            <AdvancedDeviceOptions descriptor={descriptor} draft={draft} onOption={setOption} onField={setField} />
           </Section>
 
           <Section title="Limits" hint="Protect slow devices and gateways.">
@@ -226,14 +232,14 @@ export default function DeviceForm({ device, protocols, profiles = [], live, not
               <p className="font-medium">{saveError.message}</p>
               {saveError.details?.length > 0 && (
                 <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                  {saveError.details.map((d, i) => <li key={i}><span className="mono">{d.key}</span>: {d.error}</li>)}
+                  {saveError.details.map((d, i) => <li key={i}>{d.key ? <><span className="mono">{d.key}</span>: </> : null}{d.error}</li>)}
                 </ul>
               )}
             </div>
           )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={requestClose}>Cancel</Button>
-            <Button type="submit" disabled={saving}>
+            <Button type="submit" disabled={saving || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               {saving && <Loader2 size={14} className="animate-spin" />} {editing ? 'Save changes' : 'Create device'}
             </Button>
           </div>

@@ -36,7 +36,7 @@ export default function AuditCard() {
           <tbody>
             {events.map((e, i) => (
               <Tr key={i}>
-                <Td className="whitespace-nowrap py-1.5 text-muted">{new Date(e.ts).toLocaleTimeString()}</Td>
+                <Td className="whitespace-nowrap py-1.5 text-muted" title={`${new Date(e.ts).toLocaleString()} (local) · ${new Date(e.ts).toISOString()}`}>{new Date(e.ts).toLocaleTimeString()}</Td>
                 <Td className={clsx('py-1.5', auditStatusClass(e))}>{e.status || e.method}</Td>
                 <Td className="py-1.5 text-sky-300">{e.role}</Td>
                 <Td className="max-w-[18rem] truncate py-1.5 text-slate-300">

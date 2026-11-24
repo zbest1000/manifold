@@ -2,14 +2,16 @@ import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { X, Loader2, RefreshCw } from 'lucide-react';
 import { Modal, Button, IconButton, Input } from '@/components/ui';
 import { api } from '@/lib/api';
+import { bulkCreateDevices } from '@/pages/devices/devicesApi';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import RowStatus, { runSummary } from '@/pages/devices/RowStatus';
 import { blankDevice, toPayload } from '@/pages/devices/model';
 import { SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
 
 /**
  * Review list for "Add all". Nothing is created until the user confirms; devices
- * that already exist (same host and port) start unticked. Creation is sequential
- * and every row ends as created or failed with the server's message.
+ * that already exist (same host and port) start unticked. Creation is all-or-nothing:
+ * one request that the server validates completely before it stores anything.
  */
 export default function AddAllDialog({ drafts, onClose, onCreated }) {
   const titleId = useId();
@@ -19,16 +21,20 @@ export default function AddAllDialog({ drafts, onClose, onCreated }) {
   const [results, setResults] = useState({});
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [failure, setFailure] = useState('');
+  const readOnly = useReadOnly();
 
-  const load = useCallback(async () => {
-    setLoadError('');
-    try {
-      const r = await api.devices();
-      setInfo({ protocols: r.protocols || [], devices: r.devices || [] });
-    } catch (e) {
-      setLoadError(e.message || 'Could not load the existing devices');
-    }
-  }, []);
+  const load = useCallback(
+    () =>
+      api
+        .devices()
+        .then((r) => {
+          setInfo({ protocols: r.protocols || [], devices: r.devices || [] });
+          setLoadError('');
+        })
+        .catch((e) => setLoadError(e.message || 'Could not load the existing devices')),
+    []
+  );
   useEffect(() => {
     load();
   }, [load]);
@@ -40,25 +46,50 @@ export default function AddAllDialog({ drafts, onClose, onCreated }) {
   const label = (id) => SCAN_PROTOCOLS.find((p) => p.id === id)?.label || id;
 
   const run = async () => {
+    if (running || chosen.length === 0) return;
     setRunning(true);
     setFinished(false);
+    setFailure('');
+    const payloads = [];
+    const todo = [];
+    const missing = {};
     for (const r of chosen) {
       const descriptor = info.protocols.find((p) => p.id === r.draft.protocol);
-      if (!descriptor) {
-        setResults((s) => ({ ...s, [r.id]: { status: 'error', message: `the server has no ${r.draft.protocol} driver` } }));
-        continue;
-      }
-      setResults((s) => ({ ...s, [r.id]: { status: 'running' } }));
-      try {
-        const saved = await api.createDevice(toPayload({ ...blankDevice(descriptor), ...r.draft, name: r.name.trim() || r.draft.name }, descriptor));
-        setResults((s) => ({ ...s, [r.id]: { status: 'created', message: saved.name } }));
-      } catch (err) {
-        setResults((s) => ({ ...s, [r.id]: { status: 'error', message: err.message } }));
+      if (!descriptor) missing[r.id] = { status: 'error', message: `the server has no ${r.draft.protocol} driver` };
+      else {
+        todo.push(r);
+        payloads.push(toPayload({ ...blankDevice(descriptor), ...r.draft, name: r.name.trim() || r.draft.name }, descriptor));
       }
     }
-    setRunning(false);
-    setFinished(true);
-    onCreated();
+    if (Object.keys(missing).length) {
+      setResults(missing);
+      setFailure('Nothing was created: some rows cannot be created. Untick them and try again.');
+      setRunning(false);
+      setFinished(true);
+      return;
+    }
+    setResults(Object.fromEntries(todo.map((r) => [r.id, { status: 'running' }])));
+    try {
+      // One all-or-nothing request: the server checks every row before it stores any.
+      const saved = await bulkCreateDevices(payloads);
+      setResults(Object.fromEntries(todo.map((r, i) => [r.id, { status: 'created', message: saved.created?.[i]?.name || r.name }])));
+      setFailure('');
+      onCreated();
+    } catch (err) {
+      const rejected = new Map((err.rows || []).map((x) => [x.index, x]));
+      setResults(
+        Object.fromEntries(
+          todo.map((r, i) => {
+            const x = rejected.get(i);
+            return [r.id, x ? { status: 'error', message: x.error } : { status: 'ready', message: 'valid, but not created because another row was rejected' }];
+          })
+        )
+      );
+      setFailure(rejected.size ? `Nothing was created: ${rejected.size} row${rejected.size === 1 ? ' was' : 's were'} rejected. Rename or untick ${rejected.size === 1 ? 'it' : 'them'} and try again.` : `Nothing was created: ${err.message}`);
+    } finally {
+      setRunning(false);
+      setFinished(true);
+    }
   };
 
   const summary = runSummary(rows.filter((r) => results[r.id]).map((r) => results[r.id].status));
@@ -105,11 +136,11 @@ export default function AddAllDialog({ drafts, onClose, onCreated }) {
             </tbody>
           </table>
         </div>
-        {finished && <p role="status" className={`text-sm font-medium ${summary.failed ? 'text-amber-300' : 'text-emerald-300'}`}>Done: {summary.text}</p>}
+        {finished && <p role="status" className={`text-sm font-medium ${failure ? 'text-amber-300' : 'text-emerald-300'}`}>{failure || `Created ${summary.created} device${summary.created === 1 ? '' : 's'}.`}</p>}
       </div>
       <div className="sticky bottom-0 z-10 flex justify-end gap-2 border-t border-white/5 bg-surface-900 px-5 py-3 sm:px-6">
         <Button type="button" variant="ghost" data-autofocus onClick={onClose} disabled={running}>{finished ? 'Close' : 'Cancel'}</Button>
-        <Button type="button" onClick={run} disabled={running || !info || chosen.length === 0}>
+        <Button type="button" onClick={run} disabled={running || !info || chosen.length === 0 || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
           {running && <Loader2 size={14} className="animate-spin" />} Create {chosen.length} device{chosen.length === 1 ? '' : 's'}
         </Button>
       </div>

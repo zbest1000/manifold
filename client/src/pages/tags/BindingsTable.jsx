@@ -4,6 +4,7 @@ import clsx from 'clsx';
 import { formatDistanceToNow } from 'date-fns';
 import { Modal, Button, Badge, Card } from '@/components/ui';
 import BindingDetail from './BindingDetail';
+import { READ_ONLY_REASON } from '@/store/selectors';
 import { layoutLabel, rbeLabel, instanceCount } from './bindingView';
 
 function sourceLabel(b, sources, profiles = []) {
@@ -47,7 +48,7 @@ function StateBadge({ state }) {
 }
 
 /** Bindings as a real table. The expander row shows full source/target and the last error. */
-export default function BindingsTable({ bindings, status, sources, profiles = [], historians = [], editingId, onEdit, onToggleEnabled, onDelete, busyId }) {
+export default function BindingsTable({ bindings, status, sources, profiles = [], historians = [], editingId, onEdit, onToggleEnabled, onDelete, busyId, readOnly = false }) {
   const [open, setOpen] = useState(() => new Set());
   const [confirm, setConfirm] = useState(null);
   const toggleOpen = (id) =>
@@ -134,18 +135,18 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
                         <button
                           type="button"
                           onClick={() => onToggleEnabled(b)}
-                          disabled={busyId === b.id}
+                          disabled={busyId === b.id || readOnly}
                           aria-pressed={enabled}
                           aria-label={`${enabled ? 'Disable' : 'Enable'} binding ${label}`}
-                          title={enabled ? 'Disable' : 'Enable'}
+                          title={readOnly ? READ_ONLY_REASON : enabled ? 'Disable' : 'Enable'}
                           className={clsx('rounded-lg p-1.5 hover:bg-white/10 disabled:opacity-40', enabled ? 'text-emerald-300' : 'text-slate-400')}
                         >
                           <Power size={14} aria-hidden="true" />
                         </button>
-                        <button type="button" onClick={() => onEdit(b)} aria-label={`Edit binding ${label}`} title="Edit" className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-accent-300">
+                        <button type="button" onClick={() => onEdit(b)} aria-label={`${readOnly ? 'View' : 'Edit'} binding ${label}`} title={readOnly ? 'View (read-only session)' : 'Edit'} className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-accent-300">
                           <Pencil size={14} aria-hidden="true" />
                         </button>
-                        <button type="button" onClick={() => setConfirm(b)} aria-label={`Delete binding ${label}`} title="Delete" className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-rose-300">
+                        <button type="button" onClick={() => setConfirm(b)} disabled={readOnly} aria-label={`Delete binding ${label}`} title={readOnly ? READ_ONLY_REASON : 'Delete'} className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-rose-300">
                           <Trash2 size={14} aria-hidden="true" />
                         </button>
                       </div>

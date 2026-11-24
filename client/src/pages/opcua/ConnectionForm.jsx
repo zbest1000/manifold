@@ -1,14 +1,23 @@
 import { Cpu, Radar } from 'lucide-react';
 import clsx from 'clsx';
 import { Card, Button, Badge, Input, Field, Select, Checkbox } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import CertificatesSection from './CertificatesSection';
 import { SECURITY_MODES, SECURITY_POLICIES, withCurrent } from './helpers';
 
 /** The connect / edit form for an OPC UA server, including endpoint discovery. */
 export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, onDiscover, onSubmit, onCancel }) {
+  const readOnly = useReadOnly();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   return (
     <Card className="max-h-[70vh] overflow-y-auto p-4 sm:p-5">
+      <form
+        aria-label={editing ? 'Edit OPC UA connection' : 'New OPC UA connection'}
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit();
+        }}
+      >
       <h2 className="mb-4 text-sm font-semibold text-slate-100">{editing ? 'Edit OPC UA connection' : 'New OPC UA connection'}</h2>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Name">
@@ -18,6 +27,7 @@ export default function ConnectionForm({ form, setForm, editing, endpoints, disc
           <div className="flex gap-2">
             <Input value={form.endpointUrl} onChange={(e) => set({ endpointUrl: e.target.value })} placeholder="opc.tcp://host:4840" />
             <Button
+              type="button"
               variant="outline"
               onClick={onDiscover}
               disabled={discovering || !form.endpointUrl}
@@ -76,13 +86,14 @@ export default function ConnectionForm({ form, setForm, editing, endpoints, disc
       <CertificatesSection />
 
       <div className="mt-4 flex flex-wrap justify-end gap-2">
-        <Button variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button onClick={onSubmit} disabled={busy}>
-          <Cpu size={15} aria-hidden="true" /> {editing ? 'Save changes' : 'Connect'}
+        <Button type="submit" disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
+          <Cpu size={15} aria-hidden="true" /> {busy ? (editing ? 'Saving…' : 'Connecting…') : editing ? 'Save changes' : 'Connect'}
         </Button>
       </div>
+      </form>
     </Card>
   );
 }

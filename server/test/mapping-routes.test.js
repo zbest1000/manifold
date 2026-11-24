@@ -409,3 +409,77 @@ test('device validation: tag metadata is checked', () => {
   assert.deepStrictEqual(seen, ['a', 'b', 'end:d1']);
   return dm.stop();
 });
+
+test('device-level settings the driver rejects fail the save instead of leaving a device stuck offline', async () => {
+  const base = { name: 'Opt test', protocol: 'modbus-tcp', host: '10.4.0.1', tags: [{ key: 'a', address: 'holding:1', type: 'uint16' }] };
+  let r = await api('POST', '/api/devices', { ...base, options: { unmapped: [{ table: 'holding', from: 9, to: 5 }] } });
+  assert.strictEqual(r.status, 400);
+  assert.match(r.body.error, /options\.unmapped must be/);
+  r = await api('POST', '/api/devices', { ...base, options: { maxRegisters: 500 } });
+  assert.strictEqual(r.status, 400);
+  assert.match(r.body.error, /maxRegisters must be an integer 1\.\.125/);
+  r = await api('POST', '/api/devices/test', { device: { ...base, options: { maxRegisters: 500 } } });
+  assert.strictEqual(r.status, 400, 'the connection test reports the same problem');
+  r = await api('POST', '/api/devices', { name: 'S7 no slot', protocol: 's7', host: '10.4.0.2', tags: [] });
+  assert.strictEqual(r.status, 400);
+  assert.match(r.body.error, /rack and slot/);
+  assert.ok(!ctx.profiles.listIn('devices').some((d) => d.name === 'Opt test' || d.name === 'S7 no slot'));
+  // valid unmapped ranges and isolate are stored as given
+  r = await api('POST', '/api/devices', { ...base, isolate: true, options: { unmapped: [{ table: 'holding', from: 5, to: 9 }] } });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.strictEqual(r.body.isolate, true);
+  assert.deepStrictEqual(r.body.options.unmapped, [{ table: 'holding', from: 5, to: 9 }]);
+});
+
+test('POST /api/devices/bulk is all-or-nothing and reports every bad row', async () => {
+  const row = (name, host = '10.1.0.1') => ({ name, protocol: 'modbus-tcp', host, unitId: 1, tags: [{ key: 'a', address: 'holding:1', type: 'uint16' }] });
+  const stored = await api('POST', '/api/devices', row('Stored X'));
+  assert.strictEqual(stored.status, 201);
+  // device names are unique (lists, binding source labels and the UI would be ambiguous otherwise)
+  let dup = await api('POST', '/api/devices', row('Stored X', '10.9.9.9'));
+  assert.strictEqual(dup.status, 400);
+  assert.match(dup.body.error, /already used by another device/);
+  const sneaky = await api('POST', '/api/devices', row('Stored \u202eZ', '10.9.9.7'));
+  assert.strictEqual(sneaky.status, 400);
+  assert.match(sneaky.body.error, /control or text-direction override/);
+  const other = await api('POST', '/api/devices', row('Stored Y', '10.9.9.8'));
+  dup = await api('PUT', `/api/devices/${other.body.id}`, { ...other.body, name: 'Stored X' });
+  assert.strictEqual(dup.status, 400);
+  assert.strictEqual((await api('PUT', `/api/devices/${stored.body.id}`, { ...stored.body, enabled: true })).status, 200, 'saving a device under its own name is fine');
+  const before = ctx.profiles.listIn('devices').length;
+
+  // one bad row (bad port), one duplicate name inside the batch, one clashing with a stored device
+  let r = await api('POST', '/api/devices/bulk', {
+    devices: [row('Bulk A'), { ...row('Bulk B'), port: 70000 }, row('Bulk A'), row('Stored X')]
+  });
+  assert.strictEqual(r.status, 400);
+  assert.match(r.body.error, /3 of 4 device\(s\) are invalid; nothing was created/);
+  assert.deepStrictEqual(r.body.rows.map((x) => x.index), [1, 2, 3]);
+  assert.match(r.body.rows[0].error, /port must be 1-65535/);
+  assert.match(r.body.rows[1].error, /already used/);
+  assert.strictEqual(ctx.profiles.listIn('devices').length, before, 'nothing was stored, not even the valid first row');
+
+  // tag-level failures carry their details
+  r = await api('POST', '/api/devices/bulk', { devices: [{ ...row('Bulk T'), tags: [{ key: 'bad', address: '12345', type: 'uint16' }] }] });
+  assert.strictEqual(r.status, 400);
+  assert.strictEqual(r.body.rows[0].details[0].key, 'bad');
+
+  r = await api('POST', '/api/devices/bulk', { devices: [] });
+  assert.strictEqual(r.status, 400);
+
+  // all valid: all created
+  r = await api('POST', '/api/devices/bulk', { devices: [row('Bulk A'), row('Bulk B', '10.1.0.2')] });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.deepStrictEqual(r.body.created.map((d) => d.name), ['Bulk A', 'Bulk B']);
+  assert.strictEqual(ctx.profiles.listIn('devices').length, before + 2);
+
+  // a profile default applies to rows without profileId; per-row parameter errors are reported
+  const pid = (await api('POST', '/api/devices/profiles', { ...PROFILE, name: 'Bulk profile' })).body.id;
+  r = await api('POST', '/api/devices/bulk', { profileId: pid, devices: [{ name: 'P1', host: '10.2.0.1', params: { line: 'a' } }, { name: 'P2', host: '10.2.0.2' }] });
+  assert.strictEqual(r.status, 400);
+  assert.deepStrictEqual(r.body.rows.map((x) => x.index), [1]);
+  assert.match(r.body.rows[0].details[0].error, /parameter "line" is required/);
+  r = await api('POST', '/api/devices/bulk', { profileId: pid, devices: [{ name: 'P1', host: '10.2.0.1', params: { line: 'a' } }] });
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(r.body.created[0].profileId, pid);
+});

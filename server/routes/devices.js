@@ -121,6 +121,23 @@ router.post('/validate-tags', (req, res) => {
   }
 });
 
+// POST /api/devices/bulk { devices: [...], profileId? } — all-or-nothing: every row is validated
+// first; on any failure nothing is created and 400 carries `rows` [{ index, name, error, details }].
+router.post('/bulk', async (req, res) => {
+  const { devices, bindings } = req.app.locals.services;
+  try {
+    const created = await devices.saveBulk(req.body?.devices, { profileId: req.body?.profileId });
+    bindings?.reconcile?.();
+    await bindings?.syncMonitors?.();
+    res.status(201).json({ created });
+  } catch (error) {
+    if (error instanceof DeviceValidationError && Array.isArray(error.details)) {
+      return res.status(400).json({ error: error.message, rows: error.details });
+    }
+    fail(res, error);
+  }
+});
+
 // POST /api/devices
 router.post('/', async (req, res) => {
   const { devices, bindings } = req.app.locals.services;

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Workflow, Boxes, Database, CircleDot, FileCheck2 } from 'lucide-react';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
 import ViewTab from '@/components/ViewTab';
 import { Banner, HelpButton, PageBody } from '@/components/ui';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 import PipelinesHelp from './pipelines/PipelinesHelp';
 import RoutesTab from './pipelines/RoutesTab';
 import ModelsTab from './pipelines/ModelsTab';
@@ -20,8 +21,13 @@ import ContractsTab from './pipelines/ContractsTab';
  *   Contracts   locked payload schemas with drift violations
  * Each tab lives in pages/pipelines/.
  */
+const TABS = ['routes', 'models', 'historians', 'recorder', 'contracts'];
+
 export default function Pipelines() {
-  const [tab, setTab] = useState('routes');
+  // The tab lives in the URL (?tab=historians) so a refresh, back/forward and shared links keep it.
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.includes(params.get('tab')) ? params.get('tab') : 'routes';
+  const setTab = (t) => setParams(t === 'routes' ? {} : { tab: t }, { replace: true });
   const allBrokers = useStore((s) => s.brokers);
   const brokers = allBrokers.filter((b) => b.status === 'connected');
 
@@ -46,6 +52,7 @@ export default function Pipelines() {
         }
       />
       <PageBody>
+        <ReadOnlyNote />
         {brokers.length === 0 && (
           <Banner variant="warn" title="No connected brokers">
             Sources and targets need at least one live MQTT connection. Connect one on the MQTT Brokers page.

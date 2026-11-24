@@ -2,16 +2,18 @@ import { memo } from 'react';
 import { Link } from 'react-router-dom';
 import { Pencil, Trash2, Waypoints, AlertTriangle } from 'lucide-react';
 import { Card, Badge, IconButton } from '@/components/ui';
+import { READ_ONLY_REASON } from '@/store/selectors';
 import { deviceBadge, quarantineList, quarantineSummary, quarantineReasonText, relativeTime } from '@/lib/deviceStatus';
 import { resolveParams } from '@/lib/deviceProfiles';
 import { FromProfileBadge } from './EffectiveTagsTable';
 import PollHealth from './PollHealth';
 import { ExperimentalBadge } from './ProtocolNotices';
 
-function DeviceCardImpl({ device, live, host, profile, protocolLabel, experimental, onEdit, onDelete, onToggle, busy }) {
+function DeviceCardImpl({ device, live, host, profile, protocolLabel, experimental, onEdit, onDelete, onToggle, busy, readOnly = false }) {
   const b = deviceBadge(device, device.status, live, host);
   const st = { ...(device.status || {}), ...(live || {}) };
   const quarantined = quarantineList(device.status);
+  const tagCount = device.tags?.length ?? device.status?.tagCount ?? 0;
   const le = device.status?.lastError;
   const lastError = le && typeof le === 'object' ? le.message || JSON.stringify(le) : le;
   return (
@@ -19,7 +21,7 @@ function DeviceCardImpl({ device, live, host, profile, protocolLabel, experiment
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
         <div className="min-w-[14rem] flex-1 basis-60">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="truncate text-base font-semibold text-slate-100">{device.name}</h2>
+            <h2 className="truncate text-base font-semibold text-slate-100" title={device.name}>{device.name}</h2>
             <Badge status={b.status}>{b.label}</Badge>
             <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-2xs font-medium text-slate-300">{protocolLabel}</span>
             {experimental && <ExperimentalBadge />}
@@ -29,7 +31,7 @@ function DeviceCardImpl({ device, live, host, profile, protocolLabel, experiment
             {device.unitId !== undefined && <span className="text-slate-500"> · unit {device.unitId}</span>}
             {device.rack !== undefined && device.slot !== undefined && <span className="text-slate-500"> · rack {device.rack} / slot {device.slot}</span>}
             {device.protocol === 'ethernet-ip' && device.slot !== undefined && <span className="text-slate-500"> · slot {device.slot}</span>}
-            <span className="text-slate-500"> · {device.tags?.length ?? device.status?.tagCount ?? 0} tags{device.profileId ? ` (${device.ownTags?.length || 0} own)` : ''}</span>
+            <span className="text-slate-500"> · {tagCount} tag{tagCount === 1 ? '' : 's'}{device.profileId ? ` (${device.ownTags?.length || 0} own)` : ''}</span>
           </p>
           {device.profileId && (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
@@ -43,7 +45,7 @@ function DeviceCardImpl({ device, live, host, profile, protocolLabel, experiment
         </div>
         <div className="flex items-center gap-1">
           <label className="mr-1 inline-flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-            <input type="checkbox" role="switch" className="h-4 w-4 accent-sky-500" checked={device.enabled} disabled={busy} onChange={() => onToggle(device)} aria-label={`${device.enabled ? 'Disable' : 'Enable'} ${device.name}`} />
+            <input type="checkbox" role="switch" className="h-4 w-4 accent-sky-500" checked={device.enabled} disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} onChange={() => onToggle(device)} aria-label={`${device.enabled ? 'Disable' : 'Enable'} ${device.name}`} />
             {device.enabled ? 'Enabled' : 'Disabled'}
           </label>
           <Link
@@ -52,8 +54,8 @@ function DeviceCardImpl({ device, live, host, profile, protocolLabel, experiment
           >
             <Waypoints size={14} aria-hidden="true" /> Map to UNS
           </Link>
-          <IconButton icon={Pencil} label={`Edit ${device.name}`} onClick={() => onEdit(device)} />
-          <IconButton icon={Trash2} label={`Delete ${device.name}`} onClick={() => onDelete(device)} disabled={busy} />
+          <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} ${device.name}`} onClick={() => onEdit(device)} />
+          <IconButton icon={Trash2} label={`Delete ${device.name}`} onClick={() => onDelete(device)} disabled={busy || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} />
         </div>
       </div>
 

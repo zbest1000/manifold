@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Pencil, Trash2, Eye } from 'lucide-react';
 import { Table, THead, TableSort, Th, Tr, Td, Badge, Button, IconButton } from '@/components/ui';
 import { nextSort, sortRows } from '@/lib/sortRows';
+import { READ_ONLY_REASON } from '@/store/selectors';
 import { connectionLabel } from './helpers';
 
 const ACCESSORS = {
@@ -11,7 +12,7 @@ const ACCESSORS = {
 };
 
 /** The list of OPC UA connections as a sortable table; one row is the "active" explorer target. */
-export default function ConnectionsTable({ connections, activeId, editingId, onSelect, onEdit, onRemove }) {
+export default function ConnectionsTable({ connections, activeId, editingId, onSelect, onEdit, onRemove, readOnly = false }) {
   const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
   const rows = sortRows(connections, sort, ACCESSORS);
   return (
@@ -45,13 +46,15 @@ export default function ConnectionsTable({ connections, activeId, editingId, onS
                     <Button size="sm" variant={active ? 'subtle' : 'outline'} onClick={() => onSelect(c.id)} aria-pressed={active} aria-label={`Explore ${label}`}>
                       <Eye size={13} aria-hidden="true" /> {active ? 'Exploring' : 'Explore'}
                     </Button>
-                    <IconButton icon={Pencil} label={`Edit ${label}`} size={14} onClick={() => onEdit(c)} />
+                    <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} ${label}`} size={14} onClick={() => onEdit(c)} />
                     <IconButton
                       icon={Trash2}
                       label={`Disconnect and remove ${label}`}
                       size={14}
                       className="hover:bg-rose-500/10 hover:text-rose-300"
                       onClick={() => onRemove(c)}
+                      disabled={readOnly}
+                      title={readOnly ? READ_ONLY_REASON : undefined}
                     />
                   </span>
                 </Td>

@@ -71,7 +71,8 @@ const VIEWER_READ_ONLY_POSTS = [
   /^\/tags\/bindings\/preview$/, // binding dry run (no publishing)
   /^\/tags\/bindings\/suggest$/, // name/context suggestions for a source (no writes)
   /^\/contracts\/infer$/, // schema inference from an observed payload
-  /^\/i3x\/(related|value|history)$/ // i3X reads
+  /^\/i3x\/(related|value|history)$/, // i3X reads
+  /^\/cesmii\/history$/ // SMIP time-series read (a GraphQL query; changes nothing)
 ];
 
 function isViewerAllowedPost(method, apiPath) {

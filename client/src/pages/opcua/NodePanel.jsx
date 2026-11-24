@@ -6,10 +6,11 @@ import { socket } from '@/lib/socket';
 import { usePolled } from '@/lib/usePolled';
 import JsonView from '@/components/JsonView';
 import { Card, Button, Banner, Skeleton } from '@/components/ui';
+import { READ_ONLY_REASON } from '@/store/selectors';
 import { formatValue } from './helpers';
 
 /** Side panel with a node's attributes, a live value and a "monitor" action. */
-export default function NodePanel({ node, connectionId, values, onClose }) {
+export default function NodePanel({ node, connectionId, values, onClose, readOnly = false }) {
   const nodeId = node.meta?.nodeId;
   const [monitoring, setMonitoring] = useState(false);
 
@@ -54,7 +55,7 @@ export default function NodePanel({ node, connectionId, values, onClose }) {
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {node.meta?.nodeClass === 'Variable' && (
-          <Button onClick={monitor} disabled={monitoring} className="w-full">
+          <Button onClick={monitor} disabled={monitoring || readOnly} title={readOnly ? READ_ONLY_REASON : undefined} className="w-full">
             <Eye size={14} aria-hidden="true" /> {monitoring ? 'Monitoring live' : 'Monitor value'}
           </Button>
         )}

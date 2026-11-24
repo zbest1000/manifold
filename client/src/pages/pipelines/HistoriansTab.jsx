@@ -1,13 +1,13 @@
 import { useCallback, useState } from 'react';
-import { Database, Plus, RefreshCw, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Database, Plus, RefreshCw, CheckCircle2, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Textarea, Field, Select, Checkbox, Badge, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
+import { Card, Button, Input, Textarea, Field, Select, Checkbox, Badge, IconButton, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { useEngineMetrics } from './hooks';
 import { ListState } from './shared';
-import { RowActions } from '@/components/ui';
 import { BLANK_HISTORIAN, historianFormFrom, historianPayload, historianSaveDisabled, historianSummary, outboxSummary } from './helpers';
 
 function Outbox({ o }) {
@@ -19,7 +19,13 @@ function Outbox({ o }) {
       <span className="font-mono text-muted">
         {s.written} written · {s.queued} queued
         {s.spilledKb && <span className="text-amber-300"> · {s.spilledKb} KB spilled to disk</span>}
-        {s.dropped && <span className="text-rose-300"> · {s.dropped} dropped</span>}
+        {s.dropped && <span className="text-rose-300"> · {s.dropped} dropped (buffer full)</span>}
+        {s.deadLettered && (
+          <span className="text-rose-300" title="The historian permanently rejected these points (for example a bad tag name or value). They are kept in a dead-letter file on the server instead of being retried forever.">
+            {' '}· {s.deadLettered} rejected by the historian{s.deadLetterKb ? ` (${s.deadLetterKb} KB kept in dead-letter file)` : ''}
+          </span>
+        )}
+        {s.skipped && <span className="text-amber-300" title="Points with no usable value (null without a quality) are not sent."> · {s.skipped} skipped (no value)</span>}
       </span>
       {s.lastError && <span className="ml-1 text-rose-300">· {s.lastError}</span>}
     </p>
@@ -33,6 +39,9 @@ export default function HistoriansTab() {
   const [editingId, setEditingId] = useState(null);
   const [testing, setTesting] = useState(null); // { id, state, error }
   const [confirm, confirmDialog] = useConfirm();
+  const [saving, setSaving] = useState(false);
+  const readOnly = useReadOnly();
+  const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
   const { data, error, loading, reload } = usePolled(() => api.listHistorians());
   useEngineMetrics(useCallback((m) => m.outbox && setOutbox(m.outbox), []));
 
@@ -46,6 +55,8 @@ export default function HistoriansTab() {
   };
 
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       await api.saveHistorian(historianPayload(form, editingId));
       closeForm();
@@ -53,6 +64,8 @@ export default function HistoriansTab() {
       toast.success('Historian saved');
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -73,6 +86,7 @@ export default function HistoriansTab() {
     try {
       await api.deleteHistorian(h.id);
       reload();
+      toast.success(`Removed historian "${h.name || h.url}"`);
     } catch (e) {
       toast.error(e.message);
     }
@@ -104,7 +118,7 @@ export default function HistoriansTab() {
                 title: 'No historians configured',
                 hint: 'A historian is a time-series database (InfluxDB, TimescaleDB, Timebase) that routes and the recorder write into, and that Trends reads back.',
                 action: (
-                  <Button onClick={() => setShowForm(true)}>
+                  <Button onClick={() => setShowForm(true)} {...ro}>
                     <Plus size={15} aria-hidden="true" /> Add a historian
                   </Button>
                 )
@@ -142,11 +156,13 @@ export default function HistoriansTab() {
                     )}
                   </Td>
                   <Td align="right">
-                    <RowActions what={`historian ${name}`} onEdit={() => edit(h)} onDelete={() => remove(h)}>
-                      <Button size="sm" variant="outline" onClick={() => test(h.id)} disabled={running} aria-label={`Test write to ${name}`}>
+                    <span className="inline-flex items-center justify-end gap-1">
+                      <Button size="sm" variant="outline" onClick={() => test(h.id)} disabled={running || readOnly} title={readOnly ? READ_ONLY_REASON : 'Writes one point (manifold/connection-test) to the historian'} aria-label={`Test write to ${name}`}>
                         <RefreshCw size={12} aria-hidden="true" className={clsx(running && 'animate-spin')} /> Test write
                       </Button>
-                    </RowActions>
+                      <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} historian ${name}`} size={14} onClick={() => edit(h)} />
+                      <IconButton icon={Trash2} label={`Delete historian ${name}`} size={14} className="hover:bg-rose-500/10 hover:text-rose-300" onClick={() => remove(h)} {...ro} />
+                    </span>
                   </Td>
                 </Tr>
               );
@@ -156,7 +172,7 @@ export default function HistoriansTab() {
       </ListState>
 
       {!showForm && historians.length > 0 && (
-        <Button variant="outline" onClick={() => setShowForm(true)}>
+        <Button variant="outline" onClick={() => setShowForm(true)} {...ro}>
           <Plus size={14} aria-hidden="true" /> Add historian
         </Button>
       )}
@@ -257,7 +273,7 @@ export default function HistoriansTab() {
             </p>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button onClick={save} disabled={historianSaveDisabled(form)}>
+            <Button onClick={save} disabled={historianSaveDisabled(form) || saving || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               {editingId ? (
                 'Save changes'
               ) : (

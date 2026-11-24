@@ -2,6 +2,8 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Cpu, Plus, ListTree, Search, Share2, Box } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
 import ForceGraph from '@/graph/ForceGraph';
@@ -17,10 +19,11 @@ import ViewTab from '@/components/ViewTab';
 import ConnectionForm from './opcua/ConnectionForm';
 import ConnectionsTable from './opcua/ConnectionsTable';
 import NodePanel from './opcua/NodePanel';
-import { ROOT, BLANK_FORM, formFromConnection, connectionLabel, nodeValueMap, pickConnectionId } from './opcua/helpers';
+import { formProblem, ROOT, BLANK_FORM, formFromConnection, connectionLabel, nodeValueMap, pickConnectionId } from './opcua/helpers';
 
 export default function OpcUa() {
   const opcua = useStore((s) => s.opcua);
+  const readOnly = useReadOnly();
   const opcuaValues = useStore((s) => s.opcuaValues);
   const setOpcua = useStore((s) => s.setOpcua);
   const graphStyle = useStore((s) => s.graphStyle);
@@ -93,7 +96,9 @@ export default function OpcUa() {
   };
 
   const connect = async () => {
-    if (!form.endpointUrl) return toast.error('Endpoint URL is required');
+    if (busy || readOnly) return;
+    const problem = formProblem(form);
+    if (problem) return toast.error(problem);
     setBusy(true);
     try {
       const res = editingId ? await api.updateOpcuaConnection(editingId, form) : await api.connectOpcua(form);
@@ -104,6 +109,9 @@ export default function OpcUa() {
       setOpcua(list.connections);
     } catch (e) {
       toast.error(e.message);
+      // The server announces a connection while it is connecting and drops it again when that fails;
+      // re-read the list so a failed attempt does not leave a ghost "connecting" row behind.
+      api.listOpcua().then((list) => setOpcua(list.connections)).catch(() => {});
     } finally {
       setBusy(false);
     }
@@ -172,7 +180,7 @@ export default function OpcUa() {
   };
 
   const connectAction = (
-    <Button onClick={openNewForm} aria-expanded={showForm}>
+    <Button onClick={openNewForm} aria-expanded={showForm} disabled={readOnly && !showForm} title={readOnly ? READ_ONLY_REASON : undefined}>
       <Plus size={15} aria-hidden="true" /> {showForm ? 'Close form' : 'Connect a server'}
     </Button>
   );
@@ -198,6 +206,10 @@ export default function OpcUa() {
         }
       />
 
+      <div className="px-4 pt-4 empty:hidden sm:px-6">
+        <ReadOnlyNote className="" />
+      </div>
+
       {error && opcua.length === 0 && (
         <div className="px-4 pt-4 sm:px-6">
           <Banner variant="error" title="Could not load OPC UA connections" onRetry={reload}>
@@ -218,7 +230,7 @@ export default function OpcUa() {
           title="No OPC UA servers connected"
           hint="Connect to an OPC UA endpoint (opc.tcp://…) to explore its address space, watch live values and map nodes to tags."
           action={
-            <Button onClick={openNewForm}>
+            <Button onClick={openNewForm} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               <Plus size={15} aria-hidden="true" /> Connect a server
             </Button>
           }
@@ -241,7 +253,7 @@ export default function OpcUa() {
                 onCancel={closeForm}
               />
             )}
-            {opcua.length > 0 && <ConnectionsTable connections={opcua} activeId={connectionId} editingId={editingId} onSelect={setConnectionId} onEdit={edit} onRemove={disconnect} />}
+            {opcua.length > 0 && <ConnectionsTable connections={opcua} activeId={connectionId} editingId={editingId} onSelect={setConnectionId} onEdit={edit} onRemove={disconnect} readOnly={readOnly} />}
             {browseError && (
               <Banner variant="error" title="Could not browse this server" onRetry={loadRoot}>
                 {browseError.message}
@@ -316,7 +328,7 @@ export default function OpcUa() {
                 )}
               </div>
 
-              {selected && <NodePanel key={`${connectionId}:${selected.meta?.nodeId || selected.id}`} node={selected} connectionId={connectionId} values={opcuaValues[connectionId] || {}} onClose={() => setSelected(null)} />}
+              {selected && <NodePanel key={`${connectionId}:${selected.meta?.nodeId || selected.id}`} readOnly={readOnly} node={selected} connectionId={connectionId} values={opcuaValues[connectionId] || {}} onClose={() => setSelected(null)} />}
             </div>
           )}
         </div>

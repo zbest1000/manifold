@@ -88,6 +88,21 @@ export function cleanModel(draft) {
   };
 }
 
+/**
+ * Does this payload look like a TVQ envelope ({ v, t?, q? } with a numeric value)? Manifold's own
+ * `envelope` publishers and many gateways produce it. A historian target stores a JSON object as
+ * TEXT, so such a route needs a `numeric` transform on field "v".
+ */
+export function looksLikeTvq(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  if (!('v' in payload) || !('t' in payload || 'q' in payload)) return false;
+  const v = payload.v;
+  return (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)));
+}
+
+/** Is a `numeric` transform on field "v" already part of the chain? */
+export const hasTvqNumeric = (transforms) => (transforms || []).some((t) => t.type === 'numeric' && t.field === 'v');
+
 export const routeSaveable = (draft) => Boolean(draft.source.filter) && !(draft.target.type === 'historian' && !draft.target.historianId);
 export const modelSaveable = (draft) => Boolean(draft.target.topic) && draft.attributes.some((a) => a.name && a.source.topic);
 
@@ -169,6 +184,9 @@ export function outboxSummary(o) {
     queued: o.queued,
     spilledKb: o.spillBytes > 0 ? (o.spillBytes / 1024).toFixed(1) : null,
     dropped: o.dropped > 0 ? o.dropped : null,
+    deadLettered: o.deadLettered > 0 ? o.deadLettered : null,
+    deadLetterKb: o.deadLetterBytes > 0 ? (o.deadLetterBytes / 1024).toFixed(1) : null,
+    skipped: o.skipped > 0 ? o.skipped : null,
     lastError: o.lastError || null
   };
 }

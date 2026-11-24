@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plug, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 
 function infoText(info) {
   if (!info) return '';
@@ -16,6 +17,7 @@ function infoText(info) {
 export default function ConnectionTest({ buildConfig, disabled }) {
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState(null);
+  const readOnly = useReadOnly();
   const run = async () => {
     setTesting(true);
     setTest(null);
@@ -30,7 +32,7 @@ export default function ConnectionTest({ buildConfig, disabled }) {
   };
   return (
     <div className="flex flex-wrap items-center gap-3">
-      <Button type="button" variant="outline" onClick={run} disabled={testing || disabled}>
+      <Button type="button" variant="outline" onClick={run} disabled={testing || disabled || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
         {testing ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />} Test connection
       </Button>
       <div aria-live="polite" className="min-w-0 text-xs">

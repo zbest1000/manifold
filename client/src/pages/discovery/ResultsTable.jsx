@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Radio, Cpu, Plug, Boxes, HardDrive, Plus } from 'lucide-react';
 import { Button, Badge, Table, THead, TableSort, Th, Tr, Td } from '@/components/ui';
 import { nextSort, sortRows } from '@/lib/sortRows';
+import { READ_ONLY_REASON } from '@/store/selectors';
 import { isDeviceResult, identityText, SCAN_PROTOCOLS } from '@/lib/discoveryDevices';
 
 const KIND_META = {
@@ -27,7 +28,7 @@ function detailFor(r) {
 }
 
 /** Discovered endpoints: brokers, OPC UA, i3X and identified devices (protocol badge, identity, Add as device). */
-export default function ResultsTable({ results, onConnect, onAddDevice }) {
+export default function ResultsTable({ results, onConnect, onAddDevice, readOnly = false, alreadyConnected = () => false }) {
   const [sort, setSort] = useState({ key: 'endpoint', dir: 'asc' });
   const rows = sortRows(results, sort, ACCESSORS);
   return (
@@ -63,11 +64,13 @@ export default function ResultsTable({ results, onConnect, onAddDevice }) {
                 <Td className="max-w-[22rem] text-xs text-muted">{detail || '—'}</Td>
                 <Td align="right">
                   {device ? (
-                    <Button size="sm" variant="subtle" onClick={() => onAddDevice(r)} aria-label={`Add ${r.host}:${r.port} as device`}>
+                    <Button size="sm" variant="subtle" onClick={() => onAddDevice(r)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined} aria-label={`Add ${r.host}:${r.port} as device`}>
                       <Plus size={13} aria-hidden="true" /> Add as device
                     </Button>
+                  ) : alreadyConnected(r) ? (
+                    <span title="This endpoint is already connected (see its page in the sidebar)"><Badge status="connected">already connected</Badge></span>
                   ) : (
-                    <Button size="sm" variant="subtle" onClick={() => onConnect(r)} aria-label={`Connect to ${r.host}:${r.port}`}>
+                    <Button size="sm" variant="subtle" onClick={() => onConnect(r)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined} aria-label={`Connect to ${r.host}:${r.port}`}>
                       <Plug size={13} aria-hidden="true" /> Connect
                     </Button>
                   )}

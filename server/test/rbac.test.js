@@ -94,7 +94,8 @@ test('viewer may call allowlisted read-only POSTs; mutating POSTs stay forbidden
     ['/api/historians/nope/query', {}],
     ['/api/pipelines/preview', {}],
     ['/api/mqtt/brokers/nope/subscriptions/resolve', {}],
-    ['/api/devices/validate-tags', {}]
+    ['/api/devices/validate-tags', {}],
+    ['/api/cesmii/history', {}]
   ];
   for (const [p, body] of allowed) {
     const res = await call(p, { method: 'POST', token: 'viewer-token', body });

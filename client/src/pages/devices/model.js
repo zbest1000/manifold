@@ -223,6 +223,7 @@ export function blankDevice(descriptor) {
 export function toPayload(draft, descriptor) {
   const { status: _status, ownTags: _own, profileErrors: _errs, paramValues: _pv, ...rest } = draft;
   const top = cleanFields(rest, descriptor?.deviceFields);
+  if (!top.isolate) delete top.isolate; // only ever stored as true
   return {
     ...top,
     port: Number(draft.port),

@@ -4,18 +4,22 @@ import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
-import { Card, Button, Input, Field, Select, Badge, Checkbox, IconButton, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
-import { useEngineMetrics } from './hooks';
+import { Card, Button, Input, Field, Select, Badge, Checkbox, IconButton, Table, THead, Th, Tr, Td, Banner, useConfirm } from '@/components/ui';
+import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import { useEngineMetrics, useTvqSample } from './hooks';
 import { BrokerSelect, ListState } from './shared';
-import { RowActions } from '@/components/ui';
 import TransformRow from './TransformRow';
-import { TRANSFORM_DEFAULTS, blankRoute, brokerName, cloneRoute, routeSaveable, routeTargetLabel } from './helpers';
+import { Pencil, Trash2 } from 'lucide-react';
+import { TRANSFORM_DEFAULTS, blankRoute, brokerName, cloneRoute, hasTvqNumeric, routeSaveable, routeTargetLabel } from './helpers';
 
 export default function RoutesTab({ brokers }) {
   const [metrics, setMetrics] = useState({});
   const [draft, setDraft] = useState(null); // null = closed editor
   const [preview, setPreview] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
+  const [saving, setSaving] = useState(false);
+  const readOnly = useReadOnly();
+  const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
 
   const { data, error, loading, reload } = usePolled(
     async () => {
@@ -31,6 +35,8 @@ export default function RoutesTab({ brokers }) {
   const historians = data?.historians || [];
 
   const save = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       await api.savePipeline(draft);
       setDraft(null);
@@ -39,6 +45,8 @@ export default function RoutesTab({ brokers }) {
       toast.success('Route saved');
     } catch (e) {
       toast.error(e.message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -81,6 +89,9 @@ export default function RoutesTab({ brokers }) {
   };
 
   const newRoute = () => setDraft(blankRoute(brokers));
+  const toHistorian = draft?.target.type === 'historian';
+  const tvqTopic = useTvqSample({ brokerId: draft?.source.brokerId, filter: draft?.source.filter, enabled: Boolean(toHistorian) });
+  const offerTvq = Boolean(tvqTopic) && !hasTvqNumeric(draft?.transforms);
 
   return (
     <>
@@ -98,7 +109,7 @@ export default function RoutesTab({ brokers }) {
                 title: 'No pipeline routes yet',
                 hint: 'A route consumes a topic filter, runs it through transforms (re-path, reshape, scale, flatten), and publishes to a broker or writes to a historian.',
                 action: (
-                  <Button onClick={newRoute}>
+                  <Button onClick={newRoute} {...ro}>
                     <Plus size={15} aria-hidden="true" /> Create the first route
                   </Button>
                 )
@@ -138,9 +149,11 @@ export default function RoutesTab({ brokers }) {
                     </span>
                   </Td>
                   <Td align="right">
-                    <RowActions what={`route ${name}`} onEdit={() => edit(route)} onDelete={() => remove(route)}>
-                      <IconButton icon={Power} label={route.enabled ? `Pause route ${name}` : `Resume route ${name}`} size={14} onClick={() => toggle(route)} />
-                    </RowActions>
+                    <span className="inline-flex items-center justify-end gap-1">
+                      <IconButton icon={Power} label={route.enabled ? `Pause route ${name}` : `Resume route ${name}`} size={14} onClick={() => toggle(route)} {...ro} />
+                      <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} route ${name}`} size={14} onClick={() => edit(route)} />
+                      <IconButton icon={Trash2} label={`Delete route ${name}`} size={14} className="hover:bg-rose-500/10 hover:text-rose-300" onClick={() => remove(route)} {...ro} />
+                    </span>
                   </Td>
                 </Tr>
               );
@@ -150,7 +163,7 @@ export default function RoutesTab({ brokers }) {
       </ListState>
 
       {!draft && routes.length > 0 && (
-        <Button variant="outline" onClick={newRoute}>
+        <Button variant="outline" onClick={newRoute} {...ro}>
           <Plus size={14} aria-hidden="true" /> New route
         </Button>
       )}
@@ -228,11 +241,28 @@ export default function RoutesTab({ brokers }) {
             )}
           </div>
 
+          {offerTvq && (
+            <Banner
+              variant="warn"
+              title="This topic carries a value/time/quality envelope"
+              className="mt-3"
+              action={
+                <Button size="sm" variant="outline" onClick={() => setDraft({ ...draft, transforms: [...draft.transforms, { type: 'numeric', field: 'v' }] })}>
+                  <Plus size={12} aria-hidden="true" /> Add numeric transform on v
+                </Button>
+              }
+            >
+              <span className="mono">{tvqTopic}</span> looks like <span className="mono">{'{ v, t, q }'}</span>. A historian stores a JSON object as <b>text</b>, not a number,
+              so the history could not be trended. A <span className="mono">numeric</span> transform on field <span className="mono">v</span> writes the value itself (a message whose v is not a
+              number is dropped).
+            </Banner>
+          )}
+
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={runPreview} disabled={!draft.source.filter}>
               <Eye size={14} aria-hidden="true" /> Dry-run preview
             </Button>
-            <Button onClick={save} disabled={!routeSaveable(draft)}>
+            <Button onClick={save} disabled={!routeSaveable(draft) || saving || readOnly} title={readOnly ? READ_ONLY_REASON : undefined}>
               {draft.id ? 'Save changes' : 'Save route'}
             </Button>
             <Button

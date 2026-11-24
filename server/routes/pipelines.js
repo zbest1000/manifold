@@ -1,6 +1,7 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const { filterProblem, topicProblem } = require('../services/mqttMatch');
 
 // Pipeline routes: source → transforms → target, persisted in profiles and
 // executed by the PipelineEngine on the live (coalesced) message stream.
@@ -9,6 +10,8 @@ const TRANSFORM_TYPES = ['repath', 'pick', 'rename', 'set', 'scale', 'numeric', 
 
 function validateRoute(body) {
   if (!body.source?.brokerId || !body.source?.filter) return 'source.brokerId and source.filter are required';
+  const fp = filterProblem(body.source.filter);
+  if (fp) return `source filter "${body.source.filter}" ${fp}`;
   const target = body.target || {};
   if (target.type === 'mqtt') {
     if (!target.brokerId) return 'target.brokerId is required for mqtt targets';
@@ -19,6 +22,12 @@ function validateRoute(body) {
   }
   for (const t of body.transforms || []) {
     if (!TRANSFORM_TYPES.includes(t.type)) return `unknown transform type "${t.type}" (supported: ${TRANSFORM_TYPES.join(', ')})`;
+    if (t.type === 'repath') {
+      // {1} {2-} {topic} are placeholders; whatever is left is the literal output topic
+      const literal = String(t.to ?? '').replace(/\{[^}]*\}/g, 'x');
+      const tp = topicProblem(literal);
+      if (tp) return `repath target "${t.to ?? ''}" ${tp}`;
+    }
   }
   return null;
 }
