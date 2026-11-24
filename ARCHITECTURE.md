@@ -513,8 +513,9 @@ Semantics (covered by `bindings-v2.test.js`, `mapping-phase4.test.js`,
   `group/edge/device/metric`). `validateBinding` accepts only `timebase` and
   `timescaledb` historians and rejects InfluxDB (its writer stores no quality).
   A quality change a `plain` or Sparkplug target suppresses never reaches the
-  outbox either, and the Bad sample on source loss is enqueued only for envelope
-  and object bindings.
+  outbox either. The Bad sample on source loss is enqueued for envelope, object
+  and plain bindings (plain cannot carry it on the wire, history can), but not
+  for Sparkplug targets.
 - **Preview and warnings.** `bindingModel.previewBinding` and
   `POST /api/tags/bindings/preview` resolve topics and example payloads from the
   latest known values without storing or publishing anything; `bindingWarnings`

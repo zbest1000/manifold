@@ -360,9 +360,9 @@ There are **three delivery paths**:
      record through a pipeline if you accept losing quality.
    - **Use `envelope` or the object layout with this target.** A quality change
      that the target cannot express (`plain`, Sparkplug) is suppressed before it
-     reaches the historian, and the Bad sample on source loss is published only
-     for envelope and object bindings, so a `plain` or Sparkplug binding's
-     history will not show the drop-out.
+     reaches the historian. The Bad sample on source loss is recorded for
+     envelope, object and `plain` bindings; a Sparkplug-target binding's history
+     will not show the drop-out.
 3. **A pipeline** whose source filter matches the binding's output topics and
    whose target is a historian. For an envelope topic add a `numeric` transform
    with `field: "v"` so the stored value is the number, not the JSON wrapper
