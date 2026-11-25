@@ -22,7 +22,7 @@ const ROUTES = [
   { path: '/cesmii', heading: 'CESMII SMIP' },
   { path: '/i3x', heading: 'i3X' },
   { path: '/discovery', heading: 'Discovery' },
-  { path: '/system', heading: 'System' },
+  { path: '/system', heading: 'Health' },
   { path: '/settings', heading: 'Settings' }
 ];
 

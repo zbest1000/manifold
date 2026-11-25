@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { resolveGraphStyle } from './graphStyles';
 import { groupColor } from './buildGraph';
 import { useCanvasTokens, FONT } from './canvasTokens';
-import { attachPinchZoom, registerTestHook, sanitizePositions, watchCanvasSize, wheelFactor } from './canvasKit';
+import { attachPinchZoom, createGlide, keepInView, registerTestHook, sanitizePositions, watchCanvasSize, wheelFactor } from './canvasKit';
 
 /**
  * Real three.js 3D node graph. Nodes are placed with the deterministic
@@ -20,6 +20,9 @@ const LABEL_COUNT = 40; // sprite labels for the highest-degree nodes only
 const LINK_OPACITY = 0.35;
 const IDLE_MS = 2000; // keep the rAF loop alive this long after interaction
 const AUTO_ROTATE_SPEED = 0.0022; // rad/frame — a slow, cinematic spin
+// The usable part of the canvas (CSS px clear of the toolbar row, the replay
+// strip and the legend): the selected node is kept inside it.
+const DEFAULT_INSET = { top: 40, right: 40, bottom: 88, left: 40 };
 
 /** Strip the alpha channel from an rgba() color (link opacity is constant here). */
 function opaqueColor(color) {
@@ -114,7 +117,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     nodeScale = 1, // 0.5–2  point-size multiplier
     linkOpacity = LINK_OPACITY, // 0–0.8  link line opacity
     autoRotate = false, // gentle continuous spin
-    beautify = false // depth-graded colours + glow + auto-rotate
+    beautify = false, // depth-graded colours + glow + auto-rotate
+    inset = DEFAULT_INSET // clear of the floating overlays: where the selection is kept
   },
   ref
 ) {
@@ -126,6 +130,15 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const byIdRef = useRef(new Map());
   const rotRef = useRef({ yaw: 0.6, pitch: -0.35 });
   const zoomRef = useRef(1);
+  // Camera pan in its own x/y plane (world units). The orbit rotates the scene
+  // group; panning moves the camera sideways, so a selected node that a docked
+  // panel would cover can be brought back into the visible viewport.
+  const panRef = useRef({ x: 0, y: 0 });
+  const glideRef = useRef(null); // a pan glide in progress (createGlide), cancelled by user input
+  const insetRef = useRef(inset);
+  useEffect(() => {
+    insetRef.current = inset;
+  }, [inset]);
   const radiusRef = useRef(0); // bounding radius of the current layout (fits the camera)
   const selSpriteRef = useRef(null);
   const autoRotateRef = useRef(false); // read by the render loop each frame
@@ -172,7 +185,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const baseDist = () => (radiusRef.current ? fitDistance(radiusRef.current, FOV, camera.aspect) : CAM_DIST);
     const placeCamera = () => {
       const d = baseDist() / zoomRef.current;
-      camera.position.z = d;
+      camera.position.set(panRef.current.x, panRef.current.y, d);
       const far = d + radiusRef.current * 2 + 100;
       if (Math.abs(camera.far - far) > 1) {
         camera.far = far;
@@ -203,13 +216,54 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const loop = () => {
       raf = 0;
       if (autoRotateRef.current) rotRef.current.yaw += AUTO_ROTATE_SPEED;
+      const g = glideRef.current;
+      if (g) {
+        const { values, done } = g.step(performance.now());
+        panRef.current = values;
+        if (done) glideRef.current = null;
+      }
       renderFrame();
       const interacting = performance.now() - lastActive < IDLE_MS;
-      if ((interacting || autoRotateRef.current) && !document.hidden) raf = requestAnimationFrame(loop);
+      if ((interacting || autoRotateRef.current || glideRef.current) && !document.hidden) raf = requestAnimationFrame(loop);
     };
     const requestRender = (sustain = false) => {
       if (sustain) lastActive = performance.now();
       if (!raf && !document.hidden) raf = requestAnimationFrame(loop);
+    };
+
+    // Where the selected node lands on screen (CSS px) and its drawn radius there.
+    const tmpV = new THREE.Vector3();
+    const selectedOnScreen = () => {
+      const id = selectedIdRef.current;
+      const n = id != null ? byIdRef.current.get(id) : null;
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (!n || !w || !h) return null;
+      rotGroup.rotation.set(rotRef.current.pitch, rotRef.current.yaw, 0);
+      rotGroup.updateMatrixWorld();
+      placeCamera();
+      camera.updateMatrixWorld();
+      tmpV.set(n.x, n.y, n.z).applyMatrix4(rotGroup.matrixWorld);
+      const depth = camera.position.z - tmpV.z; // camera looks down -z, unrotated
+      if (!(depth > 1)) return null; // behind the camera
+      const unitsPerPx = (2 * depth * Math.tan((FOV * Math.PI) / 360)) / h;
+      tmpV.project(camera);
+      return { id: n.id, sx: ((tmpV.x + 1) / 2) * w, sy: ((1 - tmpV.y) / 2) * h, r: (nodeRadius(n) * nodeScaleRef.current) / unitsPerPx, unitsPerPx, w, h };
+    };
+    // Keep the selection inside the visible viewport (canvas minus the overlay
+    // insets): the least sideways camera move, as a short glide (instant with
+    // reduced motion). Called when the canvas resizes (a details panel opening
+    // narrows it) and when the selection changes. User input cancels the glide.
+    const keepSelected = () => {
+      const p = selectedOnScreen();
+      if (!p) return;
+      const { dx, dy } = keepInView(p.sx, p.sy, p.r + 10, { w: p.w, h: p.h }, insetRef.current);
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      // A screen move of (dx, dy) = the camera moving the other way: x right, world y up.
+      const from = glideRef.current ? glideRef.current.to : panRef.current;
+      const to = { x: from.x - dx * p.unitsPerPx, y: from.y + dy * p.unitsPerPx };
+      glideRef.current = createGlide({ ...panRef.current }, to);
+      requestRender(true);
     };
 
     // Container resize (incl. sidebar collapse) AND device-pixel-ratio changes.
@@ -220,6 +274,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderFrame(); // a resized canvas is cleared: paint synchronously
+      keepSelected();
     });
     // three.js keeps its scene through a context loss; repaint once restored.
     const onRestored = () => requestRender();
@@ -282,6 +337,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       canvas,
       (factor) => {
         zoomRef.current = Math.max(0.15, Math.min(6, zoomRef.current * factor));
+        glideRef.current = null;
         moved = Infinity;
         requestRender(true);
       },
@@ -292,6 +348,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const onDown = (e) => {
       if (e.button > 0) return;
       e.preventDefault(); // no text selection / native touch scrolling while orbiting
+      glideRef.current = null; // the user takes the camera
       dragging = true;
       moved = 0;
       lastX = e.clientX;
@@ -321,6 +378,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     };
     const onWheel = (e) => {
       e.preventDefault();
+      glideRef.current = null;
       zoomRef.current = Math.max(0.15, Math.min(6, zoomRef.current * wheelFactor(e)));
       requestRender(true);
     };
@@ -341,7 +399,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     canvas.addEventListener('contextmenu', onContext);
 
     window.addEventListener('pointercancel', onUp);
-    threeRef.current = { renderer, scene, camera, rotGroup, requestRender, ambient, dirLight };
+    threeRef.current = { renderer, scene, camera, rotGroup, requestRender, ambient, dirLight, keepSelected };
     requestRender();
 
     const v = new THREE.Vector3();
@@ -357,6 +415,30 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       },
       get camera() {
         return { z: camera.position.z, far: camera.far, aspect: camera.aspect, radius: radiusRef.current, zoom: zoomRef.current };
+      },
+      /** Camera pan (world units) and whether a keep-in-view glide is running. */
+      get pan() {
+        return { ...panRef.current, gliding: Boolean(glideRef.current) };
+      },
+      /** The visible viewport: canvas minus the overlay insets (canvas-relative CSS px). */
+      get viewport() {
+        const i = insetRef.current;
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        return { x0: i.left, y0: i.top, x1: w - i.right, y1: h - i.bottom };
+      },
+      /** The selected node on screen: { id, sx, sy, r } (canvas-relative CSS px) or null. */
+      selectedScreen() {
+        const p = selectedOnScreen();
+        return p ? { id: p.id, sx: p.sx, sy: p.sy, r: p.r } : null;
+      },
+      /** Rotate and pan as a user drag would (test setup: put the selection somewhere). */
+      setView({ yaw, pitch, pan } = {}) {
+        glideRef.current = null;
+        if (yaw != null) rotRef.current.yaw = yaw;
+        if (pitch != null) rotRef.current.pitch = pitch;
+        if (pan) panRef.current = { x: pan.x, y: pan.y };
+        renderFrame();
       },
       get size() {
         return { w: canvas.clientWidth, h: canvas.clientHeight, bw: canvas.width, bh: canvas.height };
@@ -673,11 +755,20 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     three.requestRender();
   }, [selectedId, data, style, colorFor]);
 
+  // A newly selected node that sits outside the visible viewport (or under the
+  // details panel's edge) is brought back in, the same as on a resize.
+  useEffect(() => {
+    if (selectedId == null) return;
+    threeRef.current?.keepSelected?.();
+  }, [selectedId, data]);
+
   useImperativeHandle(ref, () => ({
     // Default angle, zoom 1 = the whole layout framed (camera distance is fit to it).
     resetView: () => {
       rotRef.current = { yaw: 0.6, pitch: -0.35 };
       zoomRef.current = 1;
+      panRef.current = { x: 0, y: 0 };
+      glideRef.current = null;
       if (threeRef.current) threeRef.current.requestRender();
     }
   }), []);

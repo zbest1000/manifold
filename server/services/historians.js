@@ -450,10 +450,93 @@ async function timescaleWrite(conn, points) {
 // The write path above is one-way; these two calls close the loop so the UI can
 // trend what Manifold recorded:
 //   queryTags(conn, { search, limit })            -> string[] of topic names
-//   querySeries(conn, { tags, start, end, maxPoints }) -> { series: [{ tag, points: [[tsMs, value], ...] }] }
+//   querySeries(conn, { tags, start, end, maxPoints })
+//     -> { series: [{ tag, points }], meta: { quality: 'stored' | 'unavailable', qualityNote } }
+// with points as documented at bucketSeries above ([tsMs, value, quality,
+// partial?] where the backend stores quality, [tsMs, value] where it does not).
 // start/end are epoch ms (the route normalizes ISO input). Timebase has no
-// generic read API surface we can target, so both calls reject with a clear
-// message and the UI degrades to free-text tag entry / a hint.
+// tag-listing API, so queryTags rejects with a clear message and the UI
+// degrades to free-text tag entry.
+
+// ---- sample quality on the read path ------------------------------------------
+//
+// Point format returned by every series reader (historians AND file recordings):
+//   [tsMs, value, quality]            a sample or a Good / Uncertain bucket
+//   [tsMs, value, quality, 1]         a PARTIAL bucket (see below)
+//   [tsMs, null, quality]             a Bad sample or a Bad-only bucket: a GAP
+// `quality` is the OPC-style 0-255 code (Bad < 64 <= Uncertain < 192 <= Good).
+// A backend that stores no quality (InfluxDB) returns plain [tsMs, value] points
+// and says so in `meta.quality` ('unavailable') instead of pretending Good.
+//
+// Bucket rules when a series is downsampled (the definition; the Trends help text and the chart key say the same):
+//   - a bucket's quality is the WORST quality of the samples in it;
+//   - its value is the mean of the usable (Good or Uncertain) samples only, so a
+//     Bad sample is never averaged into a value;
+//   - a bucket with only Bad samples has no value (null): the chart shows a gap;
+//   - a bucket mixing Bad and usable samples keeps the mean of the usable ones
+//     and is marked partial (4th element = 1).
+const QUALITY_BAD_BELOW = 64;
+const QUALITY_GOOD = 192;
+
+/** OPC-style quality code from a stored value, or null when unknown. */
+function qualityCode(q) {
+  if (q === null || q === undefined || q === '') return null;
+  if (q === true) return QUALITY_GOOD;
+  if (q === false) return 0;
+  const n = Number(q);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+const isBadCode = (q) => q !== null && q < QUALITY_BAD_BELOW;
+
+/**
+ * Downsample chronological samples [[tsMs, value|null, quality|null], ...] to at
+ * most `maxPoints` buckets over [start, end] with the quality rules above. When
+ * the series already fits (and `always` is not set) the samples are returned
+ * one-to-one, a Bad sample becoming a gap. Unknown quality counts as Good.
+ */
+function bucketSeries(points, { start = null, end = null, maxPoints = 1000, always = false, width: fixedWidth = null } = {}) {
+  if (!points.length) return [];
+  const cap = Math.max(1, Math.floor(maxPoints));
+  if (!always && points.length <= cap) {
+    return points.map(([t, v, q]) => {
+      const code = qualityCode(q) ?? QUALITY_GOOD;
+      return [t, isBadCode(code) || !Number.isFinite(v) ? null : v, code];
+    });
+  }
+  const lo = Number.isFinite(start) ? start : points[0][0];
+  const hi = Number.isFinite(end) ? end : points[points.length - 1][0];
+  const width = fixedWidth > 0 ? fixedWidth : Math.max(1, Math.ceil((hi - lo + 1) / cap));
+  const buckets = new Map();
+  for (const [t, v, q] of points) {
+    if (!Number.isFinite(t) || t < lo || t > hi) continue;
+    const b = Math.floor((t - lo) / width);
+    let agg = buckets.get(b);
+    if (!agg) buckets.set(b, (agg = { sum: 0, n: 0, bad: 0, worst: Infinity }));
+    const code = qualityCode(q) ?? QUALITY_GOOD;
+    if (code < agg.worst) agg.worst = code;
+    if (isBadCode(code) || !Number.isFinite(v)) agg.bad += isBadCode(code) ? 1 : 0;
+    else {
+      agg.sum += v;
+      agg.n++;
+    }
+  }
+  const out = [];
+  for (const [b, agg] of [...buckets.entries()].sort((a, c) => a[0] - c[0])) {
+    if (!agg.n && !agg.bad) continue; // only non-numeric samples of usable quality: nothing to chart
+    const ts = lo + b * width;
+    if (!agg.n) out.push([ts, null, agg.worst]);
+    else if (agg.bad) out.push([ts, agg.sum / agg.n, agg.worst, 1]);
+    else out.push([ts, agg.sum / agg.n, agg.worst]);
+  }
+  return out;
+}
+
+const QUALITY_META = {
+  timescaledb: { quality: 'stored', qualityNote: 'Quality from the samples table (quality column); rows written without one count as Good.' },
+  timebase: { quality: 'stored', qualityNote: 'Quality from the TVQ q field.' },
+  influxdb: { quality: 'unavailable', qualityNote: 'InfluxDB stores no quality for these samples, so Bad or uncertain values cannot be marked.' }
+};
 
 /** Millisecond timestamp from epoch-ms number or ISO string. */
 function toMillis(v) {
@@ -584,7 +667,8 @@ async function influxQuerySeries(conn, { tags, start, end, maxPoints }, fetchImp
     const value = Number(row._value);
     if (Number.isFinite(ts) && Number.isFinite(value)) byTag.get(row.topic).push([ts, value]);
   }
-  return { series: tags.map((tag) => ({ tag, points: byTag.get(tag) })) };
+  // No quality in this schema: plain [ts, value] points, and the response says so.
+  return { series: tags.map((tag) => ({ tag, points: byTag.get(tag) })), meta: QUALITY_META.influxdb };
 }
 
 async function timescaleQueryTags(conn, { search, limit }) {
@@ -604,10 +688,18 @@ async function timescaleQuerySeries(conn, { tags, start, end, maxPoints }) {
   // integer we computed — user text never reaches the SQL string.
   const bucketSeconds = Math.max(1, Math.ceil((end - start) / 1000 / maxPoints));
   if (!Number.isSafeInteger(bucketSeconds)) throw new Error('invalid time range');
+  // Bucket quality rules (see bucketSeries): the value averages usable samples
+  // only (quality >= 64, or no quality = Good), the bucket carries the worst
+  // quality, and the Bad / usable counts tell a gap from a partial bucket.
+  // Bad samples are stored with a NULL value, so they are NOT filtered out here.
   const { rows } = await pool.query(
-    `SELECT topic, time_bucket('${bucketSeconds} seconds'::interval, ts) AS bucket, avg(value) AS value
+    `SELECT topic, time_bucket('${bucketSeconds} seconds'::interval, ts) AS bucket,
+            avg(value) FILTER (WHERE value IS NOT NULL AND coalesce(quality, ${QUALITY_GOOD}) >= ${QUALITY_BAD_BELOW}) AS value,
+            min(coalesce(quality, ${QUALITY_GOOD})) AS quality,
+            count(*) FILTER (WHERE coalesce(quality, ${QUALITY_GOOD}) < ${QUALITY_BAD_BELOW}) AS bad,
+            count(value) FILTER (WHERE coalesce(quality, ${QUALITY_GOOD}) >= ${QUALITY_BAD_BELOW}) AS usable
      FROM ${table}
-     WHERE topic = ANY($1) AND ts BETWEEN $2 AND $3 AND value IS NOT NULL
+     WHERE topic = ANY($1) AND ts BETWEEN $2 AND $3
      GROUP BY topic, bucket
      ORDER BY bucket`,
     [tags, new Date(start), new Date(end)]
@@ -616,10 +708,15 @@ async function timescaleQuerySeries(conn, { tags, start, end, maxPoints }) {
   for (const row of rows) {
     if (!byTag.has(row.topic)) continue;
     const ts = row.bucket instanceof Date ? row.bucket.getTime() : Date.parse(row.bucket);
-    const value = Number(row.value);
-    if (Number.isFinite(ts) && Number.isFinite(value)) byTag.get(row.topic).push([ts, value]);
+    if (!Number.isFinite(ts)) continue;
+    const q = qualityCode(row.quality) ?? QUALITY_GOOD;
+    const usable = Number(row.usable ?? (row.value == null ? 0 : 1));
+    const bad = Number(row.bad ?? 0);
+    const value = row.value == null ? NaN : Number(row.value);
+    if (usable > 0 && Number.isFinite(value)) byTag.get(row.topic).push(bad > 0 ? [ts, value, q, 1] : [ts, value, q]);
+    else if (bad > 0) byTag.get(row.topic).push([ts, null, q]); // Bad-only bucket: a gap
   }
-  return { series: tags.map((tag) => ({ tag, points: byTag.get(tag) })) };
+  return { series: tags.map((tag) => ({ tag, points: byTag.get(tag) })), meta: QUALITY_META.timescaledb };
 }
 
 const TIMEBASE_TAGS_ERROR = 'tag listing not supported for timebase — enter the tag path directly';
@@ -649,28 +746,24 @@ async function timebaseQuerySeries(conn, { tags, start, end, maxPoints }, fetchI
   }
   const data = await res.json().catch(() => null);
   const list = Array.isArray(data?.tl) ? data.tl : [];
-  const bucketMs = Math.max(1, Math.ceil((end - start) / maxPoints));
   const series = tags.map((tag) => {
     const raw = list.find((s) => s?.t?.n === tag)?.d;
-    const buckets = new Map();
+    const samples = [];
     for (const p of Array.isArray(raw) ? raw : []) {
       const ts = Date.parse(p?.t);
-      const value = Number(p?.v);
+      const q = qualityCode(p?.q);
+      const value = p?.v === null || p?.v === undefined || p?.v === '' ? NaN : Number(p.v);
       // The window is re-applied locally so a server that ignored start/end
       // (or returned edge points) can't leak data outside the asked range.
-      if (!Number.isFinite(ts) || !Number.isFinite(value) || ts < start || ts > end) continue;
-      const b = Math.floor((ts - start) / bucketMs);
-      const agg = buckets.get(b) || { sum: 0, n: 0 };
-      agg.sum += value;
-      agg.n++;
-      buckets.set(b, agg);
+      if (!Number.isFinite(ts) || ts < start || ts > end) continue;
+      if (!Number.isFinite(value) && !isBadCode(q)) continue; // text values do not chart
+      samples.push([ts, Number.isFinite(value) ? value : null, q]);
     }
-    const points = [...buckets.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([b, { sum, n }]) => [start + b * bucketMs, sum / n]);
-    return { tag, points };
+    samples.sort((a, b) => a[0] - b[0]);
+    // The API returns raw TVQs: always bucket (keeps the response bounded).
+    return { tag, points: bucketSeries(samples, { start, end, maxPoints, always: true, width: Math.max(1, Math.ceil((end - start) / maxPoints)) }) };
   });
-  return { series };
+  return { series, meta: QUALITY_META.timebase };
 }
 
 const TAG_QUERY_BACKENDS = {
@@ -738,4 +831,18 @@ function publicConfig(conn) {
   return { ...rest, hasSecret: Boolean(token || apiKey || apiSecret || password) };
 }
 
-module.exports = { writePoints, queryTags, querySeries, supportedTypes, publicConfig, toLineProtocol, closePools, timebaseWritePath, isPermanentError, classifyValue };
+module.exports = {
+  writePoints,
+  queryTags,
+  querySeries,
+  supportedTypes,
+  publicConfig,
+  toLineProtocol,
+  closePools,
+  timebaseWritePath,
+  isPermanentError,
+  classifyValue,
+  bucketSeries,
+  qualityCode,
+  QUALITY_META
+};

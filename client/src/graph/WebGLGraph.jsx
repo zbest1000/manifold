@@ -15,6 +15,8 @@ import {
   sanitizePositions,
   screenToWorld,
   watchCanvasSize,
+  createGlide,
+  keepInView,
   wheelFactor,
   zoomAround
 } from './canvasKit';
@@ -69,6 +71,8 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
   const transformRef = useRef({ x: 0, y: 0, k: 1 }); // CSS px
   const sizeRef = useRef({ w: 0, h: 0, sx: 1, sy: 1 });
   const selectedRef = useRef(null);
+  const glideRef = useRef(null); // keep-the-selection-in-view glide (createGlide), cancelled by user input
+  const keepRef = useRef(() => {});
   const drawRef = useRef(() => {});
   const schedRef = useRef(null);
   const lostRef = useRef(false);
@@ -334,6 +338,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
 
   useEffect(() => {
     selectedRef.current = selectedId;
+    keepRef.current(); // a selection outside the usable area is brought back in
     schedRef.current?.request();
   }, [selectedId]);
 
@@ -350,8 +355,37 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
     const gl = ensureGL();
     if (!gl) return undefined;
 
-    const sched = createFrameScheduler(() => drawRef.current(), { el: wrap });
+    const sched = createFrameScheduler(
+      () => {
+        const g = glideRef.current;
+        if (g) {
+          const { values, done } = g.step(performance.now());
+          Object.assign(transformRef.current, values);
+          if (done) glideRef.current = null;
+        }
+        drawRef.current();
+        if (glideRef.current) sched.request();
+      },
+      { el: wrap }
+    );
     schedRef.current = sched;
+
+    // Keep the selected node inside the usable area (canvas minus the overlay
+    // insets): a details panel opening narrows the canvas, so after a resize
+    // (or a new selection) pan the least distance, as a short glide.
+    const keepSelected = () => {
+      const id = selectedRef.current;
+      const n = id != null ? nodesRef.current.find((x) => x.id === id) : null;
+      const size = sizeRef.current;
+      if (!n || !size.w || !size.h) return;
+      const t = glideRef.current ? { ...transformRef.current, ...glideRef.current.to } : transformRef.current;
+      const r = Math.max(4, (n.size || MAX_NODE_SIZE) / 2) + 8;
+      const { dx, dy } = keepInView(n.x * t.k + t.x, n.y * t.k + t.y, r, size, FIT_INSET);
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      glideRef.current = createGlide({ x: transformRef.current.x, y: transformRef.current.y }, { x: t.x + dx, y: t.y + dy });
+      sched.request();
+    };
+    keepRef.current = keepSelected;
 
     // Context loss (GPU reset, driver update, too many contexts): keep the page
     // alive, then rebuild programs/buffers from the cached arrays on restore.
@@ -375,7 +409,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
       if (!centered && w > 0 && h > 0) {
         centered = true;
         fitAll();
-      }
+      } else keepSelected();
       drawRef.current(); // a resized canvas is cleared: repaint now
     });
 
@@ -392,6 +426,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
     const onDown = (e) => {
       if (e.button > 0 || pinching) return;
       e.preventDefault(); // no text selection / native touch gestures
+      glideRef.current = null; // the user takes the camera
       dragging = true;
       moved = 0;
       lastX = e.clientX;
@@ -436,6 +471,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
     };
     const onWheel = (e) => {
       e.preventDefault();
+      glideRef.current = null;
       const p = clientToLocal(canvas, e.clientX, e.clientY);
       transformRef.current = zoomAround(transformRef.current, p.x, p.y, wheelFactor(e), MIN_K, MAX_K);
       sched.request();
@@ -443,6 +479,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
     const unpinch = attachPinchZoom(
       canvas,
       (factor, cx, cy) => {
+        glideRef.current = null;
         transformRef.current = zoomAround(transformRef.current, cx, cy, factor, MIN_K, MAX_K);
         moved = Infinity; // a pinch is never a click
         sched.request();
@@ -467,6 +504,21 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
       get transform() {
         return { ...transformRef.current };
       },
+      get gliding() {
+        return Boolean(glideRef.current);
+      },
+      /** The usable area (canvas minus the overlay insets), canvas-relative CSS px. */
+      get viewport() {
+        const { w, h } = sizeRef.current;
+        return { x0: FIT_INSET.left, y0: FIT_INSET.top, x1: w - FIT_INSET.right, y1: h - FIT_INSET.bottom };
+      },
+      /** The selected node on screen: { id, sx, sy } or null. */
+      selectedScreen() {
+        const id = selectedRef.current;
+        const n = id != null ? nodesRef.current.find((x) => x.id === id) : null;
+        const t = transformRef.current;
+        return n ? { id: n.id, sx: n.x * t.k + t.x, sy: n.y * t.k + t.y } : null;
+      },
       get size() {
         return { ...sizeRef.current };
       },
@@ -487,6 +539,7 @@ export default function WebGLGraph({ data, styleId = 'standard', selectedId = nu
         return out;
       },
       setTransform(t) {
+        glideRef.current = null;
         transformRef.current = { ...t };
         sched.request();
       },

@@ -23,6 +23,28 @@ export function isBadQuality(q) {
   return /^(bad|false|0)$/i.test(String(q));
 }
 
+/** Is a sample's quality Uncertain? ('uncertain', or an OPC-style code from 64 to 191). */
+export function isUncertainQuality(q) {
+  if (typeof q === 'number') return q >= 64 && q < 192;
+  return typeof q === 'string' && /^uncertain$/i.test(q);
+}
+
+/**
+ * State of one point as the series readers return it ([ts, value, quality,
+ * partial?], see server/services/historians.js bucketSeries):
+ *   'partial'   a downsampled bucket that mixed Bad and usable samples: its value
+ *               is the mean of the usable ones (drawn, with a distinct marker);
+ *   'bad'       a Bad sample or a Bad-only bucket: NOT drawn (a gap + marker);
+ *   'uncertain' drawn, flagged in the readout;
+ *   null        Good, or no quality known.
+ */
+export function pointState(p) {
+  if (p?.[3]) return 'partial';
+  if (isBadQuality(p?.[2])) return 'bad';
+  if (isUncertainQuality(p?.[2])) return 'uncertain';
+  return null;
+}
+
 /**
  * Align historian series on the union of their timestamps for uPlot.
  * Returns [xsSeconds, ...ys]. A series that simply has no sample at another
@@ -32,11 +54,17 @@ export function isBadQuality(q) {
  * instead of a misleading straight line across the hole. Non-finite values
  * (NaN, Infinity, strings) are treated as missing.
  *
- * A point may carry a quality as its third element ([ts, value, quality]):
- * `false`, 'bad', or an OPC-style code below 64 marks a Bad-quality sample.
- * The result carries two non-enumerable extras for the chart's overlay:
- *   result.bad  per series, the x indices of Bad-quality samples;
- *   result.gaps per series, [xIndexBefore, xIndexAfter] pairs around each outage.
+ * A point may carry a quality and a partial flag ([ts, value, quality, partial?],
+ * see pointState). A Bad point is never drawn as a value: it becomes an explicit
+ * `null` (a break in the line) even when the source still sent a number, and is
+ * listed for the overlay marker. A point may carry its raw (pre-normalisation)
+ * value as a 5th element, for the readout.
+ * The result carries non-enumerable extras for the chart's overlay and readout:
+ *   result.bad      per series, the x indices of Bad points (gaps);
+ *   result.partial  per series, the x indices of partial buckets;
+ *   result.state    per series, Map(x index -> 'bad' | 'partial' | 'uncertain');
+ *   result.raw      per series, Map(x index -> raw value) where it differs;
+ *   result.gaps     per series, [xIndexBefore, xIndexAfter] pairs around each outage.
  */
 export function alignSeries(series, { gapFactor = 5 } = {}) {
   const per = series.map((s) => {
@@ -44,7 +72,10 @@ export function alignSeries(series, { gapFactor = 5 } = {}) {
     for (const p of s.points || []) {
       const ts = Number(p?.[0]);
       const v = p?.[1];
-      if (Number.isFinite(ts) && typeof v === 'number' && Number.isFinite(v)) pts.push([ts, v, isBadQuality(p?.[2])]);
+      const state = pointState(p);
+      const finite = typeof v === 'number' && Number.isFinite(v);
+      if (!Number.isFinite(ts) || (!finite && state !== 'bad')) continue;
+      pts.push([ts, state === 'bad' ? null : v, state, p.length > 4 ? p[4] : undefined]);
     }
     pts.sort((a, b) => a[0] - b[0]);
     return pts;
@@ -75,7 +106,10 @@ export function alignSeries(series, { gapFactor = 5 } = {}) {
     return arr;
   });
   const out = [xsMs.map((t) => t / 1000), ...ys];
-  const bad = per.map((pts) => pts.filter((p) => p[2]).map((p) => idx.get(p[0])));
+  const bad = per.map((pts) => pts.filter((p) => p[2] === 'bad').map((p) => idx.get(p[0])));
+  const partial = per.map((pts) => pts.filter((p) => p[2] === 'partial').map((p) => idx.get(p[0])));
+  const state = per.map((pts) => new Map(pts.filter((p) => p[2]).map((p) => [idx.get(p[0]), p[2]])));
+  const raw = per.map((pts) => new Map(pts.filter((p) => p[3] !== undefined).map((p) => [idx.get(p[0]), p[3]])));
   const gaps = per.map((pts, i) =>
     gapTs[i].map((g) => {
       const before = pts.filter((p) => p[0] < g).pop();
@@ -84,8 +118,64 @@ export function alignSeries(series, { gapFactor = 5 } = {}) {
     }).filter(Boolean)
   );
   Object.defineProperty(out, 'bad', { value: bad, enumerable: false });
+  Object.defineProperty(out, 'partial', { value: partial, enumerable: false });
+  Object.defineProperty(out, 'state', { value: state, enumerable: false });
+  Object.defineProperty(out, 'raw', { value: raw, enumerable: false });
   Object.defineProperty(out, 'gaps', { value: gaps, enumerable: false });
   return out;
+}
+
+/**
+ * How the y axes are arranged for a set of series with units (Trends):
+ *   - one unit (or none):     one axis, labelled with it;
+ *   - two units:              two axes, left and right, each series on its unit's;
+ *   - three or more:          no honest shared axis exists: 'normalize' (each
+ *                              series scaled to its own range, real values and
+ *                              units in the readout and legend).
+ * Series without a unit form their own group ("no unit").
+ * Returns { mode: 'single' | 'dual' | 'normalize', groups: [unit...], scaleOf: [i -> 'y' | 'y2'] }.
+ */
+export function unitLayout(series, { normalize = false } = {}) {
+  const groups = [];
+  for (const s of series) {
+    const u = s.unit || '';
+    if (!groups.includes(u)) groups.push(u);
+  }
+  if (normalize || groups.length > 2) return { mode: 'normalize', groups, scaleOf: series.map(() => 'y'), forced: !normalize && groups.length > 2 };
+  if (groups.length === 2) return { mode: 'dual', groups, scaleOf: series.map((s) => (groups.indexOf(s.unit || '') === 0 ? 'y' : 'y2')), forced: false };
+  return { mode: 'single', groups, scaleOf: series.map(() => 'y'), forced: false };
+}
+
+/**
+ * Rescale each series to 0..100 % of its own min/max (usable samples only), so
+ * tags of different magnitude or unit compare by shape on one axis. Every point
+ * keeps its raw value as a 5th element for the readout; a constant series sits
+ * at the midline. The raw [min, max] rides along on `range`, the real unit on `rawUnit`.
+ */
+export function normalizeSeries(series) {
+  return series.map((s) => {
+    const usable = (s.points || []).filter((p) => pointState(p) !== 'bad').map((p) => p[1]);
+    const ext = finiteExtent(usable);
+    if (!ext) return { ...s, unit: '%', rawUnit: s.unit };
+    const [min, max] = ext;
+    const span = max - min;
+    const points = s.points.map((p) => {
+      const v = p[1];
+      const scaled = typeof v === 'number' && Number.isFinite(v) ? (span ? ((v - min) / span) * 100 : 50) : v;
+      return [p[0], scaled, p[2], p[3] || 0, v];
+    });
+    return { ...s, points, range: [min, max], unit: '%', rawUnit: s.unit };
+  });
+}
+
+/** One readout line for a value: "21.5 C", "Bad quality: no value", "12 kPa · partial (some samples Bad)". */
+export function describeValue(v, { unit = '', state = null, fmt = String } = {}) {
+  if (state === 'bad') return 'Bad quality: no value';
+  if (v == null || !Number.isFinite(v)) return '—';
+  const base = unit ? `${fmt(v)} ${unit}` : fmt(v);
+  if (state === 'partial') return `${base} · partial (some samples Bad)`;
+  if (state === 'uncertain') return `${base} · uncertain`;
+  return base;
 }
 
 // Pad the y-scale so a trace has breathing room instead of jamming edge-to-edge;
@@ -104,4 +194,46 @@ export function paddedRange(min, max) {
   if (min >= 0 && lo < 0) lo = 0;
   if (max <= 0 && hi > 0) hi = 0;
   return [lo, hi];
+}
+// Unit riding along in a payload: a TVQ envelope's `u`, or `unit` / `units`
+// beside the value (the same rule the recorder uses, server/services/recorder.js unitOf).
+export function unitFrom(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const u = payload.unit ?? payload.units ?? payload.u;
+  return typeof u === 'string' && u.trim() && u.length <= 16 ? u.trim() : '';
+}
+
+/**
+ * Quality of a live message, OPC 0-255, with the server's rules
+ * (pipelineEngine.messageQuality): the quality the intake read from a TVQ
+ * envelope or Sparkplug, an envelope `q` (also next to a `u`), a payload that
+ * failed to decode = Bad, otherwise Good.
+ */
+export function liveQuality(m) {
+  if (m.sparkplugError) return 0;
+  const q = m.quality ?? (m.payload && typeof m.payload === 'object' && 'v' in m.payload ? m.payload.q : undefined);
+  return q === 0 || q === 64 || q === 192 ? q : 192;
+}
+
+/** Sample time of a live message: the source timestamp when plausible, else arrival (messageTime). */
+export function liveTime(m, now = Date.now()) {
+  const src = Number(m.sourceTimestamp);
+  if (Number.isFinite(src) && src >= Date.UTC(2000, 0, 1) && src <= now + 86_400_000) return src;
+  return new Date(m.timestamp).getTime();
+}
+
+
+/**
+ * A long tag shortened from the START, keeping its trailing path segments (the
+ * part that tells tags apart: ".../Edge1/Dev1/Temperature"). Short tags are
+ * returned unchanged; a single over-long segment is cut in the middle.
+ */
+export function shortTag(tag, max = 32) {
+  const s = String(tag ?? '');
+  if (s.length <= max) return s;
+  const segs = s.split('/');
+  let out = segs.pop();
+  while (segs.length && out.length + segs[segs.length - 1].length + 3 <= max) out = `${segs.pop()}/${out}`;
+  if (out.length + 2 > max) return `${out.slice(0, Math.ceil((max - 1) / 2))}…${out.slice(out.length - Math.floor((max - 1) / 2))}`;
+  return `…/${out}`;
 }

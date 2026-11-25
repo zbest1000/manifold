@@ -18,11 +18,13 @@ import {
   viewportRect,
   insetsFromOverlays,
   revealTransform,
-  PAGE_SIZE,
+  readableFit,
   R,
   MIN_K
 } from './unsLayout';
-import { drawTopology } from './unsDraw';
+import { drawTopology, PAGER_DOM_K } from './unsDraw';
+import BranchPager from './BranchPager';
+import { stepPage } from './unsPaging';
 import {
   applyCanvasSize,
   attachPinchZoom,
@@ -70,7 +72,9 @@ export { DEFAULT_LEVELS, levelName, levelColor, nodeLevel } from './unsLevels';
 export { buildUnsTree } from './unsTree';
 export { unsLiveMap, unsValueMap, unsRateMap, lastActive, nodeValue, nodeRate, staleness, expectedInterval } from './unsLive';
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null }) {
+const NO_PAGING = new Map();
+
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, paging = NO_PAGING, onPage = null }) {
   const tokens = useCanvasTokens();
   const themeTokens = buildUnsTheme(tokens);
   const hoverRef = useRef(null); // node key under the pointer
@@ -131,12 +135,24 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, [overlayRects]);
   const insets = useCallback(() => insetsFromOverlays(sizeRef.current, overlayRects()), [overlayRects]);
 
-  // Fit the framing to the visible arrangement (mounted sources don't count).
+  // Fit (the F key / button): frame the whole visible arrangement, as asked
+  // (mounted sources don't count), even below the reading floor.
   const fitAll = useCallback(() => {
     const f = fitTransform(visibleRef.current, posOf, sizeRef.current, { insets: insets() });
     if (!f) return;
     // Mutate in place: other closures (zoom/pan, the e2e hook) hold this object.
     Object.assign(transformRef.current, f);
+    schedRef.current?.request();
+  }, [posOf, insets]);
+  // The automatic first view (and re-framing while the map loads): readable
+  // first, so a phone shows the root and its first level at a zoom whose labels
+  // can be read instead of the whole forest as dust (readableFit).
+  const fitScopeRef = useRef(null);
+  const autoFit = useCallback(() => {
+    const f = readableFit(visibleRef.current, posOf, sizeRef.current, { insets: insets() });
+    if (!f) return;
+    Object.assign(transformRef.current, f.t);
+    fitScopeRef.current = f.scope;
     schedRef.current?.request();
   }, [posOf, insets]);
 
@@ -240,10 +256,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
 
   // ---- Expansion -------------------------------------------------------------
   const [expanded, setExpanded] = useState(() => new Set());
-  const [limits, setLimits] = useState(() => new Map()); // node key -> children shown (paging)
   // The node whose expansion changed: it is kept at the same screen position
   // across the relayout, then (on expand) the new children are revealed.
-  const anchorRef = useRef(null); // { key, sx, sy, reveal: 'children' | 'page' | null, from }
+  const anchorRef = useRef(null); // { key, sx, sy, reveal: 'children' | 'page' | null }
   const screenOf = (key) => {
     const l = visibleRef.current.find((x) => nodeKey(x.node) === key);
     if (!l) return null;
@@ -271,23 +286,22 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
   }, []);
-  // "N more" placeholder: show the next page of a long branch.
-  const showMore = useCallback((more) => {
+  // Pager of a long branch: another page or filter. The branch's node stays where
+  // it is on screen; the pager and the first children of the new page are revealed.
+  const onPageRef = useRef(onPage);
+  useEffect(() => {
+    onPageRef.current = onPage;
+  }, [onPage]);
+  const changePage = useCallback((pagerNodeData, state) => {
     userMovedRef.current = true;
     motionRef.current = null;
     setRevealNote(null);
-    const parentKey = more.parentKey;
-    const s = screenOf(parentKey);
-    setLimits((prev) => {
-      const next = new Map(prev);
-      const shown = prev.get(parentKey) ?? PAGE_SIZE;
-      next.set(parentKey, shown + PAGE_SIZE);
-      anchorRef.current = s ? { key: parentKey, ...s, reveal: 'page', from: shown } : null;
-      return next;
-    });
+    const s = screenOf(pagerNodeData.parentKey);
+    anchorRef.current = s ? { key: pagerNodeData.parentKey, ...s, reveal: 'page' } : null;
+    onPageRef.current?.(pagerNodeData.parentId, state);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
   }, []);
-  const activate = useCallback((l) => (l.more ? showMore(l.node) : l.hasKids ? toggle(l.node) : null), [showMore, toggle]);
+  const activate = useCallback((l) => (l.pager ? null : l.hasKids ? toggle(l.node) : null), [toggle]);
 
   // Expanded paths per broker. Default: namespace + first level open. Seeding is
   // per-broker (not one-shot): a broker whose topics stream in AFTER first paint
@@ -351,7 +365,24 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
   }, []);
 
   // ---- Tidy tree layout over the EXPANDED portion of the forest ----
-  const layout = useMemo(() => layoutForest(roots, expanded, limits), [roots, expanded, limits]);
+  const layout = useMemo(() => layoutForest(roots, expanded, paging), [roots, expanded, paging]);
+  const pagers = useMemo(() => layout.nodes.filter((l) => l.pager), [layout]);
+  // Last child row of each paged branch: while the branch's rows fill the
+  // viewport, its pager sticks to the top edge instead of scrolling away with
+  // the first row (a deep link into page 25 lands far below the pager slot).
+  const pagerLast = useMemo(() => {
+    const out = new Map();
+    for (const e of layout.edges) {
+      const pager = e.to.pager ? e.to : null;
+      if (pager) continue;
+      const key = `${e.from.node.id}#pager`;
+      const cur = out.get(key);
+      if (!cur || e.to.y > cur.y) out.set(key, e.to);
+    }
+    return out;
+  }, [layout]);
+  const pagerEls = useRef(new Map()); // pager node id -> DOM element, positioned each paint
+  const [pagerFocus, setPagerFocus] = useState({ id: null, n: 0 }); // "/" on the canvas focuses a branch filter
 
   useEffect(() => {
     visibleRef.current = layout.nodes;
@@ -368,14 +399,15 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         const parent = layout.nodes.find((l) => nodeKey(l.node) === a.key);
         const kids = layout.edges.filter((e) => e.from === parent).map((e) => nodeKey(e.to.node));
         if (a.reveal === 'children' && kids.length) startReveal([a.key, ...kids], a.key);
-        if (a.reveal === 'page') startReveal(kids.slice(a.from, a.from + 6), kids[a.from]);
+        // A page: the pager row (first) and the start of the new page.
+        if (a.reveal === 'page' && kids.length) startReveal(kids.slice(0, 6), kids[0]);
       }
     }
     // Auto-frame the forest as it loads and grows, until the user takes the camera.
-    if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) fitAll();
+    if (!userMovedRef.current && layout.nodes.length > 0 && sizeRef.current.w > 0) autoFit();
     schedRef.current?.request();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- screenOf reads refs only
-  }, [layout, fitAll, posOf, startReveal]);
+  }, [layout, autoFit, posOf, startReveal]);
 
   // ---- Drawing ----
   const draw = useCallback(() => {
@@ -401,7 +433,34 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       now: Date.now(),
       reducedMotion: reducedRef.current
     });
-  }, [layout, levels, posOf, themeTokens, tokens]);
+    // Lay each pager's DOM controls over its slot (screen space, fixed size), or
+    // hide them when zoomed out past PAGER_DOM_K (the canvas draws a pill) or off-screen.
+    const t = transformRef.current;
+    for (const l of pagers) {
+      const el = pagerEls.current.get(l.node.id);
+      if (!el) continue;
+      const p = posOf(l);
+      let sx = (p.x - R) * t.k + t.x;
+      // Keep the whole control on the canvas when its slot is near the right edge (phones).
+      const pw = el.offsetWidth || 0;
+      if (pw && sx > 8 && sx + pw > w - 8) sx = Math.max(8, w - 8 - pw);
+      let sy = p.y * t.k + t.y;
+      const last = pagerLast.get(l.node.id);
+      if (last && sy < 40) {
+        const top = Math.max(insetsFromOverlays(sizeRef.current, overlayRects()).top, 8) + 20;
+        const lastY = posOf(last).y * t.k + t.y;
+        if (sy < top && lastY > top + 40) sy = Math.min(top, lastY - 40); // sticky
+      }
+      const show = t.k >= PAGER_DOM_K && sx < w && sx + 40 > 0 && sy > -20 && sy < h + 20;
+      el.dataset.sx = String(Math.round(sx));
+      el.dataset.sy = String(Math.round(sy));
+      el.style.transform = `translate(${Math.round(sx)}px, ${Math.round(sy)}px) translateY(-50%)`;
+      if (el.dataset.shown !== String(show)) {
+        el.dataset.shown = String(show);
+        el.style.visibility = show ? 'visible' : 'hidden';
+      }
+    }
+  }, [layout, levels, posOf, themeTokens, tokens, pagers, pagerLast, overlayRects]);
   const drawRef = useRef(draw);
   useEffect(() => {
     drawRef.current = draw;
@@ -455,7 +514,8 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
               hasKids: l.hasKids,
               hasChildren: l.hasKids,
               childCount: n.children.size,
-              more: l.more,
+              more: false,
+              pager: l.pager,
               depth: n.depth
             };
           });
@@ -467,6 +527,21 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         get jumping() {
           return motionRef.current?.kind === 'jump' ? motionRef.current.phase : null;
         },
+        /** What the automatic first view framed: 'all' | 'first-level' | 'start' (null once the user moved). */
+        get fitScope() {
+          return userMovedRef.current ? null : fitScopeRef.current;
+        },
+        /** Pagers of long branches: their page, range and on-screen slot (canvas-relative CSS px). */
+        get pagers() {
+          const t = transformRef.current;
+          return visibleRef.current
+            .filter((l) => l.pager)
+            .map((l) => {
+              const p = posOf(l);
+              const el = pagerEls.current.get(l.node.id);
+              return { parentPath: l.node.parentKey.slice(l.node.parentKey.indexOf(':') + 1), parentId: l.node.parentId, ...l.node.slice, sx: el?.dataset.sx != null ? Number(el.dataset.sx) : (p.x - R) * t.k + t.x, sy: el?.dataset.sy != null ? Number(el.dataset.sy) : p.y * t.k + t.y, shown: el?.dataset.shown === 'true' };
+            });
+        },
         fit: () => fitAll(),
         setTransform: (t) => {
           cancelMotion();
@@ -477,6 +552,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       }),
     [posOf, fitAll, cancelMotion, viewport, overlayRects]
   );
+  // The pager slots move with the camera: repaint (and so re-position) when the set changes.
+  useEffect(() => {
+    schedRef.current?.request();
+  }, [pagers]);
 
   // Frame scheduling: full frame rate only while something moves (a camera
   // motion, live traffic animating the dashes/pulses, or the user interacting);
@@ -537,7 +616,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           schedRef.current?.request();
         }
       }
-      if (!userMovedRef.current && visibleRef.current.length) fitAll();
+      if (!userMovedRef.current && visibleRef.current.length) autoFit();
       drawRef.current(); // paint synchronously: a resized canvas is cleared
     });
 
@@ -645,7 +724,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         const p = toWorld(e);
         boxRef.current.x2 = p.x;
         boxRef.current.y2 = p.y;
-      } else if (grabbed && !grabbed.more) {
+      } else if (grabbed && !grabbed.pager) {
         const k = transformRef.current.k;
         const gkey = keyOf(grabbed);
         const keys = selRef.current.has(gkey) && selRef.current.size > 1 ? [...selRef.current] : [gkey];
@@ -702,10 +781,6 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         }
         return;
       }
-      if (hit.more) {
-        activate(hit); // "N more": show the next page
-        return;
-      }
       const key = keyOf(hit);
       if (e.pointerType === 'touch') {
         // Double-tap toggles (browsers do not reliably fire dblclick for touch).
@@ -737,7 +812,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       const body = pick(pt);
       const onBody = body && Math.hypot(pt.x - posOf(body).x, pt.y - posOf(body).y) < R * 0.8;
       const hit = !onBody && pickBadgeAt(pt, false) ? null : body; // a badge click already toggled
-      if (hit && (hit.hasKids || hit.more)) activate(hit);
+      if (hit && hit.hasKids) activate(hit);
     };
     const onWheel = (e) => {
       userMovedRef.current = true;
@@ -774,10 +849,10 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       canvas.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKey);
     };
-  }, [onSelect, posOf, activate, fitAll, kick, cancelMotion]);
+  }, [onSelect, posOf, activate, autoFit, kick, cancelMotion]);
 
   const keyboardHint =
-    'Arrow down selects the first node. With a node selected: up and down move between siblings, right expands or enters, left collapses or goes to the parent, Enter or Space expands or collapses. Shift and arrow keys pan, plus and minus zoom, F fits the view.';
+    'Arrow down selects the first node. With a node selected: up and down move between siblings, right expands or enters, left collapses or goes to the parent, Enter or Space expands or collapses. In a long branch, Page down and Page up show the next and previous page, Home and End the first and last, and slash filters it by name. Shift and arrow keys pan, plus and minus zoom, F fits the view.';
   const summary = useMemo(() => {
     const total = layout.nodes.length;
     const sel = selectedId ? layout.nodes.find((l) => l.node.id === selectedId)?.node : null;
@@ -798,7 +873,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
     const kidsOf = (l) => layout.edges.filter((ed) => ed.from === l).map((ed) => ed.to);
     const choose = (l) => {
       if (!l) return;
-      if (l.more) return;
+      if (l.pager) return;
       selRef.current = new Set([nodeKey(l.node)]);
       setSelCount(1);
       onSelect?.(l.node); // the selection effect reveals it
@@ -815,9 +890,20 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         else t.y -= step;
         cancelMotion();
       }
+    } else if (cur && (e.key === 'PageDown' || e.key === 'PageUp' || e.key === 'Home' || e.key === 'End' || e.key === '/')) {
+      // Paging the long branch the selected node sits in (or the one it opens).
+      const p = parentOf(cur);
+      const pager = (p && kidsOf(p).find((l) => l.pager)) || (cur.open && kidsOf(cur).find((l) => l.pager)) || null;
+      if (!pager) handled = false;
+      else if (e.key === '/') setPagerFocus((f) => ({ id: pager.node.id, n: f.n + 1 }));
+      else {
+        const action = e.key === 'PageDown' ? 'next' : e.key === 'PageUp' ? 'prev' : e.key === 'Home' ? 'first' : 'last';
+        const sl = pager.node.slice;
+        changePage(pager.node, { page: stepPage(sl, action), filter: sl.filter || '' });
+      }
     } else if (cur && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       const p = parentOf(cur);
-      const sibs = p ? kidsOf(p) : nodes.filter((l) => !parentOf(l));
+      const sibs = (p ? kidsOf(p) : nodes.filter((l) => !parentOf(l))).filter((l) => !l.pager);
       const i = sibs.indexOf(cur);
       choose(sibs[i + (e.key === 'ArrowDown' ? 1 : -1)]);
     } else if (cur && e.key === 'ArrowRight') {
@@ -872,6 +958,20 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       <span id="uns-canvas-help" className="sr-only">
         {keyboardHint}
       </span>
+      {pagers.map((l) => (
+        <div
+          key={l.node.id}
+          ref={(el) => {
+            if (el) pagerEls.current.set(l.node.id, el);
+            else pagerEls.current.delete(l.node.id);
+          }}
+          className="absolute left-0 top-0 z-[5]"
+          style={{ visibility: 'hidden' }}
+          data-uns-pager={l.node.parentKey}
+        >
+          <BranchPager slice={l.node.slice} parentName={l.node.parentName} compact onChange={(st) => changePage(l.node, st)} focusFilterSignal={pagerFocus.id === l.node.id ? pagerFocus.n : 0} />
+        </div>
+      ))}
       {(selCount > 1 || revealNote) && (
         <div role="status" className="absolute bottom-16 left-1/2 z-10 flex max-w-[calc(100%-6rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-line bg-panel py-1 pl-3 pr-1 text-xs text-fg shadow-overlay">
           {selCount > 1 ? (

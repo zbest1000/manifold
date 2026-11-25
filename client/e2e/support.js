@@ -379,3 +379,105 @@ export async function startBroker() {
 export function startDiscoveryLab() {
   return requireServer('./test/support/discoveryLab.js').startDiscoveryLab({ withWs: true });
 }
+
+// ---- a large namespace broker (canvas / Trends specs) -------------------------------------
+
+/**
+ * A second, in-worker MQTT broker with a realistic, large namespace, registered with the backend
+ * as broker `id` (default 'e2e-big'): ~300 plant topics with units (`{ value, unit }` and TVQ
+ * envelopes carrying `u`), a Sparkplug B edge node with a device (metrics with EngUnit), and one
+ * long branch `big/fleet` with `branchSize` children (`unit0001` ...). Everything is retained, so
+ * it is all there as soon as the backend subscribes. Resolves once the backend has seen every
+ * topic. Returns { id, port, publish(topic, body), close() }; close() removes the broker profile.
+ */
+export async function startBigBroker({ id = 'e2e-big', branchSize = 2000 } = {}) {
+  const aedesModule = requireServer('aedes');
+  const Aedes = aedesModule.Aedes || aedesModule;
+  const broker = Aedes.createBroker ? await Aedes.createBroker() : new Aedes();
+  const server = net.createServer(broker.handle);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const publish = (topic, body, retain = true) =>
+    new Promise((resolve) => broker.publish({ cmd: 'publish', qos: 0, dup: false, retain, topic, payload: Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)) }, resolve));
+
+  const topics = [];
+  const units = { temperature: 'C', pressure: 'bar', speed: 'rpm', power: 'kW' };
+  for (let a = 1; a <= 3; a++) {
+    for (let l = 1; l <= 5; l++) {
+      for (let c = 1; c <= 5; c++) {
+        for (const [m, u] of Object.entries(units)) {
+          const v = Math.round((a * 10 + l * 3 + c + Object.keys(units).indexOf(m) * 20) * 10) / 10;
+          topics.push([`acme/area${a}/line${l}/cell${c}/${m}`, c % 2 ? { value: v, unit: u } : { v, q: 192, u }]);
+        }
+      }
+    }
+  }
+  for (let i = 1; i <= branchSize; i++) topics.push([`big/fleet/unit${String(i).padStart(4, '0')}`, { value: i % 97, unit: 'A' }]);
+  for (const [t, body] of topics) await publish(t, body);
+
+  const { encodePayload } = requireServer('./services/sparkplugEncoder.js');
+  const metric = (name, value, unit) => ({ name, value, properties: unit ? { engUnit: unit } : undefined });
+  await publish('spBv1.0/Acme/NBIRTH/Edge1', encodePayload({ seq: 0, metrics: [{ name: 'bdSeq', value: 0, isBdSeq: true }, metric('Node Uptime', 12, 's')] }));
+  await publish('spBv1.0/Acme/DBIRTH/Edge1/Press1', encodePayload({ seq: 1, metrics: [metric('Temperature', 71.5, 'degF'), metric('Pressure', 2.5, 'bar'), metric('Running', true)] }));
+  await publish('spBv1.0/Acme/DDATA/Edge1/Press1', encodePayload({ seq: 2, metrics: [metric('Temperature', 72.25, 'degF'), metric('Pressure', 2.6, 'bar')] }));
+
+  const reg = await api.post('/api/mqtt/brokers', { id, name: 'Big namespace', host: '127.0.0.1', port, protocol: 'mqtt', autoSubscribe: true, reconnect: true, reconnectPeriod: 2000 });
+  if (!reg.ok && !/already connected/.test(reg.text)) throw new Error(`register broker failed: ${reg.status} ${reg.text}`);
+  const want = topics.length;
+  for (let i = 0; i < 300; i++) {
+    const r = await api.get(`/api/mqtt/brokers/${id}/topics?limit=100000`).catch(() => null);
+    if ((r?.json?.topics || []).length >= want) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return {
+    id,
+    port,
+    topicCount: want,
+    publish,
+    async close() {
+      await api.del(`/api/mqtt/brokers/${id}`).catch(() => {});
+      await new Promise((resolve) => broker.close(resolve));
+      await new Promise((resolve) => server.close(resolve));
+    }
+  };
+}
+
+/**
+ * A file recording on the big broker with deterministic samples. The broker tap coalesces plain
+ * topics to the latest value per 100 ms flush, but queues Sparkplug messages un-coalesced, so the
+ * samples travel as Sparkplug DDATA batches (several timestamped values of a metric per message,
+ * as Sparkplug allows), recorded under the filter `spBv1.0/<group>/DDATA/Edge1/Dev1`:
+ *   .../Temperature  `count` samples, one per second ending now, unit C (EngUnit), with a run of
+ *                    30 Bad samples (a gap) and an isolated Bad sample every 97 (a partial bucket
+ *                    once downsampled to fewer points than samples);
+ *   .../Pressure     the same span, unit bar, all Good.
+ * Resolves once the recorder has written them all. Returns { id, group, tags: [temp, press], start, end, remove() }.
+ */
+export async function createQualityRecording(bigBroker, { count = 1500 } = {}) {
+  const group = unique('rec');
+  const topic = `spBv1.0/${group}/DDATA/Edge1/Dev1`;
+  const res = await api.post('/api/recorder', { name: `Quality ${group}`, brokerId: bigBroker.id, filter: topic, target: { type: 'file' } });
+  if (!res.ok) throw new Error(`create recording failed: ${res.status} ${res.text}`);
+  const id = res.json.id; // armed at once: the recorder reads its table from the profiles on every message
+  const { encodePayload } = requireServer('./services/sparkplugEncoder.js');
+  const end = Date.now() - 1000;
+  const start = end - (count - 1) * 1000;
+  const BATCH = 100;
+  for (let from = 0, seq = 0; from < count; from += BATCH, seq++) {
+    const metrics = [];
+    for (let i = from; i < Math.min(count, from + BATCH); i++) {
+      const ts = start + i * 1000;
+      const bad = (i >= 600 && i < 630) || i % 97 === 50;
+      metrics.push({ name: 'Temperature', value: bad ? 999 : 20 + 5 * Math.sin(i / 60), ts, properties: { engUnit: 'C', Quality: bad ? 0 : 192 } });
+      metrics.push({ name: 'Pressure', value: 2 + 0.2 * Math.cos(i / 90), ts, properties: { engUnit: 'bar', Quality: 192 } });
+    }
+    await bigBroker.publish(topic, encodePayload({ seq: seq % 256, ts: start + from * 1000, metrics }), false);
+  }
+  const tags = [`${topic}/Temperature`, `${topic}/Pressure`];
+  for (let i = 0; i < 200; i++) {
+    const r = await api.get(`/api/recorder/${id}/data?limit=1`);
+    if ((r.json?.total || 0) >= Math.ceil(count / BATCH)) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { id, group, tags, start, end, remove: () => api.del(`/api/recorder/${id}`).catch(() => {}) };
+}

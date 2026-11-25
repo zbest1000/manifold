@@ -17,12 +17,12 @@ import ReplayScrubber from '@/components/ReplayScrubber';
 import TopicTree from '@/components/TopicTree';
 import PageHeader from '@/components/PageHeader';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
-import { Banner, ButtonLink, EmptyState, IconButton, Input, SegmentedControl, Select, Spinner, StatusDot, StatusText, Timestamp } from '@/components/ui';
+import { Banner, Button, ButtonLink, EmptyState, IconButton, Input, SegmentedControl, Select, Spinner, StatusDot, StatusText, Timestamp } from '@/components/ui';
 import { BarDivider, CanvasNote, FloatingBar, ToolToggle } from '@/components/CanvasChrome';
 import TopicPanel from './topics/TopicPanel';
 import Graph3DControls from './topics/Graph3DControls';
 import { numericFromPayload, shortText } from './topics/topicUtils';
-import { loadSavedView, saveView, resolveTopicsView, TREE_DEFAULT_THRESHOLD } from './topics/viewPref';
+import { dismissNote, loadSavedView, noteDismissed, saveView, resolveTopicsView } from './topics/viewPref';
 
 // Heavy renderers load on demand: three.js (3D view) and the WebGL big-graph
 // renderer aren't part of the initial bundle: most sessions never open them.
@@ -85,7 +85,10 @@ export default function TopicGraph() {
   };
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
-  const [userView, setUserView] = useState(loadSavedView); // remembered explicit choice (or null)
+  // Explicit view choices made on this page (per broker); a broker without one
+  // falls back to its remembered choice (localStorage, per broker) or the size default.
+  const [viewChoices, setViewChoices] = useState({});
+  const [noteHidden, setNoteHidden] = useState({}); // brokers whose "showing the tree" note was dismissed now
   const [treeFilter, setTreeFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [labelDensity, setLabelDensity] = useState(0.5); // 0 (off) .. 1 (dense)
@@ -162,11 +165,13 @@ export default function TopicGraph() {
   // Same derivation as Overview: the larger of the client index and the server's exact count.
   const topicCount = deriveTopicCount(brokerTopics.length, broker?.metrics?.topicCount);
 
+  const userView = viewChoices[brokerId] ?? loadSavedView(brokerId);
   const view = resolveTopicsView(userView, topicCount);
   const autoTree = userView == null && view === 'tree';
+  const showTreeNote = autoTree && !noteHidden[brokerId] && !noteDismissed(brokerId);
   const setView = (v) => {
-    setUserView(v);
-    saveView(v);
+    setViewChoices((prev) => ({ ...prev, [brokerId]: v }));
+    saveView(v, brokerId);
   };
 
   const fullGraph = useMemo(() => {
@@ -238,7 +243,7 @@ export default function TopicGraph() {
   const [coverageSeen, setCoverageSeen] = useState({ coverage, brokerId });
   if (coverageSeen.coverage !== coverage || coverageSeen.brokerId !== brokerId) {
     setCoverageSeen({ coverage, brokerId });
-    if (coverage?.brokerId === brokerId) setUserView('graph');
+    if (coverage?.brokerId === brokerId) setViewChoices((prev) => ({ ...prev, [brokerId]: 'graph' }));
   }
 
   // A batch force layout is a snapshot for a specific node set: it only applies
@@ -491,7 +496,7 @@ export default function TopicGraph() {
         {view === 'tree' && <Input type="search" aria-label="Filter topics" value={treeFilter} onChange={(e) => setTreeFilter(e.target.value)} placeholder="Filter topics" className="h-8 min-w-[10rem] max-w-xs flex-1" />}
       </div>
 
-      {(topicsError || autoTree || spHosts.length > 0 || deepLinkMiss) && (
+      {(topicsError || showTreeNote || spHosts.length > 0 || deepLinkMiss) && (
         <div className="space-y-2 border-b border-line px-4 py-2 sm:px-6">
           {topicsError && (
             <Banner
@@ -505,10 +510,25 @@ export default function TopicGraph() {
               {topicsError}
             </Banner>
           )}
-          {autoTree && (
-            <p role="status" className="text-sm text-muted">
-              Showing the tree because this broker has {topicCount.toLocaleString()} topics (more than {TREE_DEFAULT_THRESHOLD}). Pick Graph to switch; your choice is remembered.
-            </p>
+          {showTreeNote && (
+            <div role="status" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted" data-testid="tree-default-note">
+              <span className="min-w-0 flex-1 basis-56" title="Above 200 topics the graph is dense, so the tree opens first. Your choice of view is remembered for this broker.">
+                Showing the tree because this broker has {topicCount.toLocaleString()} topics.
+              </span>
+              <Button size="sm" variant="secondary" className="shrink-0" onClick={() => setView('graph')}>
+                Switch to Graph
+              </Button>
+              <IconButton
+                icon={X}
+                size={14}
+                label="Dismiss this note"
+                className="h-7 w-7"
+                onClick={() => {
+                  dismissNote(brokerId);
+                  setNoteHidden((prev) => ({ ...prev, [brokerId]: true }));
+                }}
+              />
+            </div>
           )}
           {deepLinkMiss && (
             <p role="status" className="text-sm text-muted">
@@ -563,6 +583,7 @@ export default function TopicGraph() {
                 linkOpacity={linkOpacity3d}
                 autoRotate={autoRotate3d}
                 beautify={beautify3d}
+                inset={FIT_INSET}
               />
             </Suspense>
             <p className="pointer-events-none absolute bottom-4 left-4 hidden text-xs text-subtle sm:block">Drag to rotate · scroll to zoom · click a node for details</p>

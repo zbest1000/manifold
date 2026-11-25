@@ -5,6 +5,7 @@ import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
 import TrendChart, { seriesColor } from '@/components/TrendChart';
 import { useChartTheme } from '@/components/charts';
+import { liveQuality, liveTime, shortTag, unitFrom } from '@/components/chartMath';
 import { SERIES_DASH } from '@/graph/dataPalette';
 import { Banner, Button, ButtonLink, Card, EmptyState, Field, HelpButton, IconButton, Input, PageBody, SegmentedControl, Select, Toggle } from '@/components/ui';
 
@@ -34,19 +35,9 @@ function numericFrom(payload) {
   return null;
 }
 
-// Unit and quality riding along in a payload ({ value, unit }, { v, t, q }).
-function unitFrom(payload) {
-  if (!payload || typeof payload !== 'object') return '';
-  const u = payload.unit ?? payload.units ?? payload.u;
-  return typeof u === 'string' && u.length <= 12 ? u : '';
-}
-function qualityFrom(payload) {
-  if (!payload || typeof payload !== 'object') return undefined;
-  return payload.q ?? payload.quality;
-}
-
-// Build historian-shaped series ({ series: [{ tag, points: [[tsMs, value]] }] })
-// from the live recent-message ring for each requested topic.
+// Build reader-shaped series ({ series: [{ tag, unit, points: [[tsMs, value, quality]] }] })
+// from the live recent-message ring for each requested topic. A Bad sample is
+// kept (value null) so the chart shows the gap.
 async function liveSeries(brokerId, tags, from, to) {
   const series = await Promise.all(
     tags.map(async (tag) => {
@@ -54,8 +45,12 @@ async function liveSeries(brokerId, tags, from, to) {
         const r = await api.topicMessages(brokerId, tag, 500);
         const msgs = r.messages || [];
         const points = msgs
-          .map((m) => [new Date(m.timestamp).getTime(), numericFrom(m.payload), qualityFrom(m.payload)])
-          .filter(([ts, v]) => v != null && Number.isFinite(ts) && ts >= from && ts <= to)
+          .map((m) => {
+            const q = liveQuality(m);
+            const v = numericFrom(m.payload);
+            return [liveTime(m), q < 64 ? null : v, q];
+          })
+          .filter(([ts, v, q]) => (v != null || q < 64) && Number.isFinite(ts) && ts >= from && ts <= to)
           .sort((a, b) => a[0] - b[0]);
         const unit = msgs.map((m) => unitFrom(m.payload)).find(Boolean) || '';
         return { tag, unit, points };
@@ -64,7 +59,17 @@ async function liveSeries(brokerId, tags, from, to) {
       }
     })
   );
-  return { series };
+  return { series, meta: { quality: 'stored' } };
+}
+
+/** A unit for a stored-source series that has none, from the topic's latest live payload on any broker. */
+function liveUnitOf(tag, brokers) {
+  for (const b of brokers) {
+    const t = useStore.getState().getTopics(b.id).find((x) => x.topic === tag);
+    const u = t ? unitFrom(t.payload) : '';
+    if (u) return u;
+  }
+  return '';
 }
 
 const RANGE_PRESETS = [
@@ -213,7 +218,7 @@ export default function Trends() {
             maxPoints: 1000
           });
     query
-      .then((r) => alive && setResult({ key: requestKey, scope, data: { series: r.series || [], start, end }, error: '' }))
+      .then((r) => alive && setResult({ key: requestKey, scope, data: { series: r.series || [], meta: r.meta || null, start, end }, error: '' }))
       // keep the last good data for this source, but say the refresh failed
       .catch((e) => alive && setResult((prev) => ({ key: requestKey, scope, data: prev?.scope === scope ? prev.data : null, error: e.message })));
     return () => {
@@ -245,8 +250,14 @@ export default function Trends() {
       const i = tags.indexOf(t);
       return i < 0 ? tags.length : i;
     };
-    return list.slice().sort((a, b) => rank(a.tag) - rank(b.tag));
-  }, [data, tags]);
+    // A historian stores no unit: borrow the one the topic's live payload carries.
+    return list
+      .slice()
+      .sort((a, b) => rank(a.tag) - rank(b.tag))
+      .map((s) => (s.unit ? s : { ...s, unit: liveUnitOf(s.tag, connectedBrokers) || undefined }));
+  }, [data, tags, connectedBrokers]);
+  const distinctUnits = new Set(orderedSeries.map((s) => s.unit || '')).size;
+  const normalizeForced = distinctUnits > 2;
   const sources = [
     { value: 'live', label: 'Live', on: connectedBrokers.length > 0 },
     { value: 'historian', label: 'Historian', on: historians.length > 0 },
@@ -283,7 +294,14 @@ export default function Trends() {
                 Only numeric values plot. A payload like <code>{'{ value: 401, unit: "V" }'}</code> charts its <code>value</code> and labels the axis in V; plain numbers chart directly; text is
                 skipped. Times are shown in your time zone, named under the chart. Hover the chart for the values at a point; drag across it to zoom, double-click to reset.
               </p>
-              <p>A faint dashed line bridges an outage (no samples for much longer than usual), and a hollow red ring marks a sample whose quality is Bad.</p>
+              <p>
+                Units: tags with one unit share a labelled axis; two units get a left and a right axis; with more, each tag is scaled to its own range (Normalize) and the readout keeps the real value and unit.
+              </p>
+              <p>
+                Quality: a Bad sample is not plotted. The line breaks and a red triangle marks it on the time axis. Over long ranges samples are averaged per interval: the average uses only the
+                usable samples, an interval with only Bad samples is a gap, and one that mixed Bad and good samples is marked partial with a hollow amber diamond. The readout says which. A faint
+                dashed line bridges an outage (no samples for much longer than usual). InfluxDB stores no quality, so there nothing can be marked.
+              </p>
             </HelpButton>
             <Toggle checked={autoRefresh} onChange={setAutoRefresh} label="Auto refresh" />
             <Button variant="secondary" onClick={reload} disabled={!sourceId || tags.length === 0} loading={loading && active}>
@@ -403,7 +421,9 @@ export default function Trends() {
                         <svg width="16" height="6" aria-hidden="true" className="shrink-0">
                           <line x1="0" y1="3" x2="16" y2="3" stroke={seriesColor(i, chartTheme)} strokeWidth="2" strokeDasharray={tags.length > 1 && SERIES_DASH[i] ? SERIES_DASH[i].join(' ') : undefined} />
                         </svg>
-                        <span className="max-w-[16rem] truncate font-mono">{tag}</span>
+                        <span className="max-w-[16rem] truncate font-mono" title={tag}>
+                          {shortTag(tag, 34)}
+                        </span>
                         <IconButton icon={X} size={12} label={`Remove tag ${tag}`} className="h-7 w-7" onClick={() => removeTag(tag)} />
                       </li>
                     ))}
@@ -419,9 +439,17 @@ export default function Trends() {
                 <>
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <h2 className="text-sm font-medium text-fg">Chart</h2>
-                    {(data?.series || []).length > 1 && <Toggle checked={normalize} onChange={setNormalize} label="Normalize" />}
+                    {orderedSeries.length > 1 && (
+                      <Toggle
+                        checked={normalize || normalizeForced}
+                        disabled={normalizeForced}
+                        onChange={setNormalize}
+                        label="Normalize"
+                        description={normalizeForced ? 'On: more than two units cannot share axes' : distinctUnits === 2 ? 'Off: one axis per unit' : undefined}
+                      />
+                    )}
                   </div>
-                  <TrendChart series={orderedSeries} loading={loading} error={error} height={380} normalize={normalize} onRetry={reload} />
+                  <TrendChart series={orderedSeries} loading={loading} error={error} height={380} normalize={normalize} meta={data?.meta} onRetry={reload} />
                 </>
               )}
             </Card>

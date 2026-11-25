@@ -30,7 +30,7 @@ test('open the mobile nav drawer by keyboard and navigate', async ({ page, conso
   await page.keyboard.press('Enter');
 
   await expect(page).toHaveURL(/\/system$/);
-  await expect(page.getByRole('heading', { level: 1, name: 'System' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Health' })).toBeVisible();
   await expect(drawer).toBeHidden();
 
   // Escape closes the drawer and hands focus back to the hamburger.

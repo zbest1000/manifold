@@ -4,6 +4,8 @@ import clsx from 'clsx';
 import { groupColor } from '@/graph/buildGraph';
 import { resolveGraphStyle } from '@/graph/graphStyles';
 import { useCanvasTokens } from '@/graph/canvasTokens';
+import BranchPager from '@/graph/BranchPager';
+import { PAGE_SIZE, pageSlice, stepPage } from '@/graph/unsPaging';
 
 const ROW_H = 26;
 const OVERSCAN = 8;
@@ -13,8 +15,18 @@ const OVERSCAN = 8;
  * the OPC UA and i3X views to offer the same tree/graph duality as MQTT. For
  * lazily-loaded sources (OPC UA), expanding a branch calls `onExpandNode` so the
  * page can browse deeper. Virtualized for large address spaces.
+ *
+ * Paging (the UNS Tree view): with `onPage`, a branch with more than `pageSize`
+ * children shows a pager row (first / previous / next / last, the range, a
+ * filter by name for that branch) and one page of children, from
+ * `paging.get(parentId)` = { page, filter } (see graph/unsPaging.js), the same
+ * state the UNS map uses. On a pager row, Right / Page down and Left / Page up
+ * change page and slash focuses the filter. `compare(aLabel, bLabel)` orders siblings.
  */
-export default function GraphTree({ nodes, links, selectedId, onSelect, onExpandNode, valueMap, filter = '' }) {
+const byLocale = (a, b) => a.localeCompare(b);
+const NO_PAGING = new Map();
+
+export default function GraphTree({ nodes, links, selectedId, onSelect, onExpandNode, valueMap, filter = '', paging = NO_PAGING, onPage = null, pageSize = PAGE_SIZE, compare = byLocale }) {
   const [expanded, setExpanded] = useState(() => new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(600);
@@ -68,8 +80,12 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
       const open = forced || expanded.has(id);
       out.push({ n, depth, hasChildren, open });
       if (hasChildren && open) {
-        const sorted = kids.slice().sort((a, b) => (byId.get(a)?.label || '').localeCompare(byId.get(b)?.label || ''));
-        for (const k of sorted) walk(k, depth + 1, seen);
+        const sorted = kids.slice().sort((a, b) => compare(byId.get(a)?.label || '', byId.get(b)?.label || ''));
+        if (onPage && sorted.length > pageSize) {
+          const slice = pageSlice(sorted, paging.get(id) || null, { pageSize, nameOf: (k) => byId.get(k)?.label || '' });
+          out.push({ pager: true, n: { id: `${id}#pager`, label: n.label }, parent: n, depth: depth + 1, slice });
+          for (const k of slice.items) walk(k, depth + 1, seen);
+        } else for (const k of sorted) walk(k, depth + 1, seen);
       }
     };
     const seen = new Set();
@@ -79,7 +95,7 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
     return out;
     // expandedKey is the stable string form of `expanded` (cheaper to compare than the Set itself).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- expandedKey is the stable string form of `expanded`
-  }, [byId, childrenOf, roots, expandedKey, matchIds]);
+  }, [byId, childrenOf, roots, expandedKey, matchIds, paging, onPage, pageSize, compare]);
 
   const toggle = (n) => {
     if (onExpandNode && !expanded.has(n.id) && !(childrenOf.get(n.id) || []).length) onExpandNode(n);
@@ -131,6 +147,45 @@ export default function GraphTree({ nodes, links, selectedId, onSelect, onExpand
         ) : (
           <div style={{ height: total * ROW_H, position: 'relative' }}>
             {slice.map((row, i) => {
+              if (row.pager) {
+                const sl = row.slice;
+                const page = (action) => onPage(row.parent.id, { page: stepPage(sl, action), filter: sl.filter || '' });
+                return (
+                  <div
+                    key={row.n.id}
+                    role="treeitem"
+                    data-row={start + i}
+                    tabIndex={start + i === tabRow ? 0 : -1}
+                    onFocus={(e) => e.target === e.currentTarget && setCursor(start + i)}
+                    aria-level={row.depth + 1}
+                    aria-selected={false}
+                    aria-label={`Pages of ${row.parent.label}. Right and left arrow keys change page, slash filters by name.`}
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+                        e.preventDefault();
+                        page('next');
+                      } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+                        e.preventDefault();
+                        page('prev');
+                      } else if (e.key === '/') {
+                        e.preventDefault();
+                        const rowEl = e.currentTarget;
+                        rowEl.querySelector('[data-pager-action="filter"]')?.click();
+                        requestAnimationFrame(() => rowEl.querySelector('input')?.focus());
+                      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
+                        e.preventDefault();
+                        focusRow(e.key === 'Home' ? 0 : e.key === 'End' ? total - 1 : start + i + (e.key === 'ArrowDown' ? 1 : -1));
+                      }
+                    }}
+                    className="absolute left-0 right-0 flex items-center pr-2 focus-visible:outline-offset-[-2px]"
+                    style={{ top: (start + i) * ROW_H, height: ROW_H, paddingLeft: `${row.depth * 14 + 8}px` }}
+                    data-tree-pager={row.parent.id}
+                  >
+                    <BranchPager slice={sl} parentName={row.parent.label} size="sm" onChange={(st) => onPage(row.parent.id, st)} className="border-0 bg-transparent p-0 shadow-none" />
+                  </div>
+                );
+              }
               const { n, depth, hasChildren, open } = row;
               const expandable = hasChildren || (onExpandNode && n.meta?.nodeClass === 'Object');
               const value = valueMap?.[n.id];

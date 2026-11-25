@@ -9,6 +9,7 @@ import { buildUnsTheme } from '@/graph/unsTheme';
 import { useCanvasTokens } from '@/graph/canvasTokens';
 import { buildUnsTree } from '@/graph/unsTree';
 import { buildMountRoots } from '@/graph/unsMounts';
+import { compareNames, loadPaging, pagingForPath, savePaging } from '@/graph/unsPaging';
 import useIngestRate from '@/graph/useIngestRate';
 import { formatRate } from '@/graph/rateWindow';
 import PageHeader from '@/components/PageHeader';
@@ -76,6 +77,19 @@ export default function Uns() {
   const [mounts, setMounts] = useState([]);
   const [mountRoots, setMountRoots] = useState([]);
   const [loadError, setLoadError] = useState(null); // topics / mounts failures, with Retry
+  // Paging of long branches ({ page, filter } per branch node id), shared by the
+  // map and the Tree view, kept for the browser session (see graph/unsPaging.js).
+  const [paging, setPaging] = useState(loadPaging);
+  useEffect(() => savePaging(paging), [paging]);
+  const setPage = useCallback((id, state) => {
+    setPaging((prev) => {
+      const cur = prev.get(id);
+      if (cur && cur.page === state.page && (cur.filter || '') === (state.filter || '')) return prev;
+      const next = new Map(prev);
+      next.set(id, { page: state.page, filter: state.filter || '' });
+      return next;
+    });
+  }, []);
   const [retryTick, setRetryTick] = useState(0);
   // A deep link still waiting for its node: { broker, path } (null once resolved).
   const [pendingLink, setPendingLink] = useState(() => {
@@ -204,11 +218,19 @@ export default function Uns() {
     [syncUrl]
   );
 
+  // Open the page of every long branch on the way to a node, so a deep link,
+  // a lint finding or an event lands on the page that holds it.
+  const showPageOf = (brokerId, path) => {
+    const root = roots.find((r) => r.brokerId === brokerId);
+    if (root) setPaging((prev) => pagingForPath(root, path, prev));
+  };
+
   // Jump from a lint finding / event / deep link to the node: select it AND pan
   // the canvas onto it. A fresh object each call so the same target re-focuses.
   const jumpTo = (brokerId, path) => {
     const node = flat.byId.get(nodeIdOf(brokerId, path));
     if (node) select(node);
+    showPageOf(brokerId, path);
     setView('topology');
     setFocusTarget({ brokerId, path });
   };
@@ -222,6 +244,7 @@ export default function Uns() {
       if (node) {
         setPendingLink(null);
         setSelected(node);
+        showPageOf(b, pendingLink.path);
         setView('topology');
         setFocusTarget({ brokerId: b, path: pendingLink.path });
         break;
@@ -310,16 +333,25 @@ export default function Uns() {
             <div className="border-b border-line p-2">
               <Input type="search" aria-label="Filter namespace" value={treeFilter} onChange={(e) => setTreeFilter(e.target.value)} placeholder="Filter namespace" />
             </div>
-            <GraphTree nodes={flat.nodes} links={flat.links} selectedId={selected?.id || null} onSelect={(n) => {
+            <GraphTree
+              nodes={flat.nodes}
+              links={flat.links}
+              selectedId={selected?.id || null}
+              onSelect={(n) => {
                 const node = flat.byId.get(n.id) || null;
                 select(node);
                 // Back on the map, the node is opened up to and centred.
                 if (node) setFocusTarget({ brokerId: node.brokerId, path: node.path });
-              }} filter={treeFilter} />
+              }}
+              filter={treeFilter}
+              paging={paging}
+              onPage={setPage}
+              compare={compareNames}
+            />
           </div>
         ) : (
           <div className="relative min-h-0 min-w-0 flex-1">
-            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={select} focusTarget={focusTarget} />
+            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={select} focusTarget={focusTarget} paging={paging} onPage={setPage} />
             <SourceStatus rate={rate} brokers={scoped} opcua={opcua} i3xStatus={i3xStatus} />
             <div className="pointer-events-none absolute inset-x-0 top-14 z-10 flex flex-col gap-2 px-4">
               {totalTopics === 0 && <CanvasNote>No topics yet. Waiting for traffic on the connected broker. If it stays empty, check the broker&apos;s subscribe filter on the MQTT Brokers page.</CanvasNote>}

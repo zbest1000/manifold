@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js';
+import { startBigBroker } from './support.js';
 
 /**
  * Canvas / WebGL renderer regressions, asserted deterministically (no stored
@@ -511,4 +512,216 @@ test('UNS [touch] double-tap expands and reveals, tap selects, the badge is a 44
   await page.touchscreen.tap(box.x + e.sx, box.y + e.sy);
   await expect.poll(() => page.evaluate(() => window.__manifoldTest.uns.selectedId)).toBe('uns:e2e-broker:plant/line2');
   expect(consoleErrors).toEqual([]);
+});
+
+// ---- a large namespace: readable first view, paging, 3D selection under the panel ----------
+
+const READ_K = 0.8; // unsLayout MIN_READ_K: labels are readable from this zoom up
+const pagerOf = (page, path) => page.evaluate((p) => (window.__manifoldTest.uns.pagers || []).find((x) => x.parentPath === p) || null, path);
+const unsCanvas = (page) => page.locator('canvas[aria-describedby="uns-canvas-help"]');
+
+test.describe('large namespace', () => {
+  let big;
+  test.beforeAll(async () => {
+    big = await startBigBroker();
+  });
+  test.afterAll(async () => {
+    await big?.close();
+  });
+
+  test('UNS [touch] phone first view is readable and a reveal zooms back in to a readable zoom', async ({ page, isMobile, consoleErrors }) => {
+    test.skip(!isMobile, 'phone viewport: runs in the mobile project');
+    for (const vp of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
+      await page.setViewportSize(vp);
+      await page.goto(`/uns?broker=${big.id}`);
+      await page.waitForFunction(() => (window.__manifoldTest?.uns?.nodes || []).some((n) => n.depth === 1) && window.__manifoldTest.uns.fitScope, null, { timeout: 30_000 });
+      await unsIdle(page);
+      const st = await page.evaluate(() => ({ k: window.__manifoldTest.uns.transform.k, scope: window.__manifoldTest.uns.fitScope }));
+      expect(st.k, `first-view zoom at ${vp.width}x${vp.height}`).toBeGreaterThanOrEqual(READ_K - 1e-6);
+      expect(['first-level', 'start', 'all']).toContain(st.scope);
+      // A root and at least one first-level node are on screen, inside the visible viewport.
+      const s = await unsState(page);
+      const shown = s.nodes.filter((n) => n.depth <= 1 && insideVp(n, s.vp));
+      expect(shown.some((n) => n.depth === 0)).toBe(true);
+      expect(shown.some((n) => n.depth === 1)).toBe(true);
+    }
+    // Zoomed out below the reading floor, expanding a small branch zooms IN so its children read.
+    const target = 'acme/area1/line1/cell1';
+    await page.goto(`/uns?broker=${big.id}&path=${encodeURIComponent(target)}`);
+    await page.waitForFunction((p) => window.__manifoldTest?.uns?.nodes.some((n) => n.path === p), target, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__manifoldTest.uns.jumping === null, null, { timeout: 30_000 });
+    await unsIdle(page);
+    await page.evaluate((p) => {
+      const h = window.__manifoldTest.uns;
+      const n = h.nodes.find((q) => q.path === p);
+      const k = 0.45;
+      const t = h.transform;
+      const wx = (n.sx - t.x) / t.k;
+      const wy = (n.sy - t.y) / t.k;
+      h.setTransform({ k, x: h.viewport.x0 + h.viewport.w / 2 - wx * k, y: h.viewport.y0 + h.viewport.h / 2 - wy * k });
+    }, target);
+    const n = byPath(await unsState(page), target);
+    expect(n.expanded).toBe(false);
+    const box = await unsCanvas(page).boundingBox();
+    await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+    await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+    await page.waitForFunction((p) => window.__manifoldTest.uns.nodes.find((q) => q.path === p)?.expanded, target, { timeout: 10_000 });
+    // The reveal starts with the relayout; wait for it to have zoomed in and finished.
+    await page.waitForFunction((k) => window.__manifoldTest.uns.transform.k >= k && window.__manifoldTest.uns.motion === null, READ_K - 1e-6, { timeout: 15_000 });
+    const after = await unsState(page);
+    const kids = after.nodes.filter((q) => q.path.startsWith(`${target}/`));
+    expect(kids.length).toBe(4);
+    // The expanded node and its first child are inside the visible viewport.
+    expect(insideVp(byPath(after, target), after.vp)).toBe(true);
+    expect(kids.some((k) => insideVp(k, after.vp))).toBe(true);
+
+    // A deep link into page 25 of a 2,000-child branch: the pager is on screen, whole, with 40 px targets.
+    await page.goto(`/uns?broker=${big.id}&path=big/fleet/unit1234`);
+    await page.waitForFunction(() => window.__manifoldTest?.uns?.selectedId?.endsWith('unit1234') && window.__manifoldTest.uns.jumping === null, null, { timeout: 30_000 });
+    await unsIdle(page);
+    const pager = page.locator('[data-uns-pager$=":big/fleet"]');
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,201–1,250 of 2,000');
+    const cb = await unsCanvas(page).boundingBox();
+    const next = pager.getByRole('button', { name: 'Next page' });
+    const pb = await pager.locator('[role="group"]').boundingBox();
+    expect(pb.x).toBeGreaterThanOrEqual(cb.x);
+    expect(pb.x + pb.width).toBeLessThanOrEqual(cb.x + cb.width);
+    expect((await next.boundingBox()).height).toBeGreaterThanOrEqual(40);
+    await next.tap();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,251–1,300 of 2,000');
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test('UNS paging: deep link lands on the page, prev/next/first/last, range, filter, keyboard, kept across collapse and reload', async ({ page, consoleErrors }) => {
+    await page.goto(`/uns?broker=${big.id}&path=big/fleet/unit1234`);
+    await page.waitForFunction(() => window.__manifoldTest?.uns?.selectedId?.endsWith('big/fleet/unit1234'), null, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__manifoldTest.uns.jumping === null, null, { timeout: 30_000 });
+    await unsIdle(page);
+    expect(await pagerOf(page, 'big/fleet')).toMatchObject({ page: 24, pages: 40, total: 2000, from: 1201, to: 1250, shown: true });
+    const pager = page.locator('[data-uns-pager$=":big/fleet"]');
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,201–1,250 of 2,000');
+    // The selected node is on the shown page, on screen.
+    const s0 = await unsState(page);
+    expect(insideVp(byPath(s0, 'big/fleet/unit1234'), s0.vp)).toBe(true);
+
+    await pager.getByRole('button', { name: 'Next page' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,251–1,300 of 2,000');
+    await pager.getByRole('button', { name: 'Previous page' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,201–1,250 of 2,000');
+    await pager.getByRole('button', { name: 'Last page' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1,951–2,000 of 2,000');
+    await expect(pager.getByRole('button', { name: 'Next page' })).toBeDisabled();
+    await pager.getByRole('button', { name: 'First page' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1–50 of 2,000');
+    await expect(pager.getByRole('button', { name: 'Previous page' })).toBeDisabled();
+
+    // Keyboard: with a child selected, Page down shows the next page.
+    await page.waitForFunction(() => window.__manifoldTest.uns.nodes.some((n) => n.path === 'big/fleet/unit0001'));
+    await unsIdle(page);
+    const c = byPath(await unsState(page), 'big/fleet/unit0001');
+    const box = await unsCanvas(page).boundingBox();
+    await page.mouse.click(box.x + c.sx, box.y + c.sy - 6);
+    await page.waitForFunction(() => window.__manifoldTest.uns.selectedId?.endsWith('unit0001'));
+    await unsCanvas(page).focus();
+    await page.keyboard.press('PageDown');
+    await expect(pager.locator('[data-pager-range]')).toHaveText('51–100 of 2,000');
+
+    // Filter by name: one child among 2,000 without paging.
+    await pager.getByRole('button', { name: /Filter children of fleet/ }).click();
+    await pager.getByRole('searchbox').fill('unit1777');
+    await pager.getByRole('searchbox').press('Enter');
+    await expect(pager.locator('[data-pager-range]')).toContainText('1–1 of 1 matching "unit1777"');
+    await page.waitForFunction(() => window.__manifoldTest.uns.nodes.some((n) => n.path === 'big/fleet/unit1777'));
+    await pager.getByRole('button', { name: 'Clear filter and close it' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('1–50 of 2,000');
+    await pager.getByRole('button', { name: 'Next page' }).click();
+    await pager.getByRole('button', { name: 'Next page' }).click();
+    await expect(pager.locator('[data-pager-range]')).toHaveText('101–150 of 2,000');
+
+    // Collapse and re-open the branch's parent: the page is kept.
+    await unsIdle(page);
+    await placeNode(page, 'big', 0.3, 0.5);
+    const bigNode = byPath(await unsState(page), 'big');
+    await page.mouse.click(box.x + bigNode.sx, box.y + bigNode.sy + bigNode.r + 4); // the +/- badge
+    await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((n) => n.path === 'big')?.expanded === false);
+    await expect(pager).toHaveCount(0);
+    await unsIdle(page);
+    const bigNode2 = byPath(await unsState(page), 'big');
+    await page.mouse.click(box.x + bigNode2.sx, box.y + bigNode2.sy + bigNode2.r + 4);
+    await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((n) => n.path === 'big')?.expanded);
+    // big/fleet re-opens only if it was open: open it if needed, then the page is the same.
+    const fleet = await page.evaluate(() => window.__manifoldTest.uns.nodes.find((n) => n.path === 'big/fleet'));
+    if (!fleet.expanded) {
+      await unsIdle(page);
+      await placeNode(page, 'big/fleet', 0.4, 0.5);
+      const f = byPath(await unsState(page), 'big/fleet');
+      await page.mouse.click(box.x + f.sx, box.y + f.sy + f.r + 4);
+    }
+    await expect(pager.locator('[data-pager-range]')).toHaveText('101–150 of 2,000');
+    // And for the session: a reload keeps it.
+    // (Without a path: a deep link would open the page of ITS node.) The Tree view below shows it.
+    await page.goto(`/uns?broker=${big.id}`);
+    await page.waitForFunction(() => (window.__manifoldTest?.uns?.nodes || []).some((n) => n.path === 'big'), null, { timeout: 30_000 });
+    expect(await page.evaluate((id) => JSON.parse(sessionStorage.getItem('manifold.unsPaging') || '{}')[`uns:${id}:big/fleet`], big.id)).toEqual({ page: 2, filter: '' });
+
+    // The Tree view offers the same pager.
+    await page.getByRole('radio', { name: 'Tree' }).click();
+    await page.getByRole('tree').first().waitFor();
+    // Open the way down to big/fleet (whatever is open already stays open).
+    for (const name of ['Big namespace', 'big', 'fleet']) {
+      const expand = page.getByRole('button', { name: `Expand ${name}`, exact: true }).first();
+      const collapse = page.getByRole('button', { name: `Collapse ${name}`, exact: true }).first();
+      await expect(expand.or(collapse)).toBeVisible();
+      if (await expand.isVisible()) await expand.click();
+      await expect(collapse).toBeVisible();
+    }
+    const treePager = page.locator('[data-tree-pager$="big/fleet"]');
+    await expect(treePager.locator('[data-pager-range]')).toHaveText('101–150 of 2,000');
+    await treePager.getByRole('button', { name: 'Next page' }).click();
+    await expect(treePager.locator('[data-pager-range]')).toHaveText('151–200 of 2,000');
+    await expect(page.getByRole('treeitem').filter({ hasText: /^unit0151/ })).toBeVisible();
+    expect(consoleErrors).toEqual([]);
+  });
+});
+
+test('Topics 3D: a node selected at the right edge stays visible when the details panel narrows the canvas', async ({ page, consoleErrors }) => {
+  await page.addInitScript(() => localStorage.setItem('tc.topicsView', '3d'));
+  await page.goto('/topics?broker=e2e-broker');
+  await page.waitForFunction(() => window.__manifoldTest?.graph3d && window.__manifoldTest.graph3d.nodes(10).length > 3, null, { timeout: 30_000 });
+  // Pan (as a drag would) until the rightmost node sits near the right edge, where the panel
+  // opens, then click it. Re-parked and re-read on every attempt: topics (incl. $SYS) keep
+  // arriving for a moment after load and rebuild the layout.
+  const park = () =>
+    page.evaluate(() => {
+      const h = window.__manifoldTest.graph3d;
+      const { w, h: hh } = h.size;
+      h.setView({ pan: { x: 0, y: 0 } });
+      const pick = h.nodes(500).filter((n) => n.sy > 80 && n.sy < hh - 120 && n.sx > 0 && n.sx < w).sort((a, b) => b.sx - a.sx)[0];
+      if (!pick) return null;
+      const at = (px) => {
+        h.setView({ pan: { x: px, y: 0 } });
+        return h.nodes(500).find((n) => n.id === pick.id);
+      };
+      // A sideways camera move shifts a node linearly on screen: two probes give the pan that
+      // puts it 90 px from the right edge.
+      const a0 = at(0).sx;
+      const slope = (at(-10).sx - a0) / -10;
+      if (!slope) return null;
+      const n = at((w - 90 - a0) / slope);
+      return n && n.sx > w - 130 && n.sx < w - 50 ? { id: n.id, sx: n.sx, sy: n.sy, w } : null;
+    });
+  let target = null;
+  await expect(async () => {
+    target = await park();
+    expect(target, 'a node parked near the right edge').toBeTruthy();
+    const box = await page.getByTestId('graph3d').boundingBox();
+    await page.mouse.click(box.x + target.sx, box.y + target.sy);
+    await expect(page.getByRole('complementary', { name: 'Topic details' })).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
+  await page.waitForFunction((w) => window.__manifoldTest.graph3d.size.w < w && !window.__manifoldTest.graph3d.pan.gliding, target.w, { timeout: 15_000 });
+  const r = await page.evaluate(() => ({ s: window.__manifoldTest.graph3d.selectedScreen(), v: window.__manifoldTest.graph3d.viewport }));
+  expect(r.s.id).toBe(target.id);
+  expect(r.s.sx + r.s.r).toBeLessThanOrEqual(r.v.x1 + 1);
+  expect(r.s.sx - r.s.r).toBeGreaterThanOrEqual(r.v.x0 - 1);
+  expect(consoleErrors.filter((e) => !/context lost|CONTEXT_LOST/i.test(e))).toEqual([]);
 });

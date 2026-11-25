@@ -152,6 +152,46 @@ export function boundsOf(nodes, pad = 0) {
   return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
 }
 
+/**
+ * Least screen-space move (CSS px) that brings a circle at (sx, sy) with radius
+ * r inside the usable rect of a {w, h} canvas minus `inset` (the floating
+ * overlays, a docked panel's edge). A circle bigger than the rect is centred.
+ * Returns { dx, dy } (0, 0 when it is already inside).
+ */
+export function keepInView(sx, sy, r, { w, h }, inset = {}) {
+  const l = inset.left ?? 0;
+  const t = inset.top ?? 0;
+  const rr = w - (inset.right ?? 0);
+  const b = h - (inset.bottom ?? 0);
+  const axis = (p, lo, hi) => {
+    if (hi - lo < 2 * r) return (lo + hi) / 2 - p;
+    if (p - r < lo) return lo - (p - r);
+    if (p + r > hi) return hi - (p + r);
+    return 0;
+  };
+  if (!(w > 0 && h > 0) || ![sx, sy, r].every(Number.isFinite)) return { dx: 0, dy: 0 };
+  return { dx: axis(sx, l, rr), dy: axis(sy, t, b) };
+}
+
+/**
+ * A camera glide: an ease-out move of a few numeric fields from `from` to `to`
+ * over `ms` (instant with reduced motion). `step(now)` returns the values for
+ * that moment and whether it is done. Renderers cancel it on user input.
+ */
+export function createGlide(from, to, { ms = 280, now = performance.now(), reduced = prefersReducedMotion() } = {}) {
+  const keys = Object.keys(to);
+  return {
+    to,
+    step(at) {
+      const f = reduced || ms <= 0 ? 1 : Math.min(1, Math.max(0, (at - now) / ms));
+      const e = 1 - (1 - f) ** 3;
+      const out = {};
+      for (const k of keys) out[k] = from[k] + (to[k] - from[k]) * e;
+      return { values: out, done: f >= 1 };
+    }
+  };
+}
+
 // ---- frame scheduling ----------------------------------------------------------
 
 export function prefersReducedMotion() {

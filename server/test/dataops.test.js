@@ -311,7 +311,10 @@ test('timescale querySeries downsamples with time_bucket and only binds user inp
   });
   const q = queries[0];
   assert.match(q.text, /time_bucket\('5 seconds'::interval, ts\) AS bucket/);
-  assert.match(q.text, /WHERE topic = ANY\(\$1\) AND ts BETWEEN \$2 AND \$3 AND value IS NOT NULL/);
+  // Bad samples (NULL value + quality) are part of the scan: they make gaps / partial buckets.
+  assert.match(q.text, /WHERE topic = ANY\(\$1\) AND ts BETWEEN \$2 AND \$3 GROUP BY/);
+  assert.match(q.text, /avg\(value\) FILTER \(WHERE value IS NOT NULL AND coalesce\(quality, 192\) >= 64\) AS value/);
+  assert.match(q.text, /min\(coalesce\(quality, 192\)\) AS quality/);
   assert.match(q.text, /GROUP BY topic, bucket ORDER BY bucket/);
   assert.deepStrictEqual(q.values[0], ["plant/temp'; DROP TABLE x;--", 'plant/press', 'plant/temp']);
   assert.deepStrictEqual(q.values[1], new Date(start));
@@ -320,11 +323,13 @@ test('timescale querySeries downsamples with time_bucket and only binds user inp
   assert.match(q.text, /'5 seconds'/, 'interval literal is a computed integer, not user text');
 
   const temp = out.series.find((s) => s.tag === 'plant/temp');
+  // Rows without quality / counts (older schema rows) read as Good samples.
   assert.deepStrictEqual(temp.points, [
-    [1700000000000, 21.5],
-    [1700000060000, 22]
+    [1700000000000, 21.5, 192],
+    [1700000060000, 22, 192]
   ]);
-  assert.deepStrictEqual(out.series.find((s) => s.tag === 'plant/press').points, [[1700000000000, 3.25]]);
+  assert.deepStrictEqual(out.series.find((s) => s.tag === 'plant/press').points, [[1700000000000, 3.25, 192]]);
+  assert.strictEqual(out.meta.quality, 'stored');
 });
 
 test('timebase tag listing rejects; range/tag validation applies to all backends', async () => {
@@ -378,8 +383,9 @@ test('timebase querySeries hits the documented GET, keeps literal / in tagnames,
   const temp = out.series.find((s) => s.tag === 'plant/temp');
   // 60s window / 10 maxPoints = 6s buckets: both in-window TVQs land in
   // bucket 0 and average to 21; the out-of-window 99 is gone.
-  assert.deepStrictEqual(temp.points, [[start, 21]]);
+  assert.deepStrictEqual(temp.points, [[start, 21, 192]]);
   assert.deepStrictEqual(out.series.find((s) => s.tag === 'plant/none').points, []);
+  assert.strictEqual(out.meta.quality, 'stored');
 });
 
 // ---- transforms ------------------------------------------------------------------
@@ -671,7 +677,8 @@ test('recorder.series returns downsampled numeric series and drops non-numeric',
   const temp = out.series.find((s) => s.tag === 'plant/temp');
   assert.ok(temp, 'numeric topic must appear');
   assert.strictEqual(temp.points.length, 2);
-  assert.strictEqual(temp.points[1][1], 22, 'point shape is [tsMs, value]');
+  assert.strictEqual(temp.points[1][1], 22, 'point shape is [tsMs, value, quality]');
+  assert.strictEqual(temp.points[1][2], 192);
   assert.ok(!out.series.find((s) => s.tag === 'plant/name'), 'all-non-numeric topic is dropped');
   r.stop();
   r.remove('rs');

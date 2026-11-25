@@ -4,6 +4,7 @@
  * (src/test/unsHelpers.test.js, canvasKit.test.js, unsCamera.test.js).
  */
 import { isMountNode } from './unsTree';
+import { compareNames, isPaged, pageSlice, rangeLabel } from './unsPaging';
 
 export const ROW_H = 108; // covers the badge PLUS its three-line label block
 export const COL_W = 224;
@@ -17,8 +18,10 @@ export const MIN_READ_K = 0.8;
 // children instead of the middle of the block, so opening a long list shows
 // the node together with the start of the list.
 export const LONG_BRANCH = 12;
-// Children shown per page when a branch is opened; a "N more" row pages on.
-export const PAGE_SIZE = 50;
+// Children shown per page of a long branch (see unsPaging.js).
+export { PAGE_SIZE } from './unsPaging';
+// The zoom a reveal may zoom IN to when the camera is below the reading floor.
+export const DEFAULT_K = 1;
 // Fallback insets (CSS px) when the overlays could not be measured.
 export const FIT_INSET = { top: 52, bottom: 72, side: 56 };
 // The world-space box a node occupies on screen: badge plus its label block.
@@ -38,48 +41,54 @@ export function seedExpansion(roots) {
   return keys;
 }
 
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-
 /**
  * Sibling order: by name (natural: line2 before line10). Deliberately NOT by
  * live topic count, which changes on every data flush and used to reorder a
  * branch while the user was reading it.
  */
-export const compareSiblings = (a, b) => collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+export const compareSiblings = (a, b) => compareNames(a.name, b.name);
 
-/** Placeholder row for the children of `parent` beyond the shown page. */
-function moreNode(parent, hidden) {
+/**
+ * The pager row of a long branch (see unsPaging.js): occupies the first row of
+ * the branch's children and carries the page it shows. The page renders the
+ * real controls as DOM over this slot.
+ */
+function pagerNode(parent, slice) {
   return {
-    id: `${parent.id}#more`,
-    name: `${hidden.toLocaleString()} more`,
-    path: `${parent.path ? `${parent.path}/` : ''}…more`,
+    id: `${parent.id}#pager`,
+    name: rangeLabel(slice),
+    path: `${parent.path ? `${parent.path}/` : ''}…pager`,
     brokerId: parent.brokerId,
     depth: parent.depth + 1,
     children: new Map(),
     topicCount: 0,
-    isMore: true,
+    isPager: true,
+    parentId: parent.id,
     parentKey: nodeKey(parent),
-    hidden
+    parentName: parent.name,
+    slice: { page: slice.page, pages: slice.pages, total: slice.total, all: slice.all, from: slice.from, to: slice.to, filter: slice.filter }
   };
 }
 
 /**
  * Tidy horizontal tree over the EXPANDED portion of the forest. An open node
- * shows its first `limits.get(key) ?? PAGE_SIZE` children (by name) and, if
- * there are more, one "N more" placeholder row that pages on when activated.
+ * with more than PAGE_SIZE children shows a pager row and ONE page of them (by
+ * name, optionally filtered by name), from `paging.get(node.id)` = { page, filter }.
  */
-export function layoutForest(roots, expanded, limits = null) {
+export function layoutForest(roots, expanded, paging = null) {
   const nodes = [];
   const edges = [];
   let cursorY = 0;
-  const isOpen = (n) => !n.isMore && expanded.has(nodeKey(n));
+  const isOpen = (n) => !n.isPager && expanded.has(nodeKey(n));
   const sortedCache = new Map();
   const shownKids = (n) => {
     let kids = sortedCache.get(n);
     if (!kids) {
       const all = [...n.children.values()].sort(compareSiblings);
-      const limit = Math.max(1, limits?.get(nodeKey(n)) ?? PAGE_SIZE);
-      kids = all.length > limit ? [...all.slice(0, limit), moreNode(n, all.length - limit)] : all;
+      if (isPaged(all.length)) {
+        const slice = pageSlice(all, paging?.get(n.id) || null);
+        kids = [pagerNode(n, slice), ...slice.items];
+      } else kids = all;
       sortedCache.set(n, kids);
     }
     return kids;
@@ -96,7 +105,7 @@ export function layoutForest(roots, expanded, limits = null) {
     const span = rows(n) * ROW_H;
     const long = isOpen(n) && shownKids(n).length > LONG_BRANCH;
     const y = long ? top + ROW_H * 2.5 : top + span / 2;
-    const laid = { node: n, x, y, open: isOpen(n), hasKids: n.children.size > 0, more: Boolean(n.isMore) };
+    const laid = { node: n, x, y, open: isOpen(n), hasKids: n.children.size > 0, more: false, pager: Boolean(n.isPager) };
     nodes.push(laid);
     if (isOpen(n)) {
       let childTop = top;
@@ -186,19 +195,72 @@ export function fitTransform(laidNodes, posOf, size, { excludeMounts = true, ins
 }
 
 /**
+ * The FIRST view of the map (and the automatic re-framing while it loads):
+ * everything when that fits at a readable zoom (labels >= MIN_READ_K); else
+ * never shrink below the floor: frame the namespace roots and their first
+ * level instead, and if even that is too big (a phone), sit at the reading
+ * floor showing the first root and the START of its first level, so the user
+ * pans and expands from there. Returns { t, readable, scope } where scope is
+ * 'all' | 'first-level' | 'start'.
+ */
+export function readableFit(laidNodes, posOf, size, { insets = null } = {}) {
+  const all = fitTransform(laidNodes, posOf, size, { insets });
+  if (!all) return null;
+  if (all.k >= MIN_READ_K - 1e-9) return { t: all, scope: 'all' };
+  const brokerOnly = laidNodes.filter((l) => !isMountNode(l.node));
+  const pool = brokerOnly.length ? brokerOnly : laidNodes;
+  const first = pool.filter((l) => l.node.depth <= 1);
+  const top = fitTransform(first.length ? first : pool, posOf, size, { insets, excludeMounts: false });
+  if (top && top.k >= MIN_READ_K - 1e-9) return { t: top, scope: 'first-level' };
+  // Readable floor, anchored on the first root: its first children start at the top-left.
+  const set = first.length ? first : pool;
+  const box = boxOf(set, posOf);
+  const v = viewportRect(size, insets);
+  const k = MIN_READ_K;
+  const root = set.find((l) => l.node.depth === 0) || set[0];
+  const rp = posOf(root);
+  const fitsX = (box.maxX - box.minX) * k <= v.w;
+  const x = fitsX ? v.x0 + v.w / 2 - (k * (box.minX + box.maxX)) / 2 : v.x0 - (rp.x - NODE_BOX.left) * k;
+  // Vertically: the whole first level when it fits; else the root together with
+  // its NEAREST first-level node (the tidy layout centres a root over ALL its
+  // open rows, so with a few first-level branches none may sit at the root's
+  // height); if even those two are too far apart, the root alone, centred.
+  const fitsY = (box.maxY - box.minY) * k <= v.h;
+  let y = v.y0 + v.h / 2 - rp.y * k;
+  if (fitsY) y = v.y0 + v.h / 2 - (k * (box.minY + box.maxY)) / 2;
+  else {
+    const kids = set.filter((l) => l !== root && l.node.depth === root.node.depth + 1 && l.node.brokerId === root.node.brokerId);
+    const near = kids.length ? kids.reduce((a, b) => (Math.abs(posOf(b).y - rp.y) < Math.abs(posOf(a).y - rp.y) ? b : a)) : null;
+    if (near) {
+      const top = Math.min(posOf(near).y, rp.y) - NODE_BOX.top;
+      const bottom = Math.max(posOf(near).y, rp.y) + NODE_BOX.bottom;
+      if ((bottom - top) * k <= v.h) y = v.y0 + v.h / 2 - (k * (top + bottom)) / 2;
+    }
+  }
+  return { t: { k, x, y }, scope: 'start' };
+}
+
+/**
  * Minimal camera move that brings world box `box` inside viewport rect `v`:
  * pan the least distance at the current zoom; only if the box cannot fit,
  * zoom out just enough, never below `minK`. If even `minK` cannot hold it, the
  * box is anchored on `anchor` (world point, the expanded node): it is kept in
- * view and the rest is centred around it as far as it fits. Returns
- * { t, clipped } where clipped says part of the box stays off-screen.
+ * view and the rest is centred around it as far as it fits. When the camera
+ * is BELOW the reading floor (`minK`) and the box would fit at a readable zoom,
+ * the reveal zooms IN, up to `defaultK`, so revealed labels are readable (to
+ * the floor itself, anchored, when the set cannot fit at a readable zoom).
+ * Returns { t, clipped } where clipped says part of the box stays off-screen.
  */
-export function revealTransform(t, box, v, { minK = MIN_READ_K, anchor = null } = {}) {
+export function revealTransform(t, box, v, { minK = MIN_READ_K, anchor = null, defaultK = DEFAULT_K } = {}) {
   const bw = box.maxX - box.minX;
   const bh = box.maxY - box.minY;
   let k = t.k;
   const fitK = Math.min(v.w / Math.max(bw, 1), v.h / Math.max(bh, 1));
-  if (fitK < k) k = Math.max(Math.min(minK, k), fitK);
+  // Below the reading floor: zoom IN to read the revealed nodes, up to defaultK
+  // when the set fits, else to the floor itself (anchored, the rest clipped):
+  // on a phone a readable part beats an unreadable whole.
+  if (k < minK - 1e-9) k = fitK >= minK ? Math.min(Math.max(defaultK, minK), fitK) : minK;
+  else if (fitK < k) k = Math.max(Math.min(minK, k), fitK);
   const clipped = bw * k > v.w + 0.5 || bh * k > v.h + 0.5;
   // Re-anchor the camera around the viewport centre for a zoom change, keeping
   // the box's centre fixed on screen, then pan minimally.
@@ -236,6 +298,7 @@ export function revealTransform(t, box, v, { minK = MIN_READ_K, anchor = null } 
 export function pickNode(laidNodes, posOf, pt) {
   const reach = (R + 10) * (R + 10);
   for (const l of laidNodes) {
+    if (l.pager) continue; // the pager's controls are DOM over its slot
     const P = posOf(l);
     const dx = pt.x - P.x;
     const dy = pt.y - P.y;

@@ -206,6 +206,15 @@ export default function System() {
   const [tick, setTick] = useState(0);
   const poll = useCallback(() => setTick((t) => t + 1), []); // manual Refresh/Retry: restart the poller (polls at once)
 
+  // One name everywhere: nav item, heading, document title and route label read "Health".
+  useEffect(() => {
+    const prev = document.title;
+    document.title = 'Health · Manifold';
+    return () => {
+      document.title = prev;
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const pollOnce = async () => {
@@ -246,8 +255,8 @@ export default function System() {
   if (!metrics) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="System health" />
-        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+        <PageHeader title="Health" />
+        <div role="region" aria-label="Health metrics" tabIndex={0} className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {error ? (
             <Banner variant="error" title="Could not read /metrics" onRetry={poll}>
               {error}. Check that the server is running and your access token is valid.
@@ -279,7 +288,7 @@ export default function System() {
     <UpdatedAtContext.Provider value={updatedAt ?? 0}>
       <div className="flex h-full flex-col">
         <PageHeader
-          title="System health"
+          title="Health"
           subtitle={updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()} · every ${POLL_MS / 1000} s from /metrics` : undefined}
           actions={
             <Button variant="secondary" onClick={poll}>
@@ -288,7 +297,7 @@ export default function System() {
           }
         />
 
-        <div role="region" aria-label="System metrics" tabIndex={0} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+        <div role="region" aria-label="Health metrics" tabIndex={0} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           {error && (
             <Banner variant="warn" title="Last poll failed, showing the previous readings" onRetry={poll}>
               {error}
