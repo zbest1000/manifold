@@ -34,7 +34,10 @@ const deviceIdentify = require('./deviceIdentify');
  */
 
 const DEFAULT_MQTT_PORTS = [1883, 8883];
-const DEFAULT_OPCUA_PORTS = [4840];
+// 4840 is the OPC UA default; 50000 is where Microsoft's opc-plc simulator listens
+// (common in OPC UA demos and what this project's demo stack runs), which a
+// 4840-only scan silently misses.
+const DEFAULT_OPCUA_PORTS = [4840, 50000];
 const DEFAULT_I3X_PORTS = [80, 443, 8080];
 const DEFAULT_MODBUS_PORTS = [502];
 const DEFAULT_S7_PORTS = [102];

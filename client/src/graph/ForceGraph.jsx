@@ -466,8 +466,13 @@ const ForceGraph = forwardRef(function ForceGraph(
         if (!n) continue;
         for (const k of Object.keys(src)) if (k !== 'x' && k !== 'y' && k !== 'vx' && k !== 'vy' && k !== 'fx' && k !== 'fy') n[k] = src[k];
       }
+      // React ran the previous build's cleanup (sim.stop()) before this effect.
+      // If that refresh landed mid-anneal, resume from the alpha it reached;
+      // otherwise the layout freezes as a half-spread clump.
+      const sim = simRef.current;
+      if (sim && sim.alpha() > sim.alphaMin()) sim.restart();
       schedRef.current?.request();
-      return undefined;
+      return sim ? () => sim.stop() : undefined;
     }
     sigRef.current = sig;
     builtLayoutRef.current = layout;
@@ -511,6 +516,14 @@ const ForceGraph = forwardRef(function ForceGraph(
     bigRef.current = big;
     if (big) {
       radialTreeLayout(nodes, links, depth);
+      // No force sim here, so nothing turns link endpoints from ids into node
+      // objects (forceLink().id() does that on the normal path). draw() reads
+      // l.source.x: unresolved, every edge was culled and a big graph showed
+      // nodes with no links.
+      for (const l of links) {
+        l.source = nodeById.get(l.source);
+        l.target = nodeById.get(l.target);
+      }
       sanitizePositions(nodes);
       for (const n of nodes) {
         n.fx = n.x;
@@ -823,6 +836,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       return null;
     };
 
+    let dragHeated = false;
     const dragBehavior = drag()
       .container(canvas)
       .subject((event) => {
@@ -832,12 +846,16 @@ const ForceGraph = forwardRef(function ForceGraph(
       })
       .on('start', (event) => {
         if (!event.subject) return;
-        if (simRef.current) simRef.current.alphaTarget(0.25).restart();
+        dragHeated = false;
         event.subject.fx = event.subject.x;
         event.subject.fy = event.subject.y;
       })
       .on('drag', (event) => {
         if (!event.subject) return;
+        // Re-heat on the first real move, not on press: a plain click on a node
+        // (select) must not jiggle a settled layout.
+        if (!dragHeated && simRef.current) simRef.current.alphaTarget(0.25).restart();
+        dragHeated = true;
         const t = transformRef.current;
         const rect = canvas.getBoundingClientRect();
         event.subject.fx = (event.sourceEvent.clientX - rect.left - t.x) / t.k;
@@ -845,7 +863,8 @@ const ForceGraph = forwardRef(function ForceGraph(
       })
       .on('end', (event) => {
         if (!event.subject) return;
-        if (simRef.current) simRef.current.alphaTarget(0);
+        if (dragHeated && simRef.current) simRef.current.alphaTarget(0);
+        dragHeated = false;
         // Keep nodes pinned in tree mode; release them in free-form layouts.
         if (layoutModeRef.current !== 'tree') {
           event.subject.fx = null;
@@ -853,6 +872,16 @@ const ForceGraph = forwardRef(function ForceGraph(
         }
       });
     sel.call(dragBehavior);
+    // Listener order is load-bearing: d3-zoom's mousedown/touchstart handlers call
+    // stopImmediatePropagation, and zoom was attached first (above, before the
+    // initial transform), so drag's handlers never ran and nodes could not be
+    // dragged. Re-adding zoom's handlers moves them behind drag's; a press on
+    // empty canvas has a null drag subject, which d3-drag ignores, so panning
+    // still reaches zoom.
+    for (const type of ['mousedown.zoom', 'touchstart.zoom', 'touchmove.zoom', 'touchend.zoom', 'touchcancel.zoom']) {
+      const handler = sel.on(type);
+      if (handler) sel.on(type, null).on(type, handler);
+    }
 
     let downPos = null;
     const onDown = (e) => {

@@ -230,10 +230,47 @@ class SparkplugDecoder {
     return processed;
   }
 
+  // Sparkplug B transports Int8/16/32 in the uint32 `int_value` field and Int64
+  // in the uint64 `long_value` field as UNSIGNED two's-complement; the receiver
+  // MUST reinterpret by datatype. Without this an Int32 of -5 arrives as
+  // 4294967291 and a sub-zero sensor reading is corrupted everywhere downstream
+  // (registry, Trends, tag bindings, pipelines, recordings). Datatype codes:
+  // 1=Int8 2=Int16 3=Int32 4=Int64 are signed; 5-8 (UInt*) and 13 (DateTime)
+  // stay unsigned.
+  _reinterpretInt32(v, datatype) {
+    if (datatype === 1) return (v << 24) >> 24; // Int8
+    if (datatype === 2) return (v << 16) >> 16; // Int16
+    if (datatype === 3) return v | 0; // Int32
+    return v; // UInt8/16/32 or unknown — already unsigned
+  }
+
+  _reinterpretInt64(v, datatype) {
+    // v is a string (decoded with longs:String). Only Int64 is signed.
+    if (datatype === 4) {
+      try {
+        return BigInt.asIntN(64, BigInt(v)).toString();
+      } catch {
+        return v;
+      }
+    }
+    return v; // UInt64 / DateTime or unknown
+  }
+
+  /**
+   * Reinterpret a raw (unsigned on the wire) integer value by Sparkplug
+   * datatype: numbers are int_value (32-bit), strings are long_value (64-bit,
+   * decoded with longs:String). Anything else passes through.
+   */
+  static reinterpretSigned(value, datatype) {
+    if (typeof value === 'number') return SparkplugDecoder.prototype._reinterpretInt32(value, datatype);
+    if (typeof value === 'string') return SparkplugDecoder.prototype._reinterpretInt64(value, datatype);
+    return value;
+  }
+
   extractMetricValue(metric) {
     // Extract value based on the oneof field
-    if (metric.int_value !== undefined) return metric.int_value;
-    if (metric.long_value !== undefined) return metric.long_value;
+    if (metric.int_value !== undefined) return this._reinterpretInt32(metric.int_value, metric.datatype);
+    if (metric.long_value !== undefined) return this._reinterpretInt64(metric.long_value, metric.datatype);
     if (metric.float_value !== undefined) return metric.float_value;
     if (metric.double_value !== undefined) return metric.double_value;
     if (metric.boolean_value !== undefined) return metric.boolean_value;
@@ -264,8 +301,8 @@ class SparkplugDecoder {
   extractPropertyValue(propertyValue) {
     if (propertyValue.is_null) return null;
 
-    if (propertyValue.int_value !== undefined) return propertyValue.int_value;
-    if (propertyValue.long_value !== undefined) return propertyValue.long_value;
+    if (propertyValue.int_value !== undefined) return this._reinterpretInt32(propertyValue.int_value, propertyValue.type);
+    if (propertyValue.long_value !== undefined) return this._reinterpretInt64(propertyValue.long_value, propertyValue.type);
     if (propertyValue.float_value !== undefined) return propertyValue.float_value;
     if (propertyValue.double_value !== undefined) return propertyValue.double_value;
     if (propertyValue.boolean_value !== undefined) return propertyValue.boolean_value;
@@ -288,7 +325,8 @@ class SparkplugDecoder {
     if (dataset.rows && Array.isArray(dataset.rows)) {
       processed.rows = dataset.rows.map(row => {
         if (row.elements && Array.isArray(row.elements)) {
-          return row.elements.map(element => this.extractVariantValue(element));
+          // DataSet cells carry no datatype of their own: the column's type applies.
+          return row.elements.map((element, col) => this.extractVariantValue(element, processed.types[col]));
         }
         return [];
       });
@@ -297,9 +335,9 @@ class SparkplugDecoder {
     return processed;
   }
 
-  extractVariantValue(variant) {
-    if (variant.int_value !== undefined) return variant.int_value;
-    if (variant.long_value !== undefined) return variant.long_value;
+  extractVariantValue(variant, datatype) {
+    if (variant.int_value !== undefined) return this._reinterpretInt32(variant.int_value, datatype);
+    if (variant.long_value !== undefined) return this._reinterpretInt64(variant.long_value, datatype);
     if (variant.float_value !== undefined) return variant.float_value;
     if (variant.double_value !== undefined) return variant.double_value;
     if (variant.boolean_value !== undefined) return variant.boolean_value;

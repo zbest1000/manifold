@@ -221,6 +221,18 @@ export default function ModelsTab({ brokers }) {
                   <Input className="mono" type="number" value={draft.intervalMs} onChange={(e) => setDraft({ ...draft, intervalMs: e.target.value })} />
                 </Field>
               )}
+              <Checkbox
+                className="sm:col-span-2"
+                label="Value/time/quality envelope"
+                description="Publish each attribute as {v, t, q} so consumers can tell fresh, stale and never-seen values apart."
+                checked={Boolean(draft.envelope)}
+                onChange={(v) => setDraft({ ...draft, envelope: v })}
+              />
+              {draft.envelope && (
+                <Field label="Stale after (ms)" help="An attribute older than this is published with quality 64 (uncertain); one never seen has quality 0.">
+                  <Input className="mono" type="number" min="1" value={draft.staleMs ?? 60000} onChange={(e) => setDraft({ ...draft, staleMs: e.target.value })} />
+                </Field>
+              )}
               <Checkbox className="sm:col-span-2" label="Enabled" checked={draft.enabled !== false} onChange={(v) => setDraft({ ...draft, enabled: v })} />
             </fieldset>
 

@@ -213,6 +213,13 @@ test('mqttManager surfaces MQTT 5 packet properties on built messages', () => {
   m.handleMessage(brokerId, 'plant/l1/temp', Buffer.from('{"v":2}'), { qos: 1, retain: false, properties: {} });
   const [row2] = m.stores.get(brokerId).drain();
   assert.ok(!('properties' in m.buildMessage(brokerId, row2)));
+
+  // ...and so does a later publish with NO properties block at all.
+  m.handleMessage(brokerId, 'plant/l1/temp', Buffer.from('{"v":3}'), { qos: 1, retain: false, properties: { contentType: 'text/plain' } });
+  m.stores.get(brokerId).drain();
+  m.handleMessage(brokerId, 'plant/l1/temp', Buffer.from('{"v":4}'), { qos: 1, retain: false });
+  const [row3] = m.stores.get(brokerId).drain();
+  assert.ok(!('properties' in m.buildMessage(brokerId, row3)), 'stale v5 properties must not outlive their message');
   m.shutdown();
 });
 

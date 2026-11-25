@@ -346,7 +346,7 @@ opt-in, **Modbus TCP**, **Siemens S7** and **EtherNet/IP** devices, and lets you
 2. **What to look for.** MQTT, OPC UA and i3X are ticked; Modbus TCP, S7 and EtherNet/IP are **off** until you tick
    them. The first time you tick one, a banner explains what device probing does to an OT network and the scan stays
    disabled until you tick *I understand, and I am allowed to probe this network* (remembered in that browser).
-3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840, i3X 80, 443 and 8080,
+3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840 and 50000, i3X 80, 443 and 8080,
    Modbus 502, S7 102, EtherNet/IP 44818), MQTT over WebSocket ports (none by default), and the pacing below.
 4. Before you start, the page shows what the server's own planner says: hosts, ports, probes, and how long it can take
    (*usually* about N s; *at most* about M if nothing answers, plus up to a few seconds for each open port that never

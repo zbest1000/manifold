@@ -128,7 +128,7 @@ export function isAlreadyConnected(r, { brokers = [], opcua = [] } = {}) {
 /** Everything the scan can look for. `device` kinds are opt-in (they speak to PLCs). */
 export const SCAN_KINDS = [
   { id: 'mqtt', field: 'mqttPorts', label: 'MQTT brokers', ports: [1883, 8883], on: true },
-  { id: 'opcua', field: 'opcuaPorts', label: 'OPC UA servers', ports: [4840], on: true },
+  { id: 'opcua', field: 'opcuaPorts', label: 'OPC UA servers', ports: [4840, 50000], on: true },
   { id: 'i3x', field: 'i3xPorts', label: 'i3X servers', ports: [80, 443, 8080], on: true },
   { id: 'modbus', field: 'modbusPorts', label: 'Modbus TCP', ports: [502], device: true },
   { id: 's7', field: 's7Ports', label: 'Siemens S7', ports: [102], device: true },

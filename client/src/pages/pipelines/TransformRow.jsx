@@ -25,8 +25,26 @@ export default function TransformRow({ t, index, count, onChange, onRemove, onMo
         <p className="text-xs text-subtle">{meta.hint}</p>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {t.type === 'repath' && field('new topic', { value: t.to, className: 'w-full sm:w-80', placeholder: 'uns/{1}/{3-}', onChange: (e) => onChange({ ...t, to: e.target.value }) })}
-          {t.type === 'pick' && field('fields to keep', { value: (t.fields || []).join(','), className: 'w-full sm:w-72', placeholder: 'field1,field2', onChange: (e) => onChange({ ...t, fields: parseCsv(e.target.value) }) })}
-          {t.type === 'rename' && field('rename map', { value: formatRenameMap(t.map), className: 'w-full sm:w-72', placeholder: 'old:new,old2:new2', onChange: (e) => onChange({ ...t, map: parseRenameMap(e.target.value) }) })}
+          {/* Pick and rename keep the typed text (uncontrolled, the row is keyed per transform): a
+              controlled value re-derived from the parsed list dropped a trailing comma and wiped a
+              half-typed rename pair on every keystroke. The parsed value is committed as you type
+              and the text is tidied on blur. */}
+          {t.type === 'pick' &&
+            field('fields to keep', {
+              defaultValue: (t.fields || []).join(','),
+              className: 'w-full sm:w-72',
+              placeholder: 'field1,field2',
+              onChange: (e) => onChange({ ...t, fields: parseCsv(e.target.value) }),
+              onBlur: (e) => (e.target.value = parseCsv(e.target.value).join(','))
+            })}
+          {t.type === 'rename' &&
+            field('rename map', {
+              defaultValue: formatRenameMap(t.map),
+              className: 'w-full sm:w-72',
+              placeholder: 'old:new,old2:new2',
+              onChange: (e) => onChange({ ...t, map: parseRenameMap(e.target.value) }),
+              onBlur: (e) => (e.target.value = formatRenameMap(parseRenameMap(e.target.value)))
+            })}
           {t.type === 'set' &&
             field('values to set (JSON)', {
               defaultValue: JSON.stringify(t.values || {}),

@@ -29,12 +29,18 @@ function inferSchema(value) {
   const t = typeof value;
   if (t === 'object') {
     const props = {};
-    for (const k of Object.keys(value).sort()) props[k] = inferSchema(value[k]);
+    // defineProperty, not assignment: a payload key "__proto__" must become an
+    // own property, not replace the schema object's prototype.
+    for (const k of Object.keys(value).sort()) {
+      Object.defineProperty(props, k, { value: inferSchema(value[k]), enumerable: true, writable: true, configurable: true });
+    }
     return { type: 'object', props };
   }
   if (t === 'number' || t === 'string' || t === 'boolean') return { type: t };
   return { type: 'string' };
 }
+
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 /** Structural type name without building a schema object (hot-path cheap). */
 function typeName(value) {
@@ -54,12 +60,16 @@ function typeName(value) {
 function validate(schema, value, path = '', out = []) {
   const actual = typeName(value);
   if (schema.type === 'object' && actual === 'object') {
-    for (const [k, sub] of Object.entries(schema.props || {})) {
-      if (!(k in value)) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
+    // Own-property checks, not `in`: `in` walks the prototype chain, so a
+    // payload key named like an Object.prototype member (e.g. "toString") would
+    // escape both the missing-field and new-field checks.
+    const props = schema.props || {};
+    for (const [k, sub] of Object.entries(props)) {
+      if (!hasOwn(value, k)) out.push({ path: path ? `${path}.${k}` : k, kind: 'missing-field', expected: sub.type });
       else validate(sub, value[k], path ? `${path}.${k}` : k, out);
     }
     for (const k of Object.keys(value)) {
-      if (!(k in (schema.props || {}))) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: typeName(value[k]) });
+      if (!hasOwn(props, k)) out.push({ path: path ? `${path}.${k}` : k, kind: 'new-field', got: typeName(value[k]) });
     }
     return out;
   }

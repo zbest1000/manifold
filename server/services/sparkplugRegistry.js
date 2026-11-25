@@ -55,7 +55,7 @@ class SparkplugRegistry {
         this.droppedEndpoints++;
         return null;
       }
-      e = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map(), devices: new Map(), lastSeq: null, seqGaps: 0 };
+      e = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map(), typeMap: new Map(), devices: new Map(), lastSeq: null, seqGaps: 0 };
       group.edgeNodes.set(id, e);
       this.endpointCount++;
     }
@@ -69,7 +69,7 @@ class SparkplugRegistry {
         this.droppedEndpoints++;
         return null;
       }
-      d = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map() };
+      d = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map(), typeMap: new Map() };
       edge.devices.set(id, d);
       this.endpointCount++;
     }
@@ -207,6 +207,12 @@ class SparkplugRegistry {
         if (m && m.name && m.alias !== undefined && m.alias !== null && target.aliasMap.size < MAX_METRICS_PER_ENDPOINT) {
           target.aliasMap.set(String(m.alias), m.name);
         }
+        // Remember each metric's datatype too: Sparkplug 3.0 says DATA messages
+        // SHOULD omit it, and signed integers can only be read back correctly
+        // (two's-complement on the wire) when the datatype is known.
+        if (m && m.name && m.datatype && (target.typeMap.has(m.name) || target.typeMap.size < MAX_METRICS_PER_ENDPOINT)) {
+          target.typeMap.set(m.name, m.datatype);
+        }
       }
     }
 
@@ -259,14 +265,23 @@ class SparkplugRegistry {
     const edge = this.groups.get(info.groupId)?.edgeNodes.get(info.edgeNodeId);
     if (!edge) return metrics;
     const target = info.deviceId ? edge.devices.get(info.deviceId) : edge;
-    if (!target || !target.aliasMap.size) return metrics;
+    if (!target || (!target.aliasMap.size && !target.typeMap.size)) return metrics;
     for (const m of metrics) {
-      if (m && !m.name && m.alias !== undefined && m.alias !== null) {
+      if (!m) continue;
+      if (!m.name && m.alias !== undefined && m.alias !== null) {
         const name = target.aliasMap.get(String(m.alias));
         if (name) {
           m.name = name;
           m.nameResolved = true;
         }
+      }
+      // DATA metric without a datatype: apply the one its BIRTH declared, so
+      // signed integers are reinterpreted instead of read as huge unsigned values.
+      if (!m.datatype && m.name && target.typeMap.has(m.name)) {
+        const dt = target.typeMap.get(m.name);
+        m.datatype = dt;
+        m.datatypeName = SparkplugDecoder.prototype.getDataTypeName(dt);
+        m.value = SparkplugDecoder.reinterpretSigned(m.value, dt);
       }
     }
     return metrics;

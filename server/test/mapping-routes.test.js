@@ -380,11 +380,11 @@ test('discovery: device ports are opt-in and the egress guard still filters targ
   process.env.MANIFOLD_ALLOW_PRIVATE_TARGETS = '1';
   try {
     await disc.startScan({ range: '10.1.2.3/32', includeI3x: false });
-    assert.deepStrictEqual(events.find((x) => x[0] === 'discovery-started')[1].ports, [1883, 8883, 4840]);
+    assert.deepStrictEqual(events.find((x) => x[0] === 'discovery-started')[1].ports, [1883, 8883, 4840, 50000]);
     await new Promise((r) => setTimeout(r, 20));
     events.length = 0;
     await disc.startScan({ range: '10.1.2.3/32', includeI3x: false, includeDevices: true });
-    assert.deepStrictEqual(events.find((x) => x[0] === 'discovery-started')[1].ports, [1883, 8883, 4840, 502, 102, 44818]);
+    assert.deepStrictEqual(events.find((x) => x[0] === 'discovery-started')[1].ports, [1883, 8883, 4840, 50000, 502, 102, 44818]);
     await new Promise((r) => setTimeout(r, 20));
     await assert.rejects(disc.startScan({ range: '127.0.0.1/32', includeDevices: true }), /blocked/);
   } finally {

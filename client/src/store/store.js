@@ -105,6 +105,13 @@ function reportError(s, source, rawMessage, { prefix, ...meta } = {}) {
     toast.error(summary);
   }
 }
+/** A warning toast, at most once per `key` per `everyMs` (the event log keeps every occurrence). */
+function notifyWarning(key, message, everyMs = 20000) {
+  const now = Date.now();
+  if (now - (lastToastAt.get(key) || 0) <= everyMs) return;
+  lastToastAt.set(key, now);
+  toast(message, { duration: 8000 });
+}
 function scheduleTick(store) {
   if (tickScheduled) return;
   tickScheduled = true;
@@ -422,6 +429,23 @@ export function initRealtime() {
   socket.on('mqtt-reconnecting', ({ brokerId }) => s.pushLog('warning', 'mqtt', `Reconnecting to ${brokerName(brokerId)}`, { brokerId }));
   socket.on('subscription-success', ({ brokerId, topic }) =>
     s.pushLog('verbose', 'mqtt', `Subscribed "${topic}"`, { brokerId, topic }));
+  // The broker refused the configured QoS and the server retried at 0: delivery
+  // is no longer guaranteed, which must not stay silent.
+  socket.on('subscription-downgraded', ({ brokerId, topic, from, to, reason }) => {
+    const msg = `Subscription "${topic}" on ${brokerName(brokerId)} downgraded from QoS ${from} to ${to}`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    notifyWarning(`mqtt|${brokerId}|${topic}`, msg);
+  });
+  // Schema drift was only visible on the Contracts tab. Every violation is
+  // logged; the toast is throttled per contract (a bad publisher can violate on
+  // every message).
+  socket.on('contract-violation', (evt = {}) => {
+    const first = evt.problems?.[0];
+    const what = first ? ` (${first.path || 'payload'}: ${String(first.kind || '').replace(/-/g, ' ')})` : '';
+    const msg = `Contract "${evt.contractName}" violated on ${evt.topic}${what}`;
+    s.pushLog('warning', 'contract', msg, { brokerId: evt.brokerId, topic: evt.topic });
+    notifyWarning(`contract|${evt.contractId}`, msg, 60_000);
+  });
   socket.on('unsubscription-success', ({ brokerId, topic }) =>
     s.pushLog('verbose', 'mqtt', `Unsubscribed "${topic}"`, { brokerId, topic }));
   socket.on('publish-success', ({ brokerId, topic }) =>

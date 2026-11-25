@@ -26,18 +26,24 @@ class Replayer {
   async start({ recordingId, brokerId, speed = 1, loop = false, topicPrefix = '' }) {
     if (this.active) throw new Error('a replay is already running — stop it first');
     await this.recorder.sync?.(recordingId); // flush buffered writes first
-    const file = this.recorder.filePath(recordingId);
-    if (!fs.existsSync(file)) throw new Error('recording has no data file');
+    // A rolled-over recording has a previous segment (".1") before the current file.
+    const files = this.recorder.dataFiles
+      ? this.recorder.dataFiles(recordingId)
+      : [this.recorder.filePath(recordingId)].filter((file) => fs.existsSync(file));
+    if (!files.length) throw new Error('recording has no data file');
     this.manager.requireClient(brokerId); // throws unless connected
 
     const messages = [];
-    const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      try {
-        messages.push(JSON.parse(line));
-      } catch {
-        // skip corrupt line
+    for (const file of files) {
+      const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+      for await (const line of rl) {
+        if (!line) continue;
+        try {
+          messages.push(JSON.parse(line));
+        } catch {
+          // skip corrupt line
+        }
+        if (messages.length >= MAX_LINES) break;
       }
       if (messages.length >= MAX_LINES) break;
     }

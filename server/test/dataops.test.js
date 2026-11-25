@@ -686,17 +686,39 @@ test('recorder.series returns downsampled numeric series and drops non-numeric',
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('recorder stops at the file cap and reports full', () => {
+test('recorder rolls over at the file cap instead of stopping forever', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-rec-'));
   const m = new MqttManager({ emit() {} });
-  const rec = { id: 'tiny', brokerId: 'b1', filter: '#', enabled: true, target: { type: 'file' }, maxBytes: 80 };
+  const rec = { id: 'tiny', brokerId: 'b1', filter: '#', enabled: true, target: { type: 'file' }, maxBytes: 400 };
   const r = new Recorder({ mqttManager: m, profiles: fakeProfiles({ recordings: { tiny: rec } }), dir });
   r.start();
-  for (let i = 0; i < 10; i++) m.emit('message', msg('b1', 'a/b', { i, pad: 'xxxxxxxxxx' }));
+  // Feed well past the cap; yield between messages so each async roll settles.
+  for (let i = 0; i < 40; i++) {
+    m.emit('message', msg('b1', 'a/b', i));
+    await sleep(5);
+  }
+  // The message that triggers a roll is dropped (counted); one more after the
+  // roll settled lands in the fresh current segment.
+  m.emit('message', msg('b1', 'a/b', 40));
+  await r.sync('tiny');
+
   const s = r.getStatus('tiny');
-  assert.ok(s.full);
-  assert.ok(s.bytes <= 80);
-  assert.match(s.lastError, /cap reached/);
+  assert.ok(!s.full, 'recording keeps going, never reports "full"');
+  assert.ok(s.rollovers >= 1, 'rolled over at least once');
+  assert.deepStrictEqual(r.dataFiles('tiny').map((f) => path.basename(f)), ['tiny.jsonl.1', 'tiny.jsonl']);
+  const size = r.dataFiles('tiny').reduce((n, f) => n + fs.statSync(f).size, 0);
+  assert.ok(size > 0 && size <= 400 + 120, `on-disk size stays bounded, got ${size}`);
+
+  // Newest data is kept, oldest dropped, and reads span both segments in order.
+  const { points } = await r.read('tiny', { limit: 1000 });
+  const vals = points.map((p) => p.v);
+  assert.ok(vals.length > 0);
+  assert.strictEqual(vals[vals.length - 1], 40, 'keeps the newest message');
+  assert.ok(vals[0] > 0, `dropped the oldest messages (first=${vals[0]})`);
+  assert.deepStrictEqual(vals, [...vals].sort((a, b) => a - b), 'oldest to newest across segments');
+
+  r.remove('tiny');
+  assert.deepStrictEqual(r.dataFiles('tiny'), [], 'remove deletes both segments');
   r.stop();
   m.shutdown();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -758,6 +780,37 @@ test('inferSchema and validate detect drift precisely', () => {
   assert.strictEqual(kinds['temp'], 'type-changed');
   assert.strictEqual(kinds['meta.seq'], 'missing-field');
   assert.strictEqual(kinds['extra'], 'new-field');
+});
+
+test('validate uses own properties: keys named like Object.prototype members still drift', () => {
+  const schema = inferSchema({ temp: 1 });
+  const extra = validate(schema, JSON.parse('{"temp":2,"toString":"x","__proto__":{"a":1}}'));
+  assert.deepStrictEqual(extra.map((d) => [d.path, d.kind]).sort(), [
+    ['__proto__', 'new-field'],
+    ['toString', 'new-field']
+  ]);
+  const withCtor = inferSchema(JSON.parse('{"constructor":1,"__proto__":2}'));
+  assert.deepStrictEqual(Object.keys(withCtor.props).sort(), ['__proto__', 'constructor']);
+  const missing = validate(withCtor, {});
+  assert.deepStrictEqual(missing.map((d) => d.kind), ['missing-field', 'missing-field']);
+});
+
+test('recorder treats empty / whitespace payloads as non-numeric (no fake 0 in Trends)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-rec-'));
+  const m = new MqttManager({ emit() {} });
+  const rec = { id: 'ews', brokerId: 'b1', filter: 'plant/#', enabled: true, target: { type: 'file' } };
+  const r = new Recorder({ mqttManager: m, profiles: fakeProfiles({ recordings: { ews: rec } }), dir });
+  r.start();
+  m.emit('message', msg('b1', 'plant/temp', '21'));
+  m.emit('message', msg('b1', 'plant/temp', ''));
+  m.emit('message', msg('b1', 'plant/temp', '   '));
+  m.emit('message', msg('b1', 'plant/temp', ' 23 '));
+  const out = await r.series('ews', { tags: ['plant/temp'], maxPoints: 100 });
+  assert.deepStrictEqual(out.series[0].points.map((p) => p[1]), [21, 23]);
+  r.stop();
+  r.remove('ews');
+  m.shutdown();
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('contracts engine records violations from the message tap', async () => {

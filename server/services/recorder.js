@@ -52,7 +52,11 @@ const READ_LIMIT_MAX = 5000;
 function numericOf(payload) {
   if (typeof payload === 'number') return Number.isFinite(payload) ? payload : null;
   if (typeof payload === 'string') {
-    const n = Number(payload);
+    // Number('') and Number('  ') are 0: an empty payload (e.g. a retained
+    // clear) on a numeric topic must not chart a fake 0 dip.
+    const t = payload.trim();
+    if (!t) return null;
+    const n = Number(t);
     return Number.isFinite(n) ? n : null;
   }
   if (payload && typeof payload === 'object') {
@@ -227,6 +231,16 @@ class Recorder {
     return path.join(this.dir, `${String(id).replace(/[^a-zA-Z0-9-]/g, '')}.jsonl`);
   }
 
+  /**
+   * Data files of a file recording, oldest first: the rolled-over previous
+   * segment (".1") when there is one, then the current file. Only existing
+   * files are returned.
+   */
+  dataFiles(id) {
+    const cur = this.filePath(id);
+    return [`${cur}.1`, cur].filter((file) => fs.existsSync(file));
+  }
+
   _status(id) {
     let s = this.status.get(id);
     if (!s) {
@@ -254,6 +268,37 @@ class Recorder {
     return stream;
   }
 
+  /**
+   * Rotate a full segment: flush + close the current file, move it to ".1" (the
+   * one previous segment kept), and reset so the next write starts a fresh
+   * file. Two segments bound a recording to ~maxBytes while always retaining
+   * recent history: recording never stops at the cap. Fire-and-forget from
+   * onMessage; `s.rolling` guards overlapping rolls, and the few messages that
+   * arrive mid-roll are dropped and counted in `s.droppedOnRoll`.
+   */
+  async _rollover(id, s) {
+    s.rolling = true;
+    try {
+      const stream = this.streams.get(id);
+      if (stream) {
+        this.streams.delete(id);
+        await new Promise((resolve) => stream.end(resolve));
+      }
+      const cur = this.filePath(id);
+      const prev = `${cur}.1`;
+      if (fs.existsSync(cur)) {
+        fs.rmSync(prev, { force: true });
+        fs.renameSync(cur, prev);
+      }
+      s.bytes = 0; // a fresh current file is created on the next write
+      s.rollovers = (s.rollovers || 0) + 1;
+    } catch (error) {
+      s.lastError = `roll-over failed: ${error.message}`;
+    } finally {
+      s.rolling = false;
+    }
+  }
+
   onMessage(msg) {
     const table = this.table();
     if (!table.length) return;
@@ -273,12 +318,16 @@ class Recorder {
       }
 
       // file target — buffered async append via the recording's WriteStream
-      if (s.full) continue;
+      // The cap covers two segments (current + one previous); a full segment
+      // rolls over instead of stopping the recording, so long-running
+      // recordings keep their newest data and drop their oldest.
       const cap = Number(rec.maxBytes) > 0 ? Number(rec.maxBytes) : DEFAULT_MAX_BYTES;
+      const segCap = Math.max(1, Math.floor(cap / 2));
       const line = JSON.stringify(recordLine(msg)) + '\n';
-      if (s.bytes + line.length > cap) {
-        s.full = true;
-        s.lastError = 'file cap reached — recording stopped';
+      // (An empty segment always takes the line, so one oversized line can't wedge it.)
+      if (s.rolling || (s.bytes > 0 && s.bytes + line.length > segCap)) {
+        if (!s.rolling) this._rollover(rec.id, s);
+        s.droppedOnRoll = (s.droppedOnRoll || 0) + 1;
         continue;
       }
       this._stream(rec.id).write(line);
@@ -302,17 +351,20 @@ class Recorder {
     );
   }
 
-  /** Stream the parsed JSONL records of a recording (skips blank/corrupt lines). */
+  /**
+   * Stream the parsed JSONL records of a recording (skips blank/corrupt lines),
+   * the rolled-over previous segment first so records come oldest to newest.
+   */
   async *_records(id) {
-    const file = this.filePath(id);
-    if (!fs.existsSync(file)) return;
-    const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-    for await (const line of rl) {
-      if (!line) continue;
-      try {
-        yield JSON.parse(line);
-      } catch {
-        // skip corrupt line
+    for (const file of this.dataFiles(id)) {
+      const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+      for await (const line of rl) {
+        if (!line) continue;
+        try {
+          yield JSON.parse(line);
+        } catch {
+          // skip corrupt line
+        }
       }
     }
   }
@@ -412,10 +464,13 @@ class Recorder {
       this.streams.delete(id);
     }
     this.status.delete(id);
-    try {
-      fs.unlinkSync(this.filePath(id));
-    } catch {
-      // no file — fine
+    // The current file and the rolled-over previous segment (if any).
+    for (const file of [this.filePath(id), `${this.filePath(id)}.1`]) {
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        // no file — fine
+      }
     }
   }
 

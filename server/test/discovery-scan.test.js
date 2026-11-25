@@ -153,7 +153,7 @@ test('range input: IPv6, bad CIDR, hostnames, size limit', async () => {
   // a /22 is the biggest allowed with the default limit
   const ok = await withFlags({ MANIFOLD_ALLOW_PRIVATE_TARGETS: '1' }, () => d.plan({ range: '10.0.0.0/22', includeI3x: false }));
   assert.strictEqual(ok.hosts.length, 1022);
-  assert.strictEqual(ok.totalProbes, 1022 * 3);
+  assert.strictEqual(ok.totalProbes, 1022 * 4);
 
   await assert.rejects(d.plan({ range: '10.0.0.5', concurrency: 0 }), /concurrency must be a whole number from 1 to 512/);
   await assert.rejects(d.plan({ range: '10.0.0.5', mqttPorts: ['abc'] }), /not a port/);
@@ -165,12 +165,12 @@ test('plan: counts, kinds, defaults and ETA are computed before anything is sent
   const d = new DiscoveryService(recorder().io);
   const plan = await withFlags({ MANIFOLD_ALLOW_PRIVATE_TARGETS: '1' }, () => d.plan({ range: '10.1.2.0/24' }));
   assert.strictEqual(plan.hosts.length, 254);
-  assert.deepStrictEqual(plan.ports, [1883, 8883, 4840, 80, 443, 8080]);
-  assert.strictEqual(plan.totalProbes, 254 * 6);
+  assert.deepStrictEqual(plan.ports, [1883, 8883, 4840, 50000, 80, 443, 8080]);
+  assert.strictEqual(plan.totalProbes, 254 * 7);
   assert.deepStrictEqual(plan.settings, { concurrency: 32, perHost: 2, timeoutMs: 1200, identifyTimeoutMs: 3000 });
-  assert.strictEqual(plan.estimate.worstCaseMs, Math.ceil((254 * 6) / 32) * 1200);
+  assert.strictEqual(plan.estimate.worstCaseMs, Math.ceil((254 * 7) / 32) * 1200);
   const dev = await withFlags({ MANIFOLD_ALLOW_PRIVATE_TARGETS: '1' }, () => d.plan({ range: '10.1.2.0/24', includeDevices: true }));
-  assert.deepStrictEqual(dev.ports, [1883, 8883, 4840, 80, 443, 8080, 502, 102, 44818]);
+  assert.deepStrictEqual(dev.ports, [1883, 8883, 4840, 50000, 80, 443, 8080, 502, 102, 44818]);
   // a port listed for two protocols is probed once
   const dup = await withFlags({ MANIFOLD_ALLOW_PRIVATE_TARGETS: '1' }, () => d.plan({ range: '10.1.2.3', includeI3x: false, mqttPorts: [5000], opcuaPorts: [5000], modbusPorts: [5000] }));
   assert.strictEqual(dup.totalProbes, 1);

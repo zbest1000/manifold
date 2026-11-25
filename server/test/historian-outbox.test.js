@@ -322,6 +322,41 @@ test('spill: append-only segments rotate, drain oldest-first across segments, fi
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('spill: points appended to the spill during a drain write await are not lost', async () => {
+  // Regression (ported from the old single-file spill): a message spilling while
+  // a drain batch is in flight appends to the very segment being drained. The
+  // commit after the write must only advance past what was delivered, never
+  // rewrite the file from a stale snapshot.
+  const dir = tmp();
+  let down = true;
+  let appended = false;
+  const seen = [];
+  const ref = {};
+  const fetchImpl = async (u, o) => {
+    if (down) return fail(503);
+    if (!appended) {
+      appended = true;
+      ref.outbox._spill('h', [{ tag: 't', ts: 3, value: 3 }]);
+    }
+    seen.push(...o.body.split('\n').map((l) => Number(l.split(' ')[2])));
+    return ok;
+  };
+  const outbox = new HistorianOutbox({ profiles: profilesOf({ h: { id: 'h', ...influx() } }), dir, fetchImpl });
+  ref.outbox = outbox;
+  outbox.enqueue('h', [
+    { tag: 't', ts: 1, value: 1 },
+    { tag: 't', ts: 2, value: 2 }
+  ]);
+  await outbox.flush(); // down: both spill
+  assert.strictEqual(outbox.getStats().h.spilled, 2);
+  down = false;
+  await outbox.flush(); // drain; point 3 spills during the first write await
+  await outbox.flush(); // pick up anything left behind
+  assert.deepStrictEqual(seen, [1, 2, 3], 'point spilled mid-drain must be delivered, in order');
+  assert.strictEqual(outbox.getStats().h.spillBytes, 0, 'spill fully drained');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('spill: the committed offset survives a restart (no re-send of delivered batches)', async () => {
   const dir = tmp();
   let mode = 'down';

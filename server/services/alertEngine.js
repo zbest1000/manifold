@@ -190,8 +190,19 @@ class AlertEngine {
     if (!s) {
       if (byTopic.size >= VALUE_STATE_MAX_TOPICS) {
         const oldest = byTopic.keys().next().value; // evict oldest-inserted
-        this._clearTimer(byTopic.get(oldest));
+        const victim = byTopic.get(oldest);
+        this._clearTimer(victim);
         byTopic.delete(oldest);
+        // Evicting a still-FIRING state silently would strand a phantom alarm:
+        // clients that saw 'firing' never get a 'resolved', and the active set
+        // (built from valueState) stops listing it. Resolve it, saying why.
+        if (victim?.firing) {
+          this._emit(rule, 'resolved', {
+            topic: oldest,
+            detail: `stopped tracking ${oldest}: rule exceeded ${VALUE_STATE_MAX_TOPICS} concurrent topics`
+          });
+          this._pushState(rule);
+        }
       }
       s = { firing: false, since: 0, breachedSince: 0, lastValue: null, timer: null };
       byTopic.set(topic, s);
