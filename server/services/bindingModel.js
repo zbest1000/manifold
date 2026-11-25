@@ -3,6 +3,7 @@
 const profilesModel = require('./deviceProfiles');
 const { looksLikeRawAddress } = require('./unsLint');
 const cx = require('./bindingContext');
+const mq = require('./bindingMqtt');
 
 /**
  * Binding model - the pure half of tag bindings (docs/design/southbound-drivers.md
@@ -86,7 +87,7 @@ const OBJECT_ENVELOPE_BYTES = 48; // {"t":1730000000000,"values":{}} + slack
 const UNKNOWN_VALUE_BYTES = 128;
 const STRING_VALUE_BYTES = 256;
 const HISTORIAN_TYPES = new Set(['timebase', 'timescaledb']);
-const SOURCE_TYPES = ['opcua', 'sparkplug', 'device', 'device-profile'];
+const SOURCE_TYPES = ['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt'];
 const META_FIELDS = ['type', 'unit', 'description', 'range'];
 const MAX_WARNINGS = 50;
 const PREVIEW_MAX_TAGS = 50;
@@ -103,6 +104,28 @@ class BindingValidationError extends Error {
 function slug(name) {
   return String(name).trim().replace(/[\s/+#]+/g, '_');
 }
+
+/**
+ * Observed topics for filter-mode MQTT sources: the runtime (and the routes) attach a resolver to
+ * the profile store, `(brokerId, filter, limit) -> [topic]`, so every caller of expandUnits (save,
+ * preview, warnings, the compiled index) sees the same topic set without a signature change.
+ */
+const topicResolvers = new WeakMap();
+function attachTopicSource(profiles, resolve) {
+  if (profiles && typeof profiles === 'object') topicResolvers.set(profiles, resolve);
+}
+function observedTopics(profiles, brokerId, filter) {
+  const fn = profiles && topicResolvers.get(profiles);
+  if (!fn || !brokerId || !filter) return [];
+  try {
+    return (fn(brokerId, filter, mq.MAX_FILTER_TOPICS) || []).slice(0, mq.MAX_FILTER_TOPICS);
+  } catch {
+    return [];
+  }
+}
+
+/** The key a tag publishes under (topic level, object member, _meta property). MQTT sources keep levels. */
+const nameKey = (unit, name) => (unit?.sourceType === 'mqtt' ? mq.slugPath(name) : slug(name));
 
 function targetTopic(template, tagName) {
   const t = String(template || 'uns/{name}');
@@ -250,6 +273,14 @@ function buildTag(address, dt, e, ov, unit, details) {
   if (precision !== undefined) tag.precision = precision;
   if (deadband !== undefined) tag.deadband = deadband;
   if (tagCtx) tag.context = Object.freeze(tagCtx);
+  if (unit.sourceType === 'mqtt') {
+    const src = unit.binding.source || {};
+    if (!hasVal(ent.name) && !hasVal(ov?.name)) tag.name = mq.topicName(address, unit.mqtt?.prefixLen ?? null);
+    const field = ent.field ?? ov?.field ?? src.field;
+    if (field) tag.field = field;
+    const stale = Number(ent.staleAfterMs ?? ov?.staleAfterMs ?? src.staleAfterMs);
+    if (stale > 0) tag.staleAfterMs = stale;
+  }
   if (unit.ctxMode !== 'none' && (unit.assetContext || tag.context)) tag.ctx = Object.freeze({ ...(unit.assetContext || {}), ...(tag.context || {}) });
 
   if (details) {
@@ -377,6 +408,10 @@ function expandUnits(b, profiles, opts = {}) {
       unit.template = target.pathTemplate || 'uns/{name}';
     }
   }
+  if (src.type === 'mqtt') {
+    unit.sourceId = src.brokerId;
+    unit.mqtt = { filter: src.tags === 'all' ? String(src.filter || '') : null, prefixLen: src.tags === 'all' ? mq.filterPrefix(src.filter || '').length : null };
+  }
   const eff = src.type === 'device' ? effectiveOf(profiles, src.deviceId) : null;
   try {
     assignAssetContext(unit, target, cx.contextVars(eff, null));
@@ -394,6 +429,20 @@ function expandUnits(b, profiles, opts = {}) {
       if (!keep(unit, e.address, tag, e, isAll)) continue;
       unit.tags.push(buildTag(e.address, tag, e, overrides?.[e.address], unit, details));
     }
+  } else if (src.type === 'mqtt') {
+    const entries = tagEntries(src);
+    if (entries === 'all') {
+      unit.mqtt.select = ruleSet;
+      for (const topic of observedTopics(profiles, src.brokerId, unit.mqtt.filter)) {
+        const tag = mqttCandidate(unit, topic, overrides?.[topic], details, keep);
+        if (tag) unit.tags.push(tag);
+      }
+    } else {
+      for (const e of entries) {
+        if (!keep(unit, e.address, null, e, false)) continue;
+        unit.tags.push(buildTag(e.address, null, e, overrides?.[e.address], unit, details));
+      }
+    }
   } else if (src.type !== 'sparkplug') {
     const entries = tagEntries(src);
     for (const e of entries === 'all' ? [] : entries) {
@@ -404,9 +453,43 @@ function expandUnits(b, profiles, opts = {}) {
   return [unit];
 }
 
+/** A filter-mode MQTT topic as a unit tag, when the filter and the rules keep it (else null). */
+function mqttCandidate(unit, topic, ov, details, keep) {
+  const parts = topic.split('/');
+  if (!mq.matchParts(unit.mqtt.filter.split('/'), parts)) return null;
+  const name = hasVal(ov?.name) ? String(ov.name) : mq.topicName(topic, unit.mqtt.prefixLen);
+  const probe = { key: topic, property: name };
+  if (keep) {
+    if (!keep(unit, topic, probe, {}, true)) return null;
+  } else {
+    if (ov?.enabled === false) return null;
+    if (unit.mqtt.select && !cx.selectTag(unit.mqtt.select, probe).matched) return null;
+  }
+  return buildTag(topic, null, null, ov, unit, details);
+}
+
+/**
+ * Runtime: a topic a filter-mode MQTT unit has not seen before -> its new tag (added to the unit),
+ * or null when the filter/rules do not keep it or the unit is at its topic cap.
+ */
+function addMqttTopic(unit, topic) {
+  if (!unit.mqtt?.filter || unit.tags.length >= mq.MAX_FILTER_TOPICS) return null;
+  const tag = mqttCandidate(unit, topic, overridesOf(unit.binding.source)?.[topic], false, null);
+  if (!tag) return null;
+  if (unit.tagByName?.has(tag.name)) return null; // two topics, one name: the first keeps it (warned at save)
+  unit.tags.push(tag);
+  return tag;
+}
+
 // ---- topics -------------------------------------------------------------------
 
-const valueTopicOf = (unit, name) => (unit.base ? `${unit.base}/${slug(name)}` : targetTopic(unit.template, name));
+const valueTopicOf = (unit, name) => {
+  if (unit.sourceType === 'mqtt') {
+    const n = mq.slugPath(name) || '_';
+    return unit.base ? `${unit.base}/${n}` : String(unit.template || 'uns/{name}').includes('{name}') ? String(unit.template).replace(/\{name\}/g, n) : `${String(unit.template).replace(/\/+$/, '')}/${n}`;
+  }
+  return unit.base ? `${unit.base}/${slug(name)}` : targetTopic(unit.template, name);
+};
 const statusTopicOf = (unit) => (unit.base ? `${unit.base}/_status` : statusTopic(unit.template));
 const metaTopicOf = (unit) => (unit.base ? `${unit.base}/_meta` : metaTopicFromTemplate(unit.template));
 const objectTopicOf = (unit) => (unit.base ? unit.base : assetFromTemplate(unit.template));
@@ -496,10 +579,11 @@ function metaDoc(unit) {
     if (t.context && ctxOk) p.context = t.context;
     if (ok('source')) {
       if (b.source.type === 'opcua') p.source = { connectionId: unit.sourceId, address: t.address };
+      else if (b.source.type === 'mqtt') p.source = { brokerId: unit.sourceId, topic: t.address, ...(t.field ? { field: t.field } : {}) };
       else p.source = { deviceId: unit.deviceId ?? unit.sourceId, address: t.address };
       if (b.source.type === 'device-profile') p.source.profileId = b.source.profileId;
     }
-    properties[slug(t.name)] = p;
+    properties[nameKey(unit, t.name)] = p;
   }
   return unit.assetContext && ctxOk ? { context: unit.assetContext, properties } : { properties };
 }
@@ -611,7 +695,7 @@ function validateBinding(draft, { profiles }) {
     throw new BindingValidationError(msg, details);
   };
   if (!source?.type || !SOURCE_TYPES.includes(source.type)) {
-    fail('source.type must be "device", "device-profile", "opcua" or "sparkplug" (mqtt tags compile to pipeline routes)');
+    fail('source.type must be "device", "device-profile", "opcua", "sparkplug" or "mqtt"');
   }
   const entries = tagEntries(source);
   // Disabled entries may name a tag the device no longer has (they only remember settings).
@@ -641,6 +725,11 @@ function validateBinding(draft, { profiles }) {
   }
   if (source.type === 'sparkplug' && (!source.brokerId || !source.group || !source.edge)) {
     fail('sparkplug source needs brokerId, group, edge');
+  }
+  if (source.type === 'mqtt') {
+    const units = target && typeof target === 'object' ? expandUnits({ name, source, target, id: draft.id || 'draft' }, profiles) : [];
+    const err = mq.mqttSourceError(source, target || {}, units);
+    if (err) fail(err);
   }
   if (!target?.mode || !['mqtt', 'sparkplug'].includes(target.mode)) fail('target.mode must be "mqtt" or "sparkplug"');
   if (!target.brokerId) fail('target.brokerId is required');
@@ -761,24 +850,32 @@ function validateBinding(draft, { profiles }) {
 /** Validation of the "choose what to map" / "context" options; calls fail(msg) on the first error. */
 function validateMappingOptions(source, target, profiles, fail) {
   const entries = tagEntries(source);
-  const listSource = source.type === 'device' || source.type === 'device-profile';
+  const isMqtt = source.type === 'mqtt';
+  const listSource = source.type === 'device' || source.type === 'device-profile' || isMqtt;
+  // MQTT entries also carry `field` and `staleAfterMs` (checked by bindingMqtt.mqttSourceError).
+  const own = (o) => {
+    if (!isMqtt || !cx.isPlainObject(o)) return o;
+    const { field: _f, staleAfterMs: _s, ...rest } = o;
+    return rest;
+  };
   if (Array.isArray(source.tags)) {
     for (const t of source.tags) {
       if (!t || typeof t !== 'object') continue;
-      const err = cx.overrideError(t, `tag "${t.address}"`);
+      const err = cx.overrideError(own(t), `tag "${t.address}"`);
       if (err) fail(err);
     }
   }
   if (source.select !== undefined && source.select !== null) {
-    if (!listSource || entries !== 'all') fail('source.select applies only to device and device-profile sources with tags: "all"');
+    if (!listSource || entries !== 'all') fail('source.select applies only to device, device-profile and mqtt sources with tags: "all"');
     const err = cx.selectError(source.select);
     if (err) fail(err);
+    if (isMqtt && Object.keys(source.select).some((k) => k !== 'include' && k !== 'exclude')) fail('source.select of an mqtt source takes include and exclude only (topic globs)');
   }
   if (source.overrides !== undefined && source.overrides !== null) {
-    if (!listSource) fail('source.overrides applies only to device and device-profile sources');
+    if (!listSource) fail('source.overrides applies only to device, device-profile and mqtt sources');
     if (!cx.isPlainObject(source.overrides)) fail('source.overrides must be an object { <tagKey>: { ...overrides } }');
     for (const [k, o] of Object.entries(source.overrides)) {
-      const err = cx.overrideError(o, `source.overrides["${k}"]`, { strict: true });
+      const err = cx.overrideError(own(o), `source.overrides["${k}"]`, { strict: true });
       if (err) fail(err);
     }
   }
@@ -883,12 +980,17 @@ function mappingWarnings(b, profiles, push) {
   const units = expandUnits(b, profiles);
   for (const unit of units) {
     if (!unit.tags.length && !unit.error) {
-      const why = src.select ? 'the selection rules match no tag' : 'every tag entry is disabled or the source has no tags';
+      const why =
+        src.type === 'mqtt' && src.tags === 'all'
+          ? `no topic seen on the broker matches ${src.filter}${src.select ? ' and the rules' : ''} yet; new matching topics are picked up when they appear`
+          : src.select
+            ? 'the selection rules match no tag'
+            : 'every tag entry is disabled or the source has no tags';
       push({ type: 'no-tags', topic: null, unitId: unit.id, message: `${unit.id}: nothing to publish (${why})` });
     }
     const seen = new Map();
     for (const t of unit.tags) {
-      const s = slug(t.name);
+      const s = nameKey(unit, t.name);
       if (seen.has(s) && seen.get(s) !== t.address) {
         push({ type: 'duplicate-name', topic: null, name: t.name, message: `tags "${seen.get(s)}" and "${t.address}" both publish as "${s}" in ${unit.id}` });
       } else seen.set(s, t.address);
@@ -916,6 +1018,10 @@ function bindingWarnings(b, profiles, { owners } = {}) {
   }
   if (t.mode === 'sparkplug' && Array.isArray(t.metaFields)) {
     push({ type: 'option-ignored', topic: null, message: 'metaFields has no effect on a Sparkplug target (there is no _meta document; metadata travels as metric properties in BIRTH)' });
+  }
+  if (b?.source?.type === 'mqtt') {
+    const unitsOf = (x) => expandUnits(x, profiles).filter((u) => !u.error);
+    for (const w of mq.loopWarnings(b, profiles.listIn('bindings'), unitsOf)) push(w);
   }
   if (b?.target?.mode !== 'mqtt') return warnings;
   const own = owners || topicOwners(profiles, b.id);
@@ -990,7 +1096,7 @@ function previewBinding(b, profiles, { latest = () => null, maxTags } = {}) {
       if (smp?.t > t) t = smp.t;
       if (layout === 'object-per-asset') {
         const member = memberPayload(fp.member, tag, e);
-        values[slug(tag.name)] = member;
+        values[nameKey(unit, tag.name)] = member;
         if (members.length < cap) {
           const topic = objectTopicOf(unit);
           members.push({
@@ -999,7 +1105,7 @@ function previewBinding(b, profiles, { latest = () => null, maxTags } = {}) {
             unitId: unit.id,
             hasValue: Boolean(smp),
             topic,
-            member: slug(tag.name),
+            member: nameKey(unit, tag.name),
             payload: member,
             bytes: Buffer.byteLength(JSON.stringify(member)),
             worstCaseBytes: memberBytesFor(fp.member, tag),
@@ -1146,8 +1252,14 @@ function suggestMapping(source, profiles) {
     const entries = tagEntries(src);
     tags = (entries === 'all' ? [] : entries).map((e) => ({ key: e.address }));
     context = { suggested: {}, resolved: {} };
+  } else if (src.type === 'mqtt') {
+    const entries = tagEntries(src);
+    const prefix = entries === 'all' ? mq.filterPrefix(src.filter || '').length : null;
+    const topics = entries === 'all' ? observedTopics(profiles, src.brokerId, src.filter) : entries.map((e) => e.address);
+    const rows = topics.map((topic) => ({ address: topic, property: null, type: null, unit: null, description: null, suggestedName: mq.topicName(topic, prefix), basis: 'topic', rawAddress: false }));
+    return { sourceType: 'mqtt', tags: rows, entries: rows.map((r) => ({ address: r.address, name: r.suggestedName })), context: { suggested: {}, resolved: {} } };
   } else {
-    throw new BindingValidationError('suggest supports device, device-profile and opcua sources');
+    throw new BindingValidationError('suggest supports device, device-profile, opcua and mqtt sources');
   }
   const byName = new Map();
   const out = tags.map((t) => {
@@ -1180,6 +1292,10 @@ function suggestMapping(source, profiles) {
 
 module.exports = {
   BindingValidationError,
+  attachTopicSource,
+  observedTopics,
+  addMqttTopic,
+  nameKey,
   DEFAULT_OBJECT_CAP,
   MAX_OBJECT_CAP,
   PREVIEW_MAX_TAGS,

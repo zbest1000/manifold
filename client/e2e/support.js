@@ -276,5 +276,94 @@ export async function cleanupOpcua({ connections = [], mounts = [] } = {}) {
   const m = await api.get('/api/uns/mounts').catch(() => ({ json: null }));
   for (const x of m.json?.mounts || []) {
     if (mounts.includes(x.label)) await api.del(`/api/uns/mounts/${x.id}`).catch(() => {});
+}
+
   }
+/**
+ * A publisher on the e2e broker: { publish(topic, payload, { retain }), close() }. Objects are sent as JSON.
+ */
+export async function publisher() {
+  const mqtt = requireServer('mqtt');
+  const client = mqtt.connect(`mqtt://127.0.0.1:${process.env.E2E_MQTT_PORT}`, { reconnectPeriod: 0 });
+  await new Promise((resolve, reject) => {
+    client.once('error', reject);
+    client.once('connect', resolve);
+  });
+  return {
+    publish: (topic, payload, opts = {}) =>
+      new Promise((resolve, reject) => client.publish(topic, typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload), { qos: 1, ...opts }, (e) => (e ? reject(e) : resolve()))),
+    close: () => new Promise((resolve) => client.end(true, {}, resolve))
+  };
+}
+
+/** Remove a binding by name and every pipeline route whose JSON contains `marker` (best effort). */
+export async function cleanupRoutes(marker) {
+  const { json } = await api.get('/api/pipelines').catch(() => ({ json: null }));
+  for (const r of json?.routes || []) if (JSON.stringify(r).includes(marker)) await api.del(`/api/pipelines/${r.id}`).catch(() => {});
+}
+
+/** The repo's Sparkplug B decoder (server/services/sparkplugDecoder.js): decode(buffer) -> { metrics, ... }. */
+export function sparkplugDecoder() {
+  const SparkplugDecoder = requireServer('./services/sparkplugDecoder.js');
+  return new SparkplugDecoder();
+}
+
+/** Like subscribe(), but payloads stay Buffers (Sparkplug protobuf). */
+export async function subscribeRaw(filter, port = process.env.E2E_MQTT_PORT) {
+  const mqtt = requireServer('mqtt');
+  const client = mqtt.connect(`mqtt://127.0.0.1:${port}`, { reconnectPeriod: 0 });
+  const messages = [];
+  client.on('message', (topic, buf, packet) => messages.push({ topic, payload: buf, retain: packet.retain }));
+  await new Promise((resolve, reject) => {
+    client.once('error', reject);
+    client.subscribe(filter, (err) => (err ? reject(err) : resolve()));
+  });
+  return { messages, close: () => new Promise((resolve) => client.end(true, {}, resolve)) };
+}
+
+/**
+ * An extra in-process MQTT broker (aedes). `pause()` drops every client and stops listening while
+ * keeping the retained store; `resume()` listens on the same port again.
+ * Returns { port, retained(topic) -> Promise<Buffer|null>, pause(), resume(), close() }.
+ */
+export async function startBroker() {
+  const aedesModule = requireServer('aedes');
+  const Aedes = aedesModule.Aedes || aedesModule;
+  const broker = Aedes.createBroker ? await Aedes.createBroker() : new Aedes();
+  let server = net.createServer(broker.handle);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const sockets = new Set();
+  const track = (srv) =>
+    srv.on('connection', (s) => {
+      sockets.add(s);
+      s.on('close', () => sockets.delete(s));
+    });
+  track(server);
+  return {
+    port,
+    retained: (topic) =>
+      new Promise((resolve) => {
+        const stream = broker.persistence.createRetainedStream(topic);
+        let hit = null;
+        stream.on('data', (p) => (hit = p.payload));
+        stream.on('end', () => resolve(hit && hit.length ? hit : null));
+      }),
+    async pause() {
+      await new Promise((resolve) => {
+        server.close(resolve);
+        for (const s of sockets) s.destroy();
+      });
+    },
+    async resume() {
+      server = net.createServer(broker.handle);
+      track(server);
+      await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
+    },
+    async close() {
+      for (const s of sockets) s.destroy();
+      await new Promise((resolve) => server.close(() => resolve()));
+      await new Promise((resolve) => broker.close(resolve));
+    }
+  };
 }

@@ -3,9 +3,14 @@
 const { compiledView } = require('./mqttMatch');
 const { messageTime } = require('./pipelineEngine');
 const { OpcuaSource, opcQuality } = require('./tagSources/opcuaSource');
+const { MqttSource } = require('./tagSources/mqttSource');
 const model = require('./bindingModel');
+const mqttRuntime = require('./bindingRuntimeMqtt');
+const retainedOps = require('./bindingRetainedOps');
+const { RetainedLedger, defaultLedgerFile } = require('./bindingRetained');
 
 const { slug, targetTopic, statusTopic } = model;
+const { normQuality } = require('./bindingMqtt');
 
 /**
  * Tag bindings - the bridge from "browse a device's tags" to "they live in the
@@ -28,6 +33,8 @@ const { slug, targetTopic, statusTopic } = model;
  *             statusTopic? (false = no retained <asset>/_status document),
  *             metaTopic?   (false = no retained <asset>/_meta document),
  *             historian?:  { historianId }   (opt-in direct store-and-forward target) }
+ *         | { type: 'mqtt', brokerId, tags: [{ address: <topic>, name?, field?, ... }] | 'all', filter?,
+ *             select?, overrides?, field?, staleAfterMs? }   (see ./bindingMqtt.js)
  *         | { mode: 'sparkplug', brokerId, group, edge, device (device-profile: may use {device}/{param}),
  *             historian? }
  *   rbe?:   { heartbeatMs?, deadband?: { type: 'absolute'|'percent', value } }
@@ -60,6 +67,13 @@ const { slug, targetTopic, statusTopic } = model;
  *   empty retained publish, every topic that left the set - binding deleted,
  *   disabled, renamed (path/broker change), retain switched off, profile
  *   instance removed. Call reconcile() after any binding/device/profile edit.
+ *   Every owned topic is also recorded in a ledger file (./bindingRetained.js)
+ *   so edits made while the server was down, a crash, or a clear aimed at a
+ *   disconnected broker are cleaned once the broker is connected again
+ *   (./bindingRetainedOps.js).
+ * - MQTT-topic sources ride the coalesced message tap (./bindingRuntimeMqtt.js):
+ *   a mapping never consumes what it publishes (refused at save, plus a hop
+ *   guard shared with the pipeline engine at run time).
  * - Lifecycle: on a source coming (back) online monitors are re-requested;
  *   failed monitor requests retry on a slow timer.
  * - Read-only: bindings never write to a device. There is deliberately no
@@ -101,7 +115,10 @@ class TagBindings {
     outbox = null,
     retryMs = 15000,
     heartbeatTickMs = 1000,
-    objectFlushMs = 50
+    objectFlushMs = 50,
+    pipelines = null,
+    ledgerFile,
+    brokerPollMs = 1000
   }) {
     this.manager = mqttManager;
     this.opcua = opcuaManager;
@@ -130,6 +147,15 @@ class TagBindings {
     this.objectTimer = null;
     this._syncing = null;
     this._syncAgain = false;
+    this.pipelines = pipelines; // hop registry shared with the pipeline engine (loop guard)
+    this.hops = new Map(); // `${brokerId}\0${topic}` -> { depth, ts, by } of mqtt-sourced publishes
+    this._hopOut = 0; // hop depth of the message being processed (0 = not mqtt-sourced)
+    this._hopBy = null;
+    this._rd = { v: undefined, q: 0, t: 0, u: undefined, r: undefined }; // reused MQTT read result
+    this.rx = new Map(); // unitId -> Map(tagName -> last message time) (mqtt staleness)
+    this.ledger = new RetainedLedger({ file: ledgerFile === undefined ? defaultLedgerFile(profiles) : ledgerFile });
+    this._clearing = new Set();
+    model.attachTopicSource(profiles, (brokerId, filter, limit) => mqttRuntime.observed(this.manager, brokerId, filter, limit));
 
     // Compiled index, rebuilt on profile-store revision change.
     this.index = compiledView(profiles, () => {
@@ -137,6 +163,9 @@ class TagBindings {
       const bySource = new Map(); // `${type} ${id}` -> [unit]
       const heartbeat = [];
       const units = new Map(); // unitId -> unit
+      const mqttFilters = new Map(); // brokerId -> [{ unit, parts }] (filter-mode MQTT units)
+      const mqttBrokers = new Set(); // brokers some MQTT-source unit reads
+      const stale = []; // MQTT units with a staleness limit on some tag
       for (const b of this.profiles.listIn('bindings')) {
         const type = b.source?.type;
         if (b.enabled === false || !type || type === 'sparkplug') continue;
@@ -156,6 +185,7 @@ class TagBindings {
           if (!bySource.has(sk)) bySource.set(sk, []);
           bySource.get(sk).push(unit);
           if (Number(b.rbe?.heartbeatMs) > 0) heartbeat.push(unit);
+          if (unit.sourceType === 'mqtt') mqttRuntime.indexUnit(unit, { mqttFilters, mqttBrokers, stale });
           for (const tag of unit.tags) {
             const key = `${sk} ${tag.address}`;
             if (!byKey.has(key)) byKey.set(key, []);
@@ -163,7 +193,7 @@ class TagBindings {
           }
         }
       }
-      return { byKey, bySource, heartbeat, units };
+      return { byKey, bySource, heartbeat, units, mqttFilters, mqttBrokers, stale, mqttMiss: new Set() };
     });
     this.spIndex = compiledView(profiles, () =>
       this.profiles
@@ -176,11 +206,19 @@ class TagBindings {
           unit.envFields = model.fieldPlan(b).env;
           unit.memberFields = null;
           unit.tagByName = new Map();
+          unit.dynamicRetain = true; // metric names are only known at run time: retained topics go to the ledger
           return unit;
         })
     );
 
     if (opcuaManager) this.registerSource('opcua', new OpcuaSource(opcuaManager));
+    this.mqttSource = new MqttSource(mqttManager, { pollMs: brokerPollMs });
+    this.registerSource('mqtt', this.mqttSource);
+  }
+
+  /** Late wiring of the pipeline engine, whose hop registry the loop guard shares. */
+  setPipelines(pipelines) {
+    this.pipelines = pipelines || null;
   }
 
   /** Late wiring of the historian outbox (direct historian targets). */
@@ -236,6 +274,8 @@ class TagBindings {
   stop() {
     for (const e of this.sources.values()) this._detach(e);
     this.manager.off('message', this.onMessage);
+    this.mqttSource?.close();
+    this.ledger.save();
     clearTimeout(this.retryTimer);
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.objectTimer);
@@ -294,8 +334,10 @@ class TagBindings {
     }
     // Forget monitor requests no enabled binding wants any more (bounded set).
     const wanted = new Set();
-    for (const unit of units.values()) for (const tag of unit.tags) wanted.add(`${unit.sourceType} ${unit.sourceId} ${tag.address}`);
+    for (const unit of units.values()) for (const a of mqttRuntime.monitorAddresses(unit)) wanted.add(`${unit.sourceType} ${unit.sourceId} ${a}`);
     for (const k of this.monitored) if (!wanted.has(k)) this.monitored.delete(k);
+    this.mqttSource?.retain(this.index().mqttBrokers);
+    for (const id of [...this.rx.keys()]) if (!units.has(id)) this.rx.delete(id);
 
     this._syncRetained();
     this._publishMetaAll();
@@ -350,24 +392,19 @@ class TagBindings {
     }
   }
 
-  /** Clear (empty retained publish) every retained topic the config no longer owns. */
+  /** Clear (empty retained publish) every retained topic the config no longer owns (see ./bindingRetainedOps.js). */
   _syncRetained() {
-    const next = new Map();
-    for (const b of this.profiles.listIn('bindings')) {
-      for (const r of model.retainedTopics(b, this.profiles)) next.set(`${r.brokerId}\u0000${r.topic}`, r);
-    }
-    for (const [key, r] of this.retained) {
-      if (next.has(key)) continue;
-      Promise.resolve()
-        .then(() => this.manager.publish(r.brokerId, r.topic, '', { qos: 1, retain: true }))
-        .catch(() => {}); // broker gone: nothing to clear on it now
-    }
-    this.retained = next;
-    // A unit whose meta topic was cleared must republish it if it comes back.
-    for (const [unitId, sent] of this.metaSent) {
-      const [brokerId, topic] = sent.split(' ', 2);
-      if (!next.has(`${brokerId}\u0000${topic}`)) this.metaSent.delete(unitId);
-    }
+    retainedOps.syncRetained(this);
+  }
+
+  /** Retained topics recorded as ours that nothing owns any more: [{ brokerId, topic, bindingId, ... }]. */
+  orphanedRetained() {
+    return retainedOps.orphans(this);
+  }
+
+  /** Clear what orphanedRetained() lists (dryRun: only report). */
+  cleanupRetained(opts) {
+    return retainedOps.cleanup(this, opts);
   }
 
   /** Publish the retained _meta document of every mqtt unit whose content changed. */
@@ -411,23 +448,27 @@ class TagBindings {
           if (!src) continue;
           const b = unit.binding;
           const interval = Number(b.source.samplingInterval) > 0 ? Number(b.source.samplingInterval) : 1000;
-          for (const tag of unit.tags) {
-            const key = `${unit.sourceType} ${unit.sourceId} ${tag.address}`;
+          for (const address of mqttRuntime.monitorAddresses(unit)) {
+            const key = `${unit.sourceType} ${unit.sourceId} ${address}`;
             if (this.monitored.has(key)) continue;
             this.monitored.add(key);
             try {
-              await src.adapter.ensureMonitored(unit.sourceId, tag.address, interval);
+              await src.adapter.ensureMonitored(unit.sourceId, address, interval);
             } catch (error) {
               this.monitored.delete(key); // retried on the slow timer
               failed = true;
-              this._status(b.id).lastError = `monitor ${tag.address}: ${error.message}`;
+              this._status(b.id).lastError = `monitor ${address}: ${error.message}`;
             }
           }
+          // An MQTT-topic unit publishes what its topics already hold (retained, slow topics).
+          if (unit.sourceType === 'mqtt' && mqttRuntime.monitorAddresses(unit).every((x) => this.monitored.has(`mqtt ${unit.sourceId} ${x}`))) mqttRuntime.seedUnit(this, unit);
         }
       } while (this._syncAgain);
       if (failed) this._scheduleRetry();
     })().finally(() => {
       this._syncing = null;
+      // A request that arrived after the loop's last check (but before this ran) is not lost.
+      if (this._syncAgain && this.started) this.syncMonitors();
     });
     return this._syncing;
   }
@@ -579,12 +620,14 @@ class TagBindings {
       if (!this.started) return;
       this._publishMetaAll();
       this._publishStatusForNewUnits(new Set());
+      retainedOps.clearOrphans(this);
     }, this.retryMs);
     this.retainedRetryTimer.unref?.();
   }
 
   _heartbeatSweep() {
     const now = Date.now();
+    mqttRuntime.staleSweep(this, now);
     for (const unit of this.index().heartbeat) {
       const m = this.last.get(unit.id);
       if (!m) continue;
@@ -607,17 +650,30 @@ class TagBindings {
   }
 
   onMessage(msg) {
+    const idx = this.index();
+    if (idx.mqttBrokers.has(msg.brokerId) && !msg.sparkplug) mqttRuntime.onMqttMessage(this, msg, idx);
     const units = this.spIndex();
-    if (!units.length || !msg.sparkplug || !Array.isArray(msg.sparkplug.metrics)) return;
+    if (!units.length || msg.topic.charCodeAt(0) !== 115 /* s */) return;
     // Topic: spBv1.0/{group}/{type}/{edge}[/{device}]
     const parts = msg.topicParts || msg.topic.split('/');
-    if (parts[0] !== 'spBv1.0' || !/^(N|D)(DATA|BIRTH)$/.test(parts[2] || '')) return;
-    const [, group, , edge, device = null] = parts;
+    if (parts[0] !== 'spBv1.0' || !/^(N|D)(DATA|BIRTH|DEATH)$/.test(parts[2] || '')) return;
+    const [, group, kind, edge, device = null] = parts;
 
     for (const unit of units) {
       const src = unit.binding.source;
       if (src.brokerId !== msg.brokerId || src.group !== group || src.edge !== edge) continue;
+      // Lifecycle -> source state: NDEATH takes the whole edge node down, DDEATH one device;
+      // the endpoint's own BIRTH (DBIRTH for a device, NBIRTH for edge-node metrics) brings it back.
+      if (kind === 'NDEATH' || (kind === 'DDEATH' && src.device && src.device === device)) {
+        this._sparkplugState(unit, 'offline', `${kind} from ${edge}${device ? `/${device}` : ''}`);
+        continue;
+      }
       if (src.device && src.device !== device) continue;
+      if (kind === 'DDEATH') continue; // another device of the edge node
+      if (kind === (src.device ? 'DBIRTH' : 'NBIRTH') || this.sourceState.get((unit.spStateKey ||= `sparkplug ${unit.id}`))?.state !== 'online') {
+        this._sparkplugState(unit, 'online', kind.endsWith('BIRTH') ? 'birth' : 'data');
+      }
+      if (!Array.isArray(msg.sparkplug?.metrics)) continue;
       const wanted = Array.isArray(src.metrics) && src.metrics.length ? new Set(src.metrics) : null;
       for (const m of msg.sparkplug.metrics) {
         if (!m || m.name === undefined || m.name === null) continue;
@@ -626,13 +682,26 @@ class TagBindings {
           unit,
           m.name,
           m.value,
-          // per-metric quality/timestamp when the publisher supplied them
-          m.quality === 0 || m.quality === 64 ? m.quality : 192,
+          // per-metric quality/timestamp when the publisher supplied them (OPC 0-255 codes)
+          Number.isFinite(m.quality) && m.quality >= 0 && m.quality <= 255 ? normQuality(m.quality) : 192,
           messageTime({ sourceTimestamp: m.sourceTimestamp ?? msg.sourceTimestamp, timestamp: msg.timestamp }),
           SPB_TYPES[m.datatypeName]
         );
       }
     }
+  }
+
+  /** Source state of a Sparkplug-source unit from BIRTH / DEATH (once per change). */
+  _sparkplugState(unit, state, reason) {
+    const key = `sparkplug ${unit.id}`;
+    const prev = this.sourceState.get(key);
+    if (prev?.state === state) return;
+    const now = Date.now();
+    const st = { state, since: now, reason };
+    this.sourceState.set(key, st);
+    this._status(unit.binding.id).sourceState = { ...st };
+    if (state === 'offline') this._publishBad(unit, now);
+    this._publishDeviceStatus(unit, st);
   }
 
   _objectState(unitId) {
@@ -691,6 +760,10 @@ class TagBindings {
     }
     if (isObject) {
       const o = this._objectState(unit.id);
+      if (this._hopOut > (o.hop || 0)) {
+        o.hop = this._hopOut;
+        o.hopBy = this._hopBy;
+      }
       o.changed.add(tagName);
       if (ts > o.t) o.t = ts;
       o.dirty = true;
@@ -722,7 +795,7 @@ class TagBindings {
     const target = b.target || {};
     const s = this._status(b.id);
     const values = {};
-    for (const [name, e] of m) values[slug(name)] = model.memberPayload(unit.memberFields, unit.tagByName.get(name), e);
+    for (const [name, e] of m) values[model.nameKey(unit, name)] = model.memberPayload(unit.memberFields, unit.tagByName.get(name), e);
     const payload = { t: o.t || Date.now(), values };
     const body = JSON.stringify(payload);
     const cap = model.objectCapOf(b);
@@ -737,6 +810,10 @@ class TagBindings {
     }
     s.lastTs = o.pubAt;
     const topic = model.objectTopicOf(unit);
+    if (o.hop) {
+      mqttRuntime.recordHop(this, target.brokerId, topic, o.hop, o.hopBy);
+      o.hop = 0;
+    }
     this.manager
       .publish(target.brokerId, topic, body, { qos: target.qos || 0, retain: Boolean(target.retain) })
       .then(() => {
@@ -777,6 +854,7 @@ class TagBindings {
     s.lastTs = Date.now();
 
     if (target.mode === 'sparkplug') {
+      if (this._hopOut) mqttRuntime.recordHop(this, target.brokerId, `spBv1.0/${target.group}/DDATA/${target.edge}/${unit.spDevice}`, this._hopOut, this._hopBy);
       try {
         this.spb.updateDevice({
           brokerId: target.brokerId,
@@ -805,6 +883,8 @@ class TagBindings {
       return;
     }
     const payload = model.tagPayload(target.format, unit.envFields, tag, value, ts, quality, reason);
+    if (this._hopOut) mqttRuntime.recordHop(this, target.brokerId, topic, this._hopOut, this._hopBy);
+    if (target.retain && unit.dynamicRetain) retainedOps.recordDynamic(this, target.brokerId, topic, binding.id);
     this.manager
       .publish(target.brokerId, topic, payload, { qos: target.qos || 0, retain: Boolean(target.retain) })
       .then(() => {
@@ -828,6 +908,11 @@ class TagBindings {
 
   getStatus() {
     return Object.fromEntries(this.status);
+  }
+
+  /** Newest message of an MQTT-source tag (preview): { v, q, t, type, u } or null. */
+  latestMqtt(unit, tag) {
+    return mqttRuntime.latestOf(this, unit, tag);
   }
 }
 

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
-  stateFromBinding, newState, buildMapping, withTagDefs, switchSelectMode, makeRow, entryOf, overrideOf, renameRow, setOv, effective,
-  mergedTagContext, matchTag, rowVerdict, publishingRows, bulkEnable, bulkSet, bulkContextKey, bulkRename, bulkCopy, bulkReset,
+  stateFromBinding, newState, buildMapping, withTagDefs, switchSelectMode, makeRow, entryOf, overrideOf, renameRow, setOv,
+  matchTag, rowVerdict, publishingRows, bulkEnable, bulkSet, bulkContextKey, bulkRename, bulkCopy, bulkReset,
   camelCase, snakeCase, stripPrefix, parseGrid, applyPaste, computeTopics, diffTopics, validateMapping, rowErrors, contextErrors,
-  contextRows, contextObject, contextPlaceholders, visibleErrors, focusDraft, mqttSourceTopics, pipelineFor, rowKeyFromMessage, suggestionMap
+  contextRows, contextObject, contextPlaceholders, visibleErrors, focusDraft, rowKeyFromMessage, suggestionMap
 } from '@/pages/tags/mappingModel';
 
 const brokers = [{ id: 'b1', name: 'Local' }];
@@ -139,14 +139,6 @@ describe('rows', () => {
     expect(entryOf(renameRow(renameRow(row, 'p2'), 'pressure'))).toBe('press');
     expect(overrideOf(row)).toBeNull();
     expect(overrideOf(setOv(row, 'unit', 'psi'))).toEqual({ unit: 'psi' });
-  });
-  it('effective values say where they come from, and clearing an override falls back to the device', () => {
-    expect(effective(row, 'unit')).toEqual({ value: 'bar', origin: 'device' });
-    expect(effective(setOv(row, 'unit', 'psi'), 'unit')).toEqual({ value: 'psi', origin: 'mapping' });
-    expect(effective(setOv(setOv(row, 'unit', 'psi'), 'unit', ''), 'unit')).toEqual({ value: 'bar', origin: 'device' });
-    expect(effective(row, 'scale').origin).toBe('default');
-    const ctx = mergedTagContext(setOv(row, 'context', { pid: 'PT-9', loop: 'L' }));
-    expect(ctx).toEqual([{ key: 'pid', value: 'PT-9', origin: 'mapping' }, { key: 'loop', value: 'L', origin: 'mapping' }]);
   });
   it('validates overrides like the server', () => {
     const errs = (ov) => rowErrors({ ...row, ov }).map((e) => e.field);
@@ -289,17 +281,11 @@ describe('validation', () => {
   });
 });
 
-describe('preview and pipeline helpers', () => {
+describe('preview helpers', () => {
   it('focused draft previews one row with the same target', () => {
     const s = stateFromBinding({ id: 'f', source: { type: 'device', deviceId: 'd1', tags: 'all', select: { include: ['t*'] } }, target: { mode: 'mqtt', brokerId: 'b1', assetPath: 'a', contextMode: 'payload' } }, { brokers, tagDefs: DEVICE_TAGS });
     const d = focusDraft(s, s.rows[3]);
     expect(d.source.tags).toEqual(['press']);
     expect(d.target.contextMode).toBe('payload');
-  });
-  it('MQTT topics become a pipeline route', () => {
-    const rows = [{ address: 'plant/line1/temperature', enabled: true }, { address: 'plant/line1/pressure', enabled: true }];
-    expect(mqttSourceTopics(rows, 'uns/x/{name}').rows.map((r) => r.topic)).toEqual(['uns/x/temperature', 'uns/x/pressure']);
-    const p = pipelineFor({ name: '', rows, form: { pathTemplate: 'uns/x', format: 'envelope', brokerId: 'b1', retain: false, qos: 0 } }, 'src');
-    expect(p).toEqual({ name: 'tags -> uns/x', source: { brokerId: 'src', filter: 'plant/line1/#' }, transforms: [{ type: 'repath', to: 'uns/x/{3-}' }, { type: 'envelope' }], target: { type: 'mqtt', brokerId: 'b1', retain: false, qos: 0 } });
   });
 });

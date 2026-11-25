@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ChevronUp, ChevronDown, RotateCcw, X } from 'lucide-react';
 import { Input, Select, SegmentedControl, Button, IconButton } from '@/components/ui';
 import { OverrideField, KeyValueEditor, NumberInput, SubHeading, OriginLabel, ErrorText } from './parts';
-import { effective, setOv, mergedTagContext, contextRows, contextObject, contextErrors, LIMIT_KEYS, rowVerdict, RULE_LABEL } from '../mappingModel';
+import { setOv, contextRows, contextObject, contextErrors, LIMIT_KEYS, rowVerdict, RULE_LABEL } from '../mappingModel';
 import { nameBasis } from './TagTable';
 
 const STATES_LABEL = { 'label-field': 'Value plus label', replace: 'Label replaces value' };
@@ -40,13 +40,18 @@ function describeDeadband(db) {
 /**
  * Everything about the active row beyond name / unit / description: display name, transform,
  * range and limits, states, per-tag deadband and context. Each value shows where it comes from
- * (device or mapping) with a one-click reset to the device value.
+ * (device or mapping) with a one-click reset to the device value. Where a value comes from is
+ * the server's answer (`serverTag`: the preview's origins, metadata and contextOrigins for this
+ * row); a value set in this row is "mapping" at once, without waiting for the server.
  */
-export default function TagInspector({ state, row, index, total, onRow, onMove, onClose, problems, schema, readOnly }) {
+export default function TagInspector({ state, row, index, total, onRow, onMove, onClose, problems, schema, readOnly, serverTag = null }) {
   const [resetNonce, setResetNonce] = useState(0);
   const seed = `${row.key}|${resetNonce}`;
-  const ctxInherited = mergedTagContext({ ...row, ov: {} });
-  const [statesRows, setStatesRows] = useListFrom(effective(row, 'states').value, `${seed}|states`, statesToRows);
+  const serverCtx = serverTag?.metadata?.context || {};
+  const ctxInherited = Object.entries(serverCtx)
+    .filter(([k]) => !(row.ov.context && Object.hasOwn(row.ov.context, k)))
+    .map(([key, value]) => ({ key, value, origin: serverTag?.contextOrigins?.[key] || 'device' }));
+  const [statesRows, setStatesRows] = useListFrom(row.ov.states ?? serverTag?.metadata?.states ?? row.def.states, `${seed}|states`, statesToRows);
   const [ctxRows, setCtxRows] = useListFrom(row.ov.context, `${seed}|ctx`, contextRows);
   const set = (field, value) => onRow((r) => setOv(r, field, value));
   const reset = (field) => {
@@ -58,7 +63,7 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
   const statesModes = schema?.statesModes || ['label-field', 'replace'];
   const maxPrecision = schema?.limits?.maxPrecision ?? 10;
   const o = row.ov;
-  const e = (f) => effective(row, f);
+  const e = (f) => ({ origin: row.ov[f] !== undefined ? 'mapping' : serverTag?.origins?.[f] || null });
   const verdict = rowVerdict(state, row);
   const basis = nameBasis(row);
   const range = o.range || {};
@@ -103,13 +108,24 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
               setResetNonce((n) => n + 1);
             }}
           >
-            <RotateCcw size={12} aria-hidden="true" /> Reset all to device
+            <RotateCcw size={12} aria-hidden="true" /> {state.srcType === 'mqtt' ? 'Reset all' : 'Reset all to device'}
           </Button>
           <IconButton icon={X} label="Close details" side="left" onClick={onClose} />
         </div>
       </div>
 
       <div className="grid gap-x-6 gap-y-5 p-4 lg:grid-cols-2">
+        {state.srcType === 'mqtt' && (
+          <fieldset className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2" disabled={disabled}>
+            <legend className="mb-2 text-sm font-medium text-fg">Reading this topic</legend>
+            <OverrideField label="Value field" origin={o.field !== undefined ? 'mapping' : null} onReset={() => reset('field')} error={err('field')} help="Dot path into the JSON payload. Empty: the mapping's default.">
+              <Input className="mono" value={o.field ?? ''} placeholder={state.form.srcField || 'payload'} onChange={(ev) => set('field', ev.target.value || undefined)} />
+            </OverrideField>
+            <OverrideField label="Mark stale after (ms)" origin={o.staleAfterMs !== undefined ? 'mapping' : null} onReset={() => reset('staleAfterMs')} error={err('staleAfterMs')} help="Empty: the mapping's default.">
+              <NumberInput integer value={o.staleAfterMs} placeholder={state.form.staleAfterMs || 'never'} onChange={(v) => set('staleAfterMs', v)} />
+            </OverrideField>
+          </fieldset>
+        )}
         <fieldset className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2" disabled={disabled}>
           <legend className="mb-2 text-sm font-medium text-fg">Metadata</legend>
           <OverrideField label="Display name" origin={e('displayName').origin} onReset={() => reset('displayName')} deviceValue={row.def.displayName} error={err('displayName')}>

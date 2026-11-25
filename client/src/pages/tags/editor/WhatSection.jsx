@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Plus, Search } from 'lucide-react';
-import { SegmentedControl, Select, Checkbox, Button, Input, Banner } from '@/components/ui';
+import { SegmentedControl, Select, Checkbox, Button, Input, Banner, Field } from '@/components/ui';
 import { EditorSection, PatternInput } from './parts';
 import { makeRow, defOf, supportsRules, RULE_LABEL } from '../mappingModel';
 
@@ -78,7 +78,7 @@ function AddTags({ srcType, tagDefs, present, onAdd, onClose, suggestions }) {
  * What to map: an explicit pick list with per-tag on/off, or (devices and profiles) every tag
  * that matches rules, which also picks up tags added to the device later.
  */
-export default function WhatSection({ state, setState, onSwitchMode, tagDefs, device, profiles, profile, onPickProfile, verdicts, selection, schema, suggestions, readOnly, onShowExcluded }) {
+export default function WhatSection({ state, setState, onSwitchMode, tagDefs, device, profiles, profile, onPickProfile, verdicts, selection, schema, suggestions, readOnly, onShowExcluded, errors = [], topicsLoading = false }) {
   const [adding, setAdding] = useState(false);
   const rules = state.rules;
   const rulesOn = state.selectMode === 'rules';
@@ -113,6 +113,9 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
   const present = useMemo(() => new Set(state.rows.map((r) => r.address)), [state.rows]);
   const selectHelp = schema?.select?.glob;
   const isProfile = state.srcType === 'device-profile';
+  const mqtt = state.srcType === 'mqtt';
+  const noun = mqtt ? 'topic' : 'tag';
+  const filterErr = errors.find((e) => e.section === 'what' && e.field === 'filter')?.message;
   const serverMatched = serverRows ? serverRows.filter((r) => r.matched || r.rule === 'disabled').length : null;
   const serverDisagrees = rulesOn && serverMatched !== null && serverMatched !== matched.length;
 
@@ -120,7 +123,15 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
     <EditorSection
       id="map-what"
       title="What to map"
-      description={rulesOn ? 'Every tag that matches the rules is published. Tags added to the device later are picked up automatically when they match.' : 'Only the tags listed below are published. Switch a tag off to stop publishing it but keep its settings; tags added to the device later are not picked up.'}
+      description={
+        mqtt
+          ? rulesOn
+            ? 'Every topic under the filter that matches the rules is published, one value per topic. Topics that appear later are picked up automatically (at most 2000).'
+            : 'Only the topics listed below are published, one value per topic. Switch a topic off to stop publishing it but keep its settings.'
+          : rulesOn
+            ? 'Every tag that matches the rules is published. Tags added to the device later are picked up automatically when they match.'
+            : 'Only the tags listed below are published. Switch a tag off to stop publishing it but keep its settings; tags added to the device later are not picked up.'
+      }
       actions={
         supportsRules(state.srcType) && (
           <SegmentedControl
@@ -129,8 +140,8 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
             value={state.selectMode}
             onChange={(m) => !readOnly && onSwitchMode(m)}
             options={[
-              { value: 'list', label: 'Pick tags' },
-              { value: 'rules', label: 'All tags by rule' }
+              { value: 'list', label: mqtt ? 'Pick topics' : 'Pick tags' },
+              { value: 'rules', label: mqtt ? 'All topics under a filter' : 'All tags by rule' }
             ]}
           />
         )
@@ -153,7 +164,12 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
         <div className="space-y-4">
           <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2" disabled={readOnly}>
             <legend className="sr-only">Selection rules</legend>
-            <PatternInput label="Include (key or property)" values={rules.include} onChange={(v) => setRules({ include: v })} placeholder="* (every tag)" help={selectHelp ? `Glob: ${selectHelp}.` : undefined} max={schema?.select?.fields?.include?.maxItems} />
+            {mqtt && (
+              <Field className="sm:col-span-2" label="Topic filter" error={filterErr} help="MQTT wildcards: + is one level, # the rest. Names keep the levels below the filter's fixed part.">
+                <Input id="mqtt-filter" value={state.ref.filter || ''} onChange={(e) => setState((s) => ({ ...s, ref: { ...s.ref, filter: e.target.value } }))} placeholder="plant1/line1/#" className="mono" aria-invalid={Boolean(filterErr) || undefined} />
+              </Field>
+            )}
+            <PatternInput label={mqtt ? 'Include (topic or name)' : 'Include (key or property)'} values={rules.include} onChange={(v) => setRules({ include: v })} placeholder="* (every tag)" help={selectHelp ? `Glob: ${selectHelp}.` : undefined} max={schema?.select?.fields?.include?.maxItems} />
             <PatternInput label="Exclude" values={rules.exclude} onChange={(v) => setRules({ exclude: v })} placeholder="*spare*, *_raw" max={schema?.select?.fields?.exclude?.maxItems} />
             {pollGroups.length > 1 && (
               <div className="min-w-0 space-y-1.5">
@@ -177,17 +193,20 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
                 <p className="helper">None ticked: every type.</p>
               </div>
             )}
-            <Select
-              label="Property"
-              fieldClassName="sm:col-span-1"
-              value={rules.withProperty === true ? 'with' : rules.withProperty === false ? 'without' : 'any'}
-              onChange={(e) => setRules({ withProperty: e.target.value === 'with' ? true : e.target.value === 'without' ? false : null })}
-              options={PROPERTY_FILTER}
-            />
+            {!mqtt && (
+              <Select
+                label="Property"
+                fieldClassName="sm:col-span-1"
+                value={rules.withProperty === true ? 'with' : rules.withProperty === false ? 'without' : 'any'}
+                onChange={(e) => setRules({ withProperty: e.target.value === 'with' ? true : e.target.value === 'without' ? false : null })}
+                options={PROPERTY_FILTER}
+              />
+            )}
           </fieldset>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-l-2 border-line pl-3 text-sm" aria-live="polite">
             <span className="text-fg">
-              <span className="font-medium tabular-nums">{matched.length.toLocaleString()}</span> of {total.toLocaleString()} tags match
+              <span className="font-medium tabular-nums">{matched.length.toLocaleString()}</span> of {total.toLocaleString()} {noun}s match
+              {mqtt && topicsLoading && <span className="text-muted"> (checking the broker…)</span>}
               {off > 0 && <span className="text-muted">, {off} switched off</span>}
             </span>
             {excluded > 0 && (
@@ -217,7 +236,7 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
       ) : (
         <div>
           <p className="text-sm text-fg" aria-live="polite">
-            <span className="font-medium tabular-nums">{publishing.toLocaleString()}</span> of {total.toLocaleString()} tag{total === 1 ? '' : 's'} published
+            <span className="font-medium tabular-nums">{publishing.toLocaleString()}</span> of {total.toLocaleString()} {noun}{total === 1 ? '' : 's'} published
             {off > 0 && <span className="text-muted"> · {off} switched off (kept with their settings)</span>}
           </p>
           {(state.srcType === 'device' || isProfile) && !readOnly && (

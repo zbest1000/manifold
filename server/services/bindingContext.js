@@ -550,7 +550,19 @@ function bindingSchema({ defaultObjectCap, minObjectCap, maxObjectCap, previewMa
   const text = (maxLength, description) => ({ type: 'string', maxLength, description });
   return {
     version: 1,
-    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug'],
+    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug', 'mqtt'],
+    mqttSource: {
+      description: 'An MQTT topic tree as a source: each entry reads one value from a topic payload',
+      fields: {
+        brokerId: { type: 'string', required: true },
+        tags: { type: 'array | "all"', description: '[{ address: <topic>, name?, field?, staleAfterMs?, ...overrides }] or "all" with filter' },
+        filter: { type: 'mqtt filter', description: 'tags: "all": every topic matching it, including topics that appear later (at most 2000)' },
+        field: { type: 'dot path', description: 'Where the value is in a JSON payload (default: the payload; value/time/quality envelopes are read automatically)' },
+        staleAfterMs: { type: 'integer', min: 1000, max: 86400000, description: 'No message for this long: Bad with reason "stale" once; the next message is Good again' }
+      },
+      envelopes: ['{ v, t?, q?, u? }', '{ value, timestamp?, quality?, unit? }'],
+      select: ['include', 'exclude']
+    },
     tagEntry: {
       description: 'An item of source.tags: a string (address) or this object. Disabled entries are kept but not monitored, published, counted or listed in _meta.',
       fields: {
@@ -611,6 +623,7 @@ function bindingSchema({ defaultObjectCap, minObjectCap, maxObjectCap, previewMa
       'device-profile': [...DEVICE_PLACEHOLDERS.map((p) => `{${p}}`), '{param:<name>}'],
       opcua: [],
       sparkplug: [],
+      mqtt: [],
       descriptions: { '{device}': 'device name', '{deviceId}': 'device id', '{protocol}': 'driver protocol', '{host}': 'device host', '{param:<name>}': 'profile parameter of the instance' }
     },
     limits: {

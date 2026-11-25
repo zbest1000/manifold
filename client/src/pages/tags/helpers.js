@@ -95,7 +95,7 @@ export function examplePayload(format, now = 1700000000000) {
   return format === 'envelope' ? JSON.stringify({ v: 42.5, t: now, q: 192 }) : '42.5';
 }
 
-// ---- MQTT-source (pipeline route) helpers ---------------------------------------
+// ---- topic paths ------------------------------------------------------------
 
 export function commonPrefix(topics) {
   if (!topics.length) return '';
@@ -149,7 +149,7 @@ export function buildBoundIndex(bindings) {
         add(wildcard, base, { id: b.id, name: label, path });
       }
     } else if (Array.isArray(s.tags)) {
-      const sid = s.type === 'opcua' ? s.connectionId : s.deviceId ?? s.connectionId;
+      const sid = s.type === 'opcua' ? s.connectionId : s.type === 'mqtt' ? s.brokerId : s.deviceId ?? s.connectionId;
       for (const t of s.tags) {
         const address = typeof t === 'string' ? t : t.address;
         const name = typeof t === 'string' ? t : t.name;
@@ -190,7 +190,7 @@ export const SOURCE_GROUPS = [
   { type: 'device', label: 'Devices' },
   { type: 'opcua', label: 'OPC UA servers' },
   { type: 'sparkplug', label: 'Sparkplug (via MQTT broker)' },
-  { type: 'mqtt', label: 'MQTT topics (mapped with a pipeline route)' }
+  { type: 'mqtt', label: 'MQTT topics' }
 ];
 
 export function groupSources(sources) {

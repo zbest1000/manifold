@@ -17,9 +17,9 @@
 ![The Tags workspace on the Boiler house PLC: its five tags, all already mapped](images/tags-workspace.png)
 
 Pick a **Source**, tick tags in the tree (or press **Map by rule** to take every tag matching include
-and exclude patterns), and press **Add to UNS**. The page does the right thing per source: MQTT
-selections compile into a **pipeline route** (the button then reads **Create pipeline route**); device,
-OPC UA and Sparkplug selections become **mappings** (stored as *bindings*; the interface says mapping). The
+and exclude patterns, or **Map by filter** for every MQTT topic under a wildcard filter), and press **Add to
+UNS**. Every source, MQTT topics included, becomes a **mapping** (stored as a *binding*; the interface says
+mapping). The
 **mapping editor** is one sheet, not a wizard: **Mapping** (name, broker, UNS topics or Sparkplug B device),
 **What** (pick tags or choose by rule), **Where** (the asset path, chosen in a picker over the live UNS tree, and
 the layout), **Tags** (the published name, unit and description of each tag, and a details panel per tag),
@@ -38,8 +38,18 @@ profile can be mapped as a whole with **Map a device profile** (every instance g
 For the full story on device tags (asset paths versus templates, the two
 layouts, quality, the `_status` and `_meta` documents, deadband, heartbeat,
 retained cleanup, historians) see [Mapping to the UNS](Mapping-to-the-UNS).
-The MQTT-source path is the exception: it compiles to a pipeline route and does
-not get `_status`, `_meta`, object payloads or a historian target.
+MQTT topics are a source like the others: one value per topic (a field path into JSON, or a
+value/time/quality envelope read automatically), the broker connection as source state, an
+optional per-topic staleness limit, and loop safety so a mapping never reads what it publishes;
+see [MQTT topics as a source](Mapping-to-the-UNS#mqtt-topics-as-a-source). Routes the old Tags page
+created for topics keep working and can be migrated from the Mappings tab after review.
+
+**A Sparkplug source** maps the metrics of an edge node or device (`{ type: "sparkplug", brokerId, group,
+edge, device?, metrics? }`). Each metric keeps its own timestamp and its declared quality (the `Quality`
+property most edge stacks send, OPC-style 0 to 255). BIRTH and DEATH are the source state: DDEATH of the
+device (or NDEATH of the edge node) publishes every tag Bad once and `_status` offline with the reason
+(`DDEATH from Edge1/Pump1`); the next DBIRTH (NBIRTH for edge-node metrics), or the first data, brings it back
+online.
 
 ## How a mapping flows
 
@@ -92,8 +102,12 @@ second per broker.
 
 ## CSV import
 
-For an **OPC UA** source the tag list has an **Import CSV** button: tag exports from Kepware/Ignition-style tools drop
-straight into the selection:
+Every source can import and export mapping rows as CSV: **Import CSV** / **Export CSV** in the editor's Tags
+section, or **CSV** beside **Selected tags** to open the editor straight into the import. Columns are
+`address,name,enabled,unit,description,displayName,dataType,scale,offset,precision,deadband` (plus
+`field,staleAfterMs` for MQTT topics), with a downloadable template and an error per line that cannot apply
+(see [Mapping to the UNS](Mapping-to-the-UNS#the-tags-page-and-the-mapping-editor)). Without a header the columns
+are `address,name`, so tag exports from Kepware/Ignition-style tools work as they are:
 
 ```csv
 nodeId,name
@@ -101,9 +115,8 @@ ns=2;s=Channel1.Device1.Temperature,Temperature
 ns=2;s=Channel1.Device1.Pressure,Pressure
 ```
 
-> For **device tags**, import and edit tags on the Devices page instead
-> (`key,address,type,pollGroup,scale,...`); see
-> [Devices and Drivers](Devices-and-Drivers).
+> The tags themselves (`key,address,type,pollGroup,scale,...`) are imported on the Devices page; see
+> [Devices and Drivers](Devices-and-Drivers). This CSV only maps tags that exist.
 
 ## The Sparkplug B publisher
 

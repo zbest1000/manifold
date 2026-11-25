@@ -24,16 +24,22 @@ async function call(path, { method = 'GET', body, signal } = {}) {
   } catch {
     json = {};
   }
-  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    // status and body travel with the error: a 409 { code: 'stale', current } is handled by the editor.
+    const err = new Error(json.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
   return json;
 }
 
 export const fetchSources = () => api.tagSources().then((r) => r.sources || []);
 export const browse = (source, node = '') => api.tagBrowse(source.type, source.id, node).then((r) => r.children || []);
 export const fetchBindings = () => api.listBindings();
-export const saveBinding = (b) => api.saveBinding(b); // -> stored binding + { warnings }
+/** POST /api/tags/bindings -> stored binding + { warnings }. Throws { status: 409, body: { code: 'stale', current } } on a concurrent edit. */
+export const saveBinding = (b) => call('/api/tags/bindings', { method: 'POST', body: b });
 export const removeBinding = (id) => api.deleteBinding(id);
-export const savePipeline = (p) => api.savePipeline(p);
 export const setHostState = (body) => api.sparkplugState(body);
 
 /** POST /api/tags/bindings/preview -> { valid, error? | resolved topics, payloads, warnings }. Read-only. */
@@ -67,3 +73,12 @@ export async function fetchDeviceTags(deviceId) {
   const nested = await Promise.all(folders.map((f) => browse(src, f.address)));
   return [...top.filter((n) => n.kind === 'tag'), ...nested.flat().filter((n) => n.kind === 'tag')];
 }
+
+/** GET /api/tags/bindings/migrations -> { candidates: [{ route, mapping, differences, blocked }] } (pipeline routes the old Tags flow created). */
+export const fetchMigrations = () => call('/api/tags/bindings/migrations');
+
+/** POST /api/tags/bindings/migrate { routeId, mapping, route: 'disable' | 'delete' } -> { binding, route }. */
+export const migrateRoute = (body) => call('/api/tags/bindings/migrate', { method: 'POST', body });
+
+/** GET (dry run) or POST { dryRun: false } /api/tags/bindings/cleanup-retained -> { topics: [{ brokerId, topic, bindingName, reason, connected, cleared? }], cleared, waiting }. */
+export const cleanupRetained = (dryRun) => (dryRun ? call('/api/tags/bindings/cleanup-retained') : call('/api/tags/bindings/cleanup-retained', { method: 'POST', body: { dryRun: false } }));

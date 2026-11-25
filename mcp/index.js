@@ -650,7 +650,10 @@ server.tool(
 
 server.tool(
   'binding_save',
-  'Create or update a tag binding (changes server state): map device tags (Modbus/S7/EtherNet-IP devices or device profiles), OPC UA nodes or Sparkplug metrics into the UNS. ' +
+  'Create or update a tag binding (changes server state): map device tags (Modbus/S7/EtherNet-IP devices or device profiles), OPC UA nodes, Sparkplug metrics or MQTT topics into the UNS. ' +
+    'An MQTT source reads one value per topic: { type: "mqtt", brokerId, tags: [{ address: <topic>, name?, field? (dot path into JSON), staleAfterMs? }] } or tags:"all" with filter (wildcards; new topics are picked up) and select { include?, exclude? }; ' +
+    'value/time/quality envelopes ({v,t,q,u} or {value,timestamp,quality,unit}) are read automatically; a target that could feed the source filter on the same broker is refused (loop). ' +
+    'Pass rev (from the stored binding) to refuse a save over a newer edit (409 code stale). ' +
     'Choose what to map: tags as strings or entries { address, name?, enabled?, ...overrides } (enabled:false keeps the entry but publishes nothing), or tags:"all" with source.select ' +
     '{ include?, exclude? (globs * ? on key and property), pollGroups?, types?, withProperty? } and source.overrides { <tagKey>: overrides }. ' +
     'Overrides (fall back to the device tag): name, displayName, description, unit, range {min,max}, dataType (number|integer|boolean|string), scale, offset, precision, ' +
@@ -662,8 +665,9 @@ server.tool(
     id: z.string().optional().describe('Binding id to update; omit to create.'),
     name: z.string().optional(),
     enabled: z.boolean().optional().describe('Default true.'),
-    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile']) }).passthrough()
-      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? } or { type: "device-profile", profileId, tags, select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
+    rev: z.number().optional().describe('Revision of the stored binding this edit is based on (optimistic concurrency, when the server supports it).'),
+    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt']) }).passthrough()
+      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? }, { type: "device-profile", profileId, tags, select?, overrides? } or { type: "mqtt", brokerId, tags | tags:"all" + filter, field?, staleAfterMs?, select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
     target: z.object({ mode: z.enum(['mqtt', 'sparkplug']), brokerId: z.string() }).passthrough()
       .describe('Target: { mode, brokerId, assetPath | assetPathTemplate, format?, layout?, fields?, metaFields?, context?, contextMode?, ... }; sparkplug mode also needs group and edge.'),
     rbe: z.object({}).passthrough().optional().describe('Report by exception: { heartbeatMs?, deadband?: { type: "absolute"|"percent", value } }.')

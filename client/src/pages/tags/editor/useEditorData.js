@@ -7,10 +7,10 @@ import { fetchSchema, fetchDevices, fetchHistorians, suggestMapping } from '../t
  * own status so a failure shows where it matters, with a retry.
  *   part = { status: 'loading' | 'ok' | 'error' | 'off', data, error }
  */
-export function useEditorData({ srcType, deviceId = null, profileId = null, opcuaTags = null }) {
+export function useEditorData({ srcType, deviceId = null, profileId = null, opcuaTags = null, mqttFilter = null }) {
   const [schema, setSchema] = useState({ status: 'loading', data: null, error: null });
   const [devices, setDevices] = useState({ status: srcType === 'device' || srcType === 'device-profile' ? 'loading' : 'off', data: null, error: null });
-  const [hist, setHist] = useState({ status: srcType === 'mqtt' ? 'off' : 'loading', data: [], error: null });
+  const [hist, setHist] = useState({ status: 'loading', data: [], error: null });
   const [suggest, setSuggest] = useState({ status: 'loading', data: null, error: null });
 
   // Promise chains (not async/await) keep every setState inside a callback.
@@ -39,7 +39,15 @@ export function useEditorData({ srcType, deviceId = null, profileId = null, opcu
     []
   );
   const suggestKey = JSON.stringify(
-    srcType === 'device' ? { type: 'device', deviceId } : srcType === 'device-profile' ? { type: 'device-profile', profileId } : srcType === 'opcua' && opcuaTags?.length ? { type: 'opcua', tags: opcuaTags } : null
+    srcType === 'device'
+      ? { type: 'device', deviceId }
+      : srcType === 'device-profile'
+        ? { type: 'device-profile', profileId }
+        : srcType === 'opcua' && opcuaTags?.length
+          ? { type: 'opcua', tags: opcuaTags }
+          : mqttFilter?.filter
+            ? { type: 'mqtt', brokerId: mqttFilter.brokerId, tags: 'all', filter: mqttFilter.filter }
+            : null
   );
   const suggestOff = (() => {
     const s = JSON.parse(suggestKey);
@@ -61,11 +69,14 @@ export function useEditorData({ srcType, deviceId = null, profileId = null, opcu
     if (srcType === 'device' || srcType === 'device-profile') loadDevices();
   }, [srcType, loadDevices]);
   useEffect(() => {
-    if (srcType !== 'mqtt') loadHist();
-  }, [srcType, loadHist]);
+    loadHist();
+  }, [loadHist]);
+  // A typed MQTT filter is asked for once typing pauses.
+  const debounceMs = srcType === 'mqtt' ? 300 : 0;
   useEffect(() => {
-    loadSuggest();
-  }, [loadSuggest]);
+    const t = setTimeout(loadSuggest, debounceMs);
+    return () => clearTimeout(t);
+  }, [loadSuggest, debounceMs]);
 
   return {
     schema: { ...schema, retry: loadSchema },

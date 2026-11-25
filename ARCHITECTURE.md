@@ -416,8 +416,13 @@ not) and `tRead` is when the value was read. An adapter also implements
 OPC UA adapter (`OpcuaSource`, wrapping the manager's `value` and
 `connection-state` events and mapping OPC UA status codes to quality) and the
 device manager (`source type 'device'`, fed by the driver supervisor). Sparkplug
-sources are not adapters: they read the decoded message tap directly.
-MQTT-source selections still compile into pipeline routes instead.
+sources are not adapters: they read the decoded message tap directly, and
+N/DBIRTH and N/DDEATH become their source state (`_status`, Bad once on death).
+MQTT-topic sources (`tagSources/mqttSource.js`) are a half adapter: it reports
+the broker connection as `source-state` (polled) and makes sure the broker
+session subscribes to what a mapping reads; values come from the coalesced
+message tap (`bindingRuntimeMqtt.js`), one map lookup per message on a broker a
+mapping reads, against indexes compiled per profile-store revision.
 
 ### Bindings
 
@@ -431,6 +436,9 @@ source: { type: 'device', deviceId, tags: [{ address: <tagKey>, name? }] | 'all'
       | { type: 'device-profile', profileId, tags: [<profile tag key>] | 'all' }
       | { type: 'opcua', connectionId, samplingInterval?, tags: [{ address: <nodeId>, name }] }
       | { type: 'sparkplug', brokerId, group, edge, device?, metrics? }
+      | { type: 'mqtt', brokerId, tags: [{ address: <topic>, name?, field?, staleAfterMs? }]
+                                  | 'all' + filter: 'raw/plant1/#', select?: { include?, exclude? },
+          field?, staleAfterMs?, overrides? }      // one value per topic (bindingMqtt.js)
 target: { mode: 'mqtt', brokerId,
           assetPath                       // 'acme/dallas/line4/filler' (no placeholders)
           | pathTemplate                  // legacy 'site/area/{name}'
@@ -559,12 +567,33 @@ Semantics (covered by `bindings-v2.test.js`, `mapping-phase4.test.js`,
   that often. Heartbeat repeats are not sent to a historian target.
 - **Retained cleanup.** `retainedTopics()` derives from configuration the set of
   retained topics a binding owns (`_status`, `_meta`, and value or object topics
-  when `retain` is on); `reconcile()` keeps the previous set in memory and
-  publishes an empty retained message (QoS 1) to every topic that left it
-  (binding deleted, disabled, path or broker changed, retain off, instance
-  removed). The set is rebuilt at start, so an edit made while the server was
-  down is not cleaned up; Sparkplug-source value topics are not derivable; a
-  clear sent to a disconnected broker is dropped.
+  when `retain` is on). Every owned topic is also recorded in a ledger
+  (`bindingRetained.js`: `<data dir>/binding-retained.json`, `{ version: 1,
+  savedAt, brokers: { <brokerId>: { <topic>: { b: <bindingId>, d?: 1, n?: <name> } } } }`,
+  atomic tmp+fsync+rename, a corrupt file moved aside, at most 20000 topics per
+  broker; `d: 1` marks topics recorded at publish time because their names are only
+  known then: filter-mode MQTT sources, Sparkplug sources). An orphan is a ledger
+  entry no binding owns; `bindingRetainedOps.js` clears orphans (empty retained,
+  QoS 1) at reconcile, on the retry timer and so once at start, only on a connected
+  broker, and drops an entry only after the broker acknowledged the clear. Edits
+  made while the server was down, a crash, and clears aimed at a disconnected
+  broker are therefore cleaned when the broker is back. `GET
+  /api/tags/bindings/cleanup-retained` lists orphans (dry run); `POST { dryRun:
+  false }` clears them. The broker's contents are never guessed from.
+- **MQTT-topic sources and loop safety.** Validation refuses a binding whose
+  publish filters (asset path and below, Sparkplug group/edge) overlap its source
+  topics or filter on the same broker; `loop-risk` warns about A->B->A pairs. At
+  run time each publish made while handling an MQTT message is recorded with its
+  hop depth and binding (10 s TTL, bounded) in the engine and in the pipeline
+  engine's hop registry (`_recordHop`/`_hopDepth`, wired when the routes see both
+  services); a binding ignores its own publications and a message with 4 hops is
+  not consumed (`loopBlocked`). Envelopes (`{v,t,q,u}`, `{value,timestamp,quality,unit}`)
+  are read with the pipeline engine's `messageQuality`/`messageTime`; a new unit
+  publishes the newest stored message of each topic once; `staleAfterMs` publishes
+  Bad with reason `stale` once from the heartbeat sweep.
+- **Health.** `bindingHealth.js` turns configuration and counters into a
+  per-binding diagnosis (`GET /api/tags/bindings` `health`: `{ state, reasons:
+  [{ code, message, fix? }] }`), including a source that no longer exists.
 - **Direct historian target.** `target.historian.historianId` enqueues each
   published sample, after report-by-exception, to the outbox as `{ tag: <resolved
   topic>, ts, value, quality }` (object layout: the per-member topic; Sparkplug:

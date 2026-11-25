@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { FolderTree, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { Field, Input, Select, SegmentedControl, Button, Banner, Table, THead, Th, Tr, Td } from '@/components/ui';
@@ -20,7 +19,6 @@ const LAYOUT_HELP = {
 /** Name, broker and output protocol. */
 export function SetupSection({ state, setState, set, brokers, errors, readOnly }) {
   const brokerErr = errors.find((e) => e.field === 'broker' || (e.section === 'setup' && !e.field))?.message;
-  const mqttSrc = state.srcType === 'mqtt';
   return (
     <EditorSection id="map-setup" title="Mapping">
       <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 xl:grid-cols-3" disabled={readOnly}>
@@ -36,30 +34,19 @@ export function SetupSection({ state, setState, set, brokers, errors, readOnly }
             </option>
           ))}
         </Select>
-        {!mqttSrc && (
-          <div className="min-w-0 space-y-1.5">
-            <p className="text-xs font-medium text-muted">Publish as</p>
-            <SegmentedControl
-              label="Publish as"
-              value={state.mode}
-              onChange={(m) => !readOnly && setState((s) => ({ ...s, mode: m, form: m === 'sparkplug' ? { ...s.form, layout: 'topic-per-tag' } : s.form }))}
-              options={[
-                { value: 'mqtt', label: 'UNS topics' },
-                { value: 'sparkplug', label: 'Sparkplug B device' }
-              ]}
-            />
-          </div>
-        )}
+        <div className="min-w-0 space-y-1.5">
+          <p className="text-xs font-medium text-muted">Publish as</p>
+          <SegmentedControl
+            label="Publish as"
+            value={state.mode}
+            onChange={(m) => !readOnly && setState((s) => ({ ...s, mode: m, form: m === 'sparkplug' ? { ...s.form, layout: 'topic-per-tag' } : s.form }))}
+            options={[
+              { value: 'mqtt', label: 'UNS topics' },
+              { value: 'sparkplug', label: 'Sparkplug B device' }
+            ]}
+          />
+        </div>
       </fieldset>
-      {mqttSrc && (
-        <Banner variant="info" title="This creates a pipeline route, not a mapping" className="mt-3">
-          The topics are re-published under your base path by the pipeline engine, so deadband, heartbeat, per-tag names and units, Sparkplug output and direct history are not available. The route is managed under{' '}
-          <Link to="/pipelines" className="text-accent-text underline">
-            Pipelines, Routes
-          </Link>
-          .
-        </Banner>
-      )}
     </EditorSection>
   );
 }
@@ -203,13 +190,7 @@ export default function WhereSection({ state, set, errors, profile, devices, rea
   const isProfile = state.srcType === 'device-profile';
   return (
     <EditorSection id="map-where" title="Where">
-      {state.srcType === 'mqtt' ? (
-        <div className="max-w-2xl">
-          <Field label="Base path" error={destErr} help="Each selected topic is re-published under this path, keeping the part below the common prefix.">
-            <Input value={f.pathTemplate} onChange={(e) => set.patch({ pathTemplate: e.target.value })} className="mono" placeholder="acme/dallas/imported" aria-invalid={Boolean(destErr) || undefined} disabled={readOnly} />
-          </Field>
-        </div>
-      ) : state.mode === 'sparkplug' ? (
+      {state.mode === 'sparkplug' ? (
         <div className="space-y-2">
           <fieldset className="grid max-w-3xl grid-cols-1 gap-3 sm:grid-cols-3" disabled={readOnly}>
             <legend className="sr-only">Sparkplug target</legend>
@@ -233,7 +214,7 @@ export default function WhereSection({ state, set, errors, profile, devices, rea
         <AssetPathField form={f} patch={set.patch} error={destErr} readOnly={readOnly} />
       )}
 
-      {state.mode === 'mqtt' && state.srcType !== 'mqtt' && (
+      {state.mode === 'mqtt' && (
         <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <SegmentedControl size="sm" label="Layout" value={f.layout} onChange={(v) => !readOnly && set.patch({ layout: v })} options={LAYOUTS} />
           <p className="helper min-w-0 flex-1 basis-64">{LAYOUT_HELP[f.layout]}</p>

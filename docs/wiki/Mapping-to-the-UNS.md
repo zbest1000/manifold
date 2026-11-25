@@ -5,7 +5,7 @@
 > is 0" from "the device is gone".
 
 A **mapping** takes tags from a source (a device, a device profile, an OPC UA
-connection or a Sparkplug endpoint) and publishes them to the broker. **"Mapping" is
+connection, a Sparkplug endpoint or MQTT topics) and publishes them to the broker. **"Mapping" is
 the word the interface uses; the REST API, the stored configuration and the
 JSON on this page call the same object a *binding*** (`/api/tags/bindings`).
 This guide says "mapping" for what you do in the UI and keeps `binding` where it
@@ -42,32 +42,57 @@ flowchart LR
   belong to a mapping. On the right: **Selected tags**, **Every tag of this device**
   (with **Map by rule**), **Mappings of this source** (each with its state and an edit
   pencil) and a collapsed **Sparkplug primary host** panel. In the header: **Map a device
-  profile** and **Add to UNS**. With an MQTT topic source the button reads **Create
-  pipeline route** instead: MQTT-topic selections do not become mappings, they compile to a
-  [pipeline route](Pipelines-and-Models).
+  profile** and **Add to UNS**. MQTT topics become mappings like any other source (see
+  [MQTT topics as a source](#mqtt-topics-as-a-source)); with an MQTT source the right column offers
+  **Every topic under a filter** (**Map by filter**) instead of map by rule. The selected list
+  shows each tag's name plus as many parent levels as it takes to tell same-named tags apart
+  (`temp …/line1`, `temp …/line2`); the full address shows on hover and keyboard focus. A **CSV**
+  button opens the editor straight into **Import mapping rows from CSV**.
 - **Mappings**: every mapping in a sortable table (**State**, **Publishes to**, **Tags**,
   **Published**, **Last publish**), an enable switch, **Edit mapping** and **Delete mapping**
   per row, and an expandable row with the asset path (**Copy**, **Show in UNS**) and the
-  resolved topics. A profile mapping shows `all x N` for its N instances.
+  resolved topics. A profile mapping shows `all x N` for its N instances. The **State** column
+  answers "why is nothing publishing?" in plain language from the server's diagnosis
+  (`health` in `GET /api/tags/bindings`): *Publishing*, *Waiting* (no first value yet),
+  *Not publishing* with the reason (source offline, target broker not connected or removed,
+  every tag switched off, 0 tags matched by the rules, no topic under the filter yet,
+  deadband holding every value back, loop guard, stale topics, last error), *Disabled*, and
+  **Source missing** when the device, profile, OPC UA connection or broker the mapping reads
+  from was deleted, with how to fix it. A **Clear orphaned retained topics** button sits above
+  the table (see [Retain, and what is cleaned up](#retain-and-what-is-cleaned-up)).
+- When the configuration still holds pipeline routes the old Tags page created for MQTT
+  topics, a banner offers to **Review** them: each shows the route, the equivalent mapping (as
+  JSON too) and what changes; **Create mapping** asks for confirmation and then disables
+  (default) or deletes the route. Only routes with exactly the shape that page wrote are
+  offered; a migrated route is not offered again.
 
 ![The Mappings tab with the Boiler house mapping expanded to show its resolved topics](images/mappings.png)
 
 **The editor.** One modal sheet with a tab strip that scrolls to each section (a red dot
 marks a section with a problem): **Mapping, What, Where, Tags, Context, Payload,
 Delivery**. A live **Preview** column is always on the right (from wide screens).
-`Ctrl+S` saves; `Esc` or **Cancel** asks before discarding what you entered. A viewer
-session can open the editor but not save. The Context section is not shown for an
-MQTT-topic source.
+`Ctrl+S` saves (a save asked for while the server is still checking the latest change goes
+ahead as soon as the check answers); `Esc` or **Cancel** asks before discarding what you
+entered. A viewer session can open the editor read-only, with the reason on every disabled
+control, and still use the preview, the suggestions and **Export CSV**. When the same mapping
+is open in another tab of the browser, a banner says so.
+
+**Concurrent edits.** The editor sends the mapping's `rev` back when the server provides one.
+If someone saved the mapping after you opened it, the server answers `409 { code: 'stale',
+current }` and the editor shows **This mapping was changed elsewhere**: what changed there and
+what you changed (field by field, fields changed in both places marked), with **Keep mine
+(overwrite)** (saves your version on top of their revision), **Take theirs** (reloads their
+version) and **Cancel** (back to editing, nothing lost).
 
 | Section | Controls | What it decides |
 |---|---|---|
 | **Mapping** | **Name**; **Target broker**; **Publish as**: *UNS topics* or *Sparkplug B device* | Where the output goes and in which form |
 | **What** | **How tags are chosen**: *Pick tags* or *All tags by rule*. Rules: **Include (key or property)**, **Exclude**, poll-group and type checkboxes, **Property** (*Any tag*, *Only tags with a UNS name (property)*, *Only tags without a property*), with live match counts. For a profile mapping, the **Device profile** | Which tags are mapped. By rule, tags added to the device later are picked up when they match |
 | **Where** | The **asset path**, with a picker that browses the branches already in the UNS or accepts a new path; for a profile an **Asset path template** with insertable `{device}`, `{deviceId}` and parameter chips and an own-path override per instance; for Sparkplug **Group**, **Edge node**, **Device**; **Layout**: *Topic per tag* or *Object per asset* | The topic of every tag |
-| **Tags** | A table: **Publish** switch, **Source tag**, **Published name**, **Name from**, **Unit**, **Description**, and a **Details of &lt;tag&gt;** button. A filter (*All*, *Published*, *Off*). Paste a column from a spreadsheet into names, units or descriptions. Select rows (shift-click for a range) and use **More actions...**: set unit, set description, set deadband, set a context key, find and replace in names, names to camelCase or snake_case, strip a prefix, copy settings from a tag, reset to device values | What each tag is called and how it is described |
+| **Tags** | A table: **Publish** switch, **Source tag** (long paths are shortened from the start), **Published name**, **Name from**, **Unit**, **Description**, and a **Details of &lt;tag&gt;** button. A filter (*All*, *Published*, *Off*). **Import CSV** and **Export CSV** (see below). Paste a column from a spreadsheet into names, units or descriptions. Select rows (shift-click for a range) and use **More actions...**: set unit, set description, set deadband, set a context key, find and replace in names, names to camelCase or snake_case, strip a prefix, copy settings from a tag, reset to device values | What each tag is called and how it is described |
 | **Context** | **Asset context**: key, value and type rows; **Placeholders** (`{device}`, `{deviceId}`, `{protocol}`, `{host}`, profile parameters); a size meter; **Add suggested**; **Resolved by the server** | Site, line, equipment id and the like, for consumers |
-| **Payload** | **Format**: *Envelope* or *Plain value*; **Fields of each payload** (`v` value, `t` timestamp, `q` quality, `u` unit, `name`, `src`, `ctx`); **Context**: *Only in _meta*, *In every payload*, *Nowhere*; **What _meta lists per tag**; switches for `_status` and `_meta` | What a message and the retained documents contain |
-| **Delivery** | **QoS**; **Sampling interval (ms)** (OPC UA); **Retain values** (off by default); **Maximum object size (bytes)**; report by exception (**Deadband** *Absolute* or *Percent*, **Heartbeat (ms)**); **Also write every published sample to a historian** (Timebase or TimescaleDB only) | How often and how reliably |
+| **Payload** | **Format**: *Envelope* or *Plain value*; **Fields of each payload** (`v` value, `t` timestamp, `q` quality, `u` unit, `name`, `src`, `ctx`) as an ordered list: tick to publish, reorder with the arrow buttons, the arrow keys on a row's handle, or drag; the order is what is published; **Context**: *Only in _meta*, *In every payload*, *Nowhere*; **What _meta lists per tag**; switches for `_status` and `_meta` | What a message and the retained documents contain |
+| **Delivery** | **QoS**; **Sampling interval (ms)** (OPC UA); for MQTT topics **Value field** and **Mark stale after (ms)**; **Retain values** (off by default); **Maximum object size (bytes)**; report by exception (**Deadband** *Absolute* or *Percent*, **Heartbeat (ms)**); **Also write every published sample to a historian** (Timebase or TimescaleDB only) | How often and how reliably |
 
 **The per-tag details panel** opens from the sliders button on a row (**Details of
 &lt;tag&gt;**). It has **Previous tag** and **Next tag**, **Reset all to device**, and these groups:
@@ -83,7 +108,21 @@ MQTT-topic source.
 
 Every field shows where its value comes from: **device** (the tag definition on the
 Devices page), **mapping** (your override) or nothing (the default), with a reset
-arrow beside an override. A field you leave empty keeps following the device.
+arrow beside an override. A field you leave empty keeps following the device. The origins
+are the server's answer for that one tag (the preview's `origins`, `metadata` and
+`contextOrigins`); a value you just typed is marked *mapping* at once. For an MQTT topic the
+panel also has **Value field** and **Mark stale after (ms)** for that topic.
+
+**CSV, for every source.** **Import CSV** in the Tags section reads one line per tag, matched
+by address: `address,name,enabled,unit,description,displayName,dataType,scale,offset,precision,deadband`
+(plus `field,staleAfterMs` for MQTT topics; only `address,enabled` for Sparkplug metrics). A
+header is optional (without one the columns are `address,name`, so a Kepware or Ignition
+`nodeId,name` export works as is). Empty cells change nothing; `deadband` takes `0.5` or `2%`.
+In a pick list, addresses not in the mapping are added when the source has them; by rule,
+lines only update listed tags. Before anything applies, the dialog shows how many lines add
+or update and every line it skips with the reason (`line 4: "nope" is not a tag of the
+device`). **Download template** gives the columns for the source; **Export CSV** downloads the
+table as it is.
 
 ![The Context section of the editor: asset context rows, placeholders, size meter and the context as the server resolved it](images/mapping-editor-context.png)
 
@@ -329,6 +368,61 @@ They travel three ways:
   look the same on a `plain` topic. Use a few times your slowest acceptable
   stall. A heartbeat repeat is **not** sent to a direct historian target.
 
+## MQTT topics as a source
+
+Topics already on a broker map like device tags: each entry reads **one value from one
+topic's payload** and gets every mapping feature (asset path, per-tag names and settings,
+context, `_meta`, `_status`, quality, deadband, heartbeat, Sparkplug or historian output,
+preview, selective mapping).
+
+```json
+{ "type": "mqtt", "brokerId": "plant-broker",
+  "tags": [ { "address": "raw/plant1/line1/temp", "name": "line1/temp" },
+            { "address": "raw/plant1/line2/flow", "name": "line2/flow", "field": "data.value", "staleAfterMs": 60000 } ],
+  "field": null, "staleAfterMs": 30000 }
+```
+
+or every topic under a filter, picking up topics that appear later (at most 2000):
+
+```json
+{ "type": "mqtt", "brokerId": "plant-broker", "tags": "all", "filter": "raw/plant1/#",
+  "select": { "include": ["*temp*"], "exclude": ["*spare*"] },
+  "overrides": { "raw/plant1/line1/temp": { "name": "line1/temperature", "unit": "degC" } } }
+```
+
+- **Reading the value.** `field` is a dot path into a JSON payload (`data.value`,
+  `readings.0.v`). Without one the payload itself is the value when it is a scalar. A
+  value/time/quality envelope is recognised automatically, `{ v, t?, q?, u? }` or
+  `{ value, timestamp?, quality?, unit? }` with nothing else in it: value, source time, quality
+  (`192`/`64`/`0`, `"good"`/`"uncertain"`/`"bad"` or `true`/`false`) and unit (announced in
+  `_meta`) come from it. A field that is missing publishes Bad with the reason; any other JSON
+  object without a field is published as a structured value.
+- **Names keep the topic levels.** Picked topics are named by the levels below their common
+  prefix (`line1/temp`, `line2/temp`); by filter, by the levels below the filter's fixed part.
+  A name may contain `/`; each level is cleaned like a name and the topic nests under the
+  asset path (`acme/plant1/line1/temp`). Rules (`include`/`exclude` globs) test the topic and
+  the published name.
+- **Source state.** The broker connection is the source: when it drops, every tag publishes
+  Bad once and `_status` goes offline, as for other sources. MQTT has no per-topic liveness,
+  so `staleAfterMs` (source or per topic, 1000 to 86400000 ms) adds one: a topic silent for that
+  long publishes Bad once with `reason: "stale"`; its next message is Good again.
+- **A new mapping starts with what its topics already hold** (retained and slow topics publish
+  at once instead of waiting for their next message).
+- **Loop safety.** A mapping never consumes what it, or another mapping, publishes. Saving is
+  refused when a target topic could match a source topic or filter on the same broker (the
+  editor shows the server's refusal before you save: `loop: this mapping would read what it
+  publishes ...`). At run time every publish made while handling an MQTT message is recorded
+  with its hop depth and the mapping that made it (10 s, bounded) in the binding engine and in
+  the pipeline engine's hop registry: a mapping ignores its own publications, and a message
+  that went through 4 mapping or pipeline hops is not consumed (counted as `loopBlocked`, shown
+  in the State column). A cross-mapping cycle is also warned about at save (`loop-risk`).
+- **Hot path.** MQTT-source mappings ride the coalesced message tap: one map lookup per message
+  on a broker some mapping reads, indexes compiled per configuration revision, a new topic
+  tested once against the filters and then remembered (bounded).
+- **Routes from the old Tags page.** Topic selections used to compile to pipeline routes; those
+  keep working. The Tags page offers a reviewable migration (`GET /api/tags/bindings/migrations`,
+  `POST /api/tags/bindings/migrate { routeId, mapping, route: "disable" | "delete" }`).
+
 ## Retain, and what is cleaned up
 
 The editor leaves **Retain values** off, on purpose: a retained value
@@ -345,15 +439,24 @@ binding, **rename** it (change the asset path, template or broker), switch
 **retain off**, turn `_status` or `_meta` off, or remove a device from a profile
 binding. The limits, so nothing surprises you:
 
-- The owned set is held in memory and rebuilt at start. **An edit made while the
-  server is down is not cleaned up**: the old retained topics stay on the broker
-  until you remove them by hand (publish an empty retained message to each).
-- A clear aimed at a broker that is disconnected at that moment is dropped, not
-  retried.
-- **Sparkplug-source bindings** with retain on publish topics named by metrics
-  that are only known at run time; those are not cleaned.
-- Only topics published by a binding are cleaned. Anything a pipeline or another
-  client retained under the same path is not.
+- Every owned topic is also **recorded in a small state file** next to the
+  configuration (`binding-retained.json` in the data directory, not in
+  `profiles.json`, so a config export stays clean; written atomically; a corrupt
+  file is moved aside and the record starts empty; at most 20000 topics per broker).
+  At start, once each target broker is connected, Manifold clears every recorded
+  topic no mapping owns any more, so **edits made while the server was down, a
+  crash, or a clear aimed at a disconnected broker are cleaned up** when the broker
+  is back (a topic leaves the record only after the broker acknowledged the clear).
+- Topics named only at run time (a filter-mode MQTT source or a Sparkplug source
+  with retain on) are recorded when they are published and cleared like the rest.
+- **Clear orphaned retained topics** on the Mappings tab first shows what it
+  would clear (a dry run: topic, broker, the mapping that published it and why it
+  is orphaned, with topics on a disconnected broker marked *cleared later*), then
+  clears on request. `GET /api/tags/bindings/cleanup-retained` is the dry run (a
+  viewer may look); `POST` with `{ "dryRun": false }` (admin) clears.
+- Only topics recorded as published by a mapping are cleaned; the broker's contents
+  are never guessed from. Anything a pipeline or another client retained under the
+  same path is not touched.
 
 ## Choosing what to map
 

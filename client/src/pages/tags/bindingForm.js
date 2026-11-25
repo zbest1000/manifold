@@ -25,7 +25,7 @@ export function formFromBinding(b, { brokers = [], srcType = b?.source?.type } =
   const db = b?.rbe?.deadband && Number(b.rbe.deadband.value) > 0 ? b.rbe.deadband : legacy;
   return {
     brokerId: t.brokerId || brokers[0]?.id || '',
-    destKind: isProfile || srcType === 'mqtt' ? 'template' : hasAsset ? 'asset' : b ? 'template' : 'asset',
+    destKind: isProfile ? 'template' : hasAsset ? 'asset' : b ? 'template' : 'asset',
     assetPath: hasAsset ? String(t.assetPath) : '',
     pathTemplate: t.pathTemplate || 'uns/imported/{name}',
     assetPathTemplate: t.assetPathTemplate || '',

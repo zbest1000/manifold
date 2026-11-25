@@ -5,6 +5,7 @@ import { EditorSection, SubHeading, NumberInput } from './parts';
 import { fmtBytes } from '../previewModel';
 import { historianReason } from '../bindingView';
 import { DEADBAND_HELP } from '../bindingForm';
+import FieldOrder from './FieldOrder';
 
 const FORMAT_HELP = {
   envelope: 'Value with its time, quality and unit, so consumers can tell a bad or stale reading from a good one.',
@@ -45,23 +46,9 @@ export function PayloadSection({ state, set, schema, preview, readOnly }) {
   const sizes = preview?.sizes;
   const ctxSample = (preview?.tags || []).find((t) => t.payload && typeof t.payload === 'object' && t.payload.ctx) || (preview?.members || []).find((m) => m.payload?.ctx);
   const ctxBytes = ctxSample ? new TextEncoder().encode(`,"ctx":${JSON.stringify(ctxSample.payload.ctx)}`).length : 0;
-  const toggleField = (k, on) => {
-    const next = options.filter((o) => (o === k ? on : current.includes(o)));
-    set.patch({ fields: next });
-  };
   const toggleMeta = (k, on) => set.patch({ metaFields: metaOptions.filter((o) => (o === k ? on : metaCurrent.includes(o))) });
   const isDefaultFields = !f.fields;
   const noQuality = fieldsApply && !current.includes('q');
-  if (state.srcType === 'mqtt') {
-    return (
-      <EditorSection id="map-payload" title="Payload">
-        <div className="flex flex-wrap items-center gap-3">
-          <SegmentedControl size="sm" label="Payload format" value={f.format} onChange={(v) => set.patch({ format: v })} options={[{ value: 'envelope', label: 'Envelope' }, { value: 'plain', label: 'As received' }]} />
-          <p className="helper">{f.format === 'envelope' ? 'Wraps each message as { v, t, q }.' : 'Re-publishes each message unchanged.'}</p>
-        </div>
-      </EditorSection>
-    );
-  }
   return (
     <EditorSection id="map-payload" title="Payload" description="What each message carries and what the retained documents list.">
       <div className="grid gap-x-8 gap-y-5 lg:grid-cols-2">
@@ -88,23 +75,17 @@ export function PayloadSection({ state, set, schema, preview, readOnly }) {
               {!fieldsApply ? (
                 <p className="helper mt-1">A plain payload is the bare value; switch to the envelope format to choose fields.</p>
               ) : (
-                <div className="mt-1.5 grid grid-cols-1 gap-y-1.5">
-                  {options.map((o) => (
-                    <Checkbox
-                      key={o}
-                      checked={current.includes(o)}
-                      disabled={(fieldsSchema?.required || ['v']).includes(o) || (o === 'ctx' && f.contextMode === 'none')}
-                      onChange={(on) => toggleField(o, on)}
-                      label={
-                        <span>
-                          <span className="font-mono text-xs">{o}</span> <span className="text-muted">{fieldsSchema?.descriptions?.[o] || ''}</span>
-                        </span>
-                      }
-                    />
-                  ))}
-                </div>
+                <FieldOrder
+                  options={options}
+                  current={current}
+                  required={fieldsSchema?.required || ['v']}
+                  disabledKeys={f.contextMode === 'none' ? ['ctx'] : []}
+                  descriptions={fieldsSchema?.descriptions || {}}
+                  onChange={(next) => set.patch({ fields: next })}
+                  readOnly={readOnly}
+                />
               )}
-              {fieldsApply && <p className="helper mt-1.5">Default: {defaults.join(', ')}. Fields are published in this order.</p>}
+              {fieldsApply && <p className="helper mt-1.5">Default: {defaults.join(', ')}. Fields are published in the order listed; reorder with the arrow buttons, the arrow keys on a handle, or drag.</p>}
             </fieldset>
             {noQuality && (
               <Banner variant="warn" title="Quality is not published">
@@ -196,84 +177,100 @@ export function DeliverySection({ state, set, errors, schema, historians, readOn
               description="Off by default: a retained value outlives a dead device, so a new subscriber would read an old value as current. Turn it on for slow-changing values, and keep _status on."
             />
           )}
-          {mqttTarget && f.layout === 'object-per-asset' && state.srcType !== 'mqtt' && (
+          {mqttTarget && f.layout === 'object-per-asset' && (
             <Field label="Maximum object size (bytes)" error={err('maxObjectBytes')} help={lim ? `Default ${lim.default.toLocaleString()}, allowed ${lim.min.toLocaleString()} to ${lim.max.toLocaleString()}. The server refuses a mapping whose worst-case object is larger.` : undefined}>
               <Input inputMode="numeric" value={f.maxObjectBytes} onChange={(e) => set.patch({ maxObjectBytes: e.target.value })} placeholder={lim ? String(lim.default) : '65536'} className="mono" aria-invalid={Boolean(err('maxObjectBytes')) || undefined} />
             </Field>
           )}
         </fieldset>
 
-        {state.srcType !== 'mqtt' && (
-          <fieldset className="min-w-0 space-y-2" disabled={readOnly}>
-            <legend className="text-xs font-medium text-muted">Report by exception</legend>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <Select label="Deadband" value={f.dbType} onChange={(e) => set.patch({ dbType: e.target.value })} options={[{ value: 'absolute', label: 'Absolute' }, { value: 'percent', label: 'Percent' }]} />
-              <Field label={f.dbType === 'percent' ? 'Value (%)' : 'Value (units)'} error={err('deadband')}>
-                <Input inputMode="decimal" value={f.dbValue} onChange={(e) => set.patch({ dbValue: e.target.value })} placeholder="none" className="mono" aria-invalid={Boolean(err('deadband')) || undefined} />
-              </Field>
-              <Field label="Heartbeat (ms)" error={err('heartbeat')} className="col-span-2 sm:col-span-1">
-                <Input inputMode="numeric" value={f.heartbeatMs} onChange={(e) => set.patch({ heartbeatMs: e.target.value })} placeholder="off" className="mono" aria-invalid={Boolean(err('heartbeat')) || undefined} />
-              </Field>
-            </div>
-            <p className="helper">{DEADBAND_HELP[f.dbType]} A tag can set its own band in its details.</p>
-            <p className="helper">The heartbeat republishes an unchanged value at least this often (1000 ms or more), so consumers can tell unchanged from dead.</p>
-          </fieldset>
-        )}
+        {state.srcType === 'mqtt' && <MqttSourceFields form={f} patch={set.patch} err={err} readOnly={readOnly} />}
 
-        {state.srcType !== 'mqtt' && (
-          <fieldset className="min-w-0 space-y-2 lg:col-span-2" disabled={readOnly}>
-            <legend className="text-xs font-medium text-muted">Direct history</legend>
-            {historians.status === 'error' ? (
-              <Banner variant="error" title="Could not load historians" onRetry={historians.retry}>
-                {historians.error}
-              </Banner>
-            ) : historians.status === 'loading' ? (
-              <p className="helper">Loading historians…</p>
-            ) : !eligible.length ? (
-              <p className="helper">
-                Not available: no Timebase or TimescaleDB historian is configured.{' '}
-                <Link to="/pipelines" className="text-accent-text underline">
-                  Configure historians under Pipelines
-                </Link>
-                .
-              </p>
-            ) : (
-              <>
-                <Checkbox
-                  checked={Boolean(f.historianId)}
-                  onChange={(on) => set.patch({ historianId: on ? eligible[0].id : '' })}
-                  label="Also write every published sample to a historian"
-                  description="The broker publish always happens. This adds store-and-forward history that survives a broker outage. Timebase and TimescaleDB only: they store quality."
-                />
-                {f.historianId && (
-                  <div role="radiogroup" aria-label="Historian" className="space-y-1.5 pl-6">
-                    {(historians.data || []).map((h) => {
-                      const reason = historianReason(h);
-                      return (
-                        <Radio
-                          key={h.id}
-                          name="historian"
-                          value={h.id}
-                          checked={f.historianId === h.id}
-                          disabled={Boolean(reason)}
-                          onChange={(v) => set.patch({ historianId: v })}
-                          label={
-                            <span className={clsx(reason && 'text-subtle')}>
-                              {h.name || h.id} <span className="text-xs text-muted">({TYPE_LABEL[h.type] || h.type})</span>
-                            </span>
-                          }
-                          description={reason || undefined}
-                        />
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            )}
-          </fieldset>
-        )}
+        <fieldset className="min-w-0 space-y-2" disabled={readOnly}>
+          <legend className="text-xs font-medium text-muted">Report by exception</legend>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Select label="Deadband" value={f.dbType} onChange={(e) => set.patch({ dbType: e.target.value })} options={[{ value: 'absolute', label: 'Absolute' }, { value: 'percent', label: 'Percent' }]} />
+            <Field label={f.dbType === 'percent' ? 'Value (%)' : 'Value (units)'} error={err('deadband')}>
+              <Input inputMode="decimal" value={f.dbValue} onChange={(e) => set.patch({ dbValue: e.target.value })} placeholder="none" className="mono" aria-invalid={Boolean(err('deadband')) || undefined} />
+            </Field>
+            <Field label="Heartbeat (ms)" error={err('heartbeat')} className="col-span-2 sm:col-span-1">
+              <Input inputMode="numeric" value={f.heartbeatMs} onChange={(e) => set.patch({ heartbeatMs: e.target.value })} placeholder="off" className="mono" aria-invalid={Boolean(err('heartbeat')) || undefined} />
+            </Field>
+          </div>
+          <p className="helper">{DEADBAND_HELP[f.dbType]} A tag can set its own band in its details.</p>
+          <p className="helper">The heartbeat republishes an unchanged value at least this often (1000 ms or more), so consumers can tell unchanged from dead.</p>
+        </fieldset>
+
+        <fieldset className="min-w-0 space-y-2 lg:col-span-2" disabled={readOnly}>
+          <legend className="text-xs font-medium text-muted">Direct history</legend>
+          {historians.status === 'error' ? (
+            <Banner variant="error" title="Could not load historians" onRetry={historians.retry}>
+              {historians.error}
+            </Banner>
+          ) : historians.status === 'loading' ? (
+            <p className="helper">Loading historians…</p>
+          ) : !eligible.length ? (
+            <p className="helper">
+              Not available: no Timebase or TimescaleDB historian is configured.{' '}
+              <Link to="/pipelines" className="text-accent-text underline">
+                Configure historians under Pipelines
+              </Link>
+              .
+            </p>
+          ) : (
+            <>
+              <Checkbox
+                checked={Boolean(f.historianId)}
+                onChange={(on) => set.patch({ historianId: on ? eligible[0].id : '' })}
+                label="Also write every published sample to a historian"
+                description="The broker publish always happens. This adds store-and-forward history that survives a broker outage. Timebase and TimescaleDB only: they store quality."
+              />
+              {f.historianId && (
+                <div role="radiogroup" aria-label="Historian" className="space-y-1.5 pl-6">
+                  {(historians.data || []).map((h) => {
+                    const reason = historianReason(h);
+                    return (
+                      <Radio
+                        key={h.id}
+                        name="historian"
+                        value={h.id}
+                        checked={f.historianId === h.id}
+                        disabled={Boolean(reason)}
+                        onChange={(v) => set.patch({ historianId: v })}
+                        label={
+                          <span className={clsx(reason && 'text-subtle')}>
+                            {h.name || h.id} <span className="text-xs text-muted">({TYPE_LABEL[h.type] || h.type})</span>
+                          </span>
+                        }
+                        description={reason || undefined}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </fieldset>
       </div>
     </EditorSection>
+  );
+}
+
+/** MQTT-topic source: where the value is in each payload, and when a quiet topic counts as stale. */
+function MqttSourceFields({ form, patch, err, readOnly }) {
+  return (
+    <fieldset className="min-w-0 space-y-2" disabled={readOnly}>
+      <legend className="text-xs font-medium text-muted">Reading the topics</legend>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="Value field" error={err('srcField')} help="Dot path into a JSON payload, for example data.value. Empty: the payload itself; {v,t,q,u} and {value,timestamp,quality,unit} envelopes are read automatically.">
+          <Input value={form.srcField} onChange={(e) => patch({ srcField: e.target.value })} placeholder="payload" className="mono" aria-invalid={Boolean(err('srcField')) || undefined} />
+        </Field>
+        <Field label="Mark stale after (ms)" error={err('staleAfterMs')} help="MQTT has no per-topic liveness: a topic silent for this long is published once as Bad (reason stale); its next message is Good again. Empty: never.">
+          <Input inputMode="numeric" value={form.staleAfterMs} onChange={(e) => patch({ staleAfterMs: e.target.value })} placeholder="never" className="mono" aria-invalid={Boolean(err('staleAfterMs')) || undefined} />
+        </Field>
+      </div>
+      <p className="helper">A tag can set its own field and staleness in its details.</p>
+    </fieldset>
   );
 }
 

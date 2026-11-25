@@ -3,22 +3,10 @@ import { ArrowRight, CornerDownRight } from 'lucide-react';
 import clsx from 'clsx';
 import { SegmentedControl, StatusText, Banner, Spinner, Button, Path, Meter, Select } from '@/components/ui';
 import { pretty, fmtBytes } from '../previewModel';
-import { slug } from '../helpers';
+import { nameSlug } from '../mappingModel';
+import TopicChanges from './TopicChanges';
+import { WARNING_LABEL } from '../bindingHealthView';
 
-const WARNING_LABEL = {
-  'raw-address': 'Raw address',
-  collision: 'Collision',
-  'asset-path': 'Asset path',
-  'no-quality': 'No quality',
-  'fields-ignored': 'Fields ignored',
-  'credential-like-context': 'Looks like a credential',
-  'unknown-override': 'Unknown tag',
-  'disabled-missing': 'Missing tag',
-  'device-context': 'Device context',
-  'no-tags': 'Nothing published',
-  'duplicate-name': 'Duplicate name',
-  'sparkplug-context-collision': 'Sparkplug property'
-};
 const MAX_LEAVES = 400;
 
 function Json({ value, label }) {
@@ -85,7 +73,7 @@ function TopicTree({ groups: all, activeKey, onActivate, total }) {
   );
 }
 
-function buildGroups({ state, topics, data, clashTopics, mqttTopics }) {
+function buildGroups({ state, topics, data, clashTopics }) {
   const groups = new Map();
   const put = (topic, leaf) => {
     const i = topic.lastIndexOf('/');
@@ -93,14 +81,10 @@ function buildGroups({ state, topics, data, clashTopics, mqttTopics }) {
     if (!groups.has(parent)) groups.set(parent, { parent, unitName: leaf.unitName, leaves: [] });
     groups.get(parent).leaves.push({ ...leaf, topic, leaf: i > 0 ? topic.slice(i + 1) : topic });
   };
-  if (state.srcType === 'mqtt') {
-    for (const t of mqttTopics) put(t.topic, { key: t.key });
-    return [...groups.values()];
-  }
   if (state.mode === 'sparkplug') {
     const f = state.form;
     const base = `spBv1.0/${f.group || '?'}/DDATA/${f.edge || '?'}/${f.device || '?'}`;
-    for (const r of state.rows.filter((x) => x.enabled)) put(`${base}/${slug(r.name)}`, { key: r.key });
+    for (const r of state.rows.filter((x) => x.enabled)) put(`${base}/${nameSlug(state.srcType, r.name)}`, { key: r.key });
     return [...groups.values()];
   }
   for (const t of topics) {
@@ -126,16 +110,16 @@ function buildGroups({ state, topics, data, clashTopics, mqttTopics }) {
  * an example payload for the active tag (latest value, exact and worst-case bytes), the _meta
  * document, and what an edit changes.
  */
-export default function PreviewPane({ state, topics, mqttTopics, preview, focus, activeRow, onActivate, errors, warnings, diff, editing }) {
+export default function PreviewPane({ state, topics, preview, focus, activeRow, onActivate, errors, warnings, diff, editing }) {
   const [view, setView] = useState('topics');
   const [metaIdx, setMetaIdx] = useState(0);
   const data = preview.data?.valid ? preview.data : null;
   const rejected = preview.data && preview.data.valid === false ? preview.data : null;
   const clash = errors.filter((e) => e.collision);
   const clashTopics = useMemo(() => new Set(clash.map((c) => c.topic)), [clash]);
-  const groups = useMemo(() => buildGroups({ state, topics, data, clashTopics, mqttTopics }), [state, topics, data, clashTopics, mqttTopics]);
+  const groups = useMemo(() => buildGroups({ state, topics, data, clashTopics }), [state, topics, data, clashTopics]);
   const totalLeaves = groups.reduce((n, g) => n + g.leaves.length, 0);
-  const valueTopics = state.srcType === 'mqtt' ? mqttTopics.length : state.mode === 'sparkplug' ? state.rows.filter((r) => r.enabled).length : topics.filter((t) => !t.object).length || topics.length;
+  const valueTopics = state.mode === 'sparkplug' ? state.rows.filter((r) => r.enabled).length : topics.filter((t) => !t.object).length || topics.length;
   const object = state.form.layout === 'object-per-asset' && state.mode === 'mqtt';
   const focusData = focus?.data?.valid ? focus.data : null;
   const focusEntry = focusData ? (object ? focusData.members?.[0] : focusData.tags?.[0]) : null;
@@ -150,7 +134,7 @@ export default function PreviewPane({ state, topics, mqttTopics, preview, focus,
   const views = [
     { value: 'topics', label: 'Topics' },
     { value: 'payload', label: 'Payload' },
-    ...(state.mode === 'mqtt' && state.srcType !== 'mqtt' ? [{ value: 'meta', label: '_meta' }] : []),
+    ...(state.mode === 'mqtt' ? [{ value: 'meta', label: '_meta' }] : []),
     ...(editing ? [{ value: 'changes', label: changes ? `Changes ${changes}` : 'Changes' }] : [])
   ];
   const current = views.some((v) => v.value === view) ? view : 'topics';
@@ -159,9 +143,7 @@ export default function PreviewPane({ state, topics, mqttTopics, preview, focus,
     <div className="flex min-h-0 flex-col">
       <div className="space-y-3 border-b border-line px-4 py-3">
         <div className="flex min-h-6 flex-wrap items-center justify-between gap-2" aria-live="polite">
-          {state.srcType === 'mqtt' ? (
-            <span className="text-sm text-muted">Pipeline route: computed here, checked when it is created.</span>
-          ) : preview.status === 'loading' ? (
+          {preview.status === 'loading' ? (
             <span className="inline-flex items-center gap-2 text-sm text-muted">
               <Spinner size={12} /> Checking with the server…
             </span>
@@ -267,7 +249,7 @@ export default function PreviewPane({ state, topics, mqttTopics, preview, focus,
                 <p className="flex min-w-0 items-baseline gap-2 text-xs text-muted">
                   <span className="shrink-0">{object ? 'Member' : state.mode === 'sparkplug' ? 'Metric' : 'Topic'}</span>
                   <span className="min-w-0 truncate font-mono text-fg" title={entry?.topic}>
-                    {object ? entry?.member || slug(activeRow.name) : entry?.metric || entry?.topic || '…'}
+                    {object ? entry?.member || nameSlug(state.srcType, activeRow.name) : entry?.metric || entry?.topic || '…'}
                   </span>
                 </p>
                 {focus?.status === 'loading' && !entry ? (
@@ -315,60 +297,7 @@ export default function PreviewPane({ state, topics, mqttTopics, preview, focus,
             <p className="text-sm text-muted">{state.form.metaTopic ? 'The _meta document appears once the server has checked the mapping.' : '_meta is switched off under Payload.'}</p>
           ))}
 
-        {current === 'changes' && diff && (
-          <div className="space-y-4 text-sm">
-            {!changes && <p className="text-muted">No topic changes. Saving keeps every topic where it is.</p>}
-            {diff.renamed.length > 0 && (
-              <div>
-                <p className="font-medium text-fg">
-                  {diff.renamed.length} topic{diff.renamed.length === 1 ? '' : 's'} renamed
-                </p>
-                <p className="helper">The old topics&apos; retained messages are cleared when you save.</p>
-                <ul className="mt-1.5 space-y-1">
-                  {diff.renamed.slice(0, 50).map((r) => (
-                    <li key={`${r.unitName || ''}${r.address}`} className="min-w-0 font-mono text-xs">
-                      <span className="block truncate text-subtle line-through" title={r.from}>
-                        {r.from}
-                      </span>
-                      <span className="block truncate text-fg" title={r.to}>
-                        {r.to}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {diff.removed.length > 0 && (
-              <div>
-                <p className="font-medium text-fg">
-                  {diff.removed.length} topic{diff.removed.length === 1 ? '' : 's'} removed
-                </p>
-                <p className="helper">No longer published; retained values are cleared.</p>
-                <ul className="mt-1.5 space-y-0.5">
-                  {diff.removed.slice(0, 50).map((r) => (
-                    <li key={r.topic} className="truncate font-mono text-xs text-subtle" title={r.topic}>
-                      {r.topic}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {diff.added.length > 0 && (
-              <div>
-                <p className="font-medium text-fg">
-                  {diff.added.length} topic{diff.added.length === 1 ? '' : 's'} added
-                </p>
-                <ul className="mt-1.5 space-y-0.5">
-                  {diff.added.slice(0, 50).map((r) => (
-                    <li key={r.topic} className="truncate font-mono text-xs text-fg" title={r.topic}>
-                      {r.topic}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
+        {current === 'changes' && diff && <TopicChanges diff={diff} />}
       </div>
     </div>
   );

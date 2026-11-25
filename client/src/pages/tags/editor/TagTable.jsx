@@ -15,7 +15,7 @@ export function nameBasis(row) {
   if (row.fromSuggestion) return { label: 'cleaned key', tone: 'muted', hint: `Suggested from the tag key ${row.address} (prefix stripped, camelCase).` };
   if (rawName(row.name) || (row.suggestion?.rawAddress && !row.explicit)) return { label: 'raw address', tone: 'warn', hint: 'Looks like a raw device address. Give the tag a meaningful name so the namespace does not depend on PLC addressing.' };
   if (row.def.property && !row.explicit) return { label: 'property', tone: 'muted', hint: 'The tag property set on the device.' };
-  if (row.alwaysName) return { label: 'browse name', tone: 'muted', hint: 'The OPC UA browse name.' };
+  if (row.alwaysName) return row.address.includes('/') && !row.address.startsWith('ns=') ? { label: 'topic', tone: 'muted', hint: 'From the topic levels.' } : { label: 'browse name', tone: 'muted', hint: 'The OPC UA browse name.' };
   return { label: 'tag key', tone: 'muted', hint: 'The device has no property for this tag, so its key is used.' };
 }
 
@@ -206,8 +206,9 @@ export default function TagTable({ rows, verdicts, selected, onSelect, activeKey
                 </td>
                 <td className="max-w-[13rem] px-2">
                   <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="min-w-0 truncate font-mono text-xs text-fg" title={row.def.address ? `${row.address} (${row.def.address})` : row.address}>
-                      {row.address}
+                    {/* Shortened from the start so the distinguishing end of a long path stays visible. */}
+                    <span dir="rtl" className="min-w-0 truncate text-left font-mono text-xs text-fg" title={row.def.address ? `${row.address} (${row.def.address})` : row.address}>
+                      <bdi>{row.address}</bdi>
                     </span>
                     {row.def.type && <span className="shrink-0 font-mono text-2xs text-subtle">{row.def.type}</span>}
                   </span>

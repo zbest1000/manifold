@@ -2,47 +2,10 @@ import { test, expect } from './fixtures.js';
 import { api, unique, startModbus, createModbusDevice, deviceByName, subscribe, cleanup } from './support.js';
 
 /**
- * Tags: choosing an MQTT-topic source says plainly that it makes a pipeline route (not a binding) and
- * links to Pipelines; a mapping links to its place on the UNS page with a stable query string; the
- * editor asks before throwing work away; per-tag settings reach the broker and _meta.
+ * Tags: a mapping links to its place on the UNS page with a stable query string; the editor asks
+ * before throwing work away; per-tag settings reach the broker and _meta. (MQTT-topic mappings:
+ * tags-mqtt.spec.js.)
  */
-test('MQTT-topic tags: the choice says "pipeline route, not a binding", and creating one links to Pipelines', async ({ page }) => {
-  const base = `e2e-uns/${unique('mqtt')}`;
-  let routeId;
-  try {
-    await page.goto('/tags');
-    await page.getByLabel('Source').selectOption({ label: 'E2E broker · topics' });
-    const note = page.getByRole('status').filter({ hasText: 'MQTT topics are mapped with a pipeline route, not a binding' });
-    await expect(note).toBeVisible();
-    await expect(note.getByRole('link', { name: 'Pipelines, Routes' })).toHaveAttribute('href', '/pipelines');
-    // the action is named for what it does
-    await expect(page.getByRole('button', { name: /Create pipeline route/ })).toBeDisabled();
-    await expect(page.getByRole('button', { name: /Add to UNS/ })).toHaveCount(0);
-
-    await page.getByRole('treeitem', { name: /^plant/ }).getByRole('button', { name: /Select all/ }).click();
-    await page.getByRole('button', { name: /Create pipeline route \(\d+\)/ }).click();
-    const editor = page.getByRole('dialog');
-    await expect(editor.getByRole('heading', { name: /Create a pipeline route for \d+ topics/ })).toBeVisible();
-    const banner = editor.getByRole('status').filter({ hasText: 'This creates a pipeline route, not a mapping' });
-    await expect(banner).toBeVisible();
-    await expect(banner.getByRole('link', { name: 'Pipelines, Routes' })).toBeVisible();
-    await editor.getByLabel('Base path').fill(base);
-    // the preview shows where the topics go, before anything is created
-    await expect(editor.getByRole('complementary', { name: 'Preview' })).toContainText(`${base}/`);
-    await editor.getByRole('button', { name: 'Create pipeline route' }).click();
-
-    const toast = page.getByRole('status').filter({ hasText: 'Created a pipeline route' });
-    await expect(toast).toBeVisible();
-    await toast.getByRole('link', { name: 'Open Pipelines, Routes' }).click();
-    await expect(page).toHaveURL(/\/pipelines/);
-    await expect(page.getByRole('row').filter({ hasText: base })).toBeVisible();
-    routeId = (await api.get('/api/pipelines')).json.routes.find((r) => JSON.stringify(r.transforms).includes(base))?.id;
-    expect(routeId).toBeTruthy();
-  } finally {
-    if (routeId) await api.del(`/api/pipelines/${routeId}`);
-  }
-});
-
 test('a mapping links to its place on the UNS page (?broker=&path=)', async ({ page }) => {
   const deviceName = unique('E2E uns link ');
   const bindingName = unique('E2E uns binding ');
@@ -75,13 +38,13 @@ test('Esc in the mapping editor asks before discarding what was entered', async 
   await page.goto('/tags');
   await page.getByLabel('Source').selectOption({ label: 'E2E broker · topics' });
   await page.getByRole('treeitem', { name: /^plant/ }).getByRole('button', { name: /Select all/ }).click();
-  await page.getByRole('button', { name: /Create pipeline route \(\d+\)/ }).click();
-  const editor = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: /Create a pipeline route/ }) });
+  await page.getByRole('button', { name: /Add to UNS \(\d+\)/ }).click();
+  const editor = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: /Add \d+ topics to the UNS/ }) });
   // untouched: closes at once
   await page.keyboard.press('Escape');
   await expect(editor).toBeHidden();
 
-  await page.getByRole('button', { name: /Create pipeline route \(\d+\)/ }).click();
+  await page.getByRole('button', { name: /Add to UNS \(\d+\)/ }).click();
   await editor.getByLabel('Name', { exact: true }).fill('half done');
   await page.keyboard.press('Escape');
   const confirm = page.getByRole('dialog', { name: 'Discard changes?' });

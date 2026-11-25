@@ -205,7 +205,7 @@ const contracts = new SchemaContracts({ mqttManager, profiles, io });
 const models = new ModelEngine({ mqttManager, profiles });
 const audit = new AuditLog();
 const sparkplugPublisher = new SparkplugPublisher({ profiles });
-const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher, outbox });
+const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplugPublisher, outbox, pipelines });
 // Southbound device drivers run in supervised child processes; the manager is
 // the tag source the binding engine sees.
 const devices = new DeviceManager({ profiles, io });

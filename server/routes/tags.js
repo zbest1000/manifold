@@ -3,6 +3,16 @@ const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
 const bindingModel = require('../services/bindingModel');
 const { expectedRev, handleRevisionError } = require('../services/revision');
+const { healthOf } = require('../services/bindingHealth');
+const { migrationCandidates } = require('../services/bindingMigration');
+
+// The binding engine shares the pipeline engine's hop registry (loop guard across mappings and
+// pipelines). server/index.js may pass it at construction; wiring it here as well costs nothing.
+router.use((req, _res, next) => {
+  const s = req.app.locals.services;
+  if (s?.bindings && s.pipelines && s.bindings.pipelines !== s.pipelines) s.bindings.setPipelines?.(s.pipelines);
+  next();
+});
 
 // Tag browser + bindings: browse device tags across our drivers (OPC UA
 // address space, Sparkplug device registry, MQTT topic trie) with one unified
@@ -145,11 +155,14 @@ router.get('/browse', async (req, res) => {
 // ---- bindings -----------------------------------------------------------------
 
 // GET /api/bindings
+// `health` answers "why is nothing publishing?" per mapping in plain language (services/bindingHealth.js).
 router.get('/bindings', (req, res) => {
-  const { profiles, bindings, sparkplugPublisher } = req.app.locals.services;
+  const { profiles, bindings, sparkplugPublisher, mqttManager, opcuaManager } = req.app.locals.services;
+  const status = bindings.getStatus();
   res.json({
     bindings: profiles.listIn('bindings'),
-    status: bindings.getStatus(),
+    status,
+    health: healthOf({ profiles, status, mqttManager, opcuaManager }),
     sparkplug: sparkplugPublisher.getStatus()
   });
 });
@@ -200,6 +213,11 @@ router.post('/bindings/preview', (req, res) => {
     return res.status(500).json({ error: error.message });
   }
   const latest = (unit, address, name) => {
+    if (unit.sourceType === 'mqtt') {
+      unit.byAddress ||= new Map(unit.tags.map((t) => [t.address, t]));
+      const tag = unit.byAddress.get(address);
+      return (tag && bindings.latestMqtt?.(unit, tag)) || null;
+    }
     if (unit.sourceType === 'device' && devices?.getValues) {
       const v = devices.getValues(unit.sourceId)[address];
       if (v) return { v: v.v, q: v.q, t: v.tRead, type: v.type };
@@ -251,6 +269,71 @@ router.post('/sparkplug/state', async (req, res) => {
   } catch (error) {
     res.status(502).json({ error: error.message });
   }
+});
+
+// POST /api/tags/bindings/cleanup-retained { dryRun = true } (admin) - retained topics recorded as
+// published by a mapping that no mapping owns any more (deleted, renamed, retain off, edited while
+// the server was down). Only topics in the ledger are listed or cleared, never guessed from the
+// broker. dryRun lists; dryRun: false clears those on connected brokers.
+// GET is the same dry run (viewers may look; only POST with dryRun: false changes anything).
+router.get('/bindings/cleanup-retained', async (req, res) => {
+  try {
+    res.json(await req.app.locals.services.bindings.cleanupRetained({ dryRun: true }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/bindings/cleanup-retained', async (req, res) => {
+  const { bindings } = req.app.locals.services;
+  try {
+    res.json(await bindings.cleanupRetained({ dryRun: req.body?.dryRun !== false }));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/tags/bindings/migrations - pipeline routes the old Tags flow created for MQTT topics,
+// each with the equivalent mapping and what changes. Nothing is changed.
+router.get('/bindings/migrations', (req, res) => {
+  const { profiles } = req.app.locals.services;
+  const candidates = migrationCandidates(profiles.listIn('pipelines')).map((c) => {
+    let blocked = null;
+    try {
+      bindingModel.validateBinding(c.mapping, { profiles });
+    } catch (error) {
+      blocked = error.message;
+    }
+    return { ...c, blocked };
+  });
+  res.json({ candidates });
+});
+
+// POST /api/tags/bindings/migrate { routeId, mapping, route: 'disable' | 'delete' } (admin) -
+// create the reviewed mapping and disable (default) or delete the route it replaces. The route is
+// only touched once the mapping validated; a route that is not a recognised candidate is refused.
+router.post('/bindings/migrate', async (req, res) => {
+  const { profiles, bindings } = req.app.locals.services;
+  const { routeId, mapping, route: routeAction = 'disable' } = req.body || {};
+  if (!['disable', 'delete'].includes(routeAction)) return res.status(400).json({ error: 'route must be "disable" or "delete"' });
+  const candidate = migrationCandidates(profiles.listIn('pipelines')).find((c) => c.route.id === routeId);
+  if (!candidate) return res.status(404).json({ error: 'No migratable route with that id (only routes created by the Tags page qualify)' });
+  const id = uuidv4();
+  let body;
+  try {
+    body = bindingModel.validateBinding({ ...(mapping || candidate.mapping), id }, { profiles });
+  } catch (error) {
+    if (error instanceof bindingModel.BindingValidationError) return res.status(400).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
+  }
+  // Disable/delete the route first so the two never publish the same topics at once. A disabled
+  // route records the mapping that replaced it, which also stops it being offered again.
+  if (routeAction === 'delete') profiles.removeIn('pipelines', routeId);
+  else profiles.upsertIn('pipelines', routeId, { ...candidate.route, enabled: false, migratedTo: id });
+  const saved = profiles.upsertIn('bindings', id, body);
+  bindings.reconcile();
+  await bindings.syncMonitors();
+  res.status(201).json({ binding: { ...saved, warnings: bindingModel.bindingWarnings({ ...body, id }, profiles) }, route: routeAction === 'delete' ? null : profiles.getIn('pipelines', routeId) });
 });
 
 // DELETE /api/bindings/:id

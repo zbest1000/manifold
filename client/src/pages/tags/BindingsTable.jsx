@@ -7,8 +7,9 @@ import BindingDetail from './BindingDetail';
 import { READ_ONLY_REASON } from '@/store/selectors';
 import { MiniSwitch } from './editor/parts';
 import { layoutLabel, instanceCount } from './bindingView';
+import { HEALTH_LABEL, HEALTH_TONE, HEALTH_RANK, healthFallback } from './bindingHealthView';
 
-const SOURCE_TYPE = { device: 'Device', 'device-profile': 'Profile', opcua: 'OPC UA', sparkplug: 'Sparkplug' };
+const SOURCE_TYPE = { device: 'Device', 'device-profile': 'Profile', opcua: 'OPC UA', sparkplug: 'Sparkplug', mqtt: 'MQTT' };
 
 export function sourceLabel(b, sources, profiles = []) {
   const s = b.source || {};
@@ -16,9 +17,9 @@ export function sourceLabel(b, sources, profiles = []) {
     const p = profiles.find((x) => x.id === s.profileId);
     return { type: 'profile', label: p ? p.name : s.profileId || '?', connected: Boolean(p) };
   }
-  const id = s.type === 'opcua' ? s.connectionId : s.type === 'sparkplug' ? s.brokerId : s.deviceId ?? s.connectionId;
+  const id = s.type === 'opcua' ? s.connectionId : s.type === 'sparkplug' || s.type === 'mqtt' ? s.brokerId : s.deviceId ?? s.connectionId;
   const found = sources.find((x) => x.type === s.type && x.id === id);
-  const scope = s.type === 'sparkplug' ? ` ${s.group}/${s.edge}${s.device ? `/${s.device}` : ''}` : '';
+  const scope = s.type === 'sparkplug' ? ` ${s.group}/${s.edge}${s.device ? `/${s.device}` : ''}` : s.type === 'mqtt' && s.tags === 'all' ? ` ${s.filter}` : '';
   return { type: s.type, label: `${found?.label || id || '?'}${scope}`, connected: Boolean(found) };
 }
 
@@ -43,7 +44,7 @@ function tagCount(b, profiles) {
 
 const SORT = {
   name: (b) => (b.name || b.id).toLowerCase(),
-  state: (b, ctx) => (b.enabled === false ? 3 : ctx.status[b.id]?.lastError ? 0 : ctx.status[b.id]?.sourceState?.state === 'online' ? 2 : 1),
+  state: (b, ctx) => HEALTH_RANK[healthFallback(b, ctx.status, ctx.health).state] ?? 2,
   published: (b, ctx) => ctx.status[b.id]?.published || 0,
   last: (b, ctx) => ctx.status[b.id]?.lastTs || 0
 };
@@ -52,7 +53,7 @@ const SORT = {
  * Mappings as a sortable table: state with its reason, target, tag count, activity, last publish,
  * last error and row actions. A row expands to its full detail (resolved topics, Show in UNS).
  */
-export default function BindingsTable({ bindings, status, sources, profiles = [], historians = [], editingId, highlightId, onEdit, onToggleEnabled, onDelete, busyId, readOnly = false }) {
+export default function BindingsTable({ bindings, status, health = {}, sources, profiles = [], historians = [], editingId, highlightId, onEdit, onToggleEnabled, onDelete, busyId, readOnly = false }) {
   const [open, setOpen] = useState(() => new Set());
   const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
   const [confirm, confirmDialog] = useConfirm();
@@ -63,7 +64,7 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
       else n.add(id);
       return n;
     });
-  const ctx = { status };
+  const ctx = { status, health };
   const rows = sortRows(bindings, sort, Object.fromEntries(Object.entries(SORT).map(([k, f]) => [k, (b) => f(b, ctx)])));
 
   const remove = async (b) => {
@@ -103,8 +104,8 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
               const isOpen = open.has(b.id);
               const enabled = b.enabled !== false;
               const label = b.name || b.id.slice(0, 8);
-              const online = s.sourceState?.state === 'online';
-              const errors = s.errors || 0;
+              const h = healthFallback(b, status, health);
+              const missing = h.state === 'source-missing';
               return (
                 <Fragment key={b.id}>
                   <Tr highlight={editingId === b.id || highlightId === b.id} className={clsx(!enabled && 'text-muted')}>
@@ -121,31 +122,11 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
                       </button>
                       <span className="block truncate pl-5 text-xs text-muted" title={src.label}>
                         {SOURCE_TYPE[b.source?.type] || b.source?.type} · {src.label}
-                        {!src.connected && ' (not connected)'}
+                        {!src.connected && (missing ? ' (missing)' : ' (not connected)')}
                       </span>
                     </Td>
-                    <Td className="max-w-[16rem]">
-                      {!enabled ? (
-                        <StatusText tone="neutral">Disabled</StatusText>
-                      ) : s.sourceState ? (
-                        <StatusText tone={online ? 'good' : s.sourceState.reason ? 'bad' : 'neutral'}>{online ? 'Publishing' : 'Source offline'}</StatusText>
-                      ) : (
-                        <StatusText tone="neutral">Waiting</StatusText>
-                      )}
-                      {enabled && s.lastError ? (
-                        <button type="button" onClick={() => toggleOpen(b.id)} className="block max-w-full truncate text-left text-xs text-bad hover:underline" title={s.lastError}>
-                          {errors > 1 && <span className="font-mono">{errors.toLocaleString()} × </span>}
-                          {s.lastError}
-                        </button>
-                      ) : (
-                        enabled &&
-                        !online &&
-                        s.sourceState?.reason && (
-                          <span className="mono block truncate text-xs text-subtle" title={s.sourceState.reason}>
-                            {s.sourceState.reason}
-                          </span>
-                        )
-                      )}
+                    <Td className="max-w-[18rem]">
+                      <HealthCell h={h} errors={s.errors || 0} onOpen={() => toggleOpen(b.id)} />
                     </Td>
                     <Td className="max-w-[18rem]">
                       <Path value={targetLabel(b)} />
@@ -193,6 +174,26 @@ export default function BindingsTable({ bindings, status, sources, profiles = []
         </Table>
       </TableSort>
       {confirmDialog}
+    </>
+  );
+}
+
+/** State with the server's reasons in plain language: the first reason (and how to fix it) inline, the rest on hover. */
+function HealthCell({ h, errors, onOpen }) {
+  const [first, ...rest] = h.reasons.filter((r) => r.code !== 'disabled');
+  return (
+    <>
+      <StatusText tone={HEALTH_TONE[h.state] || 'neutral'}>{HEALTH_LABEL[h.state] || h.state}</StatusText>
+      {first && (
+        <button type="button" onClick={onOpen} className={clsx('block max-w-full text-left text-xs hover:underline', h.state === 'problem' || h.state === 'source-missing' ? 'text-bad' : 'text-muted')} title={[first, ...rest].map((r) => `${r.message}${r.fix ? ` ${r.fix}` : ''}`).join('\n')}>
+          <span className="line-clamp-2">
+            {first.code === 'error' && errors > 1 && <span className="font-mono">{errors.toLocaleString()} × </span>}
+            {first.message}
+          </span>
+          {first.fix && <span className="block text-subtle">{first.fix}</span>}
+          {rest.length > 0 && <span className="block text-subtle">+{rest.length} more</span>}
+        </button>
+      )}
     </>
   );
 }

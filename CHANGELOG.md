@@ -247,6 +247,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selection result per tag, per-tag warnings, payload sizes. Bindings that use
   none of the new options publish byte-for-byte what they did before.
 
+- **MQTT topics as a mapping source** (`source.type: 'mqtt'`): picked topics or every topic under a filter
+  (include / exclude rules, topics that appear later picked up, at most 2000), one value per topic from a field path
+  or a `{v,t,q,u}` / `{value,timestamp,quality,unit}` envelope read automatically, names that keep the topic levels,
+  the broker connection as source state, per-topic staleness (`staleAfterMs`: Bad with reason `stale` once), the
+  newest stored message published when a mapping starts, and every mapping feature (asset path, per-tag settings,
+  context, `_meta`, `_status`, quality, deadband, Sparkplug or historian output, preview, suggest, schema). **Loop
+  safety**: a target that could match the source on the same broker is refused at save (shown in the editor),
+  `loop-risk` warns about cycles across mappings, and at run time a mapping ignores its own publications and a
+  hop guard shared with the pipeline engine stops mapping and pipeline cycles.
+- **Migration of old topic routes**: routes the old Tags page created for MQTT topics are listed with the equivalent
+  mapping and what changes (`GET /api/tags/bindings/migrations`) and replaced after review
+  (`POST /api/tags/bindings/migrate { routeId, mapping, route: 'disable' | 'delete' }`).
+- **Retained cleanup that survives restarts**: the retained topics each mapping owns are recorded in
+  `<data dir>/binding-retained.json` (atomic, corruption tolerant, bounded, not in the config export); orphans are
+  cleared once their broker is connected, also after a crash or an edit made while the server was down.
+  `GET` (dry run) / `POST { dryRun: false }` `/api/tags/bindings/cleanup-retained` and **Clear orphaned retained
+  topics** on the Mappings tab, which shows what it would clear first.
+- **Why is nothing publishing?** `GET /api/tags/bindings` returns `health` per mapping (state and plain-language
+  reasons with fixes); the Mappings table shows it, including **Source missing** when the device, profile, OPC UA
+  connection or broker is gone.
+- **Mapping editor**: payload field order (arrow buttons, keyboard on the handle, drag; reflected in the preview and
+  saved); CSV import of mapping rows for every source (template download, per-line errors) and CSV export; the
+  stale-edit dialog (keep mine, take theirs, cancel) and a warning when the mapping is open in another tab;
+  disambiguating paths for same-named tags in the selection and the table; tag details take where a value comes
+  from from the server's preview; a save asked for during the server check goes ahead when it answers.
+
 ### Changed
 
 - **Device live values** reach the browser as **one `device-values` Socket.IO event per 250 ms flush** carrying every
@@ -341,6 +367,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or DDEATH/NDEATH on the old connection and reconnect with the new settings on their own; a removed profile ends them
   cleanly.
 
+- Mappings: a Sparkplug-source mapping ignored DEATH certificates (the tags kept their last good value, no
+  `_status`), and per-metric quality from the `Quality` property was taken only when it was exactly 0 or 64; the
+  editor computed where a tag setting comes from on the client (capped preview); MQTT-topic selections bypassed the
+  mapping engine entirely.
 - Canvas defects: canvases sized in px stopped their flex container from shrinking; the UNS ran at 60 frames per
   second forever; the Topics graph re-heated its layout on every click; WebGL had no context-loss handling and drew a
   2,000-child branch as a giant disc; the 3D camera sat inside the layout; charts drew outages as straight lines and
@@ -449,10 +479,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The device egress check is check-only**: a hostname is re-resolved when the
   driver connects, so a small DNS-rebinding window remains (literal IPs have
   none).
-- **MQTT-topic selections on the Tags page compile to pipeline routes**, not mappings:
-  no asset path, `_status`, `_meta` or direct historian target for that path.
-- **Concurrent edits are last-write-wins.** Two tabs editing the same item overwrite each other.
-- **Field order inside a payload cannot be changed in the editor** (the API honours the order of `target.fields`).
+- **Concurrent edits** of a mapping are detected only once the profile store hands out revisions (`rev`);
+  the editor already sends it back and handles `409 stale`. Other items are still last-write-wins.
+- The loop guard shares the pipeline engine's hop registry once `server/index.js` passes `pipelines` to
+  `TagBindings` (today the tags routes wire it on the first request to `/api/tags`).
 - A Sparkplug **host-application STATE** session picks up an edited broker profile
   only when it is started again.
 - WebGL and 3D were only run on a software renderer; accessibility is checked
