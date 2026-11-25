@@ -30,7 +30,7 @@ async function api(path, options = {}) {
       }
     });
   } catch (error) {
-    throw new Error(`Cannot reach Manifold backend at ${API_URL}: ${error.message}`);
+    throw new Error(`Cannot reach Manifold backend at ${API_URL}: ${error.message}`, { cause: error });
   }
   const text = await res.text();
   let body;
@@ -77,7 +77,7 @@ server.tool(
   {
     range: z.string().optional().describe('CIDR range to scan, e.g. "192.168.1.0/24". Defaults to the local subnet.'),
     mqttPorts: z.array(z.number()).optional().describe('MQTT ports to probe (default [1883, 8883]).'),
-    opcuaPorts: z.array(z.number()).optional().describe('OPC UA ports to probe (default [4840]).')
+    opcuaPorts: z.array(z.number()).optional().describe('OPC UA ports to probe (default [4840, 50000]).')
   },
   async (args) => {
     try {
@@ -575,6 +575,8 @@ server.tool(
       .describe('Where the merged object is published.'),
     publishMode: z.enum(['on-change', 'interval']).optional().describe('Default on-change.'),
     intervalMs: z.number().optional().describe('Publish interval for interval mode (default 5000).'),
+    envelope: z.boolean().optional().describe('Publish each attribute as a {v,t,q} value/time/quality envelope (default false).'),
+    staleMs: z.number().optional().describe('With envelope: age after which an attribute is published with quality 64, uncertain (default 60000).'),
     attributes: z.array(
       z.object({
         name: z.string(),

@@ -20,7 +20,7 @@ connection with its state, problems first) and **Latest values**:
 
 ![The Health page](images/health.png)
 
-For deeper self-observability, **Health** (the page header says "System") renders Manifold's own
+For deeper self-observability, **Health** renders Manifold's own
 Prometheus `/metrics` in the browser: process uptime, memory, and event-loop
 delay; per-broker message rate and topic counts; and every engine counter
 (pipelines, outbox, contracts, alerts, bindings, recorder) — each with a rolling
@@ -195,6 +195,8 @@ With auth enabled `/metrics` returns 401 without a token; set
 | Metric | Meaning |
 |---|---|
 | `manifold_process_uptime_seconds`, `manifold_process_memory_bytes`, `manifold_event_loop_delay_ms` | process health (event-loop delay as percentiles) |
+| `manifold_process_cpu_seconds_total` (`mode` user/system) | process CPU time; `rate()` gives utilisation, 1.0 = one core |
+| `manifold_host_load_average` (`period` 1m/5m/15m), `manifold_host_cpus`, `manifold_host_memory_bytes` (`kind` total/free) | the host or container the server runs on |
 | `manifold_broker_messages_received_total`, `manifold_broker_topics` | per-broker ingest |
 | `manifold_pipeline_messages_total` | per-route pipeline counters, `result` = `matched`, `delivered`, `error`, `loop_blocked` |
 | `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; spill size |

@@ -51,7 +51,7 @@ when you map the tag; see [Mapping to the UNS](Mapping-to-the-UNS).
 
 ## The Devices page
 
-![The Devices table: five of six devices online, one connecting, with poll-cycle meters and the experimental badges](images/devices.png)
+![The Devices table: seven of eight devices online, one connecting, with poll-cycle meters and the experimental badges](images/devices.png)
 
 **Devices** (`/devices`) has two tabs, **Devices** and **Profiles**. The header offers a refresh
 button, **From profile** (create a device from a profile, see below) and the primary **Add device**.
@@ -63,7 +63,7 @@ path), **State**, **Protocol** (with an *Experimental* badge for S7 and EtherNet
 time against the interval, for example `1 ms / 1.0 s`), **Quarantined**, **Last error** (with how
 long ago), a **Polling enabled** switch and row actions (edit, map to the UNS, delete). Filter by
 name, host or state, by protocol, and with the chips **All**, **Online**, **Problems**, **Disabled**.
-The subtitle states the position ("5 of 6 online - 1 with problems").
+The subtitle states the position ("7 of 8 online · 1 with problems").
 
 **The detail drawer.** Click a device name to open a drawer with the state and the time it
 began, and three tabs:
@@ -300,7 +300,7 @@ references the profile (`profileId`) and supplies the parameter values
 - A device that belongs to a profile shows the profile's tags as read-only
   ("from the profile") next to its own tags.
 
-![The Profiles tab: one profile with its two instances](images/device-profiles.png)
+![The Profiles tab: the Checkweigher profile with its two instances](images/device-profiles.png)
 
 On the **Profiles** tab (a table with the profile, protocol, tags, parameters and the devices that
 use it, each device a link): **New profile**, **Create from device** (copies a device's own tags,
@@ -334,7 +334,7 @@ Map the whole set to the UNS with one profile binding; see
 
 ## Finding devices on the network (Discovery)
 
-![The Discovery page with its scan options, including the opt-in PLC and meter protocols](images/discovery.png)
+![The Discovery page after a scan: the PLCs, the OPC UA server (Verified, with its application name and security) and the broker identified, those Manifold already has marked Already added, and one new Modbus meter to add](images/discovery.png)
 
 The **Discovery** page runs a CIDR scan that finds **MQTT brokers**, **OPC UA servers** and **i3X servers** and,
 opt-in, **Modbus TCP**, **Siemens S7** and **EtherNet/IP** devices, and lets you add what it found.
@@ -346,7 +346,7 @@ opt-in, **Modbus TCP**, **Siemens S7** and **EtherNet/IP** devices, and lets you
 2. **What to look for.** MQTT, OPC UA and i3X are ticked; Modbus TCP, S7 and EtherNet/IP are **off** until you tick
    them. The first time you tick one, a banner explains what device probing does to an OT network and the scan stays
    disabled until you tick *I understand, and I am allowed to probe this network* (remembered in that browser).
-3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840, i3X 80, 443 and 8080,
+3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840 and 50000, i3X 80, 443 and 8080,
    Modbus 502, S7 102, EtherNet/IP 44818), MQTT over WebSocket ports (none by default), and the pacing below.
 4. Before you start, the page shows what the server's own planner says: hosts, ports, probes, and how long it can take
    (*usually* about N s; *at most* about M if nothing answers, plus up to a few seconds for each open port that never

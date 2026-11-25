@@ -129,7 +129,7 @@ table as it is.
 
 The editor in the light theme:
 
-![The mapping editor in the light theme](images/mapping-editor-light.png)
+![The mapping editor in the light theme on an OPC UA mapping: the unit, description and range of the tag come from the server and are marked "from server"](images/mapping-editor-light.png)
 
 **The preview** (right column) is the server's answer, not a guess: a status line
 (**Checked by the server**), counts (**Value topics**, **Largest payload**, **Full

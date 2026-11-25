@@ -153,7 +153,7 @@ class HistorianOutbox {
     if (st) return st;
     st = { segs: [], offset: 0, lastSeq: 0, chain: Promise.resolve(), avgLine: 200, dlBytes: 0, dlChain: Promise.resolve(), spillPoints: 0 };
     this.disk.set(key, st);
-    let names = [];
+    let names;
     try {
       names = fs.readdirSync(this.dir);
     } catch {

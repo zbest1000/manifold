@@ -128,7 +128,7 @@ function formatSubject(subject) {
 }
 
 function readCertificateFolder(folder) {
-  let files = [];
+  let files;
   try {
     files = fs.readdirSync(folder);
   } catch {
@@ -878,7 +878,7 @@ class OpcuaManager extends EventEmitter {
   async trustCertificate(thumbprint) {
     const certificateManager = await getCertificateManager();
     const wanted = String(thumbprint).toLowerCase();
-    let files = [];
+    let files;
     try {
       files = fs.readdirSync(certificateManager.rejectedFolder);
     } catch {
@@ -1135,7 +1135,7 @@ class OpcuaManager extends EventEmitter {
       }
     }
     if (byName.has('EURange')) {
-      const r = dvs[i++]?.value?.value;
+      const r = dvs[i]?.value?.value;
       if (r && Number.isFinite(r.low) && Number.isFinite(r.high)) meta.range = { low: r.low, high: r.high };
     }
     entry.metaCache.set(nodeId, meta);

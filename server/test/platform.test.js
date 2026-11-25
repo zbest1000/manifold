@@ -58,6 +58,11 @@ test('metrics exporter renders valid Prometheus text with engine counters', () =
   });
   assert.match(text, /manifold_process_uptime_seconds \d/);
   assert.match(text, /manifold_event_loop_delay_ms\{quantile="0.99"\}/);
+  assert.match(text, /# TYPE manifold_process_cpu_seconds_total counter/);
+  assert.match(text, /manifold_process_cpu_seconds_total\{mode="user"\} \d/);
+  assert.match(text, /manifold_host_load_average\{period="1m"\} \d/);
+  assert.match(text, /manifold_host_cpus [1-9]/);
+  assert.match(text, /manifold_host_memory_bytes\{kind="total"\} [1-9]/);
   assert.match(text, /manifold_pipeline_messages_total\{route="norm",result="delivered"\} 4/);
   assert.match(text, /manifold_outbox_points_total\{historian="h1",result="spilled"\} 3/);
   assert.match(text, /manifold_contract_violations_total\{contract="c1"\} 2/);

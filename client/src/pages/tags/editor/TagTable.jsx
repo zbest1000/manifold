@@ -316,6 +316,6 @@ export default function TagTable({ rows, verdicts, selected, onSelect, activeKey
 
 const cellInput =
   'h-7 w-full min-w-0 rounded border border-transparent bg-transparent px-1.5 text-fg placeholder:text-faint transition-colors duration-150 ' +
-  'hover:border-line-strong focus:border-accent focus:bg-field focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-bad';
+  'hover:border-line-strong focus:border-accent focus:bg-field focus:outline-hidden focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-60 aria-[invalid=true]:border-bad';
 
 export { COLS };

@@ -655,7 +655,10 @@ export default function TopicGraph() {
             graph={graph}
             onJump={(id) => {
               const n = graph.nodes.find((x) => x.id === id);
-              if (n) selectNode(n);
+              if (!n) return;
+              selectNode(n);
+              // Like search and deep links: also bring the target into view on the 2D graph.
+              setFitTarget(id);
             }}
             onClose={() => setPanelOpen(false)}
           />

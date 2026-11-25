@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import globals from 'globals';
 
 /**
- * Server lint (flat config, ESLint 9). Deliberately modest: eslint:recommended
+ * Server lint (flat config, ESLint 10). Deliberately modest: eslint:recommended
  * plus a few rules that catch real defects. The server is CommonJS on Node >= 20.
  */
 export default [
@@ -27,5 +27,12 @@ export default [
       'no-unreachable-loop': 'error',
       'no-constant-binary-expression': 'error'
     }
+  },
+  {
+    // ESLint 10 added two rules to `recommended`. Device drivers are frozen
+    // (changed only with a hardware retest), so they are exempt from the new
+    // rules instead of being edited; everything else is fixed in place.
+    files: ['drivers/**/*.js'],
+    rules: { 'preserve-caught-error': 'off', 'no-useless-assignment': 'off' }
   }
 ];

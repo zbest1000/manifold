@@ -141,6 +141,25 @@ function valueEngine(rules) {
 
 const msg = (brokerId, topic, payload) => ({ brokerId, topic, payload, timestamp: new Date().toISOString() });
 
+test('value-threshold: a firing topic evicted at the tracking cap is resolved, not stranded', () => {
+  const rules = [{ id: 'vc', type: 'value-threshold', brokerId: 'b1', topic: 'plant/+/temp', op: '>', value: 80 }];
+  const { manager, io, eng } = valueEngine(rules);
+
+  // First topic in = oldest = first evicted once the per-rule cap (5000) is exceeded.
+  manager.emit('message', msg('b1', 'plant/pumpFIRST/temp', 99));
+  assert.ok(io.emitted.some((e) => e.data.status === 'firing' && e.data.topic === 'plant/pumpFIRST/temp'));
+
+  for (let i = 0; i < 5000; i++) manager.emit('message', msg('b1', `plant/pump${i}/temp`, 10));
+
+  const resolved = io.emitted.find((e) => e.data.status === 'resolved' && e.data.topic === 'plant/pumpFIRST/temp');
+  assert.ok(resolved, 'evicting a firing topic must emit a resolved event');
+  assert.match(resolved.data.detail, /stopped tracking/);
+  const state = eng.getRuleState(rules[0]);
+  assert.strictEqual(state.firingTopics, 0);
+  assert.notStrictEqual(state.state, 'firing');
+  eng.stop();
+});
+
 test('value-threshold fires on breach via the manager tap and resolves on clear', () => {
   const rules = [{ id: 'v1', type: 'value-threshold', brokerId: 'b1', topic: 'plant/line1/temp', op: '>', value: 80 }];
   const { manager, io, eng } = valueEngine(rules);

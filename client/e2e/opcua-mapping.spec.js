@@ -98,6 +98,10 @@ test('map OPC UA variables from the Tags page; values, quality, _status and _met
     await again.getByRole('button', { name: `Details of ${tName}` }).click();
     const details = again.getByRole('region', { name: `Details of ${tName}` });
     await expect(details).toContainText('from server');
+    // ...and shows the server's values, although a stored OPC UA mapping carries no browse metadata
+    await expect(details.getByRole('textbox', { name: /^Unit/ })).toHaveAttribute('placeholder', '°C');
+    await expect(details.getByLabel('Range minimum')).toHaveAttribute('placeholder', '0');
+    await expect(details.getByLabel('Range maximum')).toHaveAttribute('placeholder', '150');
     await again.getByRole('button', { name: 'Cancel' }).first().click();
 
     // a new value, then Bad with the value unchanged

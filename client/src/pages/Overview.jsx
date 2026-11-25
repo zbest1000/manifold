@@ -408,22 +408,24 @@ function ConnectionsPanel({ brokers, opcua, deviceRows }) {
       <h2 id="ov-conn" className="text-sm font-medium text-fg">
         Connections <span className="ml-1 text-xs font-normal tabular-nums text-subtle">{rows.length}</span>
       </h2>
-      <Table caption="Connections" className="min-w-[28rem]">
+      <Table caption="Connections" className="min-w-[28rem] table-fixed">
         <THead>
-          <Th>Name</Th>
-          <Th>Type</Th>
+          <Th className="w-[32%]">Name</Th>
+          <Th className="w-[17%]">Type</Th>
           <Th>Endpoint</Th>
-          <Th>State</Th>
+          <Th className="w-[7.5rem]">State</Th>
         </THead>
         <tbody>
           {rows.map((r) => (
             <Tr key={r.key}>
-              <Td header className="max-w-[12rem] truncate font-medium text-fg">
+              <Td header className="truncate font-medium text-fg" title={r.name}>
                 {r.name}
               </Td>
-              <Td className="whitespace-nowrap text-muted">{r.kind}</Td>
-              <Td className="mono max-w-[14rem] truncate text-xs text-muted">{r.endpoint}</Td>
-              <Td>
+              <Td className="truncate text-muted">{r.kind}</Td>
+              <Td className="mono truncate text-xs text-muted" title={r.endpoint}>
+                {r.endpoint}
+              </Td>
+              <Td className="whitespace-nowrap">
                 <StatusText status={r.status} tone={r.tone}>
                   {r.label}
                 </StatusText>

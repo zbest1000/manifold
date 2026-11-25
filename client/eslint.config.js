@@ -36,7 +36,7 @@ export default [
   },
   {
     // Node-side tooling and tests
-    files: ['*.config.js', 'src/test/**', 'e2e/**'],
+    files: ['*.config.js', 'src/test/**', 'e2e/**', 'scripts/**'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } }
   },
   {

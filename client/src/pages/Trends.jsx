@@ -218,7 +218,10 @@ export default function Trends() {
             maxPoints: 1000
           });
     query
-      .then((r) => alive && setResult({ key: requestKey, scope, data: { series: r.series || [], meta: r.meta || null, start, end }, error: '' }))
+      // A recording or historian with no samples for any requested tag returns no
+      // series at all; chart the tags as empty so the page says "No samples in
+      // this range" rather than "Nothing to chart yet / pick a source".
+      .then((r) => alive && setResult({ key: requestKey, scope, data: { series: r.series?.length ? r.series : tags.map((tag) => ({ tag, points: [] })), meta: r.meta || null, start, end }, error: '' }))
       // keep the last good data for this source, but say the refresh failed
       .catch((e) => alive && setResult((prev) => ({ key: requestKey, scope, data: prev?.scope === scope ? prev.data : null, error: e.message })));
     return () => {

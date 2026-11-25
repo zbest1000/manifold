@@ -1250,8 +1250,8 @@ function sparkplugProps(meta, tag) {
  */
 function suggestMapping(source, profiles) {
   const src = source || {};
-  let tags = [];
-  let context = null;
+  let tags;
+  let context;
   if (src.type === 'device') {
     const eff = effectiveOf(profiles, src.deviceId);
     if (!eff) throw new BindingValidationError('device source needs an existing deviceId');

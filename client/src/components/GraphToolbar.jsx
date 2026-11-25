@@ -66,7 +66,7 @@ export default function GraphToolbar({
   const exports = [onExportPng && { id: 'png', label: 'Export PNG', run: onExportPng }, onExportJson && { id: 'json', label: 'Export JSON', run: onExportJson }].filter(Boolean);
 
   const menuCls = 'absolute right-0 top-full z-30 mt-1 rounded-md border border-line-strong bg-overlay p-1 shadow-overlay';
-  const itemCls = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-fg hover:bg-raised focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent';
+  const itemCls = 'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-fg hover:bg-raised focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent';
 
   return (
     <div

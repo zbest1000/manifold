@@ -134,6 +134,25 @@ test('a historian that still has a route cannot be removed, the dialog says what
   }
 });
 
+test('pick and rename transforms keep what is typed (commas, half-typed pairs)', async ({ page }) => {
+  await page.goto('/pipelines');
+  await page.getByRole('button', { name: /Create the first route|New route/ }).click();
+  const editor = page.getByRole('dialog', { name: 'New route' });
+  const chain = editor.getByRole('list', { name: 'Transform chain' });
+  const before = (await chain.count()) ? await chain.getByRole('listitem').count() : 0;
+  await editor.getByRole('combobox', { name: 'Add a transform' }).selectOption('pick');
+  await editor.getByRole('combobox', { name: 'Add a transform' }).selectOption('rename');
+  const pick = editor.getByLabel(`Transform ${before + 1}: fields to keep`);
+  const rename = editor.getByLabel(`Transform ${before + 2}: rename map`);
+  await pick.pressSequentially('temp,unit');
+  await expect(pick).toHaveValue('temp,unit');
+  await rename.pressSequentially('temp:temperature,u');
+  await expect(rename).toHaveValue('temp:temperature,u');
+  await rename.blur(); // tidied on blur: the incomplete pair goes
+  await expect(rename).toHaveValue('temp:temperature');
+  await editor.getByRole('button', { name: 'Cancel' }).click();
+});
+
 test('the selected Pipelines tab is part of the URL', async ({ page }) => {
   await page.goto('/pipelines?tab=recorder');
   await expect(page.getByRole('tab', { name: 'Recorder' })).toHaveAttribute('aria-selected', 'true');

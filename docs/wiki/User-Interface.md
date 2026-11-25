@@ -16,7 +16,7 @@ The sidebar groups every page. **Overview** is on its own; then **Observe** (Top
 - the collapse button (`[`).
 
 Every page has a header with the page title, a one-line subtitle that states the current state
-("5 of 6 online - 1 with problems"), and its actions, the primary one last. Most pages with
+("7 of 8 online · 1 with problems"), and its actions, the primary one last. Most pages with
 configuration are either a **table** (Brokers, Devices, Pipelines tabs, Mappings), a **drawer** for
 looking at a row without leaving the list, a **dialog** for short forms, or a **full-page form** for long
 ones (add or edit a device). The canvas pages (Topics, UNS, Flows) put one toolbar row under the header

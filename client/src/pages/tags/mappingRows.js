@@ -39,6 +39,21 @@ export function defOf(t = {}) {
   return d;
 }
 
+/**
+ * The value a row inherits for `field` when the mapping sets none, for the editor's placeholders:
+ * the device / browse definition, else what the server reported for this tag in the preview when
+ * it came from the source itself (OPC UA EngineeringUnits, Description, EURange). A row reopened
+ * from a stored OPC UA mapping has no browse metadata, only the server's answer.
+ */
+export function inheritedValue(row, serverTag, field) {
+  const own = row?.def?.[field];
+  if (hasVal(own)) return own;
+  const origin = serverTag?.origins?.[field];
+  if (origin !== 'server' && origin !== 'device') return undefined;
+  const v = serverTag?.metadata?.[field];
+  return hasVal(v) ? v : undefined;
+}
+
 /** The name the server publishes when the mapping sets none: property, else the key (OPC UA: the browse name we store). */
 export function defaultNameOf(srcType, address, def = {}) {
   if (srcType === 'mqtt') return def.browseName || lastLevel(address);

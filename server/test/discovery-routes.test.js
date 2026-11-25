@@ -75,7 +75,7 @@ test('POST /discovery/plan: refusal names the flag; accepted ranges report probe
 
   r = await call('POST', '/api/system/discovery/plan', { range: '127.0.0.1/32', includeDevices: true });
   assert.strictEqual(r.status, 200);
-  assert.deepStrictEqual([r.body.hosts, r.body.totalProbes], [1, 6]); // 1883 8883 4840 502 102 44818; i3X ports are not probed on loopback
+  assert.deepStrictEqual([r.body.hosts, r.body.totalProbes], [1, 7]); // 1883 8883 4840 50000 502 102 44818; i3X ports are not probed on loopback
   assert.ok(r.body.notes.some((n) => /i3X is not probed on loopback/.test(n)));
   assert.ok(r.body.estimate.worstCaseMs > 0);
 

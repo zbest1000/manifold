@@ -12,8 +12,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -26,8 +26,8 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
-    "eslint": "^9.39.5",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.15.0",
     "globals": "^17.14.0"
   }
 }

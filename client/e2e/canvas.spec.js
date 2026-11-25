@@ -240,6 +240,57 @@ test('Topics graph: crisp, not blank, node hit-testing at two zoom levels, settl
   expect(consoleErrors).toEqual([]);
 });
 
+test('Topics graph: dragging a node moves the node, dragging empty canvas pans the camera', async ({ page, consoleErrors }) => {
+  await page.addInitScript(() => localStorage.setItem('tc.topicsView', 'graph'));
+  await page.goto('/topics');
+  const canvas = page.getByTestId('graph2d');
+  await expect(canvas).toBeVisible();
+  await page.waitForFunction(() => window.__manifoldTest?.graph2d?.settled && window.__manifoldTest.graph2d.nodes().length >= 5, null, { timeout: 30_000 });
+  await graphStable(page);
+
+  const node = await page.evaluate(() => {
+    const h = window.__manifoldTest.graph2d;
+    const { w, h: hh } = h.size;
+    return h.nodes().find((n) => n.label && n.sx > 120 && n.sx < w - 320 && n.sy > 120 && n.sy < hh - 200);
+  });
+  expect(node, 'a node clear of the overlays').toBeTruthy();
+  const box = await canvas.boundingBox();
+  const before = await page.evaluate(() => ({ ...window.__manifoldTest.graph2d.transform }));
+
+  // Drag the node 80 px right: the node follows the pointer, the camera stays put.
+  await page.mouse.move(box.x + node.sx, box.y + node.sy);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(box.x + node.sx + i * 10, box.y + node.sy);
+  const during = await page.evaluate((id) => window.__manifoldTest.graph2d.nodes().find((n) => n.id === id), node.id);
+  await page.mouse.up();
+  expect(during.sx - node.sx, 'node follows the drag').toBeGreaterThan(40);
+  const afterNodeDrag = await page.evaluate(() => ({ ...window.__manifoldTest.graph2d.transform }));
+  expect(afterNodeDrag.x).toBeCloseTo(before.x, 0);
+  expect(afterNodeDrag.y).toBeCloseTo(before.y, 0);
+
+  // Dragging empty canvas still pans.
+  await graphStable(page);
+  const empty = await page.evaluate(() => {
+    const h = window.__manifoldTest.graph2d;
+    const nodes = h.nodes();
+    const { w, h: hh } = h.size;
+    for (let y = 140; y < hh - 220; y += 20) {
+      for (let x = 140; x < w - 340; x += 20) {
+        if (nodes.every((n) => Math.hypot(n.sx - x, n.sy - y) > 40)) return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(empty, 'an empty spot on the canvas').toBeTruthy();
+  await page.mouse.move(box.x + empty.x, box.y + empty.y);
+  await page.mouse.down();
+  for (let i = 1; i <= 6; i++) await page.mouse.move(box.x + empty.x + i * 10, box.y + empty.y + i * 5);
+  await page.mouse.up();
+  const afterPan = await page.evaluate(() => ({ ...window.__manifoldTest.graph2d.transform }));
+  expect(afterPan.x - afterNodeDrag.x, 'background drag pans').toBeGreaterThan(30);
+  expect(consoleErrors).toEqual([]);
+});
+
 test('Topics 3D: framed, not blank, survives WebGL context loss, no idle render loop', async ({ page, consoleErrors }) => {
   await page.addInitScript(() => localStorage.setItem('tc.topicsView', '3d'));
   await page.goto('/topics');

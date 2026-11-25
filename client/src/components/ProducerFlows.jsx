@@ -108,7 +108,7 @@ export default function ProducerFlows({ broker }) {
     <div className="flex h-full w-full flex-col md:flex-row">
       <div className="relative min-h-0 min-w-0 flex-1">
         {hasSparkplug ? (
-          <ForceGraph ref={graphRef} data={graph} styleId={graphStyle} layoutId="radial" selectedId={selected} onSelect={setSelected} fitInset={{ top: 56, right: 40, bottom: 64, left: 40 }} />
+          <ForceGraph ref={graphRef} data={graph} styleId={graphStyle} layoutId="radial" selectedId={selected} onSelect={(n) => setSelected(n?.id ?? null)} fitInset={{ top: 56, right: 40, bottom: 64, left: 40 }} />
         ) : (
           <EmptyState
             icon={Cpu}

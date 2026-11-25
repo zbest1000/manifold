@@ -1,6 +1,14 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@config '../tailwind.config.js';
+
+/* Tailwind 4's preflight no longer gives buttons the pointer cursor (v3 did);
+   keep the existing behaviour for every enabled button. */
+@layer base {
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+}
 
 /* ===================================================================== */
 /* Fonts: IBM Plex Sans (variable) for UI, IBM Plex Mono for data.         */

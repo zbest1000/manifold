@@ -349,7 +349,7 @@ export default function Layout() {
         </Modal>
       )}
 
-      <main id="main-content" tabIndex={-1} aria-label="Page content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-none">
+      <main id="main-content" tabIndex={-1} aria-label="Page content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden focus:outline-hidden">
         {!connected && (
           // In-flow disconnect banner: pushes the page down instead of covering its header.
           <div role="alert" className="flex shrink-0 items-center justify-center gap-2 border-b border-bad/40 bg-bad/10 px-4 py-1.5 text-xs font-medium text-fg">

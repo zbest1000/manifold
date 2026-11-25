@@ -136,7 +136,7 @@ export default function BrowseTree({ deviceId, selection, onToggle, takenAddress
                 style={{ paddingLeft: `${(item.level - 1) * 16 + 6}px` }}
                 title={reason || node.address}
                 className={clsx(
-                  'flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]',
+                  'flex items-center gap-1.5 rounded-md py-1.5 pr-2 text-sm outline-hidden focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]',
                   reason ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-raised',
                   selected && 'bg-accent/[0.08]'
                 )}

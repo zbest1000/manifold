@@ -17,10 +17,10 @@ describe('scan request from the form', () => {
     expect(buildScanRequest({ range: ' 10.0.0.0/24 ', kinds: kinds() })).toEqual({
       range: '10.0.0.0/24',
       mqttPorts: [1883, 8883],
-      opcuaPorts: [4840],
+      opcuaPorts: [4840, 50000],
       i3xPorts: [80, 443, 8080]
     });
-    expect(buildScanRequest({ kinds: kinds({ mqtt: false, i3x: false }) })).toEqual({ mqttPorts: [], opcuaPorts: [4840], i3xPorts: [] });
+    expect(buildScanRequest({ kinds: kinds({ mqtt: false, i3x: false }) })).toEqual({ mqttPorts: [], opcuaPorts: [4840, 50000], i3xPorts: [] });
   });
   it('adds device protocols only when ticked, with custom ports', () => {
     const body = buildScanRequest({ kinds: kinds({ modbus: true, s7: true }), ports: { modbus: '5020, 1502', s7: '' } });
@@ -39,7 +39,7 @@ describe('scan request from the form', () => {
   it('knows the default ports of every kind', () => {
     expect(Object.fromEntries(SCAN_KINDS.map((k) => [k.id, k.ports]))).toEqual({
       mqtt: [1883, 8883],
-      opcua: [4840],
+      opcua: [4840, 50000],
       i3x: [80, 443, 8080],
       modbus: [502],
       s7: [102],

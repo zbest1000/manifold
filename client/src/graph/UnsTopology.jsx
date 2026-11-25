@@ -952,7 +952,7 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       <canvas
         ref={canvasRef}
         style={{ touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none' }}
-        className="absolute left-0 top-0 block h-full w-full focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
+        className="absolute left-0 top-0 block h-full w-full focus:outline-hidden focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
         role="img"
         aria-label={summary}
         aria-describedby="uns-canvas-help"

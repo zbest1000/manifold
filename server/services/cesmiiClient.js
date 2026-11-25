@@ -74,7 +74,7 @@ class CesmiiClient extends EventEmitter {
         body: JSON.stringify(body)
       });
     } catch (error) {
-      throw new Error(`CESMII request failed: ${error.message}`);
+      throw new Error(`CESMII request failed: ${error.message}`, { cause: error });
     }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {

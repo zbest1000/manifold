@@ -85,7 +85,7 @@ export default function BranchPager({ slice, parentName, onChange, className, co
           aria-label={`Filter children of ${parentName} by name`}
           placeholder="Filter by name"
           className={clsx(
-            'w-32 min-w-0 rounded border border-line-strong bg-field px-2 text-xs text-fg placeholder:text-faint focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent',
+            'w-32 min-w-0 rounded border border-line-strong bg-field px-2 text-xs text-fg placeholder:text-faint focus:border-accent focus:outline-hidden focus:ring-1 focus:ring-accent',
             sm ? 'h-6' : 'h-7 [@media(pointer:coarse)]:h-10'
           )}
           onChange={(e) => {

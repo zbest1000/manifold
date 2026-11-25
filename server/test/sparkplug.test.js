@@ -112,6 +112,70 @@ test('parseSparkplugTopic recognizes STATE host topics and rejects malformed one
   assert.strictEqual(edge.edgeNodeId, 'E');
 });
 
+test('decoder reinterprets signed integer metrics by datatype (unsigned two-s-complement on the wire)', () => {
+  const d = new SparkplugDecoder();
+  // Signed ints arrive unsigned; -5 on the wire per width:
+  assert.strictEqual(d.extractMetricValue({ int_value: 251, datatype: 1 }), -5, 'Int8');
+  assert.strictEqual(d.extractMetricValue({ int_value: 65531, datatype: 2 }), -5, 'Int16');
+  assert.strictEqual(d.extractMetricValue({ int_value: 4294967291, datatype: 3 }), -5, 'Int32');
+  assert.strictEqual(d.extractMetricValue({ long_value: '18446744073709551611', datatype: 4 }), '-5', 'Int64');
+  // Unsigned datatypes are left untouched.
+  assert.strictEqual(d.extractMetricValue({ int_value: 4294967291, datatype: 7 }), 4294967291, 'UInt32');
+  assert.strictEqual(d.extractMetricValue({ long_value: '18446744073709551611', datatype: 8 }), '18446744073709551611', 'UInt64');
+  // Positive values and non-int types are unaffected.
+  assert.strictEqual(d.extractMetricValue({ int_value: 42, datatype: 3 }), 42);
+  assert.strictEqual(d.extractMetricValue({ double_value: 3.5, datatype: 10 }), 3.5);
+});
+
+test('signed integers survive an encode/decode round trip, including DataSet cells', () => {
+  const { encodePayload } = require('../services/sparkplugEncoder');
+  const d = new SparkplugDecoder();
+  const out = Object.fromEntries(
+    d
+      .decode(
+        encodePayload({
+          metrics: [
+            { name: 'i8', value: -7, type: 'int8' },
+            { name: 'i16', value: -5, type: 'int16' },
+            { name: 'i32', value: -70000, type: 'int32' },
+            { name: 'i64', value: -123456789012, type: 'int64' },
+            { name: 'u16', value: 65535, type: 'uint16' }
+          ]
+        })
+      )
+      .metrics.map((m) => [m.name, m.value])
+  );
+  assert.strictEqual(out.i8, -7);
+  assert.strictEqual(out.i16, -5);
+  assert.strictEqual(out.i32, -70000);
+  assert.strictEqual(String(out.i64), '-123456789012');
+  assert.strictEqual(out.u16, 65535);
+
+  const ds = d.processDataSet({
+    num_of_columns: 2,
+    columns: ['signed', 'unsigned'],
+    types: [3, 7],
+    rows: [{ elements: [{ int_value: 4294967291 }, { int_value: 4294967291 }] }]
+  });
+  assert.deepStrictEqual(ds.rows, [[-5, 4294967291]], 'cells follow their column datatype');
+});
+
+test('DATA metrics without a datatype take the one their BIRTH declared (signed ints)', () => {
+  const r = new SparkplugRegistry();
+  r.update('spBv1.0/G/NBIRTH/E', { metrics: [{ name: 'Temp', alias: 3, datatype: 3, value: 0 }, { name: 'Count', datatype: 7, value: 0 }] }, 1);
+  // Sparkplug 3.0: DATA SHOULD omit datatype; protobuf defaults it to 0.
+  const metrics = [
+    { alias: 3, datatype: 0, value: 4294967291 },
+    { name: 'Count', datatype: 0, value: 4294967291 }
+  ];
+  r.update('spBv1.0/G/NDATA/E', { metrics }, 2);
+  r.resolveMetricNames('spBv1.0/G/NDATA/E', metrics);
+  assert.strictEqual(metrics[0].name, 'Temp');
+  assert.strictEqual(metrics[0].value, -5, 'Int32 from BIRTH applied to the alias-only DATA metric');
+  assert.strictEqual(metrics[0].datatypeName, 'Int32');
+  assert.strictEqual(metrics[1].value, 4294967291, 'UInt32 stays unsigned');
+});
+
 test('registry folds Sparkplug 3.0 JSON STATE with events only on transitions', () => {
   const r = new SparkplugRegistry();
   r.update('spBv1.0/STATE/scada', null, 10, { online: true, timestamp: 111 });

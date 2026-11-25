@@ -177,10 +177,12 @@ flowchart LR
     F --> C
 ```
 
-![Trends charting three temperatures from a recording](images/trends.png)
+![Trends on a recording: two boiler temperatures on the left axis (°C), steam pressure on the right axis (bar), and a short run of Bad samples that breaks the line and is marked under the chart](images/trends.png)
 
 - Search topics in the box (or type a path and press `Enter`) and **Add tag**: up to **10 series** per chart. Pick the **Range**:
-  **15m, 1h, 6h, 24h, 7d**. **Normalize** overlays series with different scales on 0 to 1.
+  **15m, 1h, 6h, 24h, 7d**. Units label the axes: series with one unit share an axis, two units get a left and a right
+  axis, and the series list says which axis each one uses. **Normalize** scales every series to its own range (one axis in
+  % of range; the readout keeps the real value and unit); it is forced on with more than two units.
 - Historian and recording queries are downsampled **on the server**: at most 1000 points per series, so a week of 1 Hz data
   charts instantly. Gaps from real outages are drawn as gaps, not bridged by straight lines; Bad-quality samples are marked.
 - **Auto refresh** (off by default) re-queries every 30 s while the tab is visible; **Refresh** does it now. The time axis

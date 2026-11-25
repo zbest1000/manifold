@@ -163,7 +163,7 @@ export default function RoutesTab({ brokers }) {
           </Button>
         </TabToolbar>
         <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
-          <Table caption="Pipeline routes" className="min-w-[78rem]">
+          <Table caption="Pipeline routes" className="min-w-[68rem]">
             <THead>
               <Th sortKey="name">Route</Th>
               <Th sortKey="state">State</Th>
@@ -185,7 +185,7 @@ export default function RoutesTab({ brokers }) {
                 const summary = `${brokerName(brokers, route.source.brokerId)}: ${flow.source} → ${flow.transforms.length ? `${flow.transforms.join(', ')} → ` : ''}${flow.target}`;
                 return (
                   <Tr key={route.id} highlight={draft?.id === route.id}>
-                    <Td header className="max-w-[30rem]">
+                    <Td header className="max-w-[18rem]">
                       <span className="flex items-center gap-2">
                         <StatusDot tone={st.tone} className="md:hidden" />
                         <span className="truncate font-medium text-fg">{name}</span>
@@ -239,7 +239,7 @@ export default function RoutesTab({ brokers }) {
                     <Td align="right" className="mono">
                       <Count value={m.errors} tone="bad" />
                     </Td>
-                    <Td align="right" className="w-32">
+                    <Td align="right" className="w-24 whitespace-nowrap">
                       <span className="inline-flex items-center justify-end gap-0.5">
                         <IconButton icon={route.enabled ? Power : Play} label={route.enabled ? `Pause route ${name}` : `Resume route ${name}`} size={14} onClick={() => toggle(route)} {...ro} />
                         <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} route ${name}`} size={14} onClick={() => openEditor(cloneRoute(route))} />

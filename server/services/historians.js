@@ -63,7 +63,8 @@ async function httpFetch(conn, url, opts, fetchImpl) {
       throw new Error(
         `TLS certificate rejected (${code}) connecting to ${host}. If this historian uses a ` +
           `self-signed certificate, enable "Allow self-signed TLS" (or supply its CA certificate) ` +
-          `in the historian settings.`
+          `in the historian settings.`,
+        { cause: err }
       );
     }
     throw err;

@@ -20,10 +20,12 @@ router.get('/', (req, res) => {
   });
 });
 
-// POST /api/models { id?, name, enabled, target, publishMode, intervalMs?, attributes }
+// POST /api/models { id?, name, enabled, target, publishMode, intervalMs?, attributes, envelope?, staleMs? }
+// envelope: publish each attribute as a {v,t,q} value/time/quality envelope; staleMs: age after which
+// an attribute's quality drops to uncertain (64).
 router.post('/', (req, res) => {
   const { profiles, models, mqttManager } = req.app.locals.services;
-  const { id, name, enabled, target, publishMode, intervalMs, attributes } = req.body || {};
+  const { id, name, enabled, target, publishMode, intervalMs, attributes, envelope, staleMs } = req.body || {};
   const expectRev = checkpoint(req, res, profiles, 'models', id, () => profiles.getIn('models', id));
   if (expectRev === false) return;
   if (!target?.brokerId || !target?.topic) return res.status(400).json({ error: 'target.brokerId and target.topic are required' });
@@ -46,6 +48,10 @@ router.post('/', (req, res) => {
     target: { brokerId: target.brokerId, topic: target.topic, retain: Boolean(target.retain) },
     publishMode: publishMode === 'interval' ? 'interval' : 'on-change',
     intervalMs: Number(intervalMs) > 0 ? Number(intervalMs) : 5000,
+    // The engine has always honoured these; without persisting them here the
+    // TVQ envelope could not be switched on from the API, UI or MCP.
+    envelope: Boolean(envelope),
+    staleMs: Number(staleMs) > 0 ? Number(staleMs) : 60_000,
     attributes
   };
   const missing = missingRefsMessage('models', next, { profiles, mqttManager });

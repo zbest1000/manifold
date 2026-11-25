@@ -359,18 +359,19 @@ class MqttManager extends EventEmitter {
     // A topic refused by the store cap gets no side-table entries either.
     if (!store.ingest(topic, message, packet.qos, packet.retain)) return;
     info.metrics.topicCount = store.topicCount();
-    // MQTT 5 per-message properties ride in a side map keyed by topic — one
-    // falsy branch per message keeps the v4 hot path allocation-free. A later
-    // publish without the surfaced keys clears the topic's stale entry. Bounded
-    // (MAX_MSG_PROPS) and cleared on eviction / broker removal.
-    if (packet.properties) {
-      const props = pickPacketProperties(packet.properties);
-      const map = this.msgProps.get(brokerId);
-      if (map) {
-        if (!props) map.delete(topic);
-        else if (map.size < this.maxMsgProps || map.has(topic)) map.set(topic, props);
-        else info.metrics.droppedProps++;
-      }
+    // MQTT 5 per-message properties ride in a side map keyed by topic. A later
+    // publish without the surfaced keys clears the topic's stale entry — also
+    // when it carries no properties block at all (packet.properties undefined),
+    // so old properties can't outlive their message. The map is only touched
+    // when this packet has properties or the broker surfaced some before, which
+    // keeps the v4 / no-property hot path lookup-free. Bounded (MAX_MSG_PROPS)
+    // and cleared on eviction / broker removal.
+    const propMap = this.msgProps.get(brokerId);
+    if (propMap && (packet.properties || propMap.size > 0)) {
+      const props = packet.properties ? pickPacketProperties(packet.properties) : null;
+      if (!props) propMap.delete(topic);
+      else if (propMap.size < this.maxMsgProps || propMap.has(topic)) propMap.set(topic, props);
+      else info.metrics.droppedProps++;
     }
     // One char-code check per message; $SYS traffic is low-rate and tracking the
     // set here keeps the /sys endpoint O(|$SYS|) instead of scanning every topic.

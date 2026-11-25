@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Overview Connections and Pipelines Routes fit at 1440 px.** The Connections table cut off its State column
+  and the Routes table hid its row actions behind a horizontal scroll; both now fit, truncating long names.
+- **Fixes carried over from the older pull requests #62 and #45**, re-applied on the current code:
+  - **Sparkplug signed integers** (Int8/16/32/64) are read back from their unsigned two's-complement wire form
+    instead of arriving as huge positive numbers (-5 was 4294967291), in metrics, properties and DataSet cells. DATA
+    messages that omit the datatype (as Sparkplug 3.0 recommends) take the one their BIRTH declared.
+  - **File recordings roll over at their size cap** (two segments, newest kept) instead of stopping for good; reads,
+    Trends series and replay span both segments. An empty payload no longer records as 0.
+  - **Alerts:** a firing value alarm dropped at the 5000-topic tracking cap is resolved (with the reason) instead of
+    left as a phantom.
+  - **Schema contracts** check own properties: keys such as `toString` or `__proto__` no longer escape drift checks.
+  - **MQTT 5:** a publish without a properties block clears the topic's previous properties.
+  - **Models:** the TVQ envelope (`envelope`, `staleMs`) is persisted by `POST /api/models` and offered in the model
+    editor and the MCP `model_save` tool; the engine supported it but the option could not be switched on.
+  - **Discovery** probes OPC UA port 50000 (opc-plc) as well as 4840 by default.
+  - **2D graph:** nodes can be dragged again (zoom swallowed the press), clicking a node no longer re-heats the
+    layout, big graphs (over 4000 nodes) draw their edges, and a refresh during the initial layout no longer freezes
+    it half-spread. Flows: clicking a device or client opens its detail card. Topics: the details panel's Location
+    chips bring the target into view.
+  - **Pipelines:** the pick and rename transform fields keep what is typed (commas, half-typed pairs).
+  - **Client:** `usePolled` applies only the newest response (a slow reply for the previous OPC UA connection or a
+    racing refresh can no longer overwrite fresher data); QoS downgrades and contract violations are logged and
+    toasted; Trends says "No samples in this range" for a recording or historian with nothing for the chosen tags.
+  - **Dependencies:** server lockfile moves to express 4.22.3 / qs 6.16.2 (moderate qs advisories).
+
+- **Reopening an OPC UA mapping shows the server's unit, description and range.** The tag details said *from server*
+  over empty fields because a stored OPC UA mapping keeps no browse metadata; the placeholders now take the values the
+  server's preview reports for the tag.
 - **OPC UA discovery is verified.** A scan answers an OPC UA candidate with a real GetEndpoints over a security
   None channel (no session, bounded, cancellable) and reports the application name and URI and the security modes,
   policies and user tokens offered. A listener that does not answer the UA-TCP Hello is no longer a result; one that
@@ -51,6 +79,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CPU and host metrics** in `/metrics`: `manifold_process_cpu_seconds_total` (user/system),
+  `manifold_host_load_average`, `manifold_host_cpus` and `manifold_host_memory_bytes` (carried over from PR #45).
+
+- **Documentation screenshots are generated.** `npm run docs:shots` (in `client/`, after `npm run build`) starts a demo
+  plant from the test simulators and the real backend, seeds it through the API and captures every image in
+  `docs/wiki/images/` (and the copies in `site/assets/`) with Chromium; `--only`, `--out`, `--serve` and `--attach`
+  re-capture single images. All images were regenerated from the current UI, and the OPC UA page has a new one
+  (`opcua.png`).
 - **OPC UA is tested against a real server.** `node-opcua` (devDependency only) backs
   `server/test/support/opcuaTestServer.js`: every scalar type, arrays, structures, engineering units and ranges,
   controllable status codes and source timestamps, None/Sign/SignAndEncrypt with anonymous and user name logins,
@@ -511,8 +547,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Three shared components (`JsonView`, `GraphLegend`, unused `ViewTab`) still use the
   legacy class names that the Tailwind compatibility layer maps to tokens.
 - See `docs/REVIEW-2026-11.md` for the full list, including defects seen while
-  capturing the documentation screenshots (an overflowing large float in the device
-  drawer, Sparkplug payloads as base64 in the Overview's Latest values).
+  capturing the documentation screenshots: an overflowing large float in the device
+  drawer; a reopened OPC UA mapping's tag table leaves Unit and Description blank.
 
 ## [1.0.0] - 2026-07-15
 

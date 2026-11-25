@@ -4,6 +4,7 @@ import { Input, Select, SegmentedControl, Button, IconButton } from '@/component
 import { OverrideField, KeyValueEditor, NumberInput, SubHeading, OriginLabel, ErrorText } from './parts';
 import { setOv, contextRows, contextObject, contextErrors, LIMIT_KEYS, rowVerdict, RULE_LABEL } from '../mappingModel';
 import { nameBasis } from './TagTable';
+import { inheritedValue } from '../mappingRows';
 
 const STATES_LABEL = { 'label-field': 'Value plus label', replace: 'Label replaces value' };
 const STATES_HELP = {
@@ -67,6 +68,8 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
   const verdict = rowVerdict(state, row);
   const basis = nameBasis(row);
   const range = o.range || {};
+  const inherited = (f) => inheritedValue(row, serverTag, f);
+  const inheritedRange = inherited('range');
   const limits = o.limits || {};
   const dbKind = describeDeadband(o.deadband);
   const scale = o.scale;
@@ -129,13 +132,13 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
         <fieldset className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2" disabled={disabled}>
           <legend className="mb-2 text-sm font-medium text-fg">Metadata</legend>
           <OverrideField label="Display name" origin={e('displayName').origin} onReset={() => reset('displayName')} deviceValue={row.def.displayName} error={err('displayName')}>
-            <Input value={o.displayName ?? ''} placeholder={row.def.displayName || ''} onChange={(ev) => set('displayName', ev.target.value)} />
+            <Input value={o.displayName ?? ''} placeholder={inherited('displayName') || ''} onChange={(ev) => set('displayName', ev.target.value)} />
           </OverrideField>
           <OverrideField label="Unit" origin={e('unit').origin} onReset={() => reset('unit')} deviceValue={row.def.unit} error={err('unit')}>
-            <Input value={o.unit ?? ''} placeholder={row.def.unit || ''} onChange={(ev) => set('unit', ev.target.value)} />
+            <Input value={o.unit ?? ''} placeholder={inherited('unit') || ''} onChange={(ev) => set('unit', ev.target.value)} />
           </OverrideField>
           <OverrideField className="sm:col-span-2" label="Description" origin={e('description').origin} onReset={() => reset('description')} deviceValue={row.def.description} error={err('description')}>
-            <Input value={o.description ?? ''} placeholder={row.def.description || ''} onChange={(ev) => set('description', ev.target.value)} />
+            <Input value={o.description ?? ''} placeholder={inherited('description') || ''} onChange={(ev) => set('description', ev.target.value)} />
           </OverrideField>
           <div className="min-w-0 sm:col-span-2">
             <div className="flex items-center justify-between gap-2">
@@ -143,8 +146,8 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
               <OriginLabel origin={e('range').origin} field="range" deviceValue={row.def.range} onReset={o.range ? () => reset('range') : undefined} />
             </div>
             <div className="mt-1.5 grid grid-cols-2 gap-3">
-              <NumberInput aria-label="Range minimum" value={range.min} placeholder={row.def.range ? String(row.def.range.min) : 'min'} onChange={(v) => set('range', v === undefined && range.max === undefined ? undefined : { ...range, min: v })} />
-              <NumberInput aria-label="Range maximum" value={range.max} placeholder={row.def.range ? String(row.def.range.max) : 'max'} onChange={(v) => set('range', v === undefined && range.min === undefined ? undefined : { ...range, max: v })} />
+              <NumberInput aria-label="Range minimum" value={range.min} placeholder={inheritedRange ? String(inheritedRange.min) : 'min'} onChange={(v) => set('range', v === undefined && range.max === undefined ? undefined : { ...range, min: v })} />
+              <NumberInput aria-label="Range maximum" value={range.max} placeholder={inheritedRange ? String(inheritedRange.max) : 'max'} onChange={(v) => set('range', v === undefined && range.min === undefined ? undefined : { ...range, max: v })} />
             </div>
             <ErrorText>{err('range')}</ErrorText>
           </div>

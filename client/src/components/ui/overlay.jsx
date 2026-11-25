@@ -82,7 +82,7 @@ export function Modal({ id, title, onClose, children, className, labelledBy, des
         ref={ref}
         tabIndex={-1}
         className={clsx(
-          'overflow-y-auto border-line-strong bg-overlay text-fg shadow-overlay focus:outline-none',
+          'overflow-y-auto border-line-strong bg-overlay text-fg shadow-overlay focus:outline-hidden',
           drawer
             ? clsx('h-full', placement === 'right' ? 'border-l drawer-in-right' : 'border-r drawer-in-left', className || 'w-full max-w-md')
             : clsx('dialog-in max-h-[90vh] w-full rounded-lg border', className || 'max-w-lg p-6')

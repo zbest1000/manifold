@@ -116,6 +116,18 @@ async function makeBroker(extra = {}) {
   return r.body.brokerId;
 }
 
+test('POST /api/models persists the TVQ envelope switch and its stale window', async () => {
+  const broker = await makeBroker({ name: 'tvq-broker', host: 'tvq.example.test' });
+  const base = { target: { brokerId: broker, topic: 'uns/tvq' }, attributes: [{ name: 'a', source: { brokerId: broker, topic: 'raw/tvq' } }] };
+  const on = await call('/api/models', { method: 'POST', body: { ...base, name: 'tvq-on', envelope: true, staleMs: 15000 } });
+  assert.strictEqual(on.status, 201, JSON.stringify(on.body));
+  assert.strictEqual(on.body.envelope, true);
+  assert.strictEqual(on.body.staleMs, 15000);
+  const off = await call('/api/models', { method: 'POST', body: { ...base, name: 'tvq-off' } });
+  assert.strictEqual(off.body.envelope, false);
+  assert.strictEqual(off.body.staleMs, 60000);
+});
+
 test('routes answer 409 { code: stale, current } on a stale write and accept rev via body or If-Match', async () => {
   const broker = await makeBroker({ name: 'rev-broker', host: 'rev.example.test' });
   const historian = (await call('/api/historians', { method: 'POST', body: { type: 'influxdb', url: 'http://h.example.test', org: 'o', bucket: 'b', token: 'SECRET-TOKEN' } })).body;

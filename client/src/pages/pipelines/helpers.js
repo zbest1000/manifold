@@ -65,6 +65,8 @@ export const blankModel = (brokers) => ({
   enabled: true,
   publishMode: 'on-change',
   intervalMs: 5000,
+  envelope: false,
+  staleMs: 60000,
   target: { brokerId: brokers[0]?.id || '', topic: '', retain: true },
   attributes: [{ name: '', source: { brokerId: brokers[0]?.id || '', topic: '', field: '' } }]
 });
