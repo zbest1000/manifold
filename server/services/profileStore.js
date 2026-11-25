@@ -22,6 +22,33 @@ function assertSafeId(id) {
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * Optimistic concurrency. Every stored object carries `rev` (integer, +1 on every
+ * write, set by the store only; data written before this existed reads as rev 0)
+ * and `updatedAt` (ISO). A write that passes `expectRev` is refused with this
+ * error when the stored rev differs; `current` is the stored object (null when
+ * it no longer exists). A write without `expectRev` is last-write-wins, as before.
+ */
+class StaleRevisionError extends Error {
+  constructor(what, current) {
+    super(`${what} was changed elsewhere (it is now at revision ${current?.rev || 0}); reload it and re-apply your edit`);
+    this.name = 'StaleRevisionError';
+    this.code = 'stale';
+    this.current = current || null;
+  }
+}
+
+function checkRev(prev, expectRev, what) {
+  if (expectRev === undefined || expectRev === null || expectRev === '') return;
+  const want = Number(expectRev);
+  if (!Number.isInteger(want) || want !== (prev?.rev || 0)) throw new StaleRevisionError(what, prev);
+}
+
+/** The store-owned bookkeeping fields for the next write of `prev`. */
+function nextStamp(prev) {
+  return { rev: (prev?.rev || 0) + 1, updatedAt: new Date().toISOString() };
+}
+
 const DEFAULT_BACKUPS = 5;
 const DEFAULT_BACKUP_INTERVAL_MS = 60_000;
 
@@ -248,11 +275,29 @@ class ProfileStore {
     }
   }
 
+  /**
+   * Throw StaleRevisionError when `expectRev` is given and the stored object is
+   * at another revision. For routes that must refuse BEFORE a side effect (a
+   * broker edit reconnects, a device edit restarts a driver). `bucket` is a
+   * collection name or one of 'mqtt' | 'opcua' | 'mounts' | 'alertRules'.
+   */
+  assertRev(bucket, id, expectRev) {
+    const b = this.data[bucket];
+    if (!isPlainObject(b)) throw new Error(`unknown collection ${bucket}`);
+    checkRev(Object.hasOwn(b, id) ? b[id] : null, expectRev, 'This item');
+  }
+
   // ---- MQTT brokers ----
-  upsertBroker(id, config) {
+  // The wrapper `{ config, admin?, rev, updatedAt }` carries the revision, so the
+  // connection config itself stays exactly what the user typed.
+  upsertBroker(id, config, { expectRev } = {}) {
     assertSafeId(id);
-    this.data.mqtt[id] = { ...(this.data.mqtt[id] || {}), config: { ...config, id } };
+    const prev = this.data.mqtt[id];
+    checkRev(prev, expectRev, 'Broker');
+    const { rev: _r, updatedAt: _u, ...clean } = config || {};
+    this.data.mqtt[id] = { ...(prev || {}), config: { ...clean, id }, ...nextStamp(prev) };
     this._save();
+    return this.data.mqtt[id];
   }
 
   removeBroker(id) {
@@ -266,14 +311,21 @@ class ProfileStore {
     assertSafeId(id);
     if (!this.data.mqtt[id]) this.data.mqtt[id] = { config: { id } };
     this.data.mqtt[id].admin = adminConfig;
+    Object.assign(this.data.mqtt[id], nextStamp(this.data.mqtt[id]));
     this._save();
   }
 
   clearBrokerAdmin(id) {
     if (this.data.mqtt[id]?.admin) {
       delete this.data.mqtt[id].admin;
+      Object.assign(this.data.mqtt[id], nextStamp(this.data.mqtt[id]));
       this._save();
     }
+  }
+
+  /** Stored `{ config, admin?, rev, updatedAt }` of a broker, or null. */
+  getBroker(id) {
+    return Object.hasOwn(this.data.mqtt, id) ? this.data.mqtt[id] : null;
   }
 
   brokers() {
@@ -281,10 +333,13 @@ class ProfileStore {
   }
 
   // ---- OPC UA ----
-  upsertOpcua(id, config) {
+  upsertOpcua(id, config, { expectRev } = {}) {
     assertSafeId(id);
-    this.data.opcua[id] = { ...config, id };
+    const prev = this.data.opcua[id];
+    checkRev(prev, expectRev, 'OPC UA connection');
+    this.data.opcua[id] = { ...config, id, ...nextStamp(prev) };
     this._save();
+    return this.data.opcua[id];
   }
 
   removeOpcua(id) {
@@ -320,9 +375,11 @@ class ProfileStore {
   }
 
   // ---- UNS mounts (external sources grafted into the namespace view) ----
-  upsertMount(id, mount) {
+  upsertMount(id, mount, { expectRev } = {}) {
     assertSafeId(id);
-    this.data.mounts[id] = { ...mount, id };
+    const prev = this.data.mounts[id];
+    checkRev(prev, expectRev, 'Mount');
+    this.data.mounts[id] = { ...mount, id, ...nextStamp(prev) };
     this._save();
     return this.data.mounts[id];
   }
@@ -341,9 +398,11 @@ class ProfileStore {
   }
 
   // ---- alert rules ----
-  upsertAlertRule(id, rule) {
+  upsertAlertRule(id, rule, { expectRev } = {}) {
     assertSafeId(id);
-    this.data.alertRules[id] = { ...rule, id };
+    const prev = this.data.alertRules[id];
+    checkRev(prev, expectRev, 'Alert rule');
+    this.data.alertRules[id] = { ...rule, id, ...nextStamp(prev) };
     this._save();
     return this.data.alertRules[id];
   }
@@ -362,10 +421,12 @@ class ProfileStore {
   }
 
   // ---- generic DataOps collections (historians, pipelines, models, ...) ----
-  upsertIn(collection, id, obj) {
+  upsertIn(collection, id, obj, { expectRev } = {}) {
     if (!COLLECTIONS.includes(collection)) throw new Error(`unknown collection ${collection}`);
     assertSafeId(id);
-    this.data[collection][id] = { ...obj, id };
+    const prev = Object.hasOwn(this.data[collection], id) ? this.data[collection][id] : null;
+    checkRev(prev, expectRev, 'This item');
+    this.data[collection][id] = { ...obj, id, ...nextStamp(prev) };
     this._save();
     return this.data[collection][id];
   }
@@ -394,3 +455,4 @@ class ProfileStore {
 module.exports = ProfileStore;
 module.exports.COLLECTIONS = COLLECTIONS;
 module.exports.assertSafeId = assertSafeId;
+module.exports.StaleRevisionError = StaleRevisionError;

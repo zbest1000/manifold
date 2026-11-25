@@ -28,6 +28,9 @@ class DriverSupervisor extends EventEmitter {
     this._heartbeatMs = o.heartbeatMs || 5000;
     this._requestTimeoutMs = o.requestTimeoutMs || 10000;
     this._killAfterMs = o.shutdownKillMs || SHUTDOWN_KILL_MS;
+    // async (device) => device': re-resolve and re-validate a device's target before its host restarts.
+    // A rejection takes that device offline with the rejection message as the reason.
+    this._revalidate = typeof o.revalidate === 'function' ? o.revalidate : null;
 
     this._hosts = new Map(); // hostId -> host
     this._transient = new Set(); // one-off hosts for testConnection
@@ -349,16 +352,55 @@ class DriverSupervisor extends EventEmitter {
     host.crashes.push(now);
     if (host.crashes.length > this._crashLoop.max) {
       this._setHostState(host, 'parked', `crash loop: ${host.crashes.length} crashes in ${this._crashLoop.windowMs}ms (${reason})`);
+      // Say so on every device of the host: "backoff" would promise a retry that is not coming.
+      // Saving any device of this protocol (setDevices) restarts a parked host.
+      for (const d of host.devices) {
+        this._deviceState.delete(d.id); // force the event: the state is offline already
+        this._setDeviceState({
+          deviceId: d.id,
+          state: 'offline',
+          phase: 'stopped',
+          reason: `driver host parked after ${host.crashes.length} crashes in ${Math.round(this._crashLoop.windowMs / 1000)}s (${reason}); saving a device of this protocol restarts it`,
+          since: Date.now()
+        });
+      }
       return;
     }
     const delay = Math.min(this._backoff.maxMs, this._backoff.initialMs * Math.pow(2, host.crashes.length - 1));
     host.restarts++;
     this._setHostState(host, 'backoff', reason);
-    host.restartTimer = setTimeout(() => {
+    host.restartTimer = setTimeout(async () => {
       host.restartTimer = null;
-      if (!this._closing && this._hosts.get(host.id) === host) this._spawn(host);
+      if (this._closing || this._hosts.get(host.id) !== host) return;
+      await this._refreshTargets(host);
+      if (!this._closing && this._hosts.get(host.id) === host && !host.child) this._spawn(host);
     }, delay);
     if (host.restartTimer.unref) host.restartTimer.unref();
+  }
+
+  /**
+   * Before a host restarts, re-validate every device's target. A device whose name now resolves to a
+   * blocked address (or no longer resolves) is dropped from the host and reported offline with the
+   * reason; the others get the freshly validated addresses.
+   */
+  async _refreshTargets(host) {
+    if (!this._revalidate) return;
+    const kept = [];
+    for (const d of host.devices) {
+      try {
+        kept.push(await this._revalidate(d));
+      } catch (error) {
+        this._devices.delete(d.id);
+        this._deviceState.delete(d.id); // force the event even when the device was already offline
+        this._setDeviceState({ deviceId: d.id, state: 'offline', phase: 'stopped', reason: error.message, since: Date.now() });
+        this._emit('device-error', { deviceId: d.id, error: error.message });
+      }
+    }
+    host.devices = kept;
+    for (const d of kept) {
+      const entry = this._devices.get(d.id);
+      if (entry) entry.device = d;
+    }
   }
 
   /** Gracefully stop a host (no restart); resolves when the child is gone. */

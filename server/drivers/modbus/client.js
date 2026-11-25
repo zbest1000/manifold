@@ -28,8 +28,9 @@ class ModbusClient {
    * @param {{host:string, port?:number, connectTimeoutMs?:number, maxQueue?:number,
    *   socketFactory?:(opts:{host:string, port:number}) => net.Socket}} opts
    */
-  constructor({ host, port = 502, connectTimeoutMs = 5000, maxQueue = MAX_QUEUE, socketFactory } = {}) {
-    this.host = host;
+  constructor({ host, displayHost, port = 502, connectTimeoutMs = 5000, maxQueue = MAX_QUEUE, socketFactory } = {}) {
+    this.host = host; // the address the socket opens (a validated, pinned IP when the device has a hostname)
+    this.displayHost = displayHost || host; // what messages and logs call it
     this.port = port;
     this.connectTimeoutMs = connectTimeoutMs;
     this.maxQueue = maxQueue;
@@ -71,7 +72,7 @@ class ModbusClient {
           resolve();
         }
       };
-      const timer = setTimeout(() => done(new Error(`connect to ${this.host}:${this.port} timed out`)), this.connectTimeoutMs);
+      const timer = setTimeout(() => done(new Error(`connect to ${this.displayHost}:${this.port} timed out`)), this.connectTimeoutMs);
       timer.unref();
       sock.once('connect', () => {
         sock.setNoDelay(true);

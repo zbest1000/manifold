@@ -20,6 +20,7 @@ const { parseAddress, formatAddress, ADDRESS_HELP } = require('./address');
 const { TYPES, normalizeType, byteLength, decode, probeDecodings, S7DecodeError } = require('./decode');
 const { planReads, bisect, limitsFor } = require('./planner');
 const { S7Client, S7ExceptionError, errorKind } = require('./client');
+const { connectAddress } = require('../runtime/pinnedAddress');
 
 const protocol = 's7';
 const DEFAULT_PDU = 960;
@@ -241,7 +242,7 @@ function createDriver(device, deps = {}) {
     if (client) await client.close().catch(() => {});
     negotiated = null;
     client = createClient({
-      host: device.host,
+      host: connectAddress(device),
       port: device.port || 102,
       localTsap,
       remoteTsap,

@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { Button, Input, Select, Checkbox, Panel, Banner, Drawer, useConfirm } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
+import { useConflict } from '@/components/ConflictDialog';
 import { FormField, DescriptorFields, PresetButtons } from './FormControls';
 import PollGroupsEditor from './PollGroupsEditor';
 import TagTable, { newTagId } from './TagTable';
@@ -58,6 +59,9 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
   const [probing, setProbing] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const readOnly = useReadOnly();
+  const { resolveConflict, conflictDialog } = useConflict();
+  // The revision this form is based on; a save that finds a newer one stored asks before overwriting it.
+  const baseRev = useRef(device?.rev);
 
   const descriptor = protocols.find((p) => p.id === draft.protocol) || protocols[0];
   const profile = draft.profileId ? profiles.find((p) => p.id === draft.profileId) : null;
@@ -138,8 +142,22 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
     setSaving(true);
     setSaveError(null);
     try {
-      const body = payload();
-      const saved = editing ? await api.updateDevice(device.id, body) : await api.createDevice(body);
+      const body = { ...payload(), ...(editing ? { rev: baseRev.current } : {}) };
+      let saved;
+      try {
+        saved = editing ? await api.updateDevice(device.id, body) : await api.createDevice(body);
+      } catch (err) {
+        const choice = editing ? await resolveConflict(err, { what: 'device', mine: payload() }) : null;
+        if (choice === null) throw err;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          baseRev.current = err.current?.rev;
+          if (err.current) setDraft(withIds(err.current));
+          toast('Showing the saved version');
+          return;
+        }
+        saved = await api.updateDevice(device.id, { ...body, rev: err.current?.rev });
+      }
       toast.success(`Device "${saved.name}" ${editing ? 'updated' : 'created'}`);
       onSaved(saved);
     } catch (err) {
@@ -369,6 +387,7 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
           </div>
         </Drawer>
       )}
+      {conflictDialog}
       {confirmDialog}
     </div>
   );

@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const net = require('net');
 const { EventEmitter } = require('events');
 const { randomUUID } = require('crypto');
 const { DriverSupervisor } = require('./driverSupervisor');
@@ -44,6 +45,17 @@ const KEY_RE = /^[A-Za-z0-9_.\-:[\]]{1,128}$/;
 const VALUE_FLUSH_MS = 250;
 
 const MAX_META_TEXT = 512;
+
+// A hostname device is re-resolved and re-checked this often while it runs, so a name that
+// later points at a blocked address takes the device offline instead of staying connected.
+const REBIND_CHECK_MS = 30_000;
+
+// Fields the store or the main process own; they never come from a client and never reach a driver.
+const BOOKKEEPING_KEYS = ['rev', 'updatedAt', 'pinned'];
+function runtimeDevice(device) {
+  const { rev: _r, updatedAt: _u, pinned: _p, ...rest } = device;
+  return rest;
+}
 
 /** Control characters and bidirectional overrides (C0/C1, U+202A-202E, U+2066-2069). */
 function hasUnsafeNameChar(text) {
@@ -125,12 +137,18 @@ class DeviceManager extends EventEmitter {
    * @param {object} [deps.supervisorOptions] passed to DriverSupervisor
    * @param {(host:string)=>Promise<void>} [deps.guard] egress check override (tests)
    */
-  constructor({ profiles, io = null, driverModules = DRIVER_MODULES, supervisorOptions = {}, guard = null }) {
+  constructor({ profiles, io = null, driverModules = DRIVER_MODULES, supervisorOptions = {}, guard = null, lookup = null, rebindCheckMs = REBIND_CHECK_MS }) {
     super();
     this.type = 'device';
     this.profiles = profiles;
     this.io = io;
     this.drivers = loadDrivers(driverModules);
+    this.lookup = lookup; // dns.promises.lookup-compatible resolver (tests flip its answers)
+    this.rebindCheckMs = rebindCheckMs;
+    this._rebindTimer = null;
+    this._applyChain = Promise.resolve();
+    this._pins = new Map(); // deviceId -> last validated address list (kept while the SET is unchanged)
+    // The guard resolves the name, checks EVERY address and returns the validated list.
     this.guard = guard || ((host) => this._guardTarget(host));
     this.values = new Map(); // deviceId -> Map(tagKey -> { v, type, q, qReason, tRead })
     this.states = new Map(); // deviceId -> { state, phase, reason, since }
@@ -151,6 +169,9 @@ class DeviceManager extends EventEmitter {
 
     this.supervisor = new DriverSupervisor({
       drivers: Object.fromEntries(Object.entries(this.drivers).map(([p, d]) => [p, d.file])),
+      // Called by the supervisor whenever it is about to (re)start a driver host: resolve and
+      // validate again, so a restart never reconnects on the strength of an old check.
+      revalidate: (device) => this._revalidate(device),
       ...supervisorOptions
     });
     this.supervisor.on('samples', (batch) => this._onSamples(batch));
@@ -188,18 +209,66 @@ class DeviceManager extends EventEmitter {
   async start() {
     if (this.started) return;
     this.started = true;
+    if (this.rebindCheckMs > 0) {
+      this._rebindTimer = setInterval(() => this._periodicCheck(), this.rebindCheckMs);
+      this._rebindTimer.unref?.();
+    }
     await this.apply();
+  }
+
+  /** Re-resolve hostname devices; apply() restarts a device whose addresses changed and parks one that is now blocked. */
+  async _periodicCheck() {
+    if (!this.started) return;
+    const hasName = this.profiles.listIn('devices').some((d) => d.enabled !== false && !net.isIP(String(d.host || '')));
+    if (!hasName) return;
+    try {
+      await this.apply();
+    } catch (error) {
+      console.warn(`devices: periodic target re-check failed: ${error.message}`);
+    }
   }
 
   async stop() {
     this.started = false;
+    clearInterval(this._rebindTimer);
+    this._rebindTimer = null;
     if (this._flushTimer) clearTimeout(this._flushTimer);
     this._flushTimer = null;
     await this.supervisor.shutdown();
   }
 
-  /** Push the stored device set to the supervisor (guarded hosts only). */
-  async apply() {
+  /** Push the stored device set to the supervisor (guarded hosts only). Serialised: overlapping calls run one after another. */
+  apply() {
+    const run = () => this._applyOnce();
+    this._applyChain = this._applyChain.then(run, run);
+    return this._applyChain;
+  }
+
+  /**
+   * `device` plus the validated addresses its driver must connect to. The list keeps its previous
+   * array while the SET of addresses is unchanged, so a re-check that finds nothing new does not
+   * restart a healthy device. IPv4 first: the driver connects to one address, and an IPv6 record
+   * that is unreachable must not shadow a working IPv4 one. A literal IP carries no pin.
+   */
+  _pinned(device, addresses) {
+    const base = runtimeDevice(device);
+    if (!Array.isArray(addresses) || !addresses.length || net.isIP(String(device.host))) {
+      this._pins.delete(device.id);
+      return base;
+    }
+    const prev = this._pins.get(device.id);
+    const same = prev && prev.length === addresses.length && addresses.every((a) => prev.includes(a));
+    const list = same ? prev : [...addresses].sort((a, b) => (net.isIPv4(b) ? 1 : 0) - (net.isIPv4(a) ? 1 : 0));
+    this._pins.set(device.id, list);
+    return { ...base, pinned: { addresses: list } };
+  }
+
+  /** Supervisor hook: re-validate one device before its host (re)starts. Throws when the name is now blocked. */
+  async _revalidate(device) {
+    return this._pinned(device, await this.guard(device.host));
+  }
+
+  async _applyOnce() {
     if (!this.started) return;
     const desired = [];
     const known = new Set();
@@ -214,10 +283,11 @@ class DeviceManager extends EventEmitter {
         continue;
       }
       try {
-        await this.guard(device.host);
+        const addresses = await this.guard(device.host);
         this.errors.delete(device.id);
-        desired.push(device);
+        desired.push(this._pinned(device, addresses));
       } catch (error) {
+        this._pins.delete(device.id);
         this.errors.set(device.id, error.message);
         this._onState({ deviceId: device.id, state: 'offline', phase: 'stopped', reason: error.message, since: Date.now() });
       }
@@ -225,6 +295,7 @@ class DeviceManager extends EventEmitter {
     for (const id of [...this.values.keys()]) if (!known.has(id)) this.values.delete(id);
     for (const id of [...this.states.keys()]) if (!known.has(id)) this.states.delete(id);
     for (const id of [...this.errors.keys()]) if (!known.has(id)) this.errors.delete(id);
+    for (const id of [...this._pins.keys()]) if (!known.has(id)) this._pins.delete(id);
     this.supervisor.setDevices(desired);
     this.io?.emit('devices-changed');
   }
@@ -233,9 +304,11 @@ class DeviceManager extends EventEmitter {
    * Device targets pass the egress guard. Loopback is refused unless
    * MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 (local simulators); private ranges need
    * MANIFOLD_ALLOW_PRIVATE_TARGETS=1; metadata ranges are always refused.
+   * Resolves to the validated address list; the drivers connect to THAT address (see _pinned),
+   * so the name is never resolved a second time by a driver in the host process.
    */
   async _guardTarget(host) {
-    await egressGuard.assertAllowedDeviceTarget(host, { purpose: 'device' });
+    return egressGuard.assertAllowedDeviceTarget(host, { purpose: 'device', lookup: this.lookup || undefined });
   }
 
   // ---- configuration ---------------------------------------------------------
@@ -337,7 +410,9 @@ class DeviceManager extends EventEmitter {
 
     // Protocol-specific top-level fields (unitId, rack, slot, ...) pass through;
     // the driver validates them again when it is created in the host process.
-    const { status: _status, ownTags: _own, paramValues: _pv, profileErrors: _pe, ...rest } = d;
+    const { status: _status, ownTags: _own, paramValues: _pv, profileErrors: _pe, ...withBookkeeping } = d;
+    // rev/updatedAt belong to the store; `pinned` to the main process. A client can set none of them.
+    const rest = Object.fromEntries(Object.entries(withBookkeeping).filter(([k]) => !BOOKKEEPING_KEYS.includes(k)));
     const device = {
       ...rest,
       id: id || d.id || randomUUID(),
@@ -469,7 +544,8 @@ class DeviceManager extends EventEmitter {
    * instances are validated against the new profile first, and if any would
    * become invalid nothing is stored and the per-instance errors are returned.
    */
-  async saveProfile(input, id) {
+  async saveProfile(input, id, { expectRev } = {}) {
+    if (id) this.profiles.assertRev?.('deviceProfiles', id, expectRev);
     const profile = this.normalizeProfile(input, id);
     const failures = [];
     for (const d of this.instancesOf(profile.id)) {
@@ -482,7 +558,7 @@ class DeviceManager extends EventEmitter {
     if (failures.length) {
       throw new DeviceValidationError(`profile change would invalidate ${failures.length} device instance(s); nothing was saved`, failures);
     }
-    const saved = this.profiles.upsertIn('deviceProfiles', profile.id, profile);
+    const saved = this.profiles.upsertIn('deviceProfiles', profile.id, profile, { expectRev });
     await this.apply();
     return saved;
   }
@@ -534,6 +610,7 @@ class DeviceManager extends EventEmitter {
       ...live,
       ...state,
       lastError: error || live.lastError || null,
+      addresses: this._pins.get(device.id) || null, // validated address(es) the driver connects to (hostname devices only)
       tagCount: (device.tags || []).length
     };
   }
@@ -542,12 +619,13 @@ class DeviceManager extends EventEmitter {
     return this.supervisor.getStatus().hosts || {};
   }
 
-  async save(input, id) {
+  async save(input, id, { expectRev } = {}) {
+    if (id) this.profiles.assertRev?.('devices', id, expectRev); // a stale edit is refused before anything else
     const device = this.normalize(input, id);
     await this.guard(device.host); // refuse to store an unreachable-by-policy target
     const clash = this.profiles.listIn('devices').find((d) => d.id !== device.id && d.name === device.name);
     if (clash) throw new DeviceValidationError(`name "${device.name}" is already used by another device; pick a different name`);
-    const saved = this.profiles.upsertIn('devices', device.id, device);
+    const saved = this.profiles.upsertIn('devices', device.id, device, { expectRev });
     await this.apply();
     return saved;
   }
@@ -600,10 +678,10 @@ class DeviceManager extends EventEmitter {
 
   async test(input) {
     const device = this.normalize({ ...input, tags: [] }, input?.id || 'test');
-    await this.guard(device.host);
+    const addresses = await this.guard(device.host);
     const started = Date.now();
     try {
-      const r = await this.supervisor.testConnection(device);
+      const r = await this.supervisor.testConnection(this._pinned(device, addresses));
       return { ok: true, latencyMs: r?.latencyMs ?? Date.now() - started, info: r?.info ?? null };
     } catch (error) {
       return { ok: false, error: error.message };

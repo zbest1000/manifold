@@ -2,6 +2,7 @@ const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
 const bindingModel = require('../services/bindingModel');
+const { expectedRev, handleRevisionError } = require('../services/revision');
 
 // Tag browser + bindings: browse device tags across our drivers (OPC UA
 // address space, Sparkplug device registry, MQTT topic trie) with one unified
@@ -169,7 +170,14 @@ router.post('/bindings', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
   const warnings = bindingModel.bindingWarnings({ ...body, id }, profiles);
-  const saved = profiles.upsertIn('bindings', id, body);
+  // Optimistic concurrency: body `rev` / If-Match = the revision the editor loaded; stale -> 409 { code:'stale', current }.
+  let saved;
+  try {
+    saved = profiles.upsertIn('bindings', id, body, { expectRev: expectedRev(req) });
+  } catch (error) {
+    if (handleRevisionError(res, error, (b) => b)) return;
+    throw error;
+  }
   bindings.reconcile(); // reset state if this edited an existing binding; clear stale retained topics; publish _meta
   await bindings.syncMonitors();
   res.status(201).json({ ...saved, warnings });

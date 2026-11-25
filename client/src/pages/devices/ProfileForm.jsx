@@ -10,6 +10,7 @@ import TagTable, { newTagId } from './TagTable';
 import { useProfileValidation } from './profileHooks';
 import { blankProfile, toProfilePayload, placeholderRowErrors, splitProfileErrors } from './profileModel';
 import { createProfile, updateProfile } from './devicesApi';
+import { useConflict } from '@/components/ConflictDialog';
 import { localTagErrors } from '@/lib/deviceTags';
 import { undeclaredPlaceholders, unusedParams } from '@/lib/deviceProfiles';
 
@@ -24,6 +25,8 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
   const readOnly = useReadOnly();
   const [saveError, setSaveError] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
+  const { resolveConflict, conflictDialog } = useConflict();
+  const baseRev = useRef(profile?.rev); // the revision this form is based on
   const descriptor = protocols.find((p) => p.id === draft.protocol) || protocols[0];
   const initial = useRef(null);
   const payload = () => toProfilePayload(draft, descriptor);
@@ -74,7 +77,21 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
     setSaving(true);
     setSaveError(null);
     try {
-      const saved = editing ? await updateProfile(profile.id, payload()) : await createProfile(payload());
+      let saved;
+      try {
+        saved = editing ? await updateProfile(profile.id, { ...payload(), rev: baseRev.current }) : await createProfile(payload());
+      } catch (err) {
+        const choice = editing ? await resolveConflict(err, { what: 'device profile', mine: payload() }) : null;
+        if (choice === null) throw err;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          baseRev.current = err.current?.rev;
+          if (err.current) setDraft(withIds(err.current));
+          toast('Showing the saved version');
+          return;
+        }
+        saved = await updateProfile(profile.id, { ...payload(), rev: err.current?.rev });
+      }
       toast.success(`Profile "${saved.name}" ${editing ? 'updated' : 'created'}${editing && instances.length ? ` and applied to ${instances.length} device${instances.length === 1 ? '' : 's'}` : ''}`);
       onSaved(saved);
     } catch (err) {
@@ -172,6 +189,7 @@ export default function ProfileForm({ profile, protocols, onClose, onSaved }) {
           </FormSection>
         </div>
       </Dialog>
+      {conflictDialog}
       {confirmDialog}
     </>
   );

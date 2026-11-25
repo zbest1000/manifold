@@ -14,6 +14,7 @@ const frame = require('./frame');
 const { parseAddress, formatAddress, encodePath } = require('./address');
 const { ATOMIC, TYPE_BY_NAME, DecodeError, LayoutError, decodeTagReply, probeDecodings } = require('./decode');
 const { planReads, bisect } = require('./planner');
+const { connectAddress } = require('../runtime/pinnedAddress');
 const { EipClient, EipTransportError, parseIdentity, LARGE_SIZE, SMALL_SIZE } = require('./client');
 const { fetchSymbols, fetchTemplate, SymbolError } = require('./symbols');
 
@@ -185,7 +186,8 @@ class EipDriver {
       else if (this.client) this.client.destroy('reconnect');
       this._resetCaches();
       const client = new EipClient({
-        host: this.device.host,
+        host: connectAddress(this.device),
+        displayHost: this.device.host,
         port: this.port,
         route: this.route,
         connectTimeoutMs: this.connectTimeoutMs,

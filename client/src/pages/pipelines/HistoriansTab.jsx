@@ -7,6 +7,7 @@ import { Button, Input, Textarea, Field, Select, Checkbox, Badge, Banner, IconBu
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { useEngineMetrics } from './hooks';
 import { Count, HeadHint, ListState, TabToolbar } from './shared';
+import { useConflict } from '@/components/ConflictDialog';
 import { BLANK_HISTORIAN, historianFormFrom, historianPayload, historianSaveDisabled, historianSummary, historianUsers, outboxHealth, formatBytes } from './helpers';
 
 const TYPE_LABEL = { influxdb: 'InfluxDB v2', timebase: 'Timebase', timescaledb: 'TimescaleDB' };
@@ -38,6 +39,7 @@ export default function HistoriansTab() {
   const [testing, setTesting] = useState(null); // { id, state: running | ok | fail, error }
   const [saving, setSaving] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
+  const { resolveConflict, conflictDialog } = useConflict();
   const [blocked, setBlocked] = useState(null); // { name, users } for the "still in use" notice
   const readOnly = useReadOnly();
   const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
@@ -70,7 +72,20 @@ export default function HistoriansTab() {
     setSaving(true);
     setFormError(null);
     try {
-      await api.saveHistorian(historianPayload(form, editingId));
+      const payload = historianPayload(form, editingId);
+      try {
+        await api.saveHistorian(payload);
+      } catch (e) {
+        const choice = editingId ? await resolveConflict(e, { what: 'historian', mine: payload }) : null;
+        if (choice === null) throw e;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          if (e.current) setForm(historianFormFrom(e.current));
+          toast('Showing the saved version');
+          return;
+        }
+        await api.saveHistorian({ ...payload, rev: e.current?.rev });
+      }
       closeForm();
       reload();
       toast.success('Historian saved');
@@ -147,15 +162,16 @@ export default function HistoriansTab() {
             <Plus size={14} aria-hidden="true" /> Add historian
           </Button>
         </TabToolbar>
-        <Table caption="Historian connections" className="min-w-[64rem]">
+        <Table caption="Historian connections" className="min-w-[72rem]">
           <THead>
             <Th>Historian</Th>
             <Th>State</Th>
-            <Th align="right"><HeadHint hint="Points the historian accepted">Written</HeadHint></Th>
-            <Th align="right"><HeadHint hint="Waiting in memory to be sent">Queued</HeadHint></Th>
-            <Th align="right"><HeadHint hint="Held on disk while the historian is unreachable">Spilled</HeadHint></Th>
-            <Th align="right"><HeadHint hint="Refused for good (bad tag or value), kept in a dead-letter file">Dead-lettered</HeadHint></Th>
-            <Th align="right"><HeadHint hint="Had no usable value, so they were not sent">Skipped</HeadHint></Th>
+            <Th align="right"><HeadHint hint="Points taken into the local buffer from routes, recordings and mappings. Admitted does not mean written: the database may still refuse or be unreachable.">Admitted</HeadHint></Th>
+            <Th align="right"><HeadHint hint="Points the historian accepted and wrote to the database.">Delivered</HeadHint></Th>
+            <Th align="right"><HeadHint hint="Admitted but not delivered yet: waiting in memory or held on disk while the historian is slow or unreachable.">Pending</HeadHint></Th>
+            <Th align="right"><HeadHint hint="On-disk buffer size while the historian is unreachable. The buffer is capped; when it is full, points are dropped.">Spilled</HeadHint></Th>
+            <Th align="right"><HeadHint hint="Refused for good (a bad tag or a type conflict), kept in a dead-letter file and not retried.">Rejected</HeadHint></Th>
+            <Th align="right"><HeadHint hint="Had no usable value, so they were not sent.">Skipped</HeadHint></Th>
             <Th srOnly align="right">Actions</Th>
           </THead>
           <tbody>
@@ -185,16 +201,19 @@ export default function HistoriansTab() {
                       </span>
                     )}
                   </Td>
-                  <Td align="right" className="mono">
-                    <Count value={o?.written} />
+                  <Td align="right" className="mono" data-testid="hist-admitted">
+                    <Count value={o?.admitted} />
                   </Td>
-                  <Td align="right" className="mono">
-                    <Count value={o?.queued} tone="warn" />
+                  <Td align="right" className="mono" data-testid="hist-delivered">
+                    <Count value={o?.delivered ?? o?.written} />
+                  </Td>
+                  <Td align="right" className="mono" data-testid="hist-pending">
+                    <Count value={o?.pending ?? o?.queued} tone="warn" />
                   </Td>
                   <Td align="right" className="mono whitespace-nowrap">
                     {o?.spillBytes > 0 ? <span className="tabular-nums text-warn">{formatBytes(o.spillBytes)}</span> : <Count value={0} />}
                   </Td>
-                  <Td align="right" className="mono">
+                  <Td align="right" className="mono" data-testid="hist-rejected">
                     <Count value={o?.deadLettered} tone="bad" />
                   </Td>
                   <Td align="right" className="mono">
@@ -212,7 +231,7 @@ export default function HistoriansTab() {
                 </Tr>,
                 t && t.state !== 'running' && (
                   <tr key={`${h.id}-test`}>
-                    <td colSpan={8} className="px-3 pb-3 pt-0">
+                    <td colSpan={9} className="px-3 pb-3 pt-0">
                       {t.state === 'ok' ? (
                         <Banner variant="success" title="Test write succeeded" onDismiss={() => setTesting(null)}>
                           One point (<span className="mono text-xs">manifold/connection-test</span>) was accepted by {name}.
@@ -387,6 +406,7 @@ export default function HistoriansTab() {
           )}
         </Dialog>
       )}
+      {conflictDialog}
       {confirmDialog}
     </>
   );

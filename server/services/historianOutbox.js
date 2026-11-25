@@ -90,6 +90,7 @@ class HistorianOutbox {
     this.batchSize = batchSize;
     this.queues = new Map(); // historianId -> points[]
     this.stats = new Map(); // historianId -> counters
+    this.byRoute = new Map(); // pipeline routeId -> { delivered, rejected } (points tagged with `r` at enqueue)
     this.disk = new Map(); // historianId -> spill state
     this.sending = new Set(); // ids with a live batch in flight
     this.hold = new Map(); // id -> points that overflowed while a live batch was in flight
@@ -112,6 +113,7 @@ class HistorianOutbox {
     let s = this.stats.get(id);
     if (!s) {
       s = {
+        admitted: 0, // points accepted into the outbox (queued or spilled) - NOT the same as delivered
         written: 0,
         spilled: 0,
         drained: 0,
@@ -149,7 +151,7 @@ class HistorianOutbox {
     const key = safeId(id);
     let st = this.disk.get(key);
     if (st) return st;
-    st = { segs: [], offset: 0, lastSeq: 0, chain: Promise.resolve(), avgLine: 200, dlBytes: 0, dlChain: Promise.resolve() };
+    st = { segs: [], offset: 0, lastSeq: 0, chain: Promise.resolve(), avgLine: 200, dlBytes: 0, dlChain: Promise.resolve(), spillPoints: 0 };
     this.disk.set(key, st);
     let names = [];
     try {
@@ -200,6 +202,8 @@ class HistorianOutbox {
         // best effort
       }
     }
+    // Points left on disk by an earlier process: only the byte size is known, so estimate the count.
+    st.spillPoints = Math.round(this._liveBytes(st) / st.avgLine);
     try {
       st.dlBytes = fs.statSync(this.deadLetterPath(id)).size;
     } catch {
@@ -252,6 +256,7 @@ class HistorianOutbox {
       await fsp.unlink(path.join(this.dir, done.name)).catch(() => {});
     }
     if (changed && !st.segs.length) await this._writeCursor(id, st); // removes cursor file
+    if (!st.segs.length) st.spillPoints = 0; // nothing on disk: self-corrects any estimate drift
   }
 
   /** Append points as JSONL to the newest segment (rotating at segmentBytes), honoring the cap. */
@@ -272,6 +277,7 @@ class HistorianOutbox {
       await fh.close();
     }
     seg.size += Buffer.byteLength(text);
+    st.spillPoints += count;
     return count;
   }
 
@@ -334,6 +340,7 @@ class HistorianOutbox {
           const conn = this.profiles.getIn('historians', id);
           if (conn?.dropPolicy === 'oldest') {
             const droppedOld = await this._dropOldest(id, st, live + bytes - this.spillMaxBytes);
+            st.spillPoints = Math.max(0, st.spillPoints - droppedOld);
             await this._appendLines(id, st, text, points.length);
             s.spilled += points.length;
             s.dropped += droppedOld;
@@ -447,6 +454,7 @@ class HistorianOutbox {
               // The segment may have been consumed/dropped (cap policy) meanwhile.
               if (st.segs[0]?.name !== segName || endOffset <= st.offset) return;
               st.offset = endOffset;
+              st.spillPoints = Math.max(0, st.spillPoints - Math.min(k, points.length));
               try {
                 await this._writeCursor(id, st);
                 await this._gc(id, st);
@@ -503,6 +511,26 @@ class HistorianOutbox {
    * finished (written, skipped as unrepresentable, or dead-lettered); on a
    * transient error the rest stay with the caller (error is set).
    */
+  /**
+   * Credit points to the pipeline route that enqueued them (`r`). `rejectedOfBatch` of a batch the
+   * historian accepted were skipped by the writer as unrepresentable; the writer does not say which,
+   * so they are spread over the routes in proportion to their share of the batch.
+   */
+  _attribute(points, outcome, rejectedOfBatch = 0) {
+    const per = new Map();
+    for (const p of points) if (p && p.r) per.set(p.r, (per.get(p.r) || 0) + 1);
+    for (const [route, n] of per) {
+      let c = this.byRoute.get(route);
+      if (!c) this.byRoute.set(route, (c = { delivered: 0, rejected: 0 }));
+      if (outcome === 'rejected') c.rejected += n;
+      else {
+        const skipped = rejectedOfBatch ? Math.min(n, Math.round((rejectedOfBatch * n) / points.length)) : 0;
+        c.delivered += n - skipped;
+        c.rejected += skipped;
+      }
+    }
+  }
+
   async _send(conn, id, s, points) {
     let budget = MAX_BISECT_SPLITS;
     let written = 0;
@@ -516,6 +544,7 @@ class HistorianOutbox {
         written += w;
         s.written += w;
         s.skipped += res?.skipped || 0;
+        this._attribute(batch, 'delivered', res?.skipped || 0);
         if (w) s.lastWrite = Date.now();
         s.lastError = null;
         remaining -= batch.length;
@@ -531,6 +560,7 @@ class HistorianOutbox {
           continue;
         }
         await this._deadLetter(id, batch, error);
+        this._attribute(batch, 'rejected');
         s.lastDeadLetter = `dead-lettered ${batch.length} point(s): ${error.message}`;
         s.lastError = s.lastDeadLetter;
         remaining -= batch.length;
@@ -539,8 +569,14 @@ class HistorianOutbox {
     return { consumed: points.length, written, error: null };
   }
 
-  enqueue(historianId, points) {
+  /**
+   * Admit points for delivery. `opts.route` (a pipeline route id) tags them so the outbox can say how many of
+   * THAT route's points the historian accepted or rejected.
+   */
+  enqueue(historianId, points, opts = {}) {
     if (!points.length) return;
+    this._stat(historianId).admitted += points.length;
+    if (opts.route) points = points.map((p) => ({ ...p, r: opts.route }));
     let q = this.queues.get(historianId);
     if (!q) {
       q = [];
@@ -609,6 +645,7 @@ class HistorianOutbox {
         for (const sg of st.segs) await fsp.unlink(path.join(this.dir, sg.name)).catch(() => {});
         st.segs = [];
         st.offset = 0;
+        st.spillPoints = 0;
         await fsp.unlink(this._cursorPath(id)).catch(() => {});
       });
       return;
@@ -655,13 +692,23 @@ class HistorianOutbox {
     }
   }
 
+  /** Per pipeline route: points the historian accepted / rejected so far (since this process started). */
+  getRouteStats() {
+    return Object.fromEntries(this.byRoute);
+  }
+
   getStats() {
     const out = {};
     for (const [id, s] of this.stats) {
       const st = this._disk(id);
+      const queued = (this.queues.get(id)?.length || 0) + (this.hold.get(id)?.length || 0);
       out[id] = {
         ...s,
-        queued: (this.queues.get(id)?.length || 0) + (this.hold.get(id)?.length || 0),
+        // The four numbers an operator needs, in plain terms:
+        delivered: s.written, // accepted by the historian
+        rejected: s.deadLettered + s.skipped, // refused for good (dead-lettered) or unrepresentable (skipped)
+        pending: queued + st.spillPoints, // waiting: in memory + spilled to disk
+        queued,
         spillBytes: this._liveBytes(st),
         deadLetterBytes: st.dlBytes
       };

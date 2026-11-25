@@ -51,21 +51,33 @@ function render(services) {
   for (const [routeId, m] of Object.entries(pipelines?.getMetrics() || {})) {
     const route = routeNames.get(routeId) || routeId.slice(0, 8);
     out += line('manifold_pipeline_messages_total', { route, result: 'matched' }, m.matched);
-    out += line('manifold_pipeline_messages_total', { route, result: 'delivered' }, m.published);
+    // routed = handed on (for a historian: admitted to the outbox); delivered = accepted by the target
+    // (for a historian: by the historian); rejected = dead-lettered/unrepresentable; pending = in flight.
+    out += line('manifold_pipeline_messages_total', { route, result: 'routed' }, m.routed ?? m.published);
+    out += line('manifold_pipeline_messages_total', { route, result: 'delivered' }, m.delivered ?? m.published);
+    out += line('manifold_pipeline_messages_total', { route, result: 'rejected' }, m.rejected ?? 0);
     out += line('manifold_pipeline_messages_total', { route, result: 'error' }, m.errors);
     out += line('manifold_pipeline_messages_total', { route, result: 'loop_blocked' }, m.loopBlocked);
   }
 
+  gauge('manifold_pipeline_pending_points', 'Points a route handed to its target that are still waiting (queued or spilled)');
+  for (const [routeId, m] of Object.entries(pipelines?.getMetrics() || {})) {
+    out += line('manifold_pipeline_pending_points', { route: routeNames.get(routeId) || routeId.slice(0, 8) }, m.pending);
+  }
   gauge('manifold_outbox_queued_points', 'Historian outbox in-memory queue depth');
+  gauge('manifold_outbox_pending_points', 'Historian outbox points waiting (in memory + spilled to disk)');
   gauge('manifold_outbox_spill_bytes', 'Historian outbox on-disk spill size');
   counter('manifold_outbox_points_total', 'Historian outbox point outcomes');
   for (const [id, s] of Object.entries(outbox?.getStats() || {})) {
     const historian = id.slice(0, 8);
     out += line('manifold_outbox_queued_points', { historian }, s.queued);
+    out += line('manifold_outbox_pending_points', { historian }, s.pending);
     out += line('manifold_outbox_spill_bytes', { historian }, s.spillBytes);
     out += line('manifold_outbox_points_total', { historian, result: 'written' }, s.written);
     out += line('manifold_outbox_points_total', { historian, result: 'spilled' }, s.spilled);
     out += line('manifold_outbox_points_total', { historian, result: 'dropped' }, s.dropped);
+    out += line('manifold_outbox_points_total', { historian, result: 'admitted' }, s.admitted);
+    out += line('manifold_outbox_points_total', { historian, result: 'rejected' }, s.rejected);
   }
 
   counter('manifold_recorder_points_total', 'Recorder captured points');

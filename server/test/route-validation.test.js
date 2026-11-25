@@ -33,7 +33,8 @@ test('the pipeline, model and recorder routes reject malformed topics with a cle
   const profiles = memoryProfiles();
   const app = express();
   app.use(express.json());
-  app.locals.services = { profiles, pipelines: { getMetrics: () => ({}) }, models: { syncTimers() {}, getStatus: () => ({}) }, recorder: { getStatus: () => ({}) } };
+  // a broker that exists (saves are refused when the broker they point at is missing)
+  app.locals.services = { profiles, mqttManager: { getConnection: () => ({}) }, pipelines: { getMetrics: () => ({}) }, models: { syncTimers() {}, getStatus: () => ({}) }, recorder: { getStatus: () => ({}) } };
   app.use('/api/pipelines', require('../routes/pipelines'));
   app.use('/api/models', require('../routes/models'));
   app.use('/api/recorder', require('../routes/recorder'));

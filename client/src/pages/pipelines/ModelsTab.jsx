@@ -6,7 +6,8 @@ import { usePolled } from '@/lib/usePolled';
 import { Button, Input, Field, Select, Checkbox, Banner, IconButton, Dialog, StatusText, Path, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { READ_ONLY_REASON } from '@/store/selectors';
 import { BrokerSelect, Count, ListState, RowButtons, TabToolbar, useRo } from './shared';
-import { blankModel, brokerName, cleanModel, cloneModel, modelSaveable } from './helpers';
+import { blankModel, brokenSummary, brokerName, cleanModel, cloneModel, modelSaveable } from './helpers';
+import { useConflict } from '@/components/ConflictDialog';
 
 /** Models: several raw topics merged into one object published at a clean UNS path. */
 export default function ModelsTab({ brokers }) {
@@ -14,6 +15,7 @@ export default function ModelsTab({ brokers }) {
   const [attempted, setAttempted] = useState(false);
   const [formError, setFormError] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
+  const { resolveConflict, conflictDialog } = useConflict();
   const [saving, setSaving] = useState(false);
   const ro = useRo();
   const readOnly = Boolean(ro.disabled);
@@ -45,7 +47,20 @@ export default function ModelsTab({ brokers }) {
     setSaving(true);
     setFormError(null);
     try {
-      await api.saveModel(cleanModel(draft));
+      const payload = cleanModel(draft); // carries `rev`: a save over a newer version is refused (409), never silent
+      try {
+        await api.saveModel(payload);
+      } catch (e) {
+        const choice = await resolveConflict(e, { what: 'model', mine: payload });
+        if (choice === null) throw e;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          if (e.current) setDraft(cloneModel(e.current));
+          toast('Showing the saved version');
+          return;
+        }
+        await api.saveModel({ ...payload, rev: e.current?.rev });
+      }
       close();
       reload();
       toast.success('Model saved');
@@ -122,7 +137,16 @@ export default function ModelsTab({ brokers }) {
                     <Path value={`${brokerName(brokers, m.target.brokerId)}: ${m.target.topic}`} className="text-muted" />
                   </Td>
                   <Td className="max-w-[16rem]">
-                    <StatusText tone={!m.enabled ? 'neutral' : failing ? 'bad' : 'good'}>{!m.enabled ? 'Paused' : failing ? 'Failing' : 'Publishing'}</StatusText>
+                    {m.broken?.length ? (
+                      <>
+                        <StatusText tone="bad">Broken reference</StatusText>
+                        <span className="block text-xs text-subtle" data-testid="model-broken">
+                          {brokenSummary(m)}. <button type="button" className="text-accent-text underline underline-offset-2" onClick={() => open(cloneModel(m))}>Fix</button>
+                        </span>
+                      </>
+                    ) : (
+                      <StatusText tone={!m.enabled ? 'neutral' : failing ? 'bad' : 'good'}>{!m.enabled ? 'Paused' : failing ? 'Failing' : 'Publishing'}</StatusText>
+                    )}
                     {s.lastError && (
                       <span className="mono block truncate text-xs text-subtle" title={s.lastError}>
                         {s.lastError}
@@ -247,6 +271,7 @@ export default function ModelsTab({ brokers }) {
           </div>
         </Dialog>
       )}
+      {conflictDialog}
       {confirmDialog}
     </>
   );

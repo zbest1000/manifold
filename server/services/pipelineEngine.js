@@ -249,15 +249,19 @@ class PipelineEngine {
           m.lastError = error.message;
         });
     } else if (target.type === 'historian') {
-      this.outbox.enqueue(target.historianId, [
-        {
-          tag: out.topic,
-          ts: messageTime(msg),
-          value: out.payload,
-          quality: messageQuality(msg)
-        }
-      ]);
-      m.published++; // admitted to the store-and-forward outbox
+      this.outbox.enqueue(
+        target.historianId,
+        [
+          {
+            tag: out.topic,
+            ts: messageTime(msg),
+            value: out.payload,
+            quality: messageQuality(msg)
+          }
+        ],
+        { route: route.id }
+      );
+      m.published++; // admitted to the store-and-forward outbox (delivery is counted by the outbox: see getMetrics)
     }
   }
 
@@ -295,8 +299,35 @@ class PipelineEngine {
     return { matchCount: result.matchCount, sampleTruncated: result.sampleTruncated, rows };
   }
 
+  /**
+   * Per-route counters. `routed` = points the route handed on; for an MQTT target that is also
+   * `delivered` (the broker publish resolved). For a HISTIAN target they diverge on purpose:
+   * `routed` = admitted to the store-and-forward outbox, `delivered` = accepted by the historian,
+   * `rejected` = dead-lettered or unrepresentable, `pending` = routed - delivered - rejected (queued,
+   * spilled to disk, or lost to a spill cap), never negative. `published` is kept as an alias of
+   * `routed` for older clients.
+   */
   getMetrics() {
-    return Object.fromEntries(this.metrics);
+    const routeStats = this.outbox?.getRouteStats?.() || {};
+    const out = {};
+    for (const [routeId, m] of this.metrics) {
+      const route = this.profiles.getIn('pipelines', routeId);
+      const target = route?.target?.type || null;
+      const entry = { ...m, routed: m.published, target };
+      if (target === 'historian') {
+        const r = routeStats[routeId] || { delivered: 0, rejected: 0 };
+        Object.assign(entry, {
+          historianId: route.target.historianId,
+          delivered: r.delivered,
+          rejected: r.rejected,
+          pending: Math.max(0, m.published - r.delivered - r.rejected)
+        });
+      } else {
+        Object.assign(entry, { delivered: m.published, rejected: 0, pending: 0 });
+      }
+      out[routeId] = entry;
+    }
+    return out;
   }
 }
 

@@ -6,7 +6,7 @@ import { usePolled } from '@/lib/usePolled';
 import { Button, Input, Field, Banner, Dialog, StatusText, Timestamp, Path, Panel, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { READ_ONLY_REASON } from '@/store/selectors';
 import { BrokerSelect, Count, ListState, RowButtons, TabToolbar, useRo } from './shared';
-import { brokerName } from './helpers';
+import { brokenSummary, brokerName } from './helpers';
 
 const PROBLEM_TONE = { 'type-changed': 'text-warn', 'missing-field': 'text-bad' };
 const PROBLEM_LABEL = { 'type-changed': 'Type changed', 'missing-field': 'Missing field' };
@@ -141,7 +141,16 @@ export default function ContractsTab({ brokers }) {
                     <Path value={`${brokerName(brokers, c.brokerId)}: ${c.filter}`} className="text-muted" />
                   </Td>
                   <Td>
-                    <StatusText tone={k.violations ? 'bad' : 'good'}>{k.violations ? 'Drifting' : 'Conforming'}</StatusText>
+                    {c.broken?.length ? (
+                      <>
+                        <StatusText tone="bad">Broken reference</StatusText>
+                        <span className="block text-xs text-subtle" data-testid="contract-broken">
+                          {brokenSummary(c)}. Delete this contract and lock it again on an existing broker.
+                        </span>
+                      </>
+                    ) : (
+                      <StatusText tone={k.violations ? 'bad' : 'good'}>{k.violations ? 'Drifting' : 'Conforming'}</StatusText>
+                    )}
                   </Td>
                   <Td align="right" className="mono">
                     <Count value={k.checked} />

@@ -2,6 +2,8 @@ const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
 const { filterProblem, topicProblem } = require('../services/mqttMatch');
+const { checkpoint, handleRevisionError } = require('../services/revision');
+const { missingRefsMessage, brokenRefs } = require('../services/references');
 
 // Pipeline routes: source → transforms → target, persisted in profiles and
 // executed by the PipelineEngine on the live (coalesced) message stream.
@@ -35,27 +37,42 @@ function validateRoute(body) {
 // GET /api/pipelines — routes + live metrics + store-and-forward outbox health
 router.get('/', (req, res) => {
   const { profiles, pipelines, outbox } = req.app.locals.services;
+  const { mqttManager } = req.app.locals.services;
   res.json({
-    routes: profiles.listIn('pipelines'),
+    // `broken`: references that no longer exist (deleted broker/historian) - the route cannot run until fixed.
+    routes: profiles.listIn('pipelines').map((r) => {
+      const broken = brokenRefs('pipelines', r, { profiles, mqttManager });
+      return broken.length ? { ...r, broken } : r;
+    }),
     metrics: pipelines.getMetrics(),
     outbox: outbox ? outbox.getStats() : {},
     transformTypes: TRANSFORM_TYPES
   });
 });
 
-// POST /api/pipelines { id?, name, enabled, source, transforms, target }
+// POST /api/pipelines { id?, rev?, name, enabled, source, transforms, target } - with an id it replaces that route;
+// `rev` (or If-Match) makes a stale replace a 409 { code:'stale', current }.
 router.post('/', (req, res) => {
-  const { profiles } = req.app.locals.services;
+  const { profiles, mqttManager } = req.app.locals.services;
   const body = req.body || {};
-  const problem = validateRoute(body);
+  const id = body.id || uuidv4();
+  const expectRev = checkpoint(req, res, profiles, 'pipelines', body.id, () => profiles.getIn('pipelines', body.id));
+  if (expectRev === false) return;
+  const problem = validateRoute(body) || missingRefsMessage('pipelines', body, { profiles, mqttManager });
   if (problem) return res.status(400).json({ error: problem });
-  const saved = profiles.upsertIn('pipelines', body.id || uuidv4(), {
-    name: body.name || null,
-    enabled: body.enabled !== false,
-    source: { brokerId: body.source.brokerId, filter: body.source.filter },
-    transforms: body.transforms || [],
-    target: body.target
-  });
+  let saved;
+  try {
+    saved = profiles.upsertIn('pipelines', id, {
+      name: body.name || null,
+      enabled: body.enabled !== false,
+      source: { brokerId: body.source.brokerId, filter: body.source.filter },
+      transforms: body.transforms || [],
+      target: body.target
+    }, { expectRev });
+  } catch (error) {
+    if (handleRevisionError(res, error, (x) => x)) return;
+    throw error;
+  }
   res.status(201).json(saved);
 });
 

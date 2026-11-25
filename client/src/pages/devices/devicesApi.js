@@ -33,6 +33,11 @@ export async function jsonRequest(path, { method = 'GET', body } = {}) {
     if (Array.isArray(data.instances)) err.instances = data.instances;
     if (Array.isArray(data.bindings)) err.bindings = data.bindings;
     if (Array.isArray(data.rows)) err.rows = data.rows;
+    // 409 stale: another writer saved first; `current` is the saved object (see components/ConflictDialog.jsx)
+    if (res.status === 409) {
+      err.code = data.code || null;
+      if (data.current !== undefined) err.current = data.current;
+    }
     throw err;
   }
   return data;

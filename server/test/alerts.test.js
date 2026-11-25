@@ -10,9 +10,11 @@ const TopicStore = require('../services/topicStore');
 const { AlertEngine, RULE_TYPES } = require('../services/alertEngine');
 const HistoryStore = require('../services/historyStore');
 
+// `emitted` holds the 'alert' events (firings/resolutions); the engine's state pushes ('alert-state') are kept apart.
 const fakeIo = () => {
   const emitted = [];
-  return { emit: (ev, data) => emitted.push({ ev, data }), emitted };
+  const states = [];
+  return { emit: (ev, data) => (ev === 'alert-state' ? states : emitted).push({ ev, data }), emitted, states };
 };
 
 function managerWith(brokerId, topics) {

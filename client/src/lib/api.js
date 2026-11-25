@@ -53,6 +53,14 @@ async function request(path, options = {}) {
     // Field-level validation errors ({ key, error }[]) travel with the error.
     if (Array.isArray(body.details)) err.details = body.details;
     err.status = res.status;
+    // 409 carries structure the pages act on: stale (another writer saved first: `current` is the saved
+    // object), duplicate (`existing` names the connection that is already there), in-use (`usedBy`).
+    if (res.status === 409) {
+      err.code = body.code || null;
+      if (body.current !== undefined) err.current = body.current;
+      if (body.existing) err.existing = body.existing;
+      if (Array.isArray(body.usedBy)) err.usedBy = body.usedBy;
+    }
     throw err;
   }
   return body;
@@ -181,7 +189,7 @@ export const api = {
   listAlertRules: () => request('/api/alerts/rules'),
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
+  alertEvents: (limit = 200, ruleId = '') => request(`/api/alerts/events?limit=${limit}${ruleId ? `&ruleId=${encodeURIComponent(ruleId)}` : ''}`),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
@@ -238,6 +246,7 @@ export const api = {
   i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // In-place edits (disconnect → upsert same id → reconnect on the server)
+  getBroker: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}`),
   updateBroker: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
   updateOpcuaConnection: (id, config) =>

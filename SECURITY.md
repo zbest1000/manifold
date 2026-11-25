@@ -50,7 +50,7 @@ instance beyond your own machine:
   the server warns at startup when it's on). The guard also covers alert
   webhooks (so a webhook to `localhost` is refused) and **device targets**;
   loopback device targets need the separate opt-in
-  `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, meant for local simulators only. It does
+  `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, meant for local simulators only. A device hostname is resolved and validated in the server process, the driver connects to the validated address (no second resolution), and the name is re-checked on every host restart and every 30 s. It does
   **not** cover MQTT broker hosts, OPC UA endpoints or historian/database URLs.
   That is a deliberate choice: a broker or historian on `localhost` or the LAN is
   the standard setup. The residual risk is that anyone holding an admin token can

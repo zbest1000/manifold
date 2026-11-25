@@ -124,6 +124,7 @@ export const BLANK_HISTORIAN = {
 /** Load a historian into the form; secret fields stay blank (= unchanged). */
 export const historianFormFrom = (h) => ({
   ...BLANK_HISTORIAN,
+  rev: h.rev, // the revision the form was loaded at: a save over a newer one is refused (409)
   type: h.type,
   name: h.name || '',
   url: h.url || '',
@@ -244,11 +245,32 @@ export function routeFlow(route, brokers, historians) {
 
 /** State of a route for the list: running / paused / failing / loop-blocked. */
 export function routeState(route, m = {}) {
+  // A broker or historian it points at was deleted: it cannot run until someone fixes the reference.
+  if (route.broken?.length) return { key: 'broken', label: 'Broken reference', tone: 'bad' };
   if (!route.enabled) return { key: 'paused', label: 'Paused', tone: 'neutral' };
+  // The historian is refusing what this route sends: "running" would be a lie.
+  if (m.target === 'historian' && m.rejected > 0 && m.delivered === 0) return { key: 'rejected', label: 'Historian rejecting', tone: 'bad' };
   if (m.errors > 0 && m.lastError) return { key: 'failing', label: 'Failing', tone: 'bad' };
   if (m.loopBlocked > 0) return { key: 'blocked', label: 'Loop blocked', tone: 'warn' };
   return { key: 'running', label: 'Running', tone: 'good' };
 }
+
+/** "broker "abc" is missing, historian "x" is missing": what a broken route (or model, recording...) points at. */
+export const brokenSummary = (item) => (item?.broken || []).map((b) => `${b.kind} "${b.id}" is missing`).join(', ');
+
+/**
+ * What the four counters of a route mean, in the words the tooltips use. A route to a historian hands points
+ * to a store-and-forward buffer first, so "routed" can be healthy while "delivered" is zero.
+ */
+export const COUNTER_HELP = {
+  in: 'Messages that matched this route\'s source filter.',
+  routed: 'Points this route handed on. For a historian that means accepted into the local buffer, not yet written.',
+  delivered: 'Points the target accepted. For a historian: written to the database. For a broker: the publish succeeded.',
+  pending: 'Handed on but not delivered yet: waiting in memory or in the on-disk buffer (the historian is slow or unreachable).',
+  rejected: 'Points the historian refused for good (for example a type conflict). They are kept in the dead-letter file, not retried.',
+  blocked: 'Messages stopped by loop protection (the output would feed back into this route).',
+  errors: 'Messages that failed in a transform or a publish.'
+};
 
 /** Health of a historian's store-and-forward outbox: tone, label and the reason in words. */
 export function outboxHealth(o) {

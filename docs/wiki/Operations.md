@@ -142,7 +142,7 @@ What the guard covers, and how strongly:
 |---|---|
 | Network scanner (Discovery) | each candidate address is checked |
 | i3X, CESMII, broker admin API, **alert webhooks** | full: checked before the request, the connect-time address is pinned (closes DNS rebinding), redirects are followed manually (at most 5) and every hop is re-checked, and credentials are dropped on a cross-origin redirect. A webhook to `localhost` or a private address is **refused** (private ones work with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) |
-| **Device drivers** (Modbus, S7, EtherNet/IP) | checked when a device is saved, tested or started. The drivers open their own sockets, so the hostname is resolved again at connect time: a small DNS-rebinding window remains for hostnames (literal IPs have none). **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
+| **Device drivers** (Modbus, S7, EtherNet/IP) | checked when a device is saved, tested or started. A hostname is resolved and validated in the server process; the validated address is passed to the driver host, which connects to **that address** (the hostname stays for display), so there is no re-resolution window. The name is re-resolved whenever a driver host restarts and every 30 s for running devices; if it now resolves to a blocked address the device goes offline with that reason instead of connecting. **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
 
 **Not covered:** MQTT broker hosts, OPC UA endpoints, and historian / database
 URLs are **not** checked. They are connections an admin configures by hand, and
@@ -268,7 +268,13 @@ with two anti-flap controls:
 Rules fire on transitions (firing → resolved) and can POST each event to a
 webhook (5 s timeout). Webhook delivery failures are counted and the last
 error is shown with the rules — a dead webhook is visible, not silent. Recent
-events show in **Settings → Alert rules** (each rule with its state, *Idle*, *Firing* or *Disabled*, and webhook health) and stream over the socket.
+events show in **Settings → Alert rules**. Each rule shows the engine's own state: *Idle*, *Breached* (the condition holds but `sustainMs` has not elapsed; a countdown shows the time left), *Firing*, *Disabled* or *Broken* (it references a broker that no longer exists), plus the current value, when the state began, the last transition and webhook health. `GET /api/alerts/rules` returns it as `state` on every rule (never the webhook URL for a viewer), `GET /api/alerts/events?ruleId=` returns one rule's recent events, and changes stream as `alert-state` on the socket.
+
+## Concurrent edits, duplicates and references
+
+- **Two people editing the same item.** Every stored object (brokers, OPC UA endpoints, devices, device profiles, mappings, routes, models, historians, recordings, contracts, alert rules) carries an integer `rev` that the store raises on each write, and `updatedAt`. Send the `rev` you loaded in the body of a `PUT` / `POST` with an id (or as `If-Match`); if the stored `rev` differs the answer is `409 { error, code: "stale", current }`, where `current` is the stored object exactly as the matching `GET` shows it (secrets redacted). The UI then shows what changed elsewhere and offers **Keep mine (overwrite)**, **Take theirs** or **Cancel**. A request **without** `rev` keeps last-write-wins, so existing scripts work. Config import bypasses the check but bumps revisions. Older stored data counts as `rev` 0.
+- **Duplicate broker connections.** `POST /api/mqtt/brokers` (and `PUT` that would make one) is refused with `409 { code: "duplicate", existing }` when another connection has the same protocol, host, port, WebSocket path, username and subscribe filter. Two connections to one broker with different filters or users are allowed.
+- **Dangling references.** Saving a route, model, recording, contract or alert rule that names a broker or historian that does not exist is a `400` naming it. Deleting a broker that is still used is a `409` naming the users (routes, mappings, recordings, alert rules, models, contracts, Sparkplug host sessions). Objects whose reference was lost (after an import or a manual edit of the data directory) are marked **Broken reference** with the missing id; the server logs them at startup.
 
 ## Device drivers in operation
 

@@ -32,7 +32,7 @@ read-only behaviour for viewer sessions.
 
 **Routes.** One row per route: its name, `source filter -> N transforms -> target`, **State**
 (*Running*, *Paused*, *Failing* when it has errors, *Loop blocked* when a loop guard fired),
-and the counters **In**, **Out**, **Blocked** and **Errors**. Per row: a **Pause route** /
+and the counters **In**, **Out**, **Blocked** and **Errors**. For a route into a historian, **Out** means *admitted to the outbox*, which is not the same as stored: the row also shows **Delivered** (accepted by the historian), **Pending** (queued or spilled to disk) and **Rejected** (dead-lettered or unrepresentable), so a historian that refuses everything is visible. The same numbers are on `/metrics` (`manifold_pipeline_messages_total{result=routed|delivered|rejected}`, `manifold_pipeline_pending_points`, `manifold_outbox_pending_points`) and per historian on the Historians tab. Per row: a **Pause route** /
 **Resume route** button, **Edit route** and **Delete route**. Pausing keeps the route and stops it.
 
 **The route editor** (a dialog; **New route** or **Edit route**) reads top to bottom as the

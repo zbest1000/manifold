@@ -57,6 +57,7 @@ export function ruleScope(r) {
 export function formFromRule(r) {
   return {
     id: r.id,
+    rev: r.rev, // the revision the form was loaded at: a save over a newer one is refused (409)
     type: r.type,
     brokerId: r.brokerId || '',
     path: r.path || '',
@@ -86,6 +87,7 @@ export function ruleBody(form, defaultBrokerId) {
     thresholdMs: Number(form.thresholdSec) * 1000,
     webhookUrl: form.webhookUrl || null
   };
+  if (form.id && form.rev !== undefined) body.rev = form.rev;
   if (form.type === 'value-threshold') {
     body.field = form.field || null;
     body.op = form.op;
@@ -111,9 +113,19 @@ export const auditTone = (e) => (e.status >= 400 ? 'bad' : 'good');
 /** Tone of an alert event's status. */
 export const alertTone = (status) => (status === 'firing' ? 'bad' : status === 'resolved' ? 'good' : 'info');
 
+const STATE_VIEW = {
+  idle: { key: 'ok', label: 'Idle', tone: 'good' },
+  breached: { key: 'breached', label: 'Breached', tone: 'warn' },
+  firing: { key: 'firing', label: 'Firing', tone: 'bad' },
+  disabled: { key: 'disabled', label: 'Disabled', tone: 'neutral' },
+  broken: { key: 'broken', label: 'Broken reference', tone: 'bad' }
+};
+
 /**
- * Where each rule stands now, from the newest event per rule: 'firing' when its latest event is a firing,
- * 'ok' otherwise. (The server does not expose a rule's live state, so this is derived from the event feed.)
+ * Where each rule stands now. The server reports the engine's real state on every rule (`r.state`: idle |
+ * breached | firing | disabled | broken, with `since`, `value`, `remainingMs` until firing, `lastTransition`,
+ * webhook health), so that is what is shown. A rule without it (an older server) falls back to the newest
+ * event per rule: 'firing' when its latest event is a firing, 'ok' otherwise.
  */
 export function ruleStates(rules, events) {
   const latest = new Map();
@@ -121,6 +133,11 @@ export function ruleStates(rules, events) {
   const out = {};
   for (const r of rules || []) {
     const e = latest.get(r.id);
+    const live = r.state && STATE_VIEW[r.state.state];
+    if (live) {
+      out[r.id] = { ...live, since: r.state.since, value: r.state.value, topic: r.state.topic, remainingMs: r.state.remainingMs, sustainMs: r.state.sustainMs, firingTopics: r.state.firingTopics, broken: r.state.broken, webhook: r.state.webhook, last: r.state.lastTransition?.ts };
+      continue;
+    }
     out[r.id] = r.enabled === false ? { key: 'disabled', label: 'Disabled', tone: 'neutral' } : e?.status === 'firing' ? { key: 'firing', label: 'Firing', tone: 'bad', since: e.ts } : { key: 'ok', label: 'Idle', tone: 'good', last: e?.ts };
   }
   return out;

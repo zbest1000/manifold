@@ -16,6 +16,8 @@ const { DeviceRuntime } = require('./runtime/deviceRuntime');
 
 const STATUS_EVERY_MS = 2000;
 const TEST_TIMEOUT_MS = 10000;
+const STAGGER_MS = 25;
+const STAGGER_MAX_MS = 5000;
 
 if (typeof process.send !== 'function') {
   // Not forked: nothing to talk to.
@@ -72,7 +74,8 @@ function startDevice(device, index) {
   const runtime = new DeviceRuntime({
     device,
     driver,
-    options: { startDelayMs: Math.min(index * 25, 500) },
+    // Spread first connects: 25 ms apart, up to 5 s, so 200 devices do not open 200 sockets in one tick.
+    options: { startDelayMs: Math.min(index * STAGGER_MS, STAGGER_MAX_MS) },
     onSamples: (b) => send({ t: 'samples', deviceId: b.deviceId, group: b.group, tRead: b.tRead, samples: b.samples }),
     onState: (s) =>
       send({ t: 'state', deviceId: s.deviceId, state: s.state, phase: s.phase, reason: s.reason, since: s.since })

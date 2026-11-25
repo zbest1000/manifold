@@ -11,6 +11,7 @@
  *   hangAfterMs: n             block the event loop n ms after createDriver
  *   throwOnCreate: true        createDriver throws (invalid config)
  *   intervalExecuteMs: n       delay inside execute
+ *   hangConnect: true          connect() never settles
  */
 
 const fs = require('fs');
@@ -39,6 +40,7 @@ function createDriver(device) {
     protocol: 'fake',
     capabilities: { browse: false, subscribe: false, maxInFlight: 1 },
     async connect() {
+      if (f.hangConnect) return new Promise(() => {});
       if (f.failConnect) throw new Error('connection refused (fake)');
       connected = true;
       return { fake: true, id: device.id };

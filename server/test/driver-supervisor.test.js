@@ -71,7 +71,8 @@ function make(opts = {}) {
 }
 
 function noConsecutiveDuplicates(states, id) {
-  const mine = states.filter((s) => s.deviceId === id).map((s) => s.state);
+  // A repeat of the same state is only legitimate when it carries a new reason (e.g. "parked").
+  const mine = states.filter((s) => s.deviceId === id).map((s) => `${s.state}|${s.reason}`);
   for (let i = 1; i < mine.length; i++) assert.notEqual(mine[i], mine[i - 1], `duplicate state for ${id}: ${mine.join(',')}`);
 }
 

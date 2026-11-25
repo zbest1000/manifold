@@ -7,9 +7,10 @@ import { nextSort, sortRows } from '@/lib/sortRows';
 import { Button, Input, Field, Select, Checkbox, IconButton, StatusDot, StatusText, Banner, Dialog, Mono, Table, TableSort, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { useEngineMetrics, useTvqSample } from './hooks';
-import { BrokerSelect, Count, ListState, TabToolbar } from './shared';
+import { BrokerSelect, Count, HeadHint, ListState, TabToolbar } from './shared';
+import { useConflict } from '@/components/ConflictDialog';
 import TransformRow from './TransformRow';
-import { TRANSFORM_META, blankRoute, brokerName, cloneRoute, hasTvqNumeric, moveItem, newTransform, routeFlow, routeSaveable, routeState, stripTransformIds, withTransformIds } from './helpers';
+import { COUNTER_HELP, TRANSFORM_META, blankRoute, brokenSummary, brokerName, cloneRoute, hasTvqNumeric, moveItem, newTransform, routeFlow, routeSaveable, routeState, stripTransformIds, withTransformIds } from './helpers';
 
 /** Routes: source filter, transform chain, target; one row per route with its state and counters. */
 export default function RoutesTab({ brokers }) {
@@ -22,6 +23,7 @@ export default function RoutesTab({ brokers }) {
   const [saving, setSaving] = useState(false);
   const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
   const [confirm, confirmDialog] = useConfirm();
+  const { resolveConflict, conflictDialog } = useConflict();
   const readOnly = useReadOnly();
   const ro = readOnly ? { disabled: true, title: READ_ONLY_REASON } : {};
 
@@ -37,7 +39,7 @@ export default function RoutesTab({ brokers }) {
 
   const routes = useMemo(() => data?.routes || [], [data]);
   const historians = data?.historians || [];
-  const rows = useMemo(() => sortRows(routes, sort, { name: (r) => r.name || r.source.filter, in: (r) => metrics[r.id]?.matched || 0, out: (r) => metrics[r.id]?.published || 0, errors: (r) => metrics[r.id]?.errors || 0, state: (r) => routeState(r, metrics[r.id]).key }), [routes, sort, metrics]);
+  const rows = useMemo(() => sortRows(routes, sort, { name: (r) => r.name || r.source.filter, in: (r) => metrics[r.id]?.matched || 0, out: (r) => metrics[r.id]?.routed ?? metrics[r.id]?.published ?? 0, delivered: (r) => metrics[r.id]?.delivered || 0, pending: (r) => metrics[r.id]?.pending || 0, rejected: (r) => metrics[r.id]?.rejected || 0, errors: (r) => metrics[r.id]?.errors || 0, state: (r) => routeState(r, metrics[r.id]).key }), [routes, sort, metrics]);
   const running = routes.filter((r) => routeState(r, metrics[r.id]).key === 'running').length;
 
   const openEditor = (route) => {
@@ -71,7 +73,20 @@ export default function RoutesTab({ brokers }) {
     setSaving(true);
     setFormError(null);
     try {
-      await api.savePipeline(stripTransformIds(draft));
+      const payload = stripTransformIds(draft); // carries `rev`: a save over a newer version is refused (409), never silent
+      try {
+        await api.savePipeline(payload);
+      } catch (e) {
+        const choice = await resolveConflict(e, { what: 'route', mine: payload });
+        if (choice === null) throw e;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          if (e.current) setDraft(withTransformIds(cloneRoute(e.current)));
+          toast('Showing the saved version');
+          return;
+        }
+        await api.savePipeline({ ...payload, rev: e.current?.rev });
+      }
       closeEditor();
       reload();
       toast.success('Route saved');
@@ -148,14 +163,17 @@ export default function RoutesTab({ brokers }) {
           </Button>
         </TabToolbar>
         <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
-          <Table caption="Pipeline routes" className="min-w-[62rem]">
+          <Table caption="Pipeline routes" className="min-w-[78rem]">
             <THead>
               <Th sortKey="name">Route</Th>
               <Th sortKey="state">State</Th>
-              <Th sortKey="in" align="right">In</Th>
-              <Th sortKey="out" align="right">Out</Th>
-              <Th align="right">Blocked</Th>
-              <Th sortKey="errors" align="right">Errors</Th>
+              <Th sortKey="in" align="right"><HeadHint hint={COUNTER_HELP.in}>In</HeadHint></Th>
+              <Th sortKey="out" align="right"><HeadHint hint={COUNTER_HELP.routed}>Routed</HeadHint></Th>
+              <Th sortKey="delivered" align="right"><HeadHint hint={COUNTER_HELP.delivered}>Delivered</HeadHint></Th>
+              <Th sortKey="pending" align="right"><HeadHint hint={COUNTER_HELP.pending}>Pending</HeadHint></Th>
+              <Th sortKey="rejected" align="right"><HeadHint hint={COUNTER_HELP.rejected}>Rejected</HeadHint></Th>
+              <Th align="right"><HeadHint hint={COUNTER_HELP.blocked}>Blocked</HeadHint></Th>
+              <Th sortKey="errors" align="right"><HeadHint hint={COUNTER_HELP.errors}>Errors</HeadHint></Th>
               <Th srOnly align="right">Actions</Th>
             </THead>
             <tbody>
@@ -186,6 +204,14 @@ export default function RoutesTab({ brokers }) {
                     </Td>
                     <Td className="max-w-[16rem]">
                       <StatusText tone={st.tone}>{st.label}</StatusText>
+                      {st.key === 'broken' && (
+                        <span className="block text-xs text-subtle" data-testid="route-broken">
+                          {brokenSummary(route)}. <button type="button" className="text-accent-text underline underline-offset-2" onClick={() => openEditor(cloneRoute(route))}>Fix</button>
+                        </span>
+                      )}
+                      {st.key === 'rejected' && (
+                        <span className="block text-xs text-subtle">The historian refuses every point. Routed is only the local buffer.</span>
+                      )}
                       {m.lastError && st.key !== 'paused' && (
                         <span className="mono block truncate text-xs text-subtle" title={m.lastError}>
                           {m.lastError}
@@ -195,8 +221,17 @@ export default function RoutesTab({ brokers }) {
                     <Td align="right" className="mono">
                       <Count value={m.matched} />
                     </Td>
-                    <Td align="right" className="mono">
-                      <Count value={m.published} />
+                    <Td align="right" className="mono" data-testid="route-routed">
+                      <Count value={m.routed ?? m.published} />
+                    </Td>
+                    <Td align="right" className="mono" data-testid="route-delivered">
+                      <Count value={m.delivered ?? m.published} />
+                    </Td>
+                    <Td align="right" className="mono" data-testid="route-pending">
+                      <Count value={m.pending} tone="warn" />
+                    </Td>
+                    <Td align="right" className="mono" data-testid="route-rejected">
+                      <Count value={m.rejected} tone="bad" />
                     </Td>
                     <Td align="right" className="mono">
                       <Count value={m.loopBlocked} tone="warn" />
@@ -356,6 +391,7 @@ export default function RoutesTab({ brokers }) {
           </div>
         </Dialog>
       )}
+      {conflictDialog}
       {confirmDialog}
     </>
   );

@@ -243,7 +243,10 @@ test('uns icons API: POST validates name and path data, list/delete round-trip',
     // list round-trip
     const list = await (await fetch(`${base}/api/uns/icons`)).json();
     assert.strictEqual(list.icons.length, 1);
-    assert.deepStrictEqual(list.icons[0], { name: 'my-tank', svgPath: 'M2 2 L22 22', id: created.body.id });
+    const { rev, updatedAt, ...icon } = list.icons[0]; // the store stamps every object with rev + updatedAt
+    assert.deepStrictEqual(icon, { name: 'my-tank', svgPath: 'M2 2 L22 22', id: created.body.id });
+    assert.strictEqual(rev, 2);
+    assert.ok(updatedAt);
 
     // delete
     const del = await fetch(`${base}/api/uns/icons/${created.body.id}`, { method: 'DELETE' });

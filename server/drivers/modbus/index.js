@@ -14,6 +14,7 @@
  * Unit ids behind one host:port share this driver's single socket.
  */
 
+const { connectAddress } = require('../runtime/pinnedAddress');
 const { ModbusClient } = require('./client');
 const { parseAddress, TABLES } = require('./address');
 const { decode, registerCount, probeDecodings } = require('./decode');
@@ -160,7 +161,8 @@ function normalizeDevice(device) {
     err.details = details;
     throw err;
   }
-  return { host: device.host.trim(), port, unitId, options, limits, tags };
+  const host = device.host.trim();
+  return { host, connectHost: connectAddress({ ...device, host }), port, unitId, options, limits, tags };
 }
 
 function mapFatal(res) {
@@ -224,7 +226,7 @@ function createDriver(device, deps = {}) {
     async connect() {
       if (client) await client.close().catch(() => {});
       client = new ModbusClient({
-        host: cfg.host, port: cfg.port, connectTimeoutMs: limits.connectTimeoutMs, socketFactory: deps.socketFactory,
+        host: cfg.connectHost, displayHost: cfg.host, port: cfg.port, connectTimeoutMs: limits.connectTimeoutMs, socketFactory: deps.socketFactory,
       });
       await client.connect();
       return {

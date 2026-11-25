@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent edits are no longer last-write-wins.** Every stored object has a `rev` and `updatedAt`; a save that
+  sends `rev` (body field or `If-Match`) against a newer stored object gets `409 { code: "stale", current }`
+  (secrets redacted); no `rev` keeps the old behaviour. Devices, profiles, brokers, routes, models, historians,
+  recordings, contracts and alert rules show a *changed elsewhere* dialog (Keep mine / Take theirs / Cancel).
+- **DNS re-resolution window for device targets closed.** The validated address is passed to the driver host and
+  connected to directly; names are re-validated on host restart and every 30 s, and a name that turns blocked
+  takes the device offline with the reason.
+- **Pipeline counters no longer lie for historian targets.** Routes report routed, delivered, pending and rejected
+  (also on `/metrics` and in the engine-metrics payload); the Routes and Historians tabs explain the split.
+- **Duplicate broker connections** are refused with a `409` naming the existing one (identity: protocol, host,
+  port, WebSocket path, user, subscribe filter).
+- **Dangling references** are rejected on save (`400`), deleting a used broker is refused (`409` naming the users),
+  and objects with a lost reference show as *Broken reference*.
+- **Alert rules expose real state** (`idle | breached | firing | disabled | broken`, countdown to firing, value,
+  last transition, webhook health) instead of the UI guessing from events.
+- Driver-host robustness is covered by tests (synchronous `createDriver` throw, a `connect()` that never settles,
+  SIGKILL mid-request, isolated devices, staggered connects, no child left after shutdown); a parked host now says so
+  on each of its devices.
+
 ### Added
 
 - **A new design system and a rebuilt interface.** Semantic colour tokens for a **light, dark and system theme**

@@ -6,11 +6,11 @@ import { usePolled } from '@/lib/usePolled';
 import { Button, Input, Field, Select, Checkbox, Badge, Banner, IconButton, Dialog, Drawer, StatusDot, StatusText, Timestamp, Path, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { READ_ONLY_REASON } from '@/store/selectors';
 import { BrokerSelect, Count, ListState, TabToolbar, useRo } from './shared';
-import { brokerName, formatBytes, recordingBody } from './helpers';
+import { brokenSummary, brokerName, formatBytes, recordingBody } from './helpers';
 
 const BLANK = { name: '', brokerId: '', filter: '', targetType: 'file', historianId: '' };
 
-const recState = (rec) => (rec.status.full ? { label: 'Full', tone: 'warn' } : rec.enabled ? { label: 'Recording', tone: 'good' } : { label: 'Paused', tone: 'neutral' });
+const recState = (rec) => (rec.broken?.length ? { label: 'Broken reference', tone: 'bad' } : rec.status.full ? { label: 'Full', tone: 'warn' } : rec.enabled ? { label: 'Recording', tone: 'good' } : { label: 'Paused', tone: 'neutral' });
 
 /** Recorder: capture a topic filter to a file (replayable) or a historian; pause, resume, peek, replay. */
 export default function RecorderTab({ brokers }) {
@@ -70,10 +70,12 @@ export default function RecorderTab({ brokers }) {
   // Pause keeps everything captured so far; Resume continues appending to the same recording.
   const togglePaused = async (rec) => {
     try {
-      await api.saveRecording({ id: rec.id, name: rec.name, brokerId: rec.brokerId, filter: rec.filter, target: rec.target, maxBytes: rec.maxBytes, enabled: !rec.enabled });
+      await api.saveRecording({ id: rec.id, rev: rec.rev, name: rec.name, brokerId: rec.brokerId, filter: rec.filter, target: rec.target, maxBytes: rec.maxBytes, enabled: !rec.enabled });
       reload();
       toast.success(rec.enabled ? 'Recording paused: captured data is kept' : 'Recording resumed');
     } catch (e) {
+      // Changed elsewhere since this list loaded: nothing was overwritten, show what is saved now.
+      if (e.status === 409 && e.code === 'stale') reload();
       toast.error(`Could not ${rec.enabled ? 'pause' : 'resume'} the recording: ${e.message}`);
     }
   };
@@ -193,6 +195,11 @@ export default function RecorderTab({ brokers }) {
                   </Td>
                   <Td className="max-w-[16rem]">
                     <StatusText tone={st.tone}>{st.label}</StatusText>
+                    {rec.broken?.length > 0 && (
+                      <span className="block text-xs text-subtle" data-testid="recording-broken">
+                        {brokenSummary(rec)}. Delete this recording and create it again on an existing broker.
+                      </span>
+                    )}
                     {rec.status.lastError && (
                       <span className="block truncate text-xs text-warn" title={rec.status.lastError}>
                         {rec.status.lastError}

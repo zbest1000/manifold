@@ -54,8 +54,9 @@ class EipClient {
    * @param {{host:string, port?:number, route:Buffer, connectTimeoutMs?:number,
    *   onFrame?:(buf:Buffer)=>void}} opts
    */
-  constructor({ host, port = 44818, route, connectTimeoutMs = 5000, onFrame }) {
-    this.host = host;
+  constructor({ host, displayHost, port = 44818, route, connectTimeoutMs = 5000, onFrame }) {
+    this.host = host; // the address the socket opens (a validated, pinned IP when the device has a hostname)
+    this.displayHost = displayHost || host; // what messages and logs call it
     this.port = port;
     this.route = route;
     this.connectTimeoutMs = connectTimeoutMs;
@@ -86,8 +87,8 @@ class EipClient {
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        this._die('timeout', `TCP connect to ${this.host}:${this.port} timed out after ${this.connectTimeoutMs} ms`);
-        reject(new EipTransportError('timeout', `TCP connect to ${this.host}:${this.port} timed out`));
+        this._die('timeout', `TCP connect to ${this.displayHost}:${this.port} timed out after ${this.connectTimeoutMs} ms`);
+        reject(new EipTransportError('timeout', `TCP connect to ${this.displayHost}:${this.port} timed out`));
       }, this.connectTimeoutMs);
       socket.once('connect', () => {
         if (settled) return;
@@ -102,7 +103,7 @@ class EipClient {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          reject(new EipTransportError('transport', `connect to ${this.host}:${this.port} failed: ${err.message}`));
+          reject(new EipTransportError('transport', `connect to ${this.displayHost}:${this.port} failed: ${err.message}`));
         }
         this._die('transport', `socket error: ${err.message}`);
       });
@@ -110,7 +111,7 @@ class EipClient {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          reject(new EipTransportError('transport', `connection to ${this.host}:${this.port} closed during connect`));
+          reject(new EipTransportError('transport', `connection to ${this.displayHost}:${this.port} closed during connect`));
         }
         this._die('transport', 'connection closed by peer');
       });

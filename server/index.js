@@ -18,6 +18,7 @@ const ProfileStore = require('./services/profileStore');
 const HistoryStore = require('./services/historyStore');
 const { AlertEngine } = require('./services/alertEngine');
 const { PipelineEngine } = require('./services/pipelineEngine');
+const { scanBroken } = require('./services/references');
 const Recorder = require('./services/recorder');
 const Replayer = require('./services/replayer');
 const { SchemaContracts } = require('./services/schemaContracts');
@@ -272,6 +273,12 @@ contracts.start();
 models.start();
 bindings.start();
 devices.start().catch((error) => console.warn(`devices: ${error.message}`));
+
+// Saved objects that point at a broker or historian that no longer exists cannot run. The API and
+// the UI mark them "broken reference"; say so in the log too instead of failing silently later.
+for (const b of scanBroken({ profiles, mqttManager })) {
+  console.warn(`startup: ${b.type} "${b.name}" has a broken reference: ${b.missing.map((m) => `${m.kind} ${m.id} (${m.field})`).join(', ')}`);
+}
 
 // Engine metrics stream over the socket the client already holds — the UI
 // shouldn't have to poll REST for numbers we can push.

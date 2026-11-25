@@ -767,6 +767,36 @@ class MqttManager extends EventEmitter {
     }
   }
 
+  /**
+   * Identity of an intake connection: protocol + host + port + wsPath +
+   * username + subscribe filter (host compared case-insensitively). Two
+   * connections to ONE broker with a different filter or user are legitimate
+   * (e.g. a narrow filter per tenant); an exact repeat double-counts every
+   * message, so POST/PUT refuse it. clientId is deliberately NOT part of the
+   * identity. Returns null for a config that does not validate (the caller
+   * reports that error separately).
+   */
+  brokerIdentity(config = {}) {
+    let info;
+    try {
+      info = this._prepareBroker('identity', config).info;
+    } catch {
+      return null;
+    }
+    return [info.protocol, String(info.host).toLowerCase(), info.port, info.wsPath || '', info.username || '', info.subscribeFilter].join('|');
+  }
+
+  /** The existing connection (other than `exceptId`) with the same identity, as { id, name }, or null. */
+  findDuplicateBroker(config, exceptId = null) {
+    const want = this.brokerIdentity(config);
+    if (!want) return null;
+    for (const [id, info] of this.connections) {
+      if (id === exceptId) continue;
+      if (this.brokerIdentity({ ...info, subscribeFilter: info.subscribeFilter }) === want) return { id, name: info.name || id };
+    }
+    return null;
+  }
+
   // Update a saved broker's config in place: validate first (a bad body must
   // not tear down the existing connection), then disconnect the old client and
   // start a fresh connect under the SAME id — subscriptions re-apply through

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { DeviceValidationError, DeviceConflictError } = require('../services/deviceManager');
+const { expectedRev, handleRevisionError } = require('../services/revision');
 
 // Southbound devices (Modbus TCP, S7, EtherNet/IP): CRUD, device profiles
 // and instances, connection test, tag validation, commissioning probe and
@@ -70,11 +71,13 @@ router.put('/profiles/:id', async (req, res) => {
   const { devices, profiles, bindings } = req.app.locals.services;
   if (!profiles.getIn('deviceProfiles', req.params.id)) return res.status(404).json({ error: 'Profile not found' });
   try {
-    const saved = await devices.saveProfile(req.body, req.params.id);
+    const { rev: _rev, ...body } = req.body || {};
+    const saved = await devices.saveProfile(body, req.params.id, { expectRev: expectedRev(req) });
     bindings.reconcile?.();
     await bindings.syncMonitors?.();
     res.json(saved);
   } catch (error) {
+    if (handleRevisionError(res, error, () => devices.listProfiles().find((x) => x.id === req.params.id) || null)) return;
     fail(res, error);
   }
 });
@@ -152,15 +155,17 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PUT /api/devices/:id
+// PUT /api/devices/:id — body `rev` (or If-Match) = the revision the client loaded; 409 { code:'stale', current } when it moved
 router.put('/:id', async (req, res) => {
   const { devices, profiles, bindings } = req.app.locals.services;
   if (!profiles.getIn('devices', req.params.id)) return res.status(404).json({ error: 'Device not found' });
   try {
-    const saved = await devices.save(req.body, req.params.id);
+    const { rev: _rev, ...body } = req.body || {};
+    const saved = await devices.save(body, req.params.id, { expectRev: expectedRev(req) });
     bindings.reconcile?.();
     res.json(saved);
   } catch (error) {
+    if (handleRevisionError(res, error, () => devices.list().find((d) => d.id === req.params.id) || null)) return;
     fail(res, error);
   }
 });

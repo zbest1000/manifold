@@ -76,6 +76,17 @@ name the problem; click the device for the drawer. The table below is organised 
 > The simulators can also be started on their own and told to misbehave in
 > tests; they are test doubles, not real devices.
 
+## Saving, duplicates and references
+
+| What you see | Cause | Fix |
+|---|---|---|
+| A dialog *was changed elsewhere* on save | Another tab, user or agent saved the item after you opened it | Read the differing fields; **Keep mine (overwrite)**, **Take theirs**, or **Cancel** to keep editing |
+| *This broker is already connected as ...* | Same protocol, host, port, user and subscribe filter as an existing connection | Edit that connection, or use a different subscribe filter or user |
+| *Cannot remove: still used by ...* | Routes, mappings, recordings, alert rules, models, contracts or Sparkplug sessions use it | Remove or repoint the named users first |
+| A row marked **Broken reference** | It names a broker or historian that is gone | Use **Fix** to pick an existing one, or recreate the missing item |
+| A route into a historian shows Out rising but Delivered at 0 | The historian rejects or dead-letters the points | See the Historians tab for the last error; Rejected counts what was refused |
+| A device is offline with *resolves to a blocked address* | Its hostname now resolves to a loopback, link-local or metadata address (or a private one without `MANIFOLD_ALLOW_PRIVATE_TARGETS`) | Fix DNS, or use the literal IP |
+
 ## Mappings and the editor
 
 | What you see | Likely cause | Fix |

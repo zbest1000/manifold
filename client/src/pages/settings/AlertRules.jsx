@@ -1,14 +1,67 @@
-import { useMemo, useState } from 'react';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Plus, Pencil, Trash2, ChevronRight } from 'lucide-react';
+import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import { api } from '@/lib/api';
 import { usePolled } from '@/lib/usePolled';
+import { socket } from '@/lib/socket';
+import { useConflict } from '@/components/ConflictDialog';
 import { Button, Input, Field, Select, Banner, Dialog, EmptyState, IconButton, LoadingState, Panel, StatusText, Timestamp, Table, THead, Th, Tr, Td, useConfirm } from '@/components/ui';
 import { EMPTY_RULE_FORM, RULE_LABEL, VALUE_OPS, alertTone, formFromRule, ruleBody, ruleScope, ruleStates } from './helpers';
 
 const STATUS_LABEL = { firing: 'Firing', resolved: 'Resolved', event: 'Event' };
+
+/** "12 s", "1 min 5 s": the countdown wording. */
+function countdown(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+/** A clock that ticks once a second while `active`, so a countdown moves without refetching. */
+function useNow(active) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+/** One rule's recent events, loaded when its row is opened. */
+function RuleEvents({ ruleId }) {
+  const q = usePolled(() => api.alertEvents(25, ruleId), { interval: 8000 });
+  const events = q.data?.events || [];
+  if (q.error && !q.data) return <p className="text-xs text-bad">Could not load this rule&apos;s events: {q.error.message}</p>;
+  if (q.loading && !q.data) return <p className="text-xs text-subtle">Loading events…</p>;
+  if (events.length === 0) return <p className="text-xs text-subtle">This rule has not fired yet since the server started.</p>;
+  return (
+    <Table caption="Recent events of this rule" wrapperClassName="max-h-56 overflow-y-auto" className="min-w-[32rem]">
+      <THead>
+        <Th>State</Th>
+        <Th>Detail</Th>
+        <Th align="right">When</Th>
+      </THead>
+      <tbody>
+        {events.map((e, i) => (
+          <Tr key={i}>
+            <Td className="py-1.5">
+              <StatusText tone={alertTone(e.status)}>{STATUS_LABEL[e.status] || e.status}</StatusText>
+            </Td>
+            <Td className="max-w-[22rem] truncate py-1.5 text-xs text-muted" title={e.detail}>
+              {e.detail}
+            </Td>
+            <Td align="right" className="py-1.5 text-xs text-muted">
+              <Timestamp value={e.ts} />
+            </Td>
+          </Tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
 
 /**
  * Alert rules: watch the namespace actively (a branch going quiet, a topic dying, unexpected topics, a
@@ -21,16 +74,32 @@ export default function AlertRules() {
   const [attempted, setAttempted] = useState(false);
   const [formError, setFormError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(null); // id of the rule whose recent events are shown
   const readOnly = useReadOnly();
   const [confirm, confirmDialog] = useConfirm();
+  const { resolveConflict, conflictDialog } = useConflict();
   const connected = brokers.filter((b) => b.status === 'connected');
 
-  const rulesQ = usePolled(() => api.listAlertRules(), { interval: 15_000 });
+  // 5 s: a breached rule's countdown is anchored to the server's clock, and a state change is also pushed (alert-state).
+  const rulesQ = usePolled(async () => ({ ...(await api.listAlertRules()), answeredAt: Date.now() }), { interval: 5_000 });
+  const reloadRules = rulesQ.reload;
+  useEffect(() => {
+    socket.on('alert-state', reloadRules);
+    socket.on('alert', reloadRules);
+    return () => {
+      socket.off('alert-state', reloadRules);
+      socket.off('alert', reloadRules);
+    };
+  }, [reloadRules]);
   const eventsQ = usePolled(() => api.alertEvents(200), { interval: 10_000 });
   const rules = useMemo(() => rulesQ.data?.rules || [], [rulesQ.data]);
   const events = useMemo(() => eventsQ.data?.events || [], [eventsQ.data]);
   const states = useMemo(() => ruleStates(rules, events), [rules, events]);
   const firing = rules.filter((r) => states[r.id]?.key === 'firing').length;
+  const breached = rules.filter((r) => states[r.id]?.key === 'breached').length;
+  // Time left on a breached rule = what the server said when it answered, minus what has passed since.
+  const answeredAt = rulesQ.data?.answeredAt ?? 0;
+  const now = useNow(breached > 0);
   const webhookFailures = rulesQ.data?.webhookFailures || 0;
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
@@ -63,7 +132,20 @@ export default function AlertRules() {
     setBusy(true);
     setFormError(null);
     try {
-      await api.saveAlertRule(ruleBody(form, connected[0]?.id));
+      const body = ruleBody(form, connected[0]?.id); // carries `rev`: a save over a newer version is refused (409), never silent
+      try {
+        await api.saveAlertRule(body);
+      } catch (e) {
+        const choice = await resolveConflict(e, { what: 'alert rule', mine: body });
+        if (choice === null) throw e;
+        if (choice === 'cancel') return;
+        if (choice === 'theirs') {
+          if (e.current) setForm(formFromRule(e.current));
+          toast('Showing the saved version');
+          return;
+        }
+        await api.saveAlertRule({ ...body, rev: e.current?.rev });
+      }
       closeForm();
       rulesQ.reload();
       toast.success('Alert rule saved');
@@ -125,6 +207,7 @@ export default function AlertRules() {
             <p className="text-sm text-muted">
               {rules.length} {rules.length === 1 ? 'rule' : 'rules'}
               {firing > 0 ? `, ${firing} firing` : ', none firing'}
+              {breached > 0 ? `, ${breached} breached, not firing yet` : ''}
             </p>
             <Button onClick={() => openForm()} disabled={addDisabled} title={addTitle}>
               <Plus size={14} aria-hidden="true" /> Add rule
@@ -143,17 +226,52 @@ export default function AlertRules() {
                 const st = states[r.id];
                 const name = r.name || RULE_LABEL[r.type];
                 const hasHook = Boolean(r.webhookUrl || r.hasWebhook);
-                return (
-                  <Tr key={r.id} highlight={form?.id === r.id}>
+                const wh = st.webhook;
+                const isOpen = open === r.id;
+                return [
+                  <Tr key={r.id} highlight={form?.id === r.id} data-testid={`alert-rule-${r.id}`} className={isOpen ? 'border-b-0' : undefined}>
                     <Td header>
-                      <span className="block font-medium text-fg">{name}</span>
-                      {r.name && <span className="block text-xs text-subtle">{RULE_LABEL[r.type]}</span>}
+                      <button
+                        type="button"
+                        onClick={() => setOpen(isOpen ? null : r.id)}
+                        aria-expanded={isOpen}
+                        aria-label={`${isOpen ? 'Hide' : 'Show'} recent events of ${name}`}
+                        className="-ml-1 flex items-center gap-1 rounded px-1 text-left font-medium text-fg hover:text-accent-text"
+                      >
+                        <ChevronRight size={13} aria-hidden="true" className={clsx('shrink-0 text-subtle transition-transform duration-150', isOpen && 'rotate-90')} />
+                        {name}
+                      </button>
+                      {r.name && <span className="block pl-4 text-xs text-subtle">{RULE_LABEL[r.type]}</span>}
                     </Td>
                     <Td>
                       <StatusText tone={st.tone}>{st.label}</StatusText>
+                      {st.key === 'breached' && (
+                        <span className="block text-xs text-subtle" data-testid="alert-breached">
+                          {st.topic && st.value !== null && st.value !== undefined ? <span className="mono">{st.value}</span> : null} past the limit; fires in{' '}
+                          <span className="mono tabular-nums text-warn" data-testid="alert-countdown">
+                            {countdown((st.remainingMs ?? 0) - (now - answeredAt))}
+                          </span>{' '}
+                          if it holds
+                        </span>
+                      )}
                       {st.key === 'firing' && (
                         <span className="block text-xs text-subtle">
                           since <Timestamp value={st.since} />
+                          {st.value !== null && st.value !== undefined && <> · <span className="mono">{st.value}</span></>}
+                          {st.firingTopics > 1 && <> · {st.firingTopics} topics</>}
+                        </span>
+                      )}
+                      {st.key === 'ok' && st.value !== null && st.value !== undefined && (
+                        <span className="block text-xs text-subtle">
+                          last value <span className="mono">{st.value}</span>
+                        </span>
+                      )}
+                      {st.key === 'broken' && (
+                        <span className="block text-xs text-subtle" data-testid="alert-broken">
+                          {(st.broken || []).map((b) => `${b.kind} "${b.id}" is missing`).join(', ')}.{' '}
+                          <button type="button" className="text-accent-text underline underline-offset-2" onClick={() => openForm(r)}>
+                            Fix
+                          </button>
                         </span>
                       )}
                     </Td>
@@ -162,15 +280,42 @@ export default function AlertRules() {
                         <span className="text-subtle">{brokerName(r.brokerId)}</span> <span className="mono">{ruleScope(r)}</span>
                       </span>
                     </Td>
-                    <Td className="text-xs">{hasHook ? <span className="text-fg">Configured</span> : <span className="text-subtle">None</span>}</Td>
+                    <Td className="text-xs">
+                      {!hasHook ? (
+                        <span className="text-subtle">None</span>
+                      ) : wh?.failures > 0 && wh.lastError ? (
+                        <>
+                          <StatusText tone="bad">Failing</StatusText>
+                          <span className="mono block max-w-[14rem] truncate text-subtle" title={wh.lastError}>
+                            {wh.failures}× · {wh.lastError}
+                          </span>
+                        </>
+                      ) : wh?.lastOkAt ? (
+                        <>
+                          <StatusText tone="good">Delivering</StatusText>
+                          <span className="block text-subtle">
+                            last <Timestamp value={wh.lastOkAt} />
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-fg">Configured</span>
+                      )}
+                    </Td>
                     <Td align="right" className="w-24">
                       <span className="inline-flex items-center justify-end gap-0.5">
                         <IconButton icon={Pencil} size={14} label={`${readOnly ? 'View' : 'Edit'} alert rule ${name}`} onClick={() => openForm(r)} />
                         <IconButton icon={Trash2} size={14} label={`Delete alert rule ${name}`} className="hover:bg-bad/10 hover:text-bad" onClick={() => remove(r)} disabled={readOnly} title={readOnly ? READ_ONLY_REASON : undefined} />
                       </span>
                     </Td>
-                  </Tr>
-                );
+                  </Tr>,
+                  isOpen && (
+                    <tr key={`${r.id}-events`}>
+                      <td colSpan={5} className="px-3 pb-3 pt-0" data-testid={`alert-events-${r.id}`}>
+                        <RuleEvents ruleId={r.id} />
+                      </td>
+                    </tr>
+                  )
+                ];
               })}
             </tbody>
           </Table>
@@ -313,6 +458,7 @@ export default function AlertRules() {
           </fieldset>
         </Dialog>
       )}
+      {conflictDialog}
       {confirmDialog}
     </div>
   );

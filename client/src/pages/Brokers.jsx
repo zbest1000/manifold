@@ -11,6 +11,7 @@ import {
   Table, THead, TableSort, Th, Tr, Td, useConfirm
 } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
+import { useConflict } from '@/components/ConflictDialog';
 
 /**
  * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md#list-page).
@@ -57,7 +58,11 @@ export default function Brokers() {
   const [showForm, setShowForm] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [editingRev, setEditingRev] = useState(undefined); // the revision the form was loaded at (conflict detection)
+  const [duplicate, setDuplicate] = useState(null); // 409 duplicate: { id, name } of the connection that already exists
+  const [refused, setRefused] = useState(null); // 409 in-use: { broker, usedBy } when a delete is refused
   const [busy, setBusy] = useState(false);
+  const { resolveConflict, conflictDialog } = useConflict();
   const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
   const [confirm, confirmDialog] = useConfirm();
 
@@ -98,12 +103,16 @@ export default function Brokers() {
   const closeForm = () => {
     setShowForm(false);
     setEditingId(null);
+    setEditingRev(undefined);
+    setDuplicate(null);
     setForm(BLANK);
   };
 
   const openNew = () => {
     setForm(BLANK);
     setEditingId(null);
+    setEditingRev(undefined);
+    setDuplicate(null);
     setShowForm(true);
   };
 
@@ -111,25 +120,42 @@ export default function Brokers() {
     if (!form.host) return toast.error('Host is required');
     if (isWs && !Number(form.port)) return toast.error('Port is required for WebSocket connections');
     setBusy(true);
+    setDuplicate(null);
+    const config = buildConfig();
     try {
       if (editingId) {
-        await api.updateBroker(editingId, buildConfig());
+        try {
+          await api.updateBroker(editingId, { ...config, rev: editingRev });
+        } catch (e) {
+          // Someone else saved this broker after the form was opened: show what differs, never overwrite silently.
+          const choice = await resolveConflict(e, { what: 'broker', mine: config });
+          if (choice === null) throw e;
+          if (choice === 'cancel') return;
+          if (choice === 'theirs') {
+            loadForm(await api.getBroker(editingId));
+            toast('Showing the saved version');
+            return;
+          }
+          await api.updateBroker(editingId, { ...config, rev: e.current?.rev });
+        }
         toast.success('Broker updated — reconnecting…');
       } else {
-        await api.connectBroker(buildConfig());
+        await api.connectBroker(config);
         toast.success('Connecting to broker…');
       }
       closeForm();
     } catch (e) {
-      toast.error(e.message);
+      // Same protocol, host, port, user and filter as a connection that exists: shown inline, in the form.
+      if (e.status === 409 && e.code === 'duplicate') setDuplicate(e.existing || { name: 'an existing connection' });
+      else toast.error(e.message);
     } finally {
       setBusy(false);
     }
   };
 
-  // Load a broker's known config into the form. Fields the server doesn't echo
-  // (password, timeouts) fall back to blanks/defaults.
-  const edit = (b) => {
+  // Fill the form from GET /api/mqtt/brokers/:id: the live row plus the saved settings (timeouts, keep-alive,
+  // TLS verification...) so an edit starts from the real values, not defaults. The password is never echoed.
+  const loadForm = ({ broker: b, config: c = {} }) => {
     setForm({
       ...BLANK,
       name: b.name || '',
@@ -144,10 +170,28 @@ export default function Brokers() {
       autoSubscribe: b.autoSubscribe !== false,
       subscribeFilter: b.subscribeFilter || '#',
       subscribeQos: b.subscribeQos ?? 1,
-      maxReconnect: b.maxReconnect || 0
+      maxReconnect: b.maxReconnect || 0,
+      keepalive: c.keepalive ?? BLANK.keepalive,
+      timeout: c.timeout ?? BLANK.timeout,
+      reconnect: c.reconnect !== false,
+      reconnectPeriod: c.reconnectPeriod ?? BLANK.reconnectPeriod,
+      cleanSession: c.cleanSession !== false,
+      rejectUnauthorized: c.rejectUnauthorized !== false
     });
     setEditingId(b.id);
+    setEditingRev(b.rev ?? c.rev);
+    setDuplicate(null);
     setShowForm(true);
+  };
+
+  // Load a broker's known config into the form. Fields the server doesn't echo
+  // (password, timeouts) fall back to blanks/defaults.
+  const edit = async (b) => {
+    try {
+      loadForm(await api.getBroker(b.id));
+    } catch (e) {
+      toast.error(e.message);
+    }
   };
 
   const disconnect = async (broker) => {
@@ -166,7 +210,9 @@ export default function Brokers() {
       await api.disconnectBroker(broker.id);
       toast.success('Disconnected and removed');
     } catch (e) {
-      toast.error(e.message);
+      // 409: routes, mappings, recordings, alert rules, models, contracts or Sparkplug host sessions still use it.
+      if (e.status === 409 && e.code === 'in-use') setRefused({ broker, usedBy: e.usedBy || [] });
+      else toast.error(e.message);
     }
   };
 
@@ -301,6 +347,14 @@ export default function Brokers() {
           }
         >
           <div className="space-y-5">
+            {duplicate && (
+              <Banner variant="error" title="This broker is already connected">
+                <span data-testid="broker-duplicate">
+                  &ldquo;{duplicate.name}&rdquo; uses the same protocol, host, port, user and subscribe filter. A second identical connection would count every
+                  message twice. Edit &ldquo;{duplicate.name}&rdquo; instead, or change the user or the subscribe filter here.
+                </span>
+              </Banner>
+            )}
             <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
               <legend className="mb-2 text-sm font-medium text-fg">Connection</legend>
               <Field label="Name" className="sm:col-span-2">
@@ -425,6 +479,27 @@ export default function Brokers() {
           </div>
         </Dialog>
       )}
+      {refused && (
+        <Dialog
+          title={`Can't remove "${refused.broker.name || refused.broker.host}"`}
+          description="Something still uses this broker. Removing it now would leave that running against a connection that no longer exists."
+          onClose={() => setRefused(null)}
+          footer={<Button onClick={() => setRefused(null)}>Close</Button>}
+        >
+          <div data-testid="broker-in-use">
+            <p className="mb-2 text-sm text-muted">Point these at another broker, or delete them first:</p>
+            <ul className="space-y-1 text-sm">
+              {refused.usedBy.map((u) => (
+                <li key={`${u.type}:${u.id}`} className="flex items-baseline gap-2">
+                  <span className="w-40 shrink-0 text-xs text-subtle">{u.type}</span>
+                  <span className="text-fg">{u.name}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Dialog>
+      )}
+      {conflictDialog}
       {confirmDialog}
     </div>
   );
