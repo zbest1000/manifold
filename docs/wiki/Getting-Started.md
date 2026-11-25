@@ -56,7 +56,7 @@ container restarts. See [Operations](Operations) for tokens and hardening.
 
 ## The first page
 
-![The Overview page](images/overview.png)
+![The Overview page of a running demo plant (a new install starts empty)](images/overview.png)
 
 **Overview** shows what is connected and what is wrong. A new install is empty: **Needs
 attention** is quiet, **Sources** reads `0 / 0` for everything, and the sidebar groups the rest of the

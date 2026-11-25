@@ -9,7 +9,7 @@ Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, CESMII 
 **[Website](https://zbest1000.github.io/manifold/)** · **[Docs / Wiki](../../wiki)** · **[Architecture](ARCHITECTURE.md)** · **[Changelog](CHANGELOG.md)**
 
 <p align="center">
-  <img src="docs/wiki/images/overview.png" alt="Manifold Overview page in the dark theme: sources, data flow, connections and latest values for a demo plant with six devices, one of them unreachable" width="850">
+  <img src="docs/wiki/images/overview.png" alt="Manifold Overview page in the dark theme: Needs attention, sources, data flow, connections and latest values for a demo plant with eight PLCs and an OPC UA server, one PLC unreachable" width="850">
 </p>
 
 <p align="center">
@@ -198,6 +198,26 @@ npm run lint             # ESLint for server, client and mcp
 ```
 
 CI additionally runs an integration job against real EMQX, InfluxDB, TimescaleDB, and Timebase containers. Details in [ARCHITECTURE.md](ARCHITECTURE.md#testing).
+
+### Documentation screenshots
+
+The images in `docs/wiki/images/` (and the copies in `site/assets/`) are generated, not hand-made:
+
+```bash
+cd client && npm run build && npm run docs:shots                # all of them
+npm run docs:shots -- --only overview,trends                    # some of them
+npm run docs:shots -- --out /tmp/shots                          # somewhere else
+npm run docs:shots -- --serve    # seed the demo plant and keep it running; then, in another shell:
+npm run docs:shots -- --attach --only opcua                     # capture against it
+```
+
+`client/scripts/capture-docs.js` starts a demo plant on 127.0.0.1 from the test simulators (an MQTT broker with an
+ISA-95 namespace and Sparkplug B edge nodes, Modbus TCP, S7 and EtherNet/IP simulators, a small OPC UA server and two
+historian stand-ins), the real backend on a throwaway data directory, seeds it through the REST API (devices, a
+profile, an OPC UA connection, mappings, routes, historians, alert rules, a recording) and drives Chromium: 1440 x 900
+at device scale 2, phone images 390 x 844, dark unless the name ends in `-light`. Nothing leaves the machine. Set
+`PW_CHROMIUM_PATH` to use a browser other than Playwright's own. When a page changes, update its step in the script's
+`shots()` list, re-run, and look at every image before committing.
 
 ## License
 

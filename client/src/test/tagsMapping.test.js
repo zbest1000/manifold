@@ -3,7 +3,7 @@ import {
   stateFromBinding, newState, buildMapping, withTagDefs, switchSelectMode, makeRow, entryOf, overrideOf, renameRow, setOv,
   matchTag, rowVerdict, publishingRows, bulkEnable, bulkSet, bulkContextKey, bulkRename, bulkCopy, bulkReset,
   camelCase, snakeCase, stripPrefix, parseGrid, applyPaste, computeTopics, diffTopics, validateMapping, rowErrors, contextErrors,
-  contextRows, contextObject, contextPlaceholders, visibleErrors, focusDraft, rowKeyFromMessage, suggestionMap
+  contextRows, contextObject, contextPlaceholders, visibleErrors, focusDraft, rowKeyFromMessage, suggestionMap, inheritedValue
 } from '@/pages/tags/mappingModel';
 
 const brokers = [{ id: 'b1', name: 'Local' }];
@@ -287,5 +287,24 @@ describe('preview helpers', () => {
     const d = focusDraft(s, s.rows[3]);
     expect(d.source.tags).toEqual(['press']);
     expect(d.target.contextMode).toBe('payload');
+  });
+});
+
+describe('inheritedValue: what a row shows when the mapping sets nothing', () => {
+  const server = {
+    metadata: { unit: 'bpm', description: 'Filler output speed', range: { min: 0, max: 600 }, name: 'filler_speed' },
+    origins: { unit: 'server', description: 'server', range: 'server', name: 'mapping' }
+  };
+  it('a reopened OPC UA row (no browse metadata) takes the server-reported unit, description and range', () => {
+    const row = makeRow({ srcType: 'opcua', address: 'ns=1;s=Line1.Filler.Speed', def: { browseName: 'filler_speed' } });
+    expect(inheritedValue(row, server, 'unit')).toBe('bpm');
+    expect(inheritedValue(row, server, 'description')).toBe('Filler output speed');
+    expect(inheritedValue(row, server, 'range')).toEqual({ min: 0, max: 600 });
+  });
+  it('the device definition wins, and a value the mapping itself set is never shown as inherited', () => {
+    const row = makeRow({ srcType: 'device', address: 'temp', def: { unit: 'degC' } });
+    expect(inheritedValue(row, server, 'unit')).toBe('degC');
+    expect(inheritedValue(row, { metadata: { name: 'x' }, origins: { name: 'mapping' } }, 'name')).toBeUndefined();
+    expect(inheritedValue(row, null, 'description')).toBeUndefined();
   });
 });

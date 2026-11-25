@@ -11,7 +11,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "e2e": "playwright test --trace off"
+    "e2e": "playwright test --trace off",
+    "docs:shots": "node scripts/capture-docs.js"
   },
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.3.0",

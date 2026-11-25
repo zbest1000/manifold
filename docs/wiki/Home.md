@@ -6,7 +6,7 @@
 
 ![Live UNS topology with the boiler-1 asset selected](images/uns-topology.png)
 
-> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots in this wiki come from the real app running against simulated devices and a simulated plant; the light theme has its own captures in [User interface](User-Interface).*
+> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots in this wiki come from the real app running against simulated devices and a simulated plant, captured by `npm run docs:shots` (see the README); the light theme has its own captures in [User interface](User-Interface).*
 
 ---
 

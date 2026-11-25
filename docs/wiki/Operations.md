@@ -20,7 +20,7 @@ connection with its state, problems first) and **Latest values**:
 
 ![The Health page](images/health.png)
 
-For deeper self-observability, **Health** (the page header says "System") renders Manifold's own
+For deeper self-observability, **Health** renders Manifold's own
 Prometheus `/metrics` in the browser: process uptime, memory, and event-loop
 delay; per-broker message rate and topic counts; and every engine counter
 (pipelines, outbox, contracts, alerts, bindings, recorder) — each with a rolling

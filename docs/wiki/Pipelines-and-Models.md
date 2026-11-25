@@ -28,11 +28,11 @@ flowchart LR
 (**New route**, **New model**, **Add historian**, ...), a dialog for the form, and the same
 read-only behaviour for viewer sessions.
 
-![The Routes tab: three running routes with in, out, blocked and error counters](images/pipelines.png)
+![The Routes tab: three running routes, two into historians and one back to the broker, with In, Routed, Delivered, Pending, Rejected, Blocked and Errors counters](images/pipelines.png)
 
 **Routes.** One row per route: its name, `source filter -> N transforms -> target`, **State**
 (*Running*, *Paused*, *Failing* when it has errors, *Loop blocked* when a loop guard fired),
-and the counters **In**, **Out**, **Blocked** and **Errors**. For a route into a historian, **Out** means *admitted to the outbox*, which is not the same as stored: the row also shows **Delivered** (accepted by the historian), **Pending** (queued or spilled to disk) and **Rejected** (dead-lettered or unrepresentable), so a historian that refuses everything is visible. The same numbers are on `/metrics` (`manifold_pipeline_messages_total{result=routed|delivered|rejected}`, `manifold_pipeline_pending_points`, `manifold_outbox_pending_points`) and per historian on the Historians tab. Per row: a **Pause route** /
+and the counters **In** (matched the source filter), **Routed** (handed on), **Delivered** (accepted by the target: the publish succeeded, or the historian stored it), **Pending** (queued or spilled to disk), **Rejected** (dead-lettered or unrepresentable), **Blocked** (stopped by the loop guard) and **Errors**; each column header explains itself on hover. For a route into a historian, **Routed** means *admitted to the outbox*, which is not the same as stored, so a historian that refuses everything is visible as Rejected (and in **Needs attention** on the Overview). The same numbers are on `/metrics` (`manifold_pipeline_messages_total{result=routed|delivered|rejected}`, `manifold_pipeline_pending_points`, `manifold_outbox_pending_points`) and per historian on the Historians tab. Per row: a **Pause route** /
 **Resume route** button, **Edit route** and **Delete route**. Pausing keeps the route and stops it.
 
 **The route editor** (a dialog; **New route** or **Edit route**) reads top to bottom as the
@@ -49,7 +49,7 @@ route does:
 - **Dry run**: **Run dry run** applies the current, unsaved settings to recent messages and shows
   each input topic and payload beside what would come out. Nothing is published.
 
-![The route editor with a three-step transform chain](images/route-editor.png)
+![The route editor with a three-step transform chain: To number, Re-path into the UNS, Wrap as TVQ](images/route-editor.png)
 
 > **The TVQ hint.** When the source topic carries a `{ v, t, q }` envelope (a mapping's output, for
 > example) and the target is a historian, the editor shows **This topic carries a value/time/quality

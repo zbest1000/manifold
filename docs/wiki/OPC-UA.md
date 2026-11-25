@@ -37,7 +37,10 @@ server does not trust Manifold's certificate yet (step 1). Certificates live in
 
 ## Browse and monitor
 
-The explorer shows the address space as a graph, in 3D or as a tree. In the tree, arrow keys move and
+![The OPC UA page: one connected server (security None, six nodes monitored for a mapping) and its address space in the tree, browsed down to the filler's Speed variable with its live value, quality and attributes](images/opcua.png)
+
+The list shows each connection with its **State**, **Security**, how many nodes are **Monitored** and when it
+connected; **Exploring** marks the one the explorer below shows. The explorer shows the address space as a graph, in 3D or as a tree. In the tree, arrow keys move and
 expand (→ expands, ← collapses), Enter selects. Select a variable to see its attributes (with
 engineering units and range when the server publishes them) and choose **Monitor value**. Monitored
 values stay monitored when you select other nodes; **Stop monitoring** ends them. A node a tag binding
