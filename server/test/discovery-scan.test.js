@@ -431,6 +431,25 @@ test('an MQTT broker that requires credentials is still identified', () =>
     }
   }));
 
+// Counts the scanner's own sockets in flight (connect probe, then identification, one after the other
+// per job) by wrapping the two methods that open them.
+function countInFlight(d) {
+  let inFlight = 0;
+  let peak = 0;
+  for (const name of ['probePort', 'identifyDevice']) {
+    const real = d[name].bind(d);
+    d[name] = async (...args) => {
+      peak = Math.max(peak, ++inFlight);
+      try {
+        return await real(...args);
+      } finally {
+        inFlight--;
+      }
+    };
+  }
+  return { peak: () => peak };
+}
+
 test('per-host limit: never more simultaneous connections to one IP than perHost', () =>
   loopbackOn(async () => {
     const tarpits = await Promise.all(Array.from({ length: 8 }, () => fake(() => {})));
@@ -438,14 +457,14 @@ test('per-host limit: never more simultaneous connections to one IP than perHost
       for (const perHost of [1, 2]) {
         const r = recorder();
         const d = new DiscoveryService(r.io);
-        let peak = 0;
-        const sampler = setInterval(() => {
-          peak = Math.max(peak, tarpits.reduce((n, t) => n + t.open, 0));
-        }, 5);
+        // Count the engine's own sockets in flight rather than the listeners' open sockets: a listener
+        // sees a close only after the kernel delivers it, so under load it can briefly count sockets
+        // the scanner has already destroyed.
+        const flight = countInFlight(d);
         await d.startScan({ range: '127.0.0.1/32', includeI3x: false, mqttPorts: [], opcuaPorts: [], modbusPorts: tarpits.map((t) => t.port), perHost, concurrency: 64, identifyTimeoutMs: 500, timeoutMs: 500 });
         await done(d);
-        clearInterval(sampler);
-        assert.ok(peak >= 1, 'the sampler saw connections');
+        const peak = flight.peak();
+        assert.ok(peak >= 1, 'the scan opened connections');
         assert.ok(peak <= perHost, `perHost=${perHost} but ${peak} connections were open at once`);
         if (perHost === 2) assert.strictEqual(peak, 2, 'the limit is used, not just respected');
       }
@@ -461,26 +480,10 @@ test('overall concurrency is bounded', () =>
     const servers = [first, ...(await Promise.all(hosts.slice(1).map((h) => fake(() => {}, h, first.port))))];
     try {
       const d = new DiscoveryService(recorder().io);
-      // Count the engine's own sockets in flight (connect probe, then identification, one after the
-      // other per job). The listeners' view lags: they see a close only after the kernel delivers it,
-      // so under load they can briefly count sockets the scanner has already destroyed.
-      let inFlight = 0;
-      let peak = 0;
-      const counted = (name) => {
-        const real = d[name].bind(d);
-        d[name] = async (...args) => {
-          peak = Math.max(peak, ++inFlight);
-          try {
-            return await real(...args);
-          } finally {
-            inFlight--;
-          }
-        };
-      };
-      counted('probePort');
-      counted('identifyDevice');
+      const flight = countInFlight(d);
       await d.startScan({ range: '127.0.1.0/28', includeI3x: false, mqttPorts: [], opcuaPorts: [], modbusPorts: [first.port], concurrency: 4, perHost: 1, identifyTimeoutMs: 500, timeoutMs: 500 });
       await done(d);
+      const peak = flight.peak();
       assert.ok(peak <= 4, `concurrency=4 but ${peak} open at once`);
       assert.ok(peak >= 3, `expected the scan to use its concurrency, saw ${peak}`);
     } finally {
