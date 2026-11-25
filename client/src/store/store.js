@@ -363,9 +363,9 @@ export function initRealtime() {
     for (const st of stats) s.upsertBroker({ id: st.brokerId, status: st.status, metrics: st.metrics });
   });
 
-  socket.on('opcua-connection-attempt', () => refreshOpcua());
-  socket.on('opcua-connected', () => refreshOpcua());
-  socket.on('opcua-disconnected', () => refreshOpcua());
+  // The connection list carries status, monitored nodes and errors: re-read it on every change of
+  // those (coalesced, so a burst of monitor events costs one request).
+  for (const e of ['opcua-connection-attempt', 'opcua-connected', 'opcua-disconnected', 'opcua-reconnecting', 'opcua-monitor-started', 'opcua-monitor-stopped', 'opcua-error']) socket.on(e, () => refreshOpcuaSoon());
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
 
   socket.on('device-state', ({ deviceId, ...st } = {}) => deviceId && useStore.getState().setDeviceState(deviceId, st));
@@ -432,8 +432,12 @@ export function initRealtime() {
   socket.on('opcua-connected', () => s.pushLog('info', 'opcua', 'OPC UA connected'));
   socket.on('opcua-disconnected', () => s.pushLog('info', 'opcua', 'OPC UA disconnected'));
   socket.on('opcua-reconnecting', () => s.pushLog('warning', 'opcua', 'OPC UA reconnecting'));
-  socket.on('opcua-error', ({ error } = {}) => {
-    if (error) reportError(s, 'opcua', error);
+  socket.on('opcua-error', ({ error, initial } = {}) => {
+    // A refused first connect is answered by the HTTP request that started it (the connection form's
+    // banner, Discovery's toast): log it, but do not toast it a second time.
+    if (!error) return;
+    if (initial) s.pushLog('error', 'opcua', humanizeError(error).summary, { raw: error });
+    else reportError(s, 'opcua', error);
   });
 }
 
@@ -441,6 +445,16 @@ export function initRealtime() {
 // index directly (the render path is identical to live ingestion).
 if (import.meta.env?.DEV && typeof window !== 'undefined') {
   window.__tcStore = useStore;
+}
+
+let opcuaRefreshTimer = null;
+/** Re-read the OPC UA connection list once, shortly (bursts of events coalesce into one request). */
+export function refreshOpcuaSoon(delayMs = 150) {
+  if (opcuaRefreshTimer) return;
+  opcuaRefreshTimer = setTimeout(() => {
+    opcuaRefreshTimer = null;
+    refreshOpcua();
+  }, delayMs);
 }
 
 async function refreshOpcua() {

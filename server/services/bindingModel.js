@@ -124,6 +124,26 @@ function observedTopics(profiles, brokerId, filter) {
   }
 }
 
+/**
+ * Server-side metadata of OPC UA nodes (EngineeringUnits, EURange, DataType, Description), read by
+ * the runtime once per (re)connect: `(connectionId, nodeId) -> { type, unit, range: {min,max},
+ * description } | null`. Attached to the profile store like the topic source, so the compiled
+ * index and the preview see the same values. It is the LOWEST layer: mapping settings win.
+ */
+const serverMetaResolvers = new WeakMap();
+function attachServerMeta(profiles, resolve) {
+  if (profiles && typeof profiles === 'object') serverMetaResolvers.set(profiles, resolve);
+}
+function serverMetaOf(profiles, connectionId, nodeId) {
+  const fn = profiles && serverMetaResolvers.get(profiles);
+  if (!fn || !connectionId) return null;
+  try {
+    return fn(connectionId, nodeId) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** The key a tag publishes under (topic level, object member, _meta property). MQTT sources keep levels. */
 const nameKey = (unit, name) => (unit?.sourceType === 'mqtt' ? mq.slugPath(name) : slug(name));
 
@@ -235,11 +255,12 @@ const overridesOf = (src) => (cx.isPlainObject(src?.overrides) ? src.overrides :
  * 'none'). `dt` is the device tag definition (null for OPC UA entries), `e`
  * the binding entry, `ov` source.overrides[key]. Mapping beats device.
  */
-function buildTag(address, dt, e, ov, unit, details) {
+function buildTag(address, dt, e, ov, unit, details, sm = null) {
   const ent = e || {};
   const mv = (k) => (hasVal(ent[k]) ? ent[k] : ov && hasVal(ov[k]) ? ov[k] : undefined);
   const dv = (k) => (dt && cx.validDeviceField(k, dt[k]) ? dt[k] : undefined);
-  const tag = { address, name: ent.name || ov?.name || dt?.property || address, meta: pickMeta(dt, ov, ent) };
+  // `sm`: what the OPC UA server says about the node, below the device and the mapping.
+  const tag = { address, name: ent.name || ov?.name || dt?.property || address, meta: pickMeta(sm, dt, ov, ent) };
 
   const displayName = mv('displayName') ?? dv('displayName');
   const limits = mv('limits') ?? dv('limits');
@@ -285,7 +306,7 @@ function buildTag(address, dt, e, ov, unit, details) {
 
   if (details) {
     const o = { name: hasVal(ent.name) || hasVal(ov?.name) ? 'mapping' : dt?.property ? 'device' : 'default' };
-    for (const f of ['type', 'unit', 'description', 'range']) o[f] = hasVal(ent[f]) || hasVal(ov?.[f]) ? 'mapping' : hasVal(dt?.[f]) ? 'device' : 'default';
+    for (const f of ['type', 'unit', 'description', 'range']) o[f] = hasVal(ent[f]) || hasVal(ov?.[f]) ? 'mapping' : hasVal(dt?.[f]) ? 'device' : hasVal(sm?.[f]) ? 'server' : 'default';
     for (const f of ['displayName', 'limits', 'states']) o[f] = mv(f) !== undefined ? 'mapping' : dv(f) !== undefined ? 'device' : 'default';
     for (const f of ['statesMode', 'dataType', 'scale', 'offset', 'precision', 'deadband']) o[f] = mv(f) !== undefined ? 'mapping' : 'default';
     o.context = mapCtx && Object.keys(mapCtx).length ? 'mapping' : devCtx ? 'device' : 'default';
@@ -447,7 +468,8 @@ function expandUnits(b, profiles, opts = {}) {
     const entries = tagEntries(src);
     for (const e of entries === 'all' ? [] : entries) {
       if (!keep(unit, e.address, null, e, false)) continue;
-      unit.tags.push(buildTag(e.address, null, e, null, unit, details));
+      const sm = src.type === 'opcua' ? serverMetaOf(profiles, unit.sourceId, e.address) : null;
+      unit.tags.push(buildTag(e.address, null, e, null, unit, details, sm));
     }
   }
   return [unit];
@@ -1294,6 +1316,8 @@ module.exports = {
   BindingValidationError,
   attachTopicSource,
   observedTopics,
+  attachServerMeta,
+  serverMetaOf,
   addMqttTopic,
   nameKey,
   DEFAULT_OBJECT_CAP,

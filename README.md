@@ -156,6 +156,7 @@ Every variable the server reads. All are optional.
 | `MANIFOLD_SPARKPLUG_QUEUE_MAX` | `5000` | Sparkplug messages queued un-coalesced per 100 ms flush, per broker. Beyond it a topic falls back to latest-wins for the window and `sparkplugCoalesced` counts it |
 | `MANIFOLD_SPARKPLUG_QUEUE_BYTES` | `8388608` (8 MiB) | Payload-byte bound for the same queue |
 | `MANIFOLD_HISTORIAN_TIMEOUT_MS` | `15000` | Deadline on historian HTTP calls |
+| `MANIFOLD_RETAINED_LEDGER` | `<data dir>/binding-retained.json` | File that records the retained topics mappings own, so orphaned retained topics can be cleared after a restart or an edit made while the target broker was away |
 
 The server also reads a `.env` file in its working directory (`dotenv`). Every `MANIFOLD_*`, `PORT` and `CLIENT_URL` variable that `grep -rn "process.env\." server/` finds outside tests is in the table above (checked November 2026). Test-only variables: `INTEGRATION`, `INTEGRATION_EMQX_HOST`/`_PORT`/`_WS_PORT`, `INTEGRATION_INFLUX_URL`/`_TOKEN`/`_ORG`/`_BUCKET`, `INTEGRATION_TSDB_HOST`/`_PORT` and `INTEGRATION_TIMEBASE_URL` select the real-service integration test; the Playwright suite uses `E2E_PORT` and `PW_CHROMIUM_PATH`.
 
@@ -167,7 +168,7 @@ The MCP server (`mcp/`) reads `MANIFOLD_API_URL` and `MANIFOLD_AUTH_TOKEN`. The 
 - **Timebase.** The Timebase REST API reference could not be read when the writer was built, so details of the direct historian path (ordering of old samples, the shape of a Bad sample without a value, resolution, quality codes, batch limits, tokens) are **unverified**. InfluxDB and TimescaleDB are exercised against real containers in CI.
 - **WebGL and 3D.** The WebGL and three.js canvases were only run on a software renderer (SwiftShader) in headless Chromium; their performance on real GPUs is untested.
 - **Accessibility.** Automated axe checks on every route (serious and critical findings fail CI), in both themes at 1440 and 390 px. No screen-reader or keyboard-only session was recorded as part of the test suite beyond the specific keyboard paths the specs drive.
-- **Known gaps** (full list in the [changelog](CHANGELOG.md) and [review](docs/REVIEW-2026-11.md)): MQTT-topic selections in the Tags page compile to pipeline routes, not mappings; two browser tabs editing the same item are last-write-wins; field order inside a payload is fixed; MQTT, OPC UA and historian endpoints are outside the egress guard by decision.
+- **Known gaps** (full list in the [changelog](CHANGELOG.md) and [review](docs/REVIEW-2026-11.md)): MQTT, OPC UA and historian endpoints are outside the egress guard by decision; a Sparkplug host STATE session follows a broker edit only when started again. (MQTT-topic selections now create mappings, concurrent edits are refused with a conflict dialog instead of last-write-wins, and payload field order is editable.)
 
 ## MCP server
 

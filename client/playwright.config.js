@@ -40,11 +40,14 @@ export default defineConfig({
     // The app follows the OS theme by default; the suite runs dark unless a test picks a theme.
     colorScheme: 'dark'
   },
+  // Tests are routed to projects by tag instead of being skipped: @touch tests need a phone with a
+  // touchscreen and run only in mobile-touch; @desktop-only tests stay out of the phone projects.
   projects: [
-    // Every spec runs on desktop except the phone-only one, so a new *.spec.js file needs no registration here.
-    { name: 'desktop', use: desktop, testMatch: /.*\.spec\.js$/, testIgnore: ['**/mobile-nav.spec.js'] },
+    // Every spec runs on desktop except the phone-only ones, so a new *.spec.js file needs no registration here.
+    { name: 'desktop', use: desktop, testMatch: /.*\.spec\.js$/, testIgnore: ['**/mobile-nav.spec.js'], grepInvert: /@touch/ },
     // Canvas renderers again at devicePixelRatio 2: backing-store size and hit-testing must hold on HiDPI.
-    { name: 'hidpi', use: { ...desktop, deviceScaleFactor: 2 }, testMatch: ['canvas.spec.js'] },
-    { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js', 'canvas.spec.js'] }
+    { name: 'hidpi', use: { ...desktop, deviceScaleFactor: 2 }, testMatch: ['canvas.spec.js'], grepInvert: /@touch/ },
+    { name: 'mobile', use: mobile, testMatch: ['routes.spec.js', 'mobile-nav.spec.js'], grepInvert: /@desktop-only/ },
+    { name: 'mobile-touch', use: mobile, testMatch: ['canvas.spec.js'], grep: /@touch/ }
   ]
 });

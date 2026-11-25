@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Plus, ListTree, Search, Share2, Box } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
-import { useStore } from '@/store/store';
+import { useStore, refreshOpcuaSoon } from '@/store/store';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { api } from '@/lib/api';
-import { socket } from '@/lib/socket';
 import { usePolled } from '@/lib/usePolled';
 import ForceGraph from '@/graph/ForceGraph';
 import ForceGraph3D from '@/graph/ForceGraph3D';
@@ -17,6 +16,7 @@ import GraphTree from '@/components/GraphTree';
 import { downloadDataUrl, downloadJson } from '@/lib/download';
 import { Button, EmptyState, Banner, LoadingState, PageBody, SegmentedControl, Input, useConfirm } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
+import { useConflict } from '@/components/ConflictDialog';
 import ConnectionForm from './opcua/ConnectionForm';
 import ConnectionsTable from './opcua/ConnectionsTable';
 import NodePanel from './opcua/NodePanel';
@@ -50,6 +50,9 @@ export default function OpcUa() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...BLANK_FORM });
   const [editingId, setEditingId] = useState(null);
+  const [editingRev, setEditingRev] = useState(null); // the stored revision the edit is based on (409 stale if someone saved since)
+  const [duplicate, setDuplicate] = useState(null); // 409 duplicate: { id, name } of the connection that already exists
+  const { resolveConflict, conflictDialog } = useConflict();
   const [attempted, setAttempted] = useState(false); // validation shows only after the first submit
   const [submitError, setSubmitError] = useState(null);
   const [failedAttempts, setFailedAttempts] = useState(0); // refreshes the certificate list after a refused connect
@@ -69,28 +72,8 @@ export default function OpcUa() {
     return list;
   });
 
-  // The store refreshes the list on connect/disconnect; monitor changes and the start of a reconnect
-  // are not among those, so the page refreshes on them itself (coalesced, a burst costs one request).
-  const refreshTimer = useRef(null);
-  const refreshList = useCallback(() => {
-    if (refreshTimer.current) return;
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      api
-        .listOpcua()
-        .then((list) => setOpcua(list.connections))
-        .catch(() => {});
-    }, 150);
-  }, [setOpcua]);
-  useEffect(() => {
-    const events = ['opcua-monitor-started', 'opcua-monitor-stopped', 'opcua-reconnecting', 'opcua-error'];
-    for (const e of events) socket.on(e, refreshList);
-    return () => {
-      for (const e of events) socket.off(e, refreshList);
-      clearTimeout(refreshTimer.current);
-      refreshTimer.current = null;
-    };
-  }, [refreshList]);
+  // Live updates (connect, reconnect, monitor changes, errors) are the store's: it re-reads the list.
+  const refreshList = refreshOpcuaSoon;
 
   const connectionId = pickConnectionId(opcua, pickedId);
   const setConnectionId = setPickedId;
@@ -131,6 +114,8 @@ export default function OpcUa() {
   const closeForm = () => {
     setShowForm(false);
     setEditingId(null);
+    setEditingRev(null);
+    setDuplicate(null);
     setForm({ ...BLANK_FORM });
     setEndpoints(null);
     setAttempted(false);
@@ -139,6 +124,8 @@ export default function OpcUa() {
 
   const openNewForm = () => {
     setEditingId(null);
+    setEditingRev(null);
+    setDuplicate(null);
     setForm({ ...BLANK_FORM });
     setEndpoints(null);
     setAttempted(false);
@@ -146,25 +133,42 @@ export default function OpcUa() {
     setShowForm(true);
   };
 
-  const connect = async () => {
+  const connect = async (override = null) => {
     if (busy || readOnly) return;
     setAttempted(true);
     setSubmitError(null);
+    setDuplicate(null);
     if (formProblem(form)) return;
     setBusy(true);
+    const body = editingId ? { ...form, ...(override?.rev !== undefined ? { rev: override.rev } : editingRev ? { rev: editingRev } : {}) } : form;
     try {
-      const res = editingId ? await api.updateOpcuaConnection(editingId, form) : await api.connectOpcua(form);
+      const res = editingId ? await api.updateOpcuaConnection(editingId, body) : await api.connectOpcua(form);
       toast.success(editingId ? 'Connection updated' : 'Connected to OPC UA server');
       closeForm();
       setConnectionId(res.connectionId);
       const list = await api.listOpcua();
       setOpcua(list.connections);
     } catch (e) {
-      setSubmitError(e.message);
-      setFailedAttempts((n) => n + 1);
       // The server announces a connection while it is connecting and drops it again when that fails;
       // re-read the list so a failed attempt does not leave a ghost "connecting" row behind.
       api.listOpcua().then((list) => setOpcua(list.connections)).catch(() => {});
+      if (e.status === 409 && e.code === 'duplicate') {
+        setDuplicate(e.existing || { name: 'an existing connection' });
+        return;
+      }
+      if (e.status === 409 && e.code === 'stale') {
+        setBusy(false);
+        // compare what a stored connection carries (not form-only switches such as trust-on-connect)
+        const choice = await resolveConflict(e, { what: 'OPC UA connection', mine: { name: form.name, endpointUrl: form.endpointUrl, securityMode: form.securityMode, securityPolicy: form.securityPolicy, username: form.username } });
+        if (choice === 'mine') return connect({ rev: e.current?.rev ?? 0 });
+        if (choice === 'theirs' && e.current) {
+          setForm(formFromConnection(e.current));
+          setEditingRev(e.current.rev ?? null);
+        }
+        return;
+      }
+      setSubmitError(e.message);
+      setFailedAttempts((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -175,6 +179,8 @@ export default function OpcUa() {
   const edit = (c) => {
     setForm(formFromConnection(c));
     setEditingId(c.id);
+    setEditingRev(c.rev ?? null);
+    setDuplicate(null);
     setEndpoints(null);
     setAttempted(false);
     setSubmitError(null);
@@ -361,13 +367,16 @@ export default function OpcUa() {
           busy={busy}
           problem={problem}
           submitError={submitError}
+          duplicate={duplicate}
+          onEditExisting={duplicate?.id && opcua.some((c) => c.id === duplicate.id) ? () => edit(opcua.find((c) => c.id === duplicate.id)) : null}
           failedAttempts={failedAttempts}
           onDiscover={discover}
-          onSubmit={connect}
+          onSubmit={() => connect()}
           onCancel={closeForm}
         />
       )}
       {confirmDialog}
+      {conflictDialog}
     </div>
   );
 }

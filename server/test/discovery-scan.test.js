@@ -236,7 +236,10 @@ test('a real scan identifies every protocol, reports each port once, writes noth
     assert.strictEqual(by(lab.mqttWsPort)[0].verified, true);
 
     const ua = by(lab.opcua.port)[0];
-    assert.deepStrictEqual([ua.kind, ua.verified, ua.method, ua.identity.accepted, ua.endpointUrl], ['opcua', true, 'ua-hello', true, `opc.tcp://127.0.0.1:${lab.opcua.port}`]);
+    // The fake answers the Hello but cannot do GetEndpoints: an OPC UA server, honestly unconfirmed
+    // (the real server is verified in discovery-opcua-real.test.js).
+    assert.deepStrictEqual([ua.kind, ua.verified, ua.method, ua.identity.accepted, ua.endpointUrl], ['opcua', false, 'ua-hello', true, `opc.tcp://127.0.0.1:${lab.opcua.port}`]);
+    assert.match(ua.note, /Answered the OPC UA Hello, but GetEndpoints failed/);
 
     const mb = by(lab.modbus.port)[0];
     assert.deepStrictEqual([mb.kind, mb.protocol, mb.verified], ['modbus', 'modbus-tcp', true]);
@@ -262,7 +265,7 @@ test('a real scan identifies every protocol, reports each port once, writes noth
     assert.strictEqual(eip.identity.deviceTypeName, 'Programmable Logic Controller');
     assert.strictEqual(eip.identity.stateName, 'operational');
 
-    // The silent port: open, never a device, at most an honestly labelled "open" MQTT/OPC UA guess.
+    // The silent port: open, never a device or an OPC UA server, at most an honestly labelled "open" MQTT guess.
     const silent = by(lab.silent.port);
     assert.strictEqual(silent.length, 1);
     assert.deepStrictEqual([silent[0].kind, silent[0].verified, silent[0].method], ['mqtt', false, 'tcp-connect']);

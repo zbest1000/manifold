@@ -18,37 +18,38 @@ page rebuilt, the mapping editor, canvas rendering, the Playwright suite).
   lists MQTT and OPC UA connections next to devices under one "Add" picker; today they are
   separate pages. Device nodes do not appear in the UNS topology either.
 - [ ] **Mapping preview has no lint delta**, only collisions, raw-address and option
-  warnings; the MQTT-source path (pipeline routes) has none of the asset-path, `_meta`
-  or historian options.
-- [ ] **Three shared components still use legacy class names** (`components/JsonView.jsx`,
-  `components/GraphLegend.jsx`, and `components/ViewTab.jsx`, which nothing imports and can be
-  deleted). They are what keeps the Tailwind compatibility layer alive; see
-  `docs/design/ui-design-system.md`, section 13.
+  warnings.
 - [ ] **Promote the locally built primitives** (side panel and floating bar chrome, editor
   parts, descriptor forms, the list-tab helpers) into `components/ui`; the candidate list with
   file paths is in the design system, section 13.
-- [ ] **Concurrent edits are last-write-wins.** Two browser tabs editing the same mapping,
-  device or route overwrite each other; there is no version check or conflict message.
-- [ ] **Field order in a payload is not user-reorderable.** The API honours the order of
-  `target.fields`; the mapping editor offers a fixed order.
 
 ### Low
 
 - [ ] **Sorting is partial.** Brokers, OPC UA connections, Discovery results, Devices, Pipelines
   routes, mappings and the live tag table sort; the Historians, Recorder, Models and Contracts
   lists do not.
-- [ ] **One bare `.catch(() => {})`** remains (`pages/OpcUa.jsx:133`, the list refresh after a
-  socket event).
+- [ ] **One bare `.catch(() => {})`** remains in `pages/OpcUa.jsx` (the list re-read after a
+  failed connect, whose error the form already shows).
 - [ ] **Main-chunk size was not re-measured** after the redesign (every page is a lazy chunk).
 - [ ] **Defects seen while capturing the documentation screenshots** (details and reproduction
   in `docs/REVIEW-2026-11.md`, "New findings from the screenshot pass"): a very large float
   overflows its cell in the device drawer's Tags tab (S1); Sparkplug topics show as base64
-  in the Overview's Latest values (S2); the Logs count includes verbose entries (S3); Flows
-  shows Online greater than Devices (S4); the Health page is titled "System" (S5).
+  in the Overview's Latest values (S2, fixed); the Logs count includes verbose entries (S3); Flows
+  shows Online greater than Devices (S4); the Health page is titled "System" (S5, fixed).
 - [ ] **Verification gaps:** WebGL and 3D were only run on a software renderer; no screen-reader
   or manual keyboard audit beyond what the specs drive.
 
 ## Done (recent)
+
+- [x] **Concurrent edits** (Nov 2026): every stored object has a `rev`; a stale save is refused
+  with `409 stale` and the conflict dialog (Keep mine / Take theirs / Cancel) on devices, profiles,
+  brokers, routes, models, historians, recordings, contracts, alert rules, mappings and OPC UA
+  connections. Mappings and OPC UA connections are tested with two real browser contexts.
+- [x] **Payload field order** is editable in the mapping editor (buttons and keyboard).
+- [x] **MQTT-topic selections create mappings** (with a reviewed migration of old routes).
+- [x] **Tailwind compatibility layer retired**: no legacy class names left; a unit test guards it.
+- [x] **Overview "Needs attention"** lists rejected or growing historian backlogs, firing alerts,
+  mappings that do not publish and broken references, each linking to the fix.
 
 - [x] **The redesign (Nov 2026).** One design system (`docs/design/ui-design-system.md`):
   semantic tokens, light, dark and system themes, IBM Plex, primitives in `components/ui`. Every

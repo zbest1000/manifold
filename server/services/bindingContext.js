@@ -644,7 +644,7 @@ function bindingSchema({ defaultObjectCap, minObjectCap, maxObjectCap, previewMa
     dataTypes: DATA_TYPES,
     contextModes: CONTEXT_MODES,
     valuePipeline: ['read', 'device decode', 'scale/offset', 'cast (dataType)', 'deadband / report by exception', 'precision + states (published form only)', 'publish'],
-    origins: ['device', 'mapping', 'default']
+    origins: ['device', 'server', 'mapping', 'default']
   };
 }
 

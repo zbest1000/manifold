@@ -14,7 +14,8 @@ async function brokerStatus(id) {
  * table says the target broker is not connected; the mapping is deleted; "Clear orphaned retained
  * topics" first SHOWS what it would clear (a dry run: only topics Manifold recorded as its own),
  * marked as waiting for their broker; once the broker is back the topics are cleared at the
- * broker. Removing the broker a mapping reads from marks that mapping "Source missing" with the fix.
+ * broker. Removing the broker a mapping reads from is refused, naming the mapping; a mapping whose
+ * broker is missing (imported from another instance) shows "Source missing" with the fix.
  */
 test('orphaned retained topics: dry run while the broker is away, cleared once it is back; source missing and reasons in the table', async ({ page, consoleErrors }) => {
   const brokerId = unique('orph');
@@ -69,11 +70,28 @@ test('orphaned retained topics: dry run while the broker is away, cleared once i
     await expect.poll(async () => Boolean(await extra.retained(`${asset}/_status`)), { timeout: 30_000 }).toBe(false);
     await dialog.getByRole('button', { name: 'Close' }).first().click();
 
-    // the broker a mapping reads from is removed: "Source missing" and how to fix it
-    await api.del(`/api/mqtt/brokers/${brokerId}`);
-    const gone = page.getByRole('row', { name: new RegExp(inName) });
+    // Removing the broker a mapping reads from is refused, naming the mapping (the reference check)
+    await page.goto('/brokers');
+    await page.getByRole('button', { name: `Disconnect and remove ${brokerId}` }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Disconnect and remove' }).click();
+    const refused = page.getByRole('dialog', { name: /Can't remove/ });
+    await expect(refused.getByTestId('broker-in-use')).toContainText(inName);
+    await expect(refused.getByTestId('broker-in-use')).toContainText('mapping');
+    await refused.getByRole('button', { name: 'Close' }).last().click();
+    expect(await brokerStatus(brokerId)).toBeTruthy(); // still there
+
+    // "Source missing" arises for real when a mapping arrives without its broker: a config file from
+    // another instance (import does not check references; the mapping shows as broken instead).
+    const missingBroker = unique('gone');
+    const imported = await api.post('/api/system/config/import', {
+      manifoldConfig: 1,
+      bindings: [{ id: unique('imp'), name: inName + ' imported', enabled: true, source: { type: 'mqtt', brokerId: missingBroker, tags: [{ address: 'x/y', name: 'y' }] }, target: { mode: 'mqtt', brokerId: 'e2e-broker', assetPath: `e2e/${unique('imp')}`, format: 'envelope' } }]
+    });
+    expect(imported.status, imported.text).toBe(200);
+    await page.goto('/tags?view=mappings');
+    const gone = page.getByRole('row', { name: new RegExp(`${inName} imported`) });
     await expect(gone).toContainText('Source missing', { timeout: 15_000 });
-    await expect(gone).toContainText(`The source broker ${brokerId} was removed.`);
+    await expect(gone).toContainText(`The source broker ${missingBroker} was removed.`);
     await expect(gone).toContainText('Add the broker again under Brokers');
     if (shots) {
       await page.screenshot({ path: `${shots}/mappings-reasons-dark.png` });
@@ -83,9 +101,10 @@ test('orphaned retained topics: dry run while the broker is away, cleared once i
       await page.waitForTimeout(300); // let the theme transition settle for the picture
       await page.screenshot({ path: `${shots}/mappings-reasons-light.png` });
     }
-    expect(consoleErrors).toEqual([]);
+    // the refused removal is a 409 the browser logs; nothing else may be
+    expect(consoleErrors.filter((e) => !/status of 409 \(Conflict\)/.test(e))).toEqual([]);
   } finally {
-    await cleanup({ bindings: [out, inName] });
+    await cleanup({ bindings: [out, inName, `${inName} imported`] });
     await api.del(`/api/mqtt/brokers/${brokerId}`).catch(() => {});
     await extra.close();
   }

@@ -142,8 +142,9 @@ for (const theme of THEMES) {
 }
 
 // The theme switch in the sidebar changes the theme at once and persists it.
-test('theme switch applies and persists the choice', async ({ page, isMobile }) => {
-  test.skip(isMobile, 'the switch lives in the drawer on phones; covered on desktop');
+// Tagged @desktop-only (playwright.config.js keeps it out of the phone project): on phones the
+// switch lives in the navigation drawer, which mobile-nav.spec.js drives.
+test('theme switch applies and persists the choice', { tag: '@desktop-only' }, async ({ page }) => {
   await useTheme(page, 'dark');
   await page.goto('/');
   await settle(page);

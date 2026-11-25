@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OPC UA discovery is verified.** A scan answers an OPC UA candidate with a real GetEndpoints over a security
+  None channel (no session, bounded, cancellable) and reports the application name and URI and the security modes,
+  policies and user tokens offered. A listener that does not answer the UA-TCP Hello is no longer a result; one that
+  answers the Hello but not GetEndpoints shows as *Not confirmed* with the reason.
+- **OPC UA units, ranges, descriptions and types reach mappings.** Read from the server once per connect (bounded,
+  batched, off the sample path) and merged below the mapping's own settings; `_meta` and Sparkplug BIRTH are
+  republished when they change; the preview reports origin `server` (*from server* in the editor); the Tags browse
+  shows type and unit for OPC UA variables.
+- **Exact duplicate OPC UA connections are refused** (`409 { code: "duplicate", existing }`; identity: normalised
+  endpoint URL, security mode and policy, user name), inline in the connection form. `PUT /api/opcua/connections/:id`
+  honours `rev` / `If-Match` with the shared conflict dialog. A refused first connect is reported once (no second
+  toast). The connection list refreshes from the store on reconnect, monitor and error events.
+- **UNS mounts of an OPC UA server** are walked on the server (`GET /api/uns/mounts/:id/tree`): one batched browse per
+  level, at most 50 children per node, 400 nodes and 8 s, instead of one browser request per node.
+- **Overview "Needs attention"** lists routes and historians with rejected points or a growing backlog, alert rules
+  firing or breached, mappings that are not publishing (with the reason) and broken references
+  (`GET /api/system/broken-references`), each linking to the fix.
+- **A slow double-tap on the UNS map** no longer selects the node (and opens the details panel) between the taps.
+- The **Tailwind compatibility layer is removed**: only the semantic tokens exist, and a unit test fails on legacy
+  class names.
+
 - **Concurrent edits are no longer last-write-wins.** Every stored object has a `rev` and `updatedAt`; a save that
   sends `rev` (body field or `If-Match`) against a newer stored object gets `409 { code: "stale", current }`
   (secrets redacted); no `rev` keeps the old behaviour. Devices, profiles, brokers, routes, models, historians,
@@ -80,7 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on failure) and both bulk dialogs use it; device names are unique; a device the driver could never
   run (bad options, S7 without rack/slot) is refused at save time; the device form has an Advanced
   section for Modbus unmapped register ranges and per-device process isolation; Tags says plainly
-  that MQTT-topic tags become pipeline routes; a historian route from a `{v,t,q}` topic offers the
+  that MQTT-topic tags become pipeline routes (since superseded: MQTT topics now create mappings, see the mapping entries above); a historian route from a `{v,t,q}` topic offers the
   numeric-on-`v` transform; bindings link to the UNS page (`/uns?broker=&path=`); viewer sessions
   see disabled controls with the reason instead of 403s; Settings shows the session and can sign out.
   Fixes: historians still used by a route, recording or binding can no longer be deleted; pipeline,

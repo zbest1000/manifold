@@ -83,8 +83,10 @@ export function identityText(r) {
     return id.anonymousAccess ? 'Anonymous access allowed' : 'Authentication required';
   }
   if (r?.kind === 'opcua') {
-    if (!r.verified) return 'Port open, but it did not answer an OPC UA Hello';
-    return id.accepted === false ? `UA-TCP server (refused the Hello: ${id.errorCode})` : 'UA-TCP server answered the Hello';
+    if (!r.verified) return r.note || (id.accepted === false ? `UA-TCP server refused the Hello (${id.errorCode})` : 'UA-TCP server answered the Hello, but not GetEndpoints');
+    const name = r.applicationName || id.applicationName;
+    const bits = [name || 'OPC UA server', r.applicationUri || id.applicationUri, id.securityModes?.length && `security ${id.securityModes.join(', ')}`].filter(Boolean);
+    return bits.join(' · ');
   }
   if (r?.kind === 'i3x') return `${r.serverName ? `${r.serverName} · ` : ''}${r.baseUrl || ''}`;
   return Object.entries(id).map(([k, v]) => `${k}: ${v}`).join(' · ');

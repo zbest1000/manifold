@@ -10,7 +10,7 @@ import { SECURITY_MODES, SECURITY_POLICIES, problemField, withCurrent } from './
  * the certificate trust flow. `problem` is a validation message shown only after the first submit;
  * `submitError` is what the server answered.
  */
-export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, failedAttempts = 0, onDiscover, onSubmit, onCancel }) {
+export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, duplicate = null, onEditExisting = null, failedAttempts = 0, onDiscover, onSubmit, onCancel }) {
   const readOnly = useReadOnly();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const field = problem ? problemField(problem) : null;
@@ -34,6 +34,19 @@ export default function ConnectionForm({ form, setForm, editing, endpoints, disc
       }
     >
       <div className="space-y-6">
+        {duplicate && (
+          <Banner variant="error" title="This server is already connected">
+            <span data-testid="opcua-duplicate">
+              &ldquo;{duplicate.name}&rdquo; uses the same endpoint URL, security mode and policy, and user. A second identical connection would open a second session
+              reading the same data. Edit &ldquo;{duplicate.name}&rdquo; instead, or change the security or the user here.
+            </span>
+            {onEditExisting && (
+              <Button size="sm" variant="secondary" className="mt-2" onClick={onEditExisting}>
+                Edit &ldquo;{duplicate.name}&rdquo;
+              </Button>
+            )}
+          </Banner>
+        )}
         {submitError && (
           <Banner variant="error" title={editing ? 'Could not save the connection' : 'Could not connect'}>
             {submitError}

@@ -16,13 +16,16 @@ const deviceIdentify = require('./deviceIdentify');
  * What it does, in order, for every host:port it is asked to look at:
  *   1. a plain TCP connect (bounded by `timeoutMs`); nothing is sent;
  *   2. only if the port is open, a protocol-specific identification handshake
- *      (MQTT CONNECT, OPC UA Hello, i3X GET /info, Modbus device-id/FC3 read,
- *      S7 COTP (+ SZL identity), EtherNet/IP ListIdentity). Identification never
- *      writes (see ./deviceIdentify.js);
+ *      (MQTT CONNECT, OPC UA Hello then GetEndpoints over security None, i3X
+ *      GET /info, Modbus device-id/FC3 read, S7 COTP (+ SZL identity),
+ *      EtherNet/IP ListIdentity). Identification never writes (see
+ *      ./deviceIdentify.js);
  *   3. one result per host:port. `verified: true` means the protocol answered;
- *      `verified: false` (MQTT / OPC UA only) means the port is open on the
- *      conventional port but did not answer. Devices and i3X are never reported
- *      unless they answered.
+ *      `verified: false` means:
+ *        - MQTT: the conventional port is open but did not answer a CONNECT;
+ *        - OPC UA: the port answered the UA-TCP Hello but GetEndpoints failed
+ *          (a listener that does not answer the Hello is not reported).
+ *      Devices and i3X are never reported unless they answered.
  *
  * Safety: every host passes the egress policy (classifyScanTarget): see SECURITY.md.
  * Pressure on the network is bounded: `concurrency` sockets in flight overall and at
@@ -163,6 +166,80 @@ function kindsFromOptions(options) {
   return { kinds, mqttWs };
 }
 
+// ---- OPC UA GetEndpoints (runtime dependency node-opcua-client, loaded on first use) ----
+
+const MODE_ORDER = ['None', 'Sign', 'SignAndEncrypt'];
+
+/** Connect with security None, GetEndpoints, disconnect. Bounded and cancellable; never leaves the client open. */
+async function getEndpointsNone(endpointUrl, { timeoutMs, signal }) {
+  const { OPCUAClient, MessageSecurityMode, SecurityPolicy } = require('node-opcua-client');
+  const client = OPCUAClient.create({
+    applicationName: 'Manifold', // the name the default client certificate was made for
+    endpointMustExist: false,
+    securityMode: MessageSecurityMode.None,
+    securityPolicy: SecurityPolicy.None,
+    transportTimeout: timeoutMs,
+    connectionStrategy: { maxRetry: 0, initialDelay: 100, maxDelay: 200 }
+  });
+  let timer = null;
+  let onAbort = null;
+  try {
+    return await Promise.race([
+      (async () => {
+        await client.connect(endpointUrl);
+        return (await client.getEndpoints()) || [];
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer within ${timeoutMs} ms`)), timeoutMs);
+        timer.unref?.();
+      }),
+      new Promise((_, reject) => {
+        onAbort = () => reject(new Error('cancelled'));
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener?.('abort', onAbort, { once: true });
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener?.('abort', onAbort);
+    await client.disconnect().catch(() => {});
+  }
+}
+
+/** What a GetEndpoints answer says about the server: identity and the security it offers. */
+function summarizeEndpoints(endpoints, MessageSecurityMode = require('node-opcua-client').MessageSecurityMode) {
+  const first = endpoints.find((e) => e.server) || {};
+  const app = first.server || {};
+  const modes = new Set();
+  const policies = new Set();
+  const tokens = new Set();
+  for (const e of endpoints) {
+    const mode = MessageSecurityMode[e.securityMode];
+    if (mode && mode !== 'Invalid') modes.add(mode);
+    const uri = e.securityPolicyUri || '';
+    if (uri) policies.add(uri.includes('#') ? uri.split('#').pop() : uri);
+    for (const t of e.userIdentityTokens || []) {
+      const k = ['Anonymous', 'UserName', 'Certificate', 'IssuedToken'][t.tokenType];
+      if (k) tokens.add(k);
+    }
+  }
+  const applicationUri = app.applicationUri || null;
+  const applicationName = app.applicationName?.text || null;
+  return {
+    applicationUri,
+    applicationName,
+    identity: {
+      applicationUri,
+      applicationName,
+      productUri: app.productUri || null,
+      securityModes: MODE_ORDER.filter((m) => modes.has(m)),
+      securityPolicies: [...policies],
+      userTokens: [...tokens],
+      endpointCount: endpoints.length
+    }
+  };
+}
+
 /**
  * Honest network discovery: TCP port probing across a CIDR range followed by a
  * real protocol handshake to confirm what is listening. No synthetic results.
@@ -291,6 +368,30 @@ class DiscoveryService extends EventEmitter {
       identity: r.identity,
       suggestedDevice: { name, protocol: r.protocol, host, port }
     };
+  }
+
+  /**
+   * OPC UA: a UA-TCP Hello (cheap, rejects anything that is not UA-TCP), then a real
+   * GetEndpoints over a security None channel. Bounded by `timeoutMs` per step, cancelled
+   * by `signal`; the client is always disconnected. Result (merged into the candidate):
+   *   { verified: true, method: 'ua-getendpoints', applicationUri, applicationName, identity }
+   *   { verified: false, method: 'ua-hello', identity, note }   Hello answered, GetEndpoints did not
+   *   null                                                      not an OPC UA server
+   */
+  async identifyOpcuaServer(host, port, { timeoutMs = DEFAULTS.identifyTimeoutMs, signal } = {}) {
+    const hello = await deviceIdentify.identifyOpcua(host, port, { timeoutMs, signal }).catch(() => null);
+    if (!hello || signal?.aborted) return null;
+    const endpointUrl = `opc.tcp://${host}:${port}`;
+    let endpoints;
+    try {
+      endpoints = await getEndpointsNone(endpointUrl, { timeoutMs, signal });
+    } catch (error) {
+      if (signal?.aborted) return null;
+      const why = hello.identity?.accepted === false ? `the server refused the Hello (${hello.identity.errorCode})` : `GetEndpoints failed: ${error.message}`;
+      return { verified: false, method: 'ua-hello', identity: hello.identity, note: `Answered the OPC UA Hello, but ${why}.` };
+    }
+    if (signal?.aborted) return null;
+    return { verified: true, method: 'ua-getendpoints', ...summarizeEndpoints(endpoints) };
   }
 
   isScanning() {
@@ -718,10 +819,12 @@ class DiscoveryService extends EventEmitter {
           if (found) return { ...base, kind, protocol: 'mqtt', ...found };
           fallback ||= { ...base, kind, protocol: 'mqtt', verified: false, method: 'tcp-connect', note: 'The port is open but did not answer an MQTT CONNECT.' };
         } else if (kind === 'opcua') {
-          const found = await deviceIdentify.identifyOpcua(job.host, job.port, identifyOpts).catch(() => null);
+          const found = await this.identifyOpcuaServer(job.host, job.port, identifyOpts).catch(() => null);
           const endpointUrl = `opc.tcp://${job.host}:${job.port}`;
-          if (found) return { ...base, kind, protocol: 'opcua', verified: true, method: found.method, identity: found.identity, endpointUrl };
-          fallback ||= { ...base, kind, protocol: 'opcua', verified: false, method: 'tcp-connect', endpointUrl, note: 'The port is open but did not answer an OPC UA Hello.' };
+          if (found?.verified) return { ...base, kind, protocol: 'opcua', ...found, endpointUrl };
+          // Answered the Hello but not GetEndpoints: still an OPC UA server, honestly unconfirmed.
+          // A port that does not answer the Hello at all is not a result (as for devices).
+          if (found) fallback ||= { ...base, kind, protocol: 'opcua', ...found, endpointUrl };
         } else if (kind === 'i3x') {
           const found = await this.identifyI3xServer(job.host, job.port, { deadlineMs: settings.identifyTimeoutMs + 1000, signal });
           // An open HTTP port that is not an i3X server is not a result

@@ -1,13 +1,14 @@
 # Manifold UI design system
 
-Status: implemented and applied to every page (November 2026). Reference pages: `client/src/pages/Overview.jsx` (dashboard), `client/src/pages/Brokers.jsx` (list + form dialog), `client/src/pages/Devices.jsx` (table + detail drawer + full-page form) and `client/src/pages/Tags.jsx` with `client/src/pages/tags/editor/` (workspace + full-height editor). The compatibility layer in section 11 is still in the Tailwind config because three shared components still use legacy class names; section 13 lists them with the other open items.
+Status: implemented and applied to every page (November 2026). Reference pages: `client/src/pages/Overview.jsx` (dashboard), `client/src/pages/Brokers.jsx` (list + form dialog), `client/src/pages/Devices.jsx` (table + detail drawer + full-page form) and `client/src/pages/Tags.jsx` with `client/src/pages/tags/editor/` (workspace + full-height editor). The Tailwind compatibility layer that remapped legacy class names was removed in November 2026 (section 11); only the semantic tokens exist.
 
 Files:
 
 | What | Where |
 | --- | --- |
-| Tokens (both themes), fonts, base styles, compatibility rules | `client/src/index.css` |
-| Tailwind mapping of tokens and legacy colour names | `client/tailwind.config.js` |
+| Tokens (both themes), fonts, base styles | `client/src/index.css` |
+| Tailwind theme: the semantic palette only (the default palette is replaced) | `client/tailwind.config.js` |
+| Guard against legacy class names | `client/src/test/designSystemClasses.test.js` |
 | Theme before first paint | `client/public/theme-init.js` (loaded from `client/index.html`) |
 | Theme at runtime (`useTheme`, `setThemePreference`) | `client/src/lib/theme.js` |
 | Primitives (import from `@/components/ui`) | `client/src/components/ui/*.jsx`, re-exported by `client/src/components/ui.jsx` |
@@ -34,7 +35,7 @@ Observed in the before screenshots of every route, dark only. Each item lists it
 | Anti-pattern (before) | Where it showed | Now |
 | --- | --- | --- |
 | Navy-black page (`#0a0f1c`) with sky-blue accents and blue-tinted slate greys | everywhere | Pure graphite neutrals with a teal accent used sparingly |
-| Gradient icon tiles (sky / violet / amber / emerald squares with coloured shadows) on stat cards | Overview, I3x, Cesmii | `Stat` (label, number, unit, secondary line) in a `StatGroup` strip. Legacy tiles are neutralised to a quiet raised square |
+| Gradient icon tiles (sky / violet / amber / emerald squares with coloured shadows) on stat cards | Overview, I3x, Cesmii | `Stat` (label, number, unit, secondary line) in a `StatGroup` strip |
 | Glowing primary buttons (`bg-sky-700 shadow-lg shadow-sky-700/20`) and gradient brand tile | every header, sidebar brand | Solid accent button, no shadow. The brand is a flat monochrome mark |
 | `rounded-2xl` translucent glass cards (`bg-surface-900/60 backdrop-blur border-white/5` plus a double shadow) nested inside each other | all panels | `Panel` / `Card`: 8px radius, 1px `border-line`, solid `bg-panel` |
 | Pills for everything: status pills with tinted fill and ring, count pills, level pills | badges, log, tables | `StatusText` (dot + word) for state. `Badge` is a small square-cornered label |
@@ -145,14 +146,14 @@ Weights: 400 body, 500 labels, headings and values, 600 page title only. Never b
 ## 6. Space, shape, depth, motion
 
 * **Spacing:** Tailwind's 4px scale. Use 1, 1.5, 2, 3, 4, 5 and 6 (4 to 24px). Panel padding is `p-4`, page gutter is `px-4 sm:px-6`, the vertical rhythm between page sections is `space-y-5`, label to control is 6px, and fields sit 12px apart.
-* **Radii:** controls 6px (`rounded-md`), chips and badges 4px (`rounded`), panels and dialogs 8px (`rounded-lg`), dots and switches `rounded-full`. Legacy `rounded-xl` maps to 6px and `rounded-2xl`/`3xl` to 8px.
+* **Radii:** controls and chips 4px (`rounded`, `rounded-md`), panels and dialogs 6px (`rounded-lg`), dots and switches `rounded-full`. Larger radii (`rounded-xl` and up) do not exist in the theme.
 * **Borders:** 1px. Use `border-line` for structure, `border-line-strong` for control outlines and overlays.
-* **Depth:** surface steps only. `shadow-overlay` (a 1px outline plus a soft drop) is for menus, dialogs, drawers, tooltips and toasts. Legacy `shadow-sm`/`shadow` are none, `md` to `2xl` equal the overlay shadow, coloured shadow utilities are disabled, and `backdrop-blur` is off.
+* **Depth:** surface steps only. `shadow-overlay` (a 1px outline plus a soft drop) is for menus, dialogs, drawers, tooltips and toasts. No other shadow utility exists, coloured shadow utilities are disabled and there is no blur.
 * **Motion:** 120 to 180ms with `cubic-bezier(0.2,0,0,1)`. It applies only to colour on hover and state change, the dialog entrance (4px rise and fade), drawer slide (24px and fade), switch knob, tab underline and meter fill. Never animate decoration. `prefers-reduced-motion` reduces all of it to an instant change. Spinners are allowed. The ping halo is removed.
 
 ## 7. Components
 
-Everything is imported from `@/components/ui`. All legacy exports and props still work.
+Everything is imported from `@/components/ui` (component aliases such as `variant="outline"` and `Badge status=` still work).
 
 ### Buttons
 
@@ -258,36 +259,13 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 * Contrast: AA for all text in both themes (section 3.4). `prefers-contrast: more` and `prefers-reduced-motion` are honoured.
 * Accessible names and roles that tests and users rely on were kept (headings, "Open navigation menu", row headers, region names).
 
-## 11. Compatibility layer: what legacy class names get
+## 11. Legacy class names (compatibility layer removed)
 
-Done in `tailwind.config.js` and the "Compatibility layer" block of `index.css`, with no page edits:
-
-| Legacy | Mapped to |
-| --- | --- |
-| `bg-surface-950` / `900` / `800` (any `/opacity`) | solid `--bg` / `--panel` / `--raised`. Opacity is ignored, so glass becomes a solid layer |
-| `text-slate-50…950`, `gray`, `zinc` | themed neutral text scale: in dark 100 = fg, 400 = muted, 500 = subtle, 600 = faint; in light 100–300 become dark text and 700–900 stay dark |
-| `bg-slate-*`, `border-slate-*`, `ring-slate-*` | fixed neutral greys (no blue), the same in both themes |
-| `bg-white/x` | under 50%: a foreground tint (white in dark, near-black in light) so hovers stay visible on white; 50% and up: real white |
-| `border-white/x`, `divide-white/x`, `ring-white/x` | up to 12% → `--border`, up to 22% → `--border-strong`, above → `--border-stronger` (hairlines never vanish on white) |
-| `bg-black/x` | a well shade, about 4.5 times lighter in light |
-| `rose` / `red` / `pink` | `bad` scale; `amber` / `yellow` / `orange` → `warn`; `emerald` / `green` / `lime` → `good`; `sky` / `blue` / `indigo` → `info`; `teal` / `cyan` → accent; `violet` / `purple` / `fuchsia` → a muted violet `aux` |
-| …the 100–400 text shades of those | light pastels in dark, dark AA shades in light (every shade at least 4.6:1 on panel and raised) |
-| `accent-100…950` | themed accent scale (300/400 = accent-text in light) |
-| `accent-sky-500` etc. (native checkbox colour) | accent |
-| `rounded-xl`, `rounded-2xl` | 6px and 8px |
-| `shadow-lg` etc., `shadow-<colour>/x` | overlay shadow only; coloured shadows removed |
-| `backdrop-blur*` | off (and the floating canvas chips get a solid panel in light) |
-| `bg-gradient-to-*` tiles | flat raised square, hairline, muted icon |
-| `.uppercase.tracking-wide` (and wider, widest, `[0.06em]`) | sentence case, normal tracking |
-| `.label-xs` | 12px medium muted sentence case |
-| `hover:text-white` | `text-fg` on hover in light |
-| `text-[10px]`, `text-[9px]` | 11px |
-| `animate-ping` | removed |
-| uPlot legend, tooltip and cursor | tokens |
+Until November 2026 `tailwind.config.js` and a block of `index.css` remapped the old class names (`slate-*`, `surface-*`, `rose`/`amber`/`emerald`/`sky`, `white/x` glass, `backdrop-blur`, gradient tiles, uppercase micro-labels, `rounded-xl`, `shadow-lg`, ...) onto the tokens so unmigrated pages followed both themes. Every page and shared component is migrated, so the layer is gone: the Tailwind palette is replaced by the semantic tokens, and a legacy name now renders nothing. `client/src/test/designSystemClasses.test.js` fails the unit tests when one appears in `client/src`. Use section 12 to translate any old snippet.
 
 ## 12. Migration guide (mechanical)
 
-Do one page at a time. Replace patterns top-down using the table, then check the page in both themes at 1440 and 390 (`npm run build`, then the e2e routes spec). Never introduce raw palette classes (`slate-`, `sky-`, `rose-`, `white/`, `surface-`) in new code; `grep -nE "(slate|sky|rose|amber|emerald|surface|white/|black/)" <file>` should come back empty when a page is done.
+For translating old snippets (from a branch, an issue or an older version): replace patterns top-down using the table, then check the page in both themes at 1440 and 390 (`npm run build`, then the e2e routes spec). The legacy names on the left no longer exist in the theme, and the guard test rejects them.
 
 ### Surfaces and structure
 
@@ -371,19 +349,14 @@ Do one page at a time. Replace patterns top-down using the table, then check the
 
 ## 13. Migration status and open items
 
-**Every page is migrated** (verified November 2026). Search used: `grep -rnE "(slate-|sky-[0-9]|rose-[0-9]|amber-[0-9]|emerald-[0-9]|surface-[0-9]|white/|black/|accent-[1-7]00|backdrop-blur)" client/src/pages client/src/components client/src/graph --include=*.jsx --include=*.js`, excluding `components/ui/` (which defines the compatibility behaviour).
+**Every page and shared component is migrated** and the compatibility layer is removed (November 2026). The guard test `client/src/test/designSystemClasses.test.js` scans `client/src` for the legacy idioms on every unit-test run; the last leftovers (`JsonView`, `GraphLegend`, the unused `ViewTab`) were migrated or deleted before the removal, and the full Playwright suite plus screenshots of every route in both themes were compared after it.
 
 | Page / area | Status |
 | --- | --- |
-| Overview, MQTT Brokers, Devices (table, drawer, form, Profiles, bulk, browse import), Discovery | on the design system, no legacy idioms |
-| Tags (workspace, Mappings tab, mapping editor), Pipelines (all five tabs), OPC UA, CESMII SMIP, i3X, Settings (all four tabs), unlock screen, UNS icon picker | on the design system, no legacy idioms |
+| Overview, MQTT Brokers, Devices (table, drawer, form, Profiles, bulk, browse import), Discovery | on the design system |
+| Tags (workspace, Mappings tab, mapping editor), Pipelines (all five tabs), OPC UA, CESMII SMIP, i3X, Settings (all four tabs), unlock screen, UNS icon picker | on the design system |
 | Topics, UNS, Flows, Trends, Health (System) and their canvases and charts | on the design system; canvases themed from tokens (section 14) |
-| `components/JsonView.jsx` | **leftover**: 12 legacy classes (`text-slate-500`, `text-amber-300`, `text-emerald-300`, `text-sky-300`, `hover:bg-white/5`, `border-white/5`). Used by the i3X page and the OPC UA node panel. It looks right in both themes only through the compatibility layer |
-| `components/GraphLegend.jsx` | **leftover**: 3 legacy classes (`border-white/10`, `bg-surface-900/80`, `text-slate-400`). Used by the i3X page and the Topics graph |
-| `components/ViewTab.jsx` | **leftover and unused**: nothing imports it. Safe to delete |
-| `components/ui.jsx` and `components/ui/*` | the primitives; the only intended mentions of the old names |
-
-Because of the three leftovers, the compatibility layer (section 11) stays in `tailwind.config.js` and `index.css`. Fixing them (and deleting `ViewTab.jsx`) is what allows removing it.
+| `components/ui.jsx` and `components/ui/*` | the primitives |
 
 ### Candidates to promote to `components/ui`
 

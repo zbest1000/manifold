@@ -17,9 +17,9 @@ import { startBigBroker } from './support.js';
  * only registered when localStorage['manifold.e2e'] = '1' (or ?e2e=1).
  */
 
-test.beforeEach(async ({ page, isMobile }, testInfo) => {
-  // The mobile project runs only the touch tests of this file.
-  if (isMobile && !testInfo.title.includes('[touch]')) testInfo.skip();
+// Which project runs what is decided in playwright.config.js by tag, not by skipping: tests tagged
+// @touch run only in the phone project (mobile-touch); every other test runs on desktop and hidpi.
+test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('manifold.e2e', '1');
     // Count animation frames the page schedules (wrapped before any app code runs).
@@ -140,7 +140,7 @@ test('UNS topology: crisp at any size, not blank, click hits the node, quiet whe
   expectCrisp(await canvasState(canvas));
   await page.setViewportSize(vp);
   await expect.poll(async () => (await canvasState(canvas)).cw).toBe(s0.cw);
-  await page.waitForTimeout(400); // sidebar width transition + re-fit
+  await unsStable(page); // sidebar width transition + re-fit have landed
 
   // Click a node at its reported position, at the fitted zoom and zoomed in.
   for (const k of [null, 1.6]) {
@@ -152,23 +152,41 @@ test('UNS topology: crisp at any size, not blank, click hits the node, quiet whe
         h.setTransform({ k: kk, x: w / 2 - n.x * kk, y: hh / 2 - n.y * kk });
       }, k);
     }
-    const node = await page.evaluate(() => window.__manifoldTest.uns.nodes.find((n) => n.depth === 1));
+    // Read positions only once nothing moves (the details panel opened by the previous click
+    // resizes the canvas; on a slow runner that lands after the camera was set).
+    await unsStable(page);
+    // A first-level node that is on screen and clear of the floating overlays (late in a full run the
+    // namespace holds more branches than fit, so "the first one" can be off screen or under a panel).
+    const pick = () =>
+      page.evaluate(() => {
+        const h = window.__manifoldTest.uns;
+        const v = h.viewport;
+        const clear = (n) => n.sx - n.r >= v.x0 && n.sx + n.r <= v.x1 && n.sy - n.r - 12 >= v.y0 && n.sy + n.r <= v.y1 && !h.overlays.some((r) => n.sx + n.r > r.left && n.sx - n.r < r.right && n.sy + n.r > r.top && n.sy - n.r - 12 < r.bottom);
+        return h.nodes.find((n) => n.depth === 1 && clear(n)) || null;
+      });
+    let node = await pick();
+    if (!node) {
+      const first = await page.evaluate(() => window.__manifoldTest.uns.nodes.find((n) => n.depth === 1).path);
+      await placeNode(page, first, 0.5, 0.5);
+      await unsStable(page);
+      node = await pick();
+    }
+    expect(node, 'a first-level node on screen').toBeTruthy();
     const box = await canvas.boundingBox();
     await page.mouse.click(box.x + node.sx, box.y + node.sy - 6); // badge centre (above the ± toggle)
     await expect(page.getByRole('complementary', { name: 'Node details' })).toContainText(node.name);
   }
 
   // Reduced motion (the suite's default): once the 1 s interaction tail is over,
-  // live data must not drive a 60 fps loop.
-  await page.waitForTimeout(1200);
-  expect(await rafPerSecond(page)).toBeLessThan(12);
+  // live data must not drive a 60 fps loop (measured until it is quiet, not after a guessed sleep).
+  await unsStable(page);
+  await expect.poll(() => rafPerSecond(page), { timeout: 30_000 }).toBeLessThan(12);
 
   // Unmount: no animation frames once the route is gone.
   await page.getByRole('link', { name: 'Settings' }).first().click();
   await expect(page.getByRole('heading', { level: 1 }).first()).toContainText('Settings');
-  await page.waitForTimeout(300);
-  expect(await rafPerSecond(page)).toBeLessThan(2);
-  expect(await page.evaluate(() => window.__manifoldTest?.uns)).toBeFalsy();
+  await expect.poll(() => page.evaluate(() => window.__manifoldTest?.uns)).toBeFalsy();
+  await expect.poll(() => rafPerSecond(page), { timeout: 30_000 }).toBeLessThan(2);
   expect(consoleErrors).toEqual([]);
 });
 
@@ -354,6 +372,47 @@ const unsState = (page) =>
     return { nodes: h.nodes, vp: h.viewport, overlays: h.overlays, t: h.transform, motion: h.motion, sel: h.selectedId };
   });
 const unsIdle = (page) => page.waitForFunction(() => window.__manifoldTest?.uns && window.__manifoldTest.uns.motion === null, null, { timeout: 20_000 });
+/**
+ * Resolve once the UNS view is still: no motion, and the camera, canvas size and the screen positions
+ * of the visible nodes identical for 6 consecutive animation frames (a resize from a panel or the
+ * sidebar transition has landed). Deterministic under CPU load, unlike a fixed sleep.
+ */
+const unsStable = (page) =>
+  page.waitForFunction(
+    () =>
+      new Promise((resolve) => {
+        let last = '';
+        let same = 0;
+        let ticks = 0;
+        const step = () => {
+          ticks += 1;
+          const h = window.__manifoldTest?.uns;
+          const snap = h && h.motion === null ? JSON.stringify([h.transform, h.size, h.nodes.slice(0, 40).map((n) => [n.id, Math.round(n.sx), Math.round(n.sy)])]) : null;
+          same = snap && snap === last ? same + 1 : 0;
+          last = snap;
+          if (same >= 6) resolve(true);
+          else if (ticks > 240) resolve(false); // let waitForFunction poll again
+          else requestAnimationFrame(step);
+        };
+        step();
+      }),
+    null,
+    { timeout: 30_000, polling: 100 }
+  );
+
+/**
+ * A double-tap through the real touch input path (CDP Input.dispatchTouchEvent, as touchscreen.tap
+ * uses), with the four events queued back to back instead of awaiting a renderer round trip after
+ * each: on a loaded 2-core runner two awaited taps can be further apart than a person's double-tap.
+ */
+async function doubleTap(page, x, y) {
+  const cdp = await page.context().newCDPSession(page);
+  const point = [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }];
+  const tap = () => [cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point }), cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })];
+  await Promise.all([...tap(), ...tap()]);
+  await cdp.detach();
+}
+
 const insideVp = (n, v) => n.sx - n.r >= v.x0 - 1 && n.sx + n.r <= v.x1 + 1 && n.sy - n.r >= v.y0 - 1 && n.sy + n.r <= v.y1 + 1;
 const underOverlay = (n, rects) => rects.some((r) => n.sx + n.r > r.left && n.sx - n.r < r.right && n.sy + n.r > r.top && n.sy - n.r < r.bottom);
 const byPath = (st, p) => st.nodes.find((n) => n.path === p);
@@ -487,15 +546,13 @@ test('UNS live data does not reorder siblings or move the camera after a reveal'
   expect(consoleErrors).toEqual([]);
 });
 
-test('UNS [touch] double-tap expands and reveals, tap selects, the badge is a 44 px target', async ({ page, isMobile, consoleErrors }) => {
-  test.skip(!isMobile, 'touch behaviour: runs in the mobile project');
+test('UNS [touch] double-tap expands and reveals, tap selects, the badge is a 44 px target', { tag: '@touch' }, async ({ page, consoleErrors }) => {
   const canvas = await openUns(page);
   await placeNode(page, 'plant/line1', 0.85, 0.4);
   const box = await canvas.boundingBox();
   const s0 = await unsState(page);
   const n = byPath(s0, 'plant/line1');
-  await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
-  await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+  await doubleTap(page, box.x + n.sx, box.y + n.sy);
   await page.waitForFunction(() => window.__manifoldTest.uns.nodes.find((q) => q.path === 'plant/line1')?.expanded, null, { timeout: 10_000 });
   await unsIdle(page);
   const s1 = await unsState(page);
@@ -529,8 +586,7 @@ test.describe('large namespace', () => {
     await big?.close();
   });
 
-  test('UNS [touch] phone first view is readable and a reveal zooms back in to a readable zoom', async ({ page, isMobile, consoleErrors }) => {
-    test.skip(!isMobile, 'phone viewport: runs in the mobile project');
+  test('UNS [touch] phone first view is readable and a reveal zooms back in to a readable zoom', { tag: '@touch' }, async ({ page, consoleErrors }) => {
     for (const vp of [{ width: 390, height: 844 }, { width: 360, height: 640 }]) {
       await page.setViewportSize(vp);
       await page.goto(`/uns?broker=${big.id}`);
@@ -563,8 +619,7 @@ test.describe('large namespace', () => {
     const n = byPath(await unsState(page), target);
     expect(n.expanded).toBe(false);
     const box = await unsCanvas(page).boundingBox();
-    await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
-    await page.touchscreen.tap(box.x + n.sx, box.y + n.sy);
+    await doubleTap(page, box.x + n.sx, box.y + n.sy);
     await page.waitForFunction((p) => window.__manifoldTest.uns.nodes.find((q) => q.path === p)?.expanded, target, { timeout: 10_000 });
     // The reveal starts with the relayout; wait for it to have zoomed in and finished.
     await page.waitForFunction((k) => window.__manifoldTest.uns.transform.k >= k && window.__manifoldTest.uns.motion === null, READ_K - 1e-6, { timeout: 15_000 });

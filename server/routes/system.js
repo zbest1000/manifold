@@ -25,6 +25,16 @@ router.get('/status', (req, res) => {
   });
 });
 
+// GET /api/system/broken-references — every stored object (route, mapping, recording, alert rule,
+// model, contract) that points at a broker or historian that no longer exists:
+// { broken: [{ type, id, name, missing: [{ kind, id, field }] }] }. Such objects cannot run;
+// the Overview lists them under "Needs attention" with a link to the place to fix them.
+router.get('/broken-references', (req, res) => {
+  const { profiles, mqttManager } = req.app.locals.services;
+  const { scanBroken } = require('../services/references');
+  res.json({ broken: scanBroken({ profiles, mqttManager }) });
+});
+
 // ---- network discovery ----------------------------------------------------------------
 // The engine lives in services/discovery.js. Results carry a server-side `known`
 // marker (already a broker / OPC UA connection / i3X server / device), so every client

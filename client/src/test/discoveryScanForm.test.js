@@ -81,7 +81,9 @@ describe('text helpers', () => {
     );
     expect(identityText({ kind: 'mqtt', verified: true, identity: { anonymousAccess: false } })).toBe('Authentication required');
     expect(identityText({ kind: 'mqtt', verified: false })).toMatch(/did not answer an MQTT CONNECT/);
-    expect(identityText({ kind: 'opcua', verified: true, identity: { accepted: true } })).toMatch(/answered the Hello/);
+    expect(identityText({ kind: 'opcua', verified: true, applicationName: 'Line 1', applicationUri: 'urn:x', identity: { securityModes: ['None', 'Sign'] } })).toBe('Line 1 · urn:x · security None, Sign');
+    expect(identityText({ kind: 'opcua', verified: false, method: 'ua-hello', note: 'Answered the OPC UA Hello, but GetEndpoints failed: x.' })).toMatch(/GetEndpoints failed/);
+    expect(identityText({ kind: 'opcua', verified: false, method: 'ua-hello', identity: { accepted: true } })).toMatch(/not GetEndpoints/);
   });
   it('groups results and sorts addresses numerically', () => {
     expect(groupOf({ kind: 'mqtt' })).toBe('mqtt');

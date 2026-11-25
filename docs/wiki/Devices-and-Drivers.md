@@ -368,14 +368,14 @@ handshake per protocol, read-only by construction:
 | Protocol | What is sent | What counts as an answer, and what the result shows |
 |---|---|---|
 | MQTT (1883, 8883, optional WebSocket) | an anonymous **CONNECT**, then DISCONNECT | a CONNACK (anonymous access allowed) or an auth refusal (authentication required) = **verified**; TCP, TLS or WebSocket is shown. Open but silent = **open port**, labelled as such |
-| OPC UA (4840) | the UA-TCP **Hello** (connection level, before any secure channel or session) | an Acknowledge or Error message = **verified**; silent = open port |
+| OPC UA (4840) | the UA-TCP **Hello**, then, if it is answered, a real **GetEndpoints** over a security None channel (no session; the client disconnects at once), each step bounded by the identify timeout | GetEndpoints answered = **verified**, with the application name and URI and the security modes, policies and user-token types the server offers. Hello answered but GetEndpoints not = **Not confirmed**, with the reason. A port that does not answer the Hello is **not reported** |
 | i3X (80, 443, 8080) | `GET /info` at `/`, `/v1`, `/i3x`, `/i3x/v1` | a valid i3X info document (server name, spec version). An open HTTP port that is not i3X is not reported |
 | Modbus TCP (502) | **FC 43 / MEI 14 Read Device Identification** (vendor, product code, revision, product name), then, if the device refuses or ignores it, **FC 3** for one register at address 0, unit 1, on the same connection | any well-formed Modbus reply. `method` records which request answered (`fc43-device-id` or `fc3-register-read`) |
 | S7 (102) | one **COTP Connection Request** (rack 0 slot 1; slot 2 if refused), then, if the CPU accepts, the S7 driver's read-only **identity read** (setup communication and read SZL, on a second connection opened after the first closed) | a COTP Connection Confirm or a Disconnect from a CPU that refuses the TSAP. With the identity read: CPU type, order code, firmware, serial, run state |
 | EtherNet/IP (44818) | the encapsulation **ListIdentity** command (no CIP service) | vendor, device type, product code, revision, serial, product name, state |
 
-An open port that does not answer a **device or i3X** protocol is **never reported**; MQTT and OPC UA ports that are
-open but silent are shown as **Open port** (not *Verified*), since those ports are conventional. One result per
+An open port that does not answer a **device, OPC UA or i3X** protocol is **never reported**; an MQTT port that is
+open but silent is shown as **Open port** (not *Verified*), since the port is conventional. One result per
 host:port; a port listed for two protocols is probed once and identified by whichever answers.
 
 The Modbus FC 43 request is a fixed 11-byte frame built in `server/services/deviceIdentify.js`; it is **not** added to
@@ -400,7 +400,7 @@ if you mean it).
 
 ### Results and adding what was found
 
-Results show the endpoint, protocol, state (*Verified* / *Identified* / *Open port*), the identity text, and whether
+Results show the endpoint, protocol, state (*Verified* / *Identified* / *Not confirmed* / *Open port*), the identity text, and whether
 Manifold **already has it**: the server marks each result with `known: { kind, id, name }` when a broker, OPC UA
 connection, i3X server or device exists at that host and port, so the table, **Add all** and a re-scan agree. Filter by
 protocol, then use the action that fits: **Add broker**, **Add OPC UA connection**, **Connect** (i3X) or **Add as

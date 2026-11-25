@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { unique, startOpcua, cleanupOpcua } from './support.js';
+import { api, unique, startOpcua, cleanupOpcua } from './support.js';
 
 /**
  * The OPC UA page driven live against a REAL OPC UA server (node-opcua, started in the test worker):
@@ -190,6 +190,67 @@ test('server restart: the state goes reconnecting -> connected and monitored val
     await expect.poll(() => srv.sessionCount()).toBe(0);
   } finally {
     await cleanupOpcua({ connections: [name, `${name}-b`] });
+  }
+});
+
+test('an exact duplicate is refused inline naming the existing connection; two tabs editing one connection get the conflict dialog', async ({ page, browser }) => {
+  const name = unique('opc-dup-');
+  const ctxB = await browser.newContext();
+  const pageB = await ctxB.newPage();
+  try {
+    const created = await api.post('/api/opcua/connections', { name, endpointUrl: srv.endpointUrl });
+    expect(created.status, created.text).toBe(201);
+
+    // the same server again (written differently): refused in the form, nothing added, one click to edit the existing one
+    const form = await openForm(page);
+    await form.getByLabel('Endpoint URL').fill(srv.endpointUrl.replace('127.0.0.1', 'localhost'));
+    await form.getByRole('button', { name: 'Connect', exact: true }).click();
+    const dup = form.getByTestId('opcua-duplicate');
+    await expect(dup).toContainText(`“${name}” uses the same endpoint URL, security mode and policy, and user`);
+    await expect(form.getByText('Could not connect')).toHaveCount(0); // one message, not two
+    expect((await api.get('/api/opcua/connections')).json.connections.filter((c) => c.name === name || c.endpointUrl.includes(String(srv.port)))).toHaveLength(1);
+    await form.getByRole('button', { name: `Edit “${name}”` }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit OPC UA connection' }).getByLabel('Name', { exact: true })).toHaveValue(name);
+    await page.getByRole('dialog', { name: 'Edit OPC UA connection' }).getByRole('button', { name: 'Cancel' }).click();
+
+    // two tabs open the same connection; B saves first, A's save is refused with the conflict dialog
+    const openEdit = async (p, current) => {
+      await p.goto('/opcua');
+      await connRow(p, current).getByRole('button', { name: `Edit ${current}` }).click();
+      return p.getByRole('dialog', { name: 'Edit OPC UA connection' });
+    };
+    const editA = await openEdit(page, name);
+    const editB = await openEdit(pageB, name);
+    await editB.getByLabel('Name', { exact: true }).fill(`${name}-B`);
+    await editB.getByRole('button', { name: 'Save changes' }).click();
+    await expect(editB).toBeHidden();
+    await editA.getByLabel('Name', { exact: true }).fill(`${name}-A`);
+    await editA.getByRole('button', { name: 'Save changes' }).click();
+    const conflict = page.getByRole('dialog', { name: /was changed elsewhere/ });
+    await expect(conflict).toBeVisible();
+    await expect(conflict.getByTestId('conflict-mine')).toContainText(`${name}-A`);
+    await expect(conflict.getByTestId('conflict-theirs')).toContainText(`${name}-B`);
+    expect((await api.get('/api/opcua/connections')).json.connections.find((c) => c.name === `${name}-B`)).toBeTruthy();
+    // Cancel keeps the edit; Take theirs loads their version; Keep mine overwrites on purpose
+    await conflict.getByRole('button', { name: 'Cancel' }).click();
+    await expect(editA.getByLabel('Name', { exact: true })).toHaveValue(`${name}-A`);
+    await editA.getByRole('button', { name: 'Save changes' }).click();
+    await page.getByRole('dialog', { name: /was changed elsewhere/ }).getByRole('button', { name: 'Take theirs' }).click();
+    await expect(editA.getByLabel('Name', { exact: true })).toHaveValue(`${name}-B`);
+    await editA.getByLabel('Name', { exact: true }).fill(`${name}-A`);
+    await editB.page().goto('/opcua'); // (B is done)
+    const editB2 = await openEdit(pageB, `${name}-B`);
+    await editB2.getByLabel('Name', { exact: true }).fill(`${name}-B2`);
+    await editB2.getByRole('button', { name: 'Save changes' }).click();
+    await expect(editB2).toBeHidden();
+    await editA.getByRole('button', { name: 'Save changes' }).click();
+    await page.getByRole('dialog', { name: /was changed elsewhere/ }).getByRole('button', { name: 'Keep mine (overwrite)' }).click();
+    await expect(editA).toBeHidden();
+    await expect(connRow(page, `${name}-A`).getByText('Connected', { exact: true })).toBeVisible();
+    expect((await api.get('/api/opcua/connections')).json.connections.find((c) => c.name === `${name}-A`)).toBeTruthy();
+  } finally {
+    await ctxB.close();
+    await cleanupOpcua({ connections: [name, `${name}-A`, `${name}-B`, `${name}-B2`] });
   }
 });
 

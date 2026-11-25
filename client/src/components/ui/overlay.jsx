@@ -1,4 +1,4 @@
-import { useId, useState, useEffect, useRef, useCallback } from 'react';
+import { useId, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { HelpCircle, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -21,7 +21,9 @@ export function Modal({ id, title, onClose, children, className, labelledBy, des
     closeRef.current = onClose;
   });
 
-  useEffect(() => {
+  // A layout effect: the Esc handler and the focus move are in place before the overlay is first
+  // painted, so an Esc pressed the moment it appears (a person, or a test) is never lost.
+  useLayoutEffect(() => {
     const el = ref.current;
     const token = {};
     modalStack.push(token);

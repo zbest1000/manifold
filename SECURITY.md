@@ -69,7 +69,7 @@ instance beyond your own machine:
     The startup warning for `MANIFOLD_ALLOW_LOOPBACK_DEVICES` covers scans too. A refused range's
     message names the one flag that would allow it, or says that nothing will.
   - *What is sent.* A TCP connect to each selected port; only open ports get an identification
-    handshake (MQTT CONNECT, OPC UA Hello, i3X `GET /info`, Modbus FC 43/14 then FC 3, S7 COTP and the
+    handshake (MQTT CONNECT, OPC UA Hello then GetEndpoints over security None without a session, i3X `GET /info`, Modbus FC 43/14 then FC 3, S7 COTP and the
     read-only SZL identity read, EtherNet/IP ListIdentity), built with the drivers' allowlisted
     encoders (Modbus FC 43 is a fixed 11-byte frame outside the driver's allowlist, which still refuses
     everything but FC 1 to 4). Nothing is ever written; the simulators count writes and the tests

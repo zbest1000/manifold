@@ -63,7 +63,9 @@ export default function Uns() {
   const topicVersionMap = useStore((s) => s.topicVersion);
   const setTopics = useStore((s) => s.setTopics);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [scope, setScope] = useState('all'); // 'all' | brokerId
+  // 'all' | brokerId. A link that names only a broker (/uns?broker=ID, no path) opens that namespace;
+  // with a path the forest stays whole and the node is selected and centred.
+  const [scope, setScope] = useState(() => (searchParams.get('broker') && !cleanPath(searchParams.get('path')) ? searchParams.get('broker') : 'all'));
   const [view, setView] = useState('topology'); // 'topology' | 'tree'
   const [treeFilter, setTreeFilter] = useState('');
   const [selected, setSelected] = useState(null);

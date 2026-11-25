@@ -38,6 +38,41 @@ router.get('/sources', (req, res) => {
   res.json({ sources });
 });
 
+const BROWSE_META_MAX = 200;
+const BROWSE_META_BATCH = 16;
+const BROWSE_META_BUDGET_MS = 4000;
+
+async function addOpcuaMeta(opcuaManager, connectionId, vars) {
+  if (typeof opcuaManager.describeNode !== 'function') return;
+  const { normalizeType } = require('../services/tagSources/opcuaSource');
+  const deadline = Date.now() + BROWSE_META_BUDGET_MS;
+  const list = vars.slice(0, BROWSE_META_MAX);
+  for (let i = 0; i < list.length && Date.now() < deadline; i += BROWSE_META_BATCH) {
+    const batch = list.slice(i, i + BROWSE_META_BATCH);
+    const left = Math.max(1, deadline - Date.now());
+    const metas = await Promise.all(
+      batch.map((c) =>
+        Promise.race([
+          opcuaManager.describeNode(connectionId, c.address).catch(() => null),
+          new Promise((resolve) => setTimeout(resolve, left, null).unref?.())
+        ])
+      )
+    );
+    batch.forEach((c, j) => {
+      const m = metas[j];
+      if (!m) return;
+      const t = normalizeType(m.type);
+      c.meta = {
+        type: t === 'unknown' ? m.type || null : t,
+        unit: m.unit || null,
+        description: m.description || null,
+        range: m.range && Number.isFinite(m.range.low) && Number.isFinite(m.range.high) ? { min: m.range.low, max: m.range.high } : null,
+        origin: 'server'
+      };
+    });
+  }
+}
+
 // GET /api/tags/browse?type=&id=&node= — one level of children under `node`
 router.get('/browse', async (req, res) => {
   const { mqttManager, opcuaManager, profiles, devices } = req.app.locals.services;
@@ -72,16 +107,19 @@ router.get('/browse', async (req, res) => {
     }
     if (type === 'opcua') {
       const result = await opcuaManager.browse(id, node || undefined);
-      return res.json({
-        children: result.references
-          .filter((r) => r.isForward !== false)
-          .map((r) => ({
-            id: r.nodeId,
-            name: r.displayName || r.browseName,
-            kind: r.nodeClass === 'Variable' ? 'tag' : 'folder',
-            address: r.nodeId
-          }))
-      });
+      const children = result.references
+        .filter((r) => r.isForward !== false)
+        .map((r) => ({
+          id: r.nodeId,
+          name: r.displayName || r.browseName,
+          kind: r.nodeClass === 'Variable' ? 'tag' : 'folder',
+          address: r.nodeId
+        }));
+      // Variables carry what the server says about them (type, unit, range, description) so the
+      // Type/Unit columns and the editor fill in. Bounded: at most BROWSE_META_MAX variables,
+      // BROWSE_META_BATCH at a time, within BROWSE_META_BUDGET_MS; the rest are listed without meta.
+      await addOpcuaMeta(opcuaManager, id, children.filter((c) => c.kind === 'tag'));
+      return res.json({ children });
     }
     if (type === 'sparkplug') {
       // node path: '' | group | group/edge | group/edge/device('' for node metrics)

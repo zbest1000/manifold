@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { test, expect } from './fixtures.js';
-import { cleanup, deviceRow, openDevice, startDiscoveryLab, unique } from './support.js';
+import { api, cleanup, cleanupOpcua, deviceRow, openDevice, startDiscoveryLab, startOpcua, unique } from './support.js';
 
 /**
  * Network discovery, for real. The backend (global-setup) runs with MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 and
@@ -73,7 +73,9 @@ test('scan the loopback simulators from the UI, add a Modbus device, re-scan: it
     await expect(endpoint(page, lab.mqttPort)).toContainText('Verified');
     await expect(endpoint(page, lab.mqttWsPort)).toContainText('WebSocket');
     await expect(endpoint(page, lab.opcua.port)).toContainText('OPC UA server');
-    await expect(endpoint(page, lab.opcua.port)).toContainText('UA-TCP server answered the Hello');
+    // The lab's UA-TCP fake answers the Hello but cannot do GetEndpoints: an OPC UA server, honestly unconfirmed.
+    await expect(endpoint(page, lab.opcua.port)).toContainText('Not confirmed');
+    await expect(endpoint(page, lab.opcua.port)).toContainText('Answered the OPC UA Hello, but GetEndpoints failed');
     await expect(endpoint(page, lab.modbus.port)).toContainText('Modbus TCP');
     await expect(endpoint(page, lab.modbus.port)).toContainText('Identified');
     await expect(endpoint(page, lab.modbus.port)).toContainText('Modbus server, unit 1');
@@ -157,6 +159,53 @@ test('scan the loopback simulators from the UI, add a Modbus device, re-scan: it
   } finally {
     await cleanup({ devices: [deviceName] });
     await lab.close();
+  }
+});
+
+test('the real scan verifies a real OPC UA server with GetEndpoints; Add OPC UA connection works and it is then already added', async ({ page, consoleErrors }) => {
+  const srv = await startOpcua({ largeCount: 1 });
+  const lab = await startDiscoveryLab();
+  const key = `127.0.0.1:${srv.port}`;
+  try {
+    await page.goto('/discovery');
+    await page.getByLabel('Range: CIDR, IP address or hostname').fill('127.0.0.1/32');
+    for (const name of [/^MQTT brokers/, /^i3X servers/]) await page.getByRole('checkbox', { name }).uncheck();
+    await openAdvanced(page);
+    // the real server, and a plain open port that does not speak OPC UA (it must not be reported)
+    await portsBox(page, 'OPC UA servers ports').fill(`${srv.port}, ${lab.silent.port}`);
+    await portsBox(page, 'Identify timeout (ms)').fill('3000');
+    await page.getByRole('button', { name: 'Start scan' }).click();
+
+    const row = endpoint(page, srv.port);
+    await expect(row).toContainText('OPC UA server');
+    await expect(row).toContainText('Verified');
+    await expect(row).toContainText('Manifold OPC UA test server');
+    await expect(row).toContainText('urn:manifold:test-server');
+    await expect(row).toContainText('security None, Sign, SignAndEncrypt');
+    await expect(page.getByText('Last scan of 127.0.0.1/32')).toBeVisible();
+    await expect(endpoint(page, lab.silent.port)).toHaveCount(0);
+    await shot(page, '7-opcua-verified');
+
+    await row.getByRole('button', { name: `Add OPC UA connection ${key}` }).click();
+    await expect(row).toContainText('Already added');
+    await expect(row.getByRole('link', { name: /^OPC UA connection: / })).toHaveAttribute('href', '/opcua');
+
+    // The connection really exists and goes online.
+    await page.goto('/opcua');
+    await expect(page.getByText(`opc.tcp://127.0.0.1:${srv.port}`).first()).toBeVisible();
+    await expect.poll(async () => (await api.get('/api/opcua/connections')).json.connections.find((c) => c.endpointUrl === `opc.tcp://127.0.0.1:${srv.port}`)?.status).toBe('connected');
+
+    // A reload of Discovery keeps the marker.
+    await page.goto('/discovery');
+    await expect(endpoint(page, srv.port)).toContainText('Already added');
+    await expect.poll(() => lab.totalOpen(), { message: 'the scan must not leak sockets' }).toBe(0);
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    const { json } = await api.get('/api/opcua/connections').catch(() => ({ json: null }));
+    const names = (json?.connections || []).filter((c) => c.endpointUrl === `opc.tcp://127.0.0.1:${srv.port}`).map((c) => c.name);
+    await cleanupOpcua({ connections: names });
+    await lab.close();
+    await srv.close();
   }
 });
 

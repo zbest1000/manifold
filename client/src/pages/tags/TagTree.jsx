@@ -203,7 +203,7 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
   const rootLoaded = nodes[''];
   const otherErrors = Object.entries(errors).filter(([k]) => k !== '');
   const filtering = filter.trim().length > 0;
-  const showMeta = source.type === 'device';
+  const showMeta = source.type === 'device' || source.type === 'opcua'; // OPC UA: what the server publishes per variable
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

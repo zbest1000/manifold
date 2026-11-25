@@ -30,6 +30,8 @@ test('the connect form validates before sending, submits with Enter, and a refus
   await url.press('Enter');
   await expect(page.getByText('Connection refused — nothing is listening on that host and port.').first()).toBeVisible({ timeout: 30_000 });
   await expect(form.getByLabel('Endpoint URL')).toHaveValue('opc.tcp://127.0.0.1:1');
+  // said once, in the form: the server's opcua-error event for this first attempt is not toasted as well
+  await expect(page.getByText('Connection refused — nothing is listening on that host and port.')).toHaveCount(1);
   await expect(page.getByRole('table', { name: 'OPC UA server connections' })).toBeHidden();
   expect((await api.get('/api/opcua/connections')).json.connections).toHaveLength(0);
 });

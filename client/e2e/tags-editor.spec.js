@@ -19,7 +19,8 @@ async function mapping(name, device, target) {
 async function openEdit(page, name) {
   await page.goto('/tags?view=mappings');
   await page.getByRole('button', { name: `Edit mapping ${name}` }).click();
-  const editor = page.getByRole('dialog');
+  // by name: a conflict dialog can sit on top of the editor, and an unnamed locator would match both
+  const editor = page.getByRole('dialog', { name: `Edit ${name}`, exact: true });
   await expect(editor.getByRole('heading', { name: `Edit ${name}` })).toBeVisible();
   return editor;
 }
@@ -72,60 +73,84 @@ test('payload field order: buttons and keyboard, preview and broker follow it, t
 });
 
 /**
- * Two people edit one mapping: the save based on an old revision is refused (409 stale, simulated
- * here at the network layer because revisions are the profile store's job). The dialog shows what
- * changed there and here; Cancel keeps editing, "Keep mine" overwrites based on their revision,
- * "Take theirs" reloads their version.
+ * Two people edit one mapping, for real: two browser contexts open the same mapping, B saves first,
+ * A's save (based on the revision A loaded) is refused by the server with 409 stale. The dialog
+ * shows what changed there and here; Cancel keeps editing, "Take theirs" reloads their version and a
+ * save on top of it is clean; "Keep mine" overwrites on purpose. Nothing is mocked.
  */
-test('stale edit: the conflict dialog shows both sides; cancel keeps edits, keep mine overwrites with their rev, take theirs reloads', async ({ page }) => {
+test('stale edit (two contexts): the conflict dialog shows both sides; cancel keeps edits, take theirs reloads, keep mine overwrites', async ({ browser }) => {
   const deviceName = unique('E2E stale ');
   const name = unique('E2E stale map ');
   const asset = `e2e/${unique('stale')}/pump`;
   const sim = await startModbus({ value: 3 });
+  const ctxA = await browser.newContext();
+  const ctxB = await browser.newContext();
+  const pageA = await ctxA.newPage();
+  const pageB = await ctxB.newPage();
+  const stored = async () => (await api.get('/api/tags/bindings')).json.bindings.find((x) => x.id === created.id);
+  let created;
   try {
     const device = await deviceWithTemp(sim, deviceName);
-    const stored = await mapping(name, device, { assetPath: asset });
-    const theirs = { ...stored, rev: 7, target: { ...stored.target, assetPath: `${asset}-theirs` }, warnings: undefined };
-    const posted = [];
-    let refuse = 2;
-    await page.route('**/api/tags/bindings', async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      posted.push(route.request().postDataJSON());
-      if (refuse-- > 0) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'This mapping was changed by someone else', code: 'stale', current: theirs }) });
-      return route.continue();
-    });
+    created = await mapping(name, device, { assetPath: asset });
+    expect(Number.isInteger(created.rev)).toBe(true);
 
-    let editor = await openEdit(page, name);
-    await editor.getByLabel('Name', { exact: true }).fill(`${name} mine`);
-    await editor.getByRole('button', { name: 'Save changes' }).click();
-    let dialog = page.getByRole('dialog', { name: 'This mapping was changed elsewhere' });
+    let editorA = await openEdit(pageA, name);
+    const editorB = await openEdit(pageB, name);
+
+    // B moves the asset first
+    await editorB.getByLabel('Asset path', { exact: true }).fill(`${asset}-theirs`);
+    await editorB.getByRole('button', { name: 'Save changes' }).click();
+    await expect(editorB).toBeHidden();
+    await expect.poll(async () => (await stored()).target.assetPath).toBe(`${asset}-theirs`);
+    const theirRev = (await stored()).rev;
+    expect(theirRev).toBeGreaterThan(created.rev);
+
+    // A, still on the old revision, renames and saves: the real server refuses it
+    await editorA.getByLabel('Name', { exact: true }).fill(`${name} mine`);
+    await editorA.getByRole('button', { name: 'Save changes' }).click();
+    let dialog = pageA.getByRole('dialog', { name: 'This mapping was changed elsewhere' });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole('region', { name: 'Changed elsewhere' })).toContainText('target.assetPath');
     await expect(dialog.getByRole('region', { name: 'Changed elsewhere' })).toContainText(`${asset}-theirs`);
     await expect(dialog.getByRole('region', { name: 'Your changes' })).toContainText(`${name} mine`);
-    if (shots) await page.screenshot({ path: `${shots}/stale-edit-dialog.png` });
+    if (shots) await pageA.screenshot({ path: `${shots}/stale-edit-dialog.png` });
+    expect((await stored()).name).toBe(name); // nothing was overwritten
+
+    // Cancel: back to editing, edits untouched
     await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(editor.getByLabel('Name', { exact: true })).toHaveValue(`${name} mine`);
+    await expect(editorA.getByLabel('Name', { exact: true })).toHaveValue(`${name} mine`);
 
-    // take theirs: the editor reloads their version (the user chose to drop the edits)
-    await editor.getByRole('button', { name: 'Save changes' }).click();
-    dialog = page.getByRole('dialog', { name: 'This mapping was changed elsewhere' });
+    // Take theirs: the editor reloads their version (the user chose to drop the edits)
+    await editorA.getByRole('button', { name: 'Save changes' }).click();
+    dialog = pageA.getByRole('dialog', { name: 'This mapping was changed elsewhere' });
     await dialog.getByRole('button', { name: 'Take theirs' }).click();
-    editor = page.getByRole('dialog', { name: `Edit ${name}` });
-    await expect(editor.getByLabel('Asset path', { exact: true })).toHaveValue(`${asset}-theirs`);
-    await expect(editor.getByLabel('Name', { exact: true })).toHaveValue(name);
+    editorA = pageA.getByRole('dialog', { name: `Edit ${name}` });
+    await expect(editorA.getByLabel('Asset path', { exact: true })).toHaveValue(`${asset}-theirs`);
+    await expect(editorA.getByLabel('Name', { exact: true })).toHaveValue(name);
 
-    // keep mine: one more refusal, then the overwrite carries their revision
-    refuse = 1;
-    await editor.getByLabel('Name', { exact: true }).fill(`${name} mine`);
-    await editor.getByRole('button', { name: 'Save changes' }).click();
-    await page.getByRole('dialog', { name: 'This mapping was changed elsewhere' }).getByRole('button', { name: 'Keep mine (overwrite)' }).click();
-    await expect(editor).toBeHidden();
-    expect(posted[0].rev).toBeUndefined(); // the server sent no rev: none is sent back
-    expect(posted.at(-1)).toMatchObject({ name: `${name} mine`, rev: 7 });
+    // A edits on top of their version: a clean save (A now holds the current revision)
+    await editorA.getByLabel('Name', { exact: true }).fill(`${name} A`);
+    await editorA.getByRole('button', { name: 'Save changes' }).click();
+    await expect(editorA).toBeHidden();
+    await expect.poll(async () => (await stored()).name).toBe(`${name} A`);
+    expect((await stored()).target.assetPath).toBe(`${asset}-theirs`);
+
+    // Keep mine: both open the current version, A saves, then B (now stale) overwrites on purpose
+    editorA = await openEdit(pageA, `${name} A`);
+    const editorB2 = await openEdit(pageB, `${name} A`);
+    await editorA.getByLabel('Name', { exact: true }).fill(`${name} A2`);
+    await editorA.getByRole('button', { name: 'Save changes' }).click();
+    await expect(editorA).toBeHidden();
+    await expect.poll(async () => (await stored()).name).toBe(`${name} A2`);
+    await editorB2.getByLabel('Name', { exact: true }).fill(`${name} mine`);
+    await editorB2.getByRole('button', { name: 'Save changes' }).click();
+    await pageB.getByRole('dialog', { name: 'This mapping was changed elsewhere' }).getByRole('button', { name: 'Keep mine (overwrite)' }).click();
+    await expect(editorB2).toBeHidden();
+    await expect.poll(async () => (await stored()).name).toBe(`${name} mine`);
   } finally {
-    await page.unroute('**/api/tags/bindings');
-    await cleanup({ bindings: [name, `${name} mine`], devices: [deviceName] });
+    await ctxA.close();
+    await ctxB.close();
+    await cleanup({ bindings: [name, `${name} A`, `${name} A2`, `${name} mine`], devices: [deviceName] });
     await sim.close();
   }
 });

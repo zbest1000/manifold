@@ -114,6 +114,8 @@ export const api = {
   // UNS mounts (external sources grafted into the namespace view)
   listMounts: () => request('/api/uns/mounts'),
   addMount: (mount) => request('/api/uns/mounts', { method: 'POST', body: JSON.stringify(mount) }),
+  /** OPC UA mount structure, walked on the server (bounded: see GET /api/uns/mounts/:id/tree). */
+  mountTree: (id) => request(`/api/uns/mounts/${encodeURIComponent(id)}/tree`),
   removeMount: (id) => request(`/api/uns/mounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // UNS custom icons (user-defined single-path SVGs for the icon picker)
@@ -133,6 +135,8 @@ export const api = {
 
   // Pipelines
   listPipelines: () => request('/api/pipelines'),
+  /** Stored objects pointing at a broker or historian that no longer exists: { broken: [{ type, id, name, missing }] }. */
+  brokenReferences: () => request('/api/system/broken-references'),
   savePipeline: (route) => request('/api/pipelines', { method: 'POST', body: JSON.stringify(route) }),
   deletePipeline: (id) => request(`/api/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   previewPipeline: (route, sampleLimit = 25) =>

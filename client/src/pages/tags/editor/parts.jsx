@@ -86,6 +86,8 @@ export function OriginLabel({ origin, onReset, field, deviceValue }) {
     );
   }
   if (origin === 'device') return <span className="text-2xs text-subtle">device</span>;
+  // OPC UA: EngineeringUnits / EURange / Description / DataType as the server publishes them.
+  if (origin === 'server') return <span className="text-2xs text-subtle">from server</span>;
   return null;
 }
 

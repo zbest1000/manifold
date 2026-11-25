@@ -10,6 +10,7 @@ import { api } from '@/lib/api';
 import { deviceBadge } from '@/lib/deviceStatus';
 import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
+import { engineAttention, recordPending } from '@/lib/attention';
 
 /**
  * Overview: the dashboard pattern (docs/design/ui-design-system.md#dashboard).
@@ -92,10 +93,48 @@ export default function Overview() {
     };
   }, [devicesVersion]);
 
+  // Pending counts across pushes: a route or historian whose backlog rises push after push is not keeping up.
+  const [pendingHist, setPendingHist] = useState({ routes: {}, historians: {} });
   useEffect(() => {
-    socket.on('engine-metrics', setEngine);
-    return () => socket.off('engine-metrics', setEngine);
+    const onMetrics = (m) => {
+      setEngine(m);
+      setPendingHist((h) => ({
+        routes: recordPending(h.routes, Object.fromEntries(Object.entries(m?.pipelines || {}).map(([id, r]) => [id, r.pending]))),
+        historians: recordPending(h.historians, Object.fromEntries(Object.entries(m?.outbox || {}).map(([id, o]) => [id, o.pending])))
+      }));
+    };
+    socket.on('engine-metrics', onMetrics);
+    return () => socket.off('engine-metrics', onMetrics);
   }, []);
+
+  // Configuration the engine numbers refer to (names, alert state, mapping health, broken references),
+  // polled slowly; each source is optional (a failure leaves its items out, the page says so in the banner).
+  const [config, setConfig] = useState({ routes: [], historians: [], alertRules: [], mappings: [], health: {}, broken: [] });
+  useEffect(() => {
+    let stop = false;
+    const load = () =>
+      Promise.allSettled([api.listPipelines(), api.listHistorians(), api.listAlertRules(), api.listBindings(), api.brokenReferences()]).then(([p, h, a, b, x]) => {
+        if (stop) return;
+        const ok = (r, f, d) => (r.status === 'fulfilled' ? f(r.value) : d);
+        setConfig((c) => ({
+          routes: ok(p, (v) => v.routes || [], c.routes),
+          historians: ok(h, (v) => v.historians || [], c.historians),
+          alertRules: ok(a, (v) => v.rules || [], c.alertRules),
+          mappings: ok(b, (v) => v.bindings || [], c.mappings),
+          health: ok(b, (v) => v.health || {}, c.health),
+          broken: ok(x, (v) => v.broken || [], c.broken)
+        }));
+      });
+    load();
+    const t = setInterval(() => document.visibilityState === 'visible' && load(), 10_000);
+    const onAlert = () => load();
+    socket.on('alert-state', onAlert);
+    return () => {
+      stop = true;
+      clearInterval(t);
+      socket.off('alert-state', onAlert);
+    };
+  }, [retry]);
 
   useEffect(() => {
     let stop = false;
@@ -187,8 +226,20 @@ export default function Overview() {
   if (dropped > 0) issues.push({ key: 'h-drop', tone: 'bad', what: 'Historians', detail: `${fmt(dropped)} points dropped`, to: '/pipelines' });
   if (spilled > 0) issues.push({ key: 'h-spill', tone: 'warn', what: 'Historians', detail: `${(spilled / 1024).toFixed(1)} KB spilled to disk`, to: '/pipelines' });
   if (bindingErrors > 0) issues.push({ key: 't-err', tone: 'bad', what: 'Tag bindings', detail: `${fmt(bindingErrors)} publish errors`, to: '/tags' });
-  if (recentAlerts > 0)
-    issues.push({ key: 'a', tone: 'warn', what: 'Alerts', detail: `${recentAlerts >= 50 ? '50+' : recentAlerts} recent events${alerts?.latest ? ` · latest: ${alerts.latest.detail || alerts.latest.ruleName || ''}` : ''}`, to: '/settings' });
+  issues.push(
+    ...engineAttention({
+      // only what still exists: counters of a deleted route or historian are history, not a problem
+      routes: Object.fromEntries(Object.entries(p || {}).filter(([id]) => config.routes.some((r) => r.id === id))),
+      historians: Object.fromEntries(Object.entries(o || {}).filter(([id]) => config.historians.some((x) => x.id === id))),
+      routePending: pendingHist.routes,
+      historianPending: pendingHist.historians,
+      names: { routes: Object.fromEntries(config.routes.map((r) => [r.id, r.name || r.id])), historians: Object.fromEntries(config.historians.map((x) => [x.id, x.name || x.id])) },
+      alertRules: config.alertRules,
+      mappings: config.mappings,
+      health: config.health,
+      broken: config.broken
+    })
+  );
   issues.sort((a, b) => (a.tone === b.tone ? 0 : a.tone === 'bad' ? -1 : 1));
 
   const nothingConfigured = brokers.length === 0 && opcua.length === 0 && devices.length === 0;
@@ -314,7 +365,7 @@ function AttentionList({ issues, total }) {
       <div role="status" className="flex items-center gap-2.5 rounded-lg border border-line bg-panel px-4 py-3 text-sm">
         <StatusDot tone="good" />
         <span className="text-fg">All {total} connections are healthy</span>
-        <span className="text-muted">· no engine errors, no recent alerts</span>
+        <span className="text-muted">· no engine errors, no alert firing, every mapping publishing</span>
       </div>
     );
   }

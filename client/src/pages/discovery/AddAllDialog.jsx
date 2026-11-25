@@ -183,7 +183,7 @@ export default function AddAllDialog({ results, onClose, onCreated }) {
                   ) : isKnown(row) ? (
                     <span className="text-sm text-warn">Already added ({row.r.known.name})</span>
                   ) : (
-                    <span className="text-sm text-subtle">{isOn(row) ? 'Will be added' : row.r.verified === false ? 'Skipped: the port did not answer its protocol' : 'Skipped'}</span>
+                    <span className="text-sm text-subtle">{isOn(row) ? 'Will be added' : row.r.verified === false ? 'Skipped: not confirmed (it did not fully answer its protocol)' : 'Skipped'}</span>
                   )}
                 </Td>
               </Tr>

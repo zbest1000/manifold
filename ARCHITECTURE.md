@@ -949,10 +949,9 @@ triplet, defined in `src/index.css` for the dark theme (default) and, under
 `text-subtle`, `text-accent-text`, `text-good`/`warn`/`bad`/`info`) with opacity modifiers working.
 The primitives live in `src/components/ui/` (`controls`, `display`, `overlay`, `table`, `tooltip`,
 re-exported from `components/ui.jsx`): buttons, form fields, `SegmentedControl`, `Tabs`, `Panel`,
-`Stat`, `Meter`, `Banner`, `Dialog`, `Drawer`, `ConfirmDialog`, `Table`. A compatibility layer in
-the Tailwind config still remaps the old raw-palette class names (`slate-*`, `surface-*`,
-`white/x`) onto the tokens; three shared components still use those names (see the migration
-status in the design-system document).
+`Stat`, `Meter`, `Banner`, `Dialog`, `Drawer`, `ConfirmDialog`, `Table`. The Tailwind palette is
+replaced by the tokens: the old raw-palette names (`slate-*`, `surface-*`, `white/x`) no longer
+exist, and `src/test/designSystemClasses.test.js` fails on them.
 
 **Theme bootstrapping.** The preference (`system`, `light`, `dark`) is stored in `localStorage`
 under `tc.theme`. `public/theme-init.js` is loaded synchronously from `index.html`, so

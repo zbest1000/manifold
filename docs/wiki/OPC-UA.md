@@ -11,6 +11,13 @@ live and maps nodes into the Unified Namespace. It never writes to a server.
 3. Optionally set a user name and password; leave them empty for anonymous access.
 4. **Connect.** The connection is saved and restored when Manifold restarts.
 
+An exact duplicate of an existing connection (the same endpoint URL, written any way: case, `localhost`,
+the default port 4840 and a trailing slash do not matter; the same security mode and policy; the same user)
+is refused inline, naming the existing connection, with a button to edit it instead (`409 { code: "duplicate",
+existing }`). A refused connect is reported once, in the form. **Edit** reconnects with the new settings; if
+someone else saved the connection since you opened it, the save is refused (`409 stale`) and the conflict
+dialog offers Keep mine, Take theirs or Cancel.
+
 Mode **None** sends everything in clear text: use it on a trusted plant network only.
 
 ### Secure connections (Sign, SignAndEncrypt)
@@ -55,15 +62,20 @@ Errors name what to do: wrong user name or password, anonymous access refused, t
   **Add to UNS**. Published names come from the browse names. Values carry quality and the source time;
   a status change publishes Bad with the last value, a lost connection publishes Bad once and sets
   `_status` offline, recovery republishes Good. See [Mapping to the UNS](Mapping-to-the-UNS).
-  Units are not filled in from the server yet: enter them in the mapping editor.
+  The browse shows each variable's type and unit; once the connection is online the mapping reads the
+  server's **EngineeringUnits**, **EURange**, **Description** and data type (once per connect, never per
+  value) and uses them wherever the mapping sets none (the editor marks them *from server*); `_meta` and the
+  Sparkplug BIRTH are republished when they change.
 - **Sparkplug targets:** OPC UA built-in types become typed metrics (Int64/UInt64 exact); arrays and
   structures travel untyped.
 - **UNS mounts:** UNS → Sources → *Mounted sources* grafts a server's address space (structure only) into
-  the namespace tree.
+  the namespace tree. The server walks it (`GET /api/uns/mounts/:id/tree`): two levels below the start node,
+  one batched browse request per level, at most 50 children per node, 400 nodes and 8 s.
 
 ## What is verified
 
 Everything above is tested against a real OPC UA server (node-opcua) in the server tests and the UI
 end-to-end suite. **Not verified:** Kepware, Siemens S7-1500, Ignition, Prosys and other servers, their
-security policies and quirks, and tens of thousands of monitored items. Network discovery reports an open
-OPC UA port without speaking OPC UA, so a result there is a candidate, not a confirmed server.
+security policies and quirks, and tens of thousands of monitored items. Network discovery verifies an OPC UA
+server with a real GetEndpoints (security None, no session) and shows its application name and the security it
+offers; a listener that does not answer the UA-TCP Hello is not reported.

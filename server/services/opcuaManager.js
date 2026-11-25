@@ -481,7 +481,8 @@ class OpcuaManager extends EventEmitter {
     } catch (rawError) {
       const error = this._explain(entry, rawError);
       info.lastError = error.message;
-      this.io.emit('opcua-error', { connectionId, error: error.message });
+      // `initial`: the first attempt of an unsupervised connect, whose HTTP caller reports the error itself.
+      this.io.emit('opcua-error', { connectionId, error: error.message, initial: !supervise });
       if (supervise && !entry.closing) {
         this._setState(entry, 'offline', `connect failed: ${error.message}`);
         this._scheduleRetry(entry);
@@ -977,6 +978,66 @@ class OpcuaManager extends EventEmitter {
     return truncated ? { nodeId, references, truncated: true } : { nodeId, references };
   }
 
+  /**
+   * Children of MANY nodes in one BrowseRequest per chunk of `chunk` nodes (instead of one
+   * request per node), at most `maxPerNode` references each (continuation points are released,
+   * not followed: a bounded overview, not a complete listing). Returns Map(nodeId -> { references,
+   * truncated }) in the shape browse() uses; a node the server refuses maps to { references: [], error }.
+   */
+  async browseMany(connectionId, nodeIds, { maxPerNode = 50, chunk = 32 } = {}) {
+    const entry = this.requireSession(connectionId);
+    const session = entry.session;
+    const out = new Map();
+    for (let i = 0; i < nodeIds.length; i += chunk) {
+      const part = nodeIds.slice(i, i + chunk);
+      let results;
+      try {
+        results = await withTimeout(
+          (async () => {
+            session.requestedMaxReferencesPerNode = maxPerNode;
+            try {
+              return await session.browse(
+                part.map((nodeId) => ({ nodeId, referenceTypeId: 'HierarchicalReferences', includeSubtypes: true, browseDirection: BrowseDirection.Forward, nodeClassMask: 0, resultMask: 63 }))
+              );
+            } finally {
+              session.requestedMaxReferencesPerNode = this._browsePageSize;
+            }
+          })(),
+          this._operationTimeoutMs,
+          'browse'
+        );
+      } catch (error) {
+        throw this._explain(entry, error);
+      }
+      const release = [];
+      part.forEach((nodeId, j) => {
+        const r = results[j];
+        if (!r || (r.statusCode && !r.statusCode.isGood())) {
+          out.set(nodeId, { references: [], error: r?.statusCode?.toString() || 'no result' });
+          return;
+        }
+        const cp = r.continuationPoint && r.continuationPoint.length ? r.continuationPoint : null;
+        if (cp) release.push(cp);
+        out.set(nodeId, {
+          references: (r.references || [])
+            .filter((ref) => ref.isForward !== false)
+            .slice(0, maxPerNode)
+            .map((ref) => ({
+              nodeId: ref.nodeId.toString(),
+              browseName: ref.browseName.toString(),
+              displayName: ref.displayName?.text || ref.browseName.name,
+              nodeClass: NODE_CLASS_NAMES[ref.nodeClass] || String(ref.nodeClass),
+              typeDefinition: ref.typeDefinition?.toString() || null
+            })),
+          truncated: Boolean(cp)
+        });
+      });
+      // Free the server-side continuation points we will not follow (servers hold only a few per session).
+      for (const cp of release) await session.browseNext(cp, true).catch(() => {});
+    }
+    return out;
+  }
+
   async _dataTypeName(session, dataTypeNodeId) {
     if (!dataTypeNodeId) return null;
     if (dataTypeNodeId.namespace === 0 && BUILTIN_TYPE_NAMES[dataTypeNodeId.value]) return BUILTIN_TYPE_NAMES[dataTypeNodeId.value];
@@ -1397,6 +1458,34 @@ class OpcuaManager extends EventEmitter {
       this.io.emit('opcua-disconnected', { connectionId });
     }
     return { connectionId, status: 'disconnected' };
+  }
+
+  /**
+   * Identity of an OPC UA connection: normalised endpoint URL (scheme and host lowercased,
+   * localhost = 127.0.0.1, default port 4840, no trailing slash), security mode + policy and user
+   * name. Two connections with the same identity open two sessions that read the same data twice;
+   * a different user or security is legitimate. Null for an endpoint URL that does not validate.
+   */
+  static connectionIdentity(config = {}) {
+    const m = /^opc\.tcp:\/\/([^/:\s]+|\[[0-9a-f:.]+\])(?::(\d{1,5}))?(\/.*)?$/i.exec(String(config.endpointUrl || '').trim());
+    if (!m) return null;
+    let host = m[1].toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host === '::1') host = '127.0.0.1';
+    const port = Number(m[2] || 4840);
+    const path = (m[3] || '').replace(/\/+$/, '');
+    return [`opc.tcp://${host}:${port}${path}`, config.securityMode || 'None', config.securityPolicy || 'None', config.username || ''].join('|');
+  }
+
+  /** The connection (live, or among `saved` configs) other than `exceptId` with the same identity, as { id, name }, or null. */
+  findDuplicateConnection(config, exceptId = null, saved = []) {
+    const want = OpcuaManager.connectionIdentity(config);
+    if (!want) return null;
+    const candidates = [...[...this.connections.values()].map((e) => e.info), ...saved];
+    for (const c of candidates) {
+      if (!c || c.id === exceptId) continue;
+      if (OpcuaManager.connectionIdentity(c) === want) return { id: c.id, name: c.name || c.endpointUrl || c.id };
+    }
+    return null;
   }
 
   getConnections() {

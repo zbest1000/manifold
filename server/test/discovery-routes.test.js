@@ -111,7 +111,8 @@ test('a scan started over HTTP finds the simulators; the results survive a reloa
   assert.strictEqual(state.scan.range, '127.0.0.1/32');
   const kinds = state.results.map((x) => x.kind).sort();
   assert.deepStrictEqual(kinds, ['ethernet-ip', 'modbus', 'mqtt', 'opcua', 's7']);
-  assert.ok(state.results.every((x) => x.verified === true && x.known === null));
+  // every result answered its protocol; the UA-TCP fake answers the Hello but not GetEndpoints
+  assert.ok(state.results.every((x) => (x.kind === 'opcua' ? x.verified === false && x.method === 'ua-hello' : x.verified === true) && x.known === null));
   assert.deepStrictEqual(lab.writes(), { modbus: 0, s7: 0, eip: 0 });
 
   // "reload": a fresh GET returns the same results; the socket snapshot path uses the same getter

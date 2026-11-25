@@ -782,27 +782,31 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
         return;
       }
       const key = keyOf(hit);
-      if (e.pointerType === 'touch') {
-        // Double-tap toggles (browsers do not reliably fire dblclick for touch).
-        const now = Date.now();
-        if (lastTap.key === key && now - lastTap.at < DOUBLE_TAP_MS) {
+      const touch = e.pointerType === 'touch';
+      if (touch) {
+        // Double-tap toggles (browsers do not reliably fire dblclick for touch). Timed with the
+        // events' own timestamps, so a busy main thread that handles the taps late does not
+        // stretch the gap between them.
+        const at = e.timeStamp || performance.now();
+        if (lastTap.key === key && at - lastTap.at < DOUBLE_TAP_MS) {
           lastTap = { key: null, at: 0 };
-          touchToggledAt = now;
+          touchToggledAt = Date.now();
           clearTimeout(pendingSelect);
           activate(hit);
           return;
         }
-        lastTap = { key, at: now };
+        lastTap = { key, at };
       }
-      // Defer selection briefly so a double-click (expand) doesn't also select
-      // (not even the selection ring).
+      // Defer selection so a double-click/double-tap (expand) doesn't also select (not even the
+      // selection ring). A touch waits out the whole double-tap window: selecting inside it would
+      // open the details panel and move the node under the finger before the second tap lands.
       clearTimeout(pendingSelect);
       pendingSelect = setTimeout(() => {
         selRef.current = new Set([key]);
         setSelCount(1);
         onSelect?.(hit.node);
         kick();
-      }, SELECT_DELAY_MS);
+      }, touch ? DOUBLE_TAP_MS : SELECT_DELAY_MS);
     };
     const onDbl = (e) => {
       e.preventDefault();

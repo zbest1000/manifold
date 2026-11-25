@@ -101,6 +101,22 @@ function sameValue(a, b) {
   }
 }
 
+const DESCRIBE_BATCH = 8;
+const DESCRIBE_MAX = 2000;
+const DESCRIBE_BUDGET_MS = 30_000;
+
+/** OPC UA describe() answer -> mapping metadata ({ type, unit, range: { min, max }, description }, set fields only) or null. */
+function serverMetaFrom(d) {
+  if (!d || typeof d !== 'object') return null;
+  const m = {};
+  if (d.type) m.type = d.type;
+  if (d.unit) m.unit = String(d.unit);
+  if (d.description) m.description = String(d.description);
+  const r = d.range;
+  if (r && Number.isFinite(Number(r.low ?? r.min)) && Number.isFinite(Number(r.high ?? r.max))) m.range = { min: Number(r.low ?? r.min), max: Number(r.high ?? r.max) };
+  return Object.keys(m).length ? m : null;
+}
+
 const bindingIdOf = (unitId) => {
   const i = unitId.indexOf('#');
   return i < 0 ? unitId : unitId.slice(0, i);
@@ -156,9 +172,22 @@ class TagBindings {
     this.ledger = new RetainedLedger({ file: ledgerFile === undefined ? defaultLedgerFile(profiles) : ledgerFile });
     this._clearing = new Set();
     model.attachTopicSource(profiles, (brokerId, filter, limit) => mqttRuntime.observed(this.manager, brokerId, filter, limit));
+    // OPC UA server metadata (unit, range, description, data type), read once per (re)connect.
+    this.serverMeta = new Map(); // `${connectionId}\0${nodeId}` -> { type?, unit?, range?, description? }
+    this._described = new Set(); // keys described on the current session of their connection
+    this._describing = new Map(); // connectionId -> running describe pass
+    this._describeAgain = new Set();
+    this._metaVer = 0; // bumped when server metadata changed: the compiled index is rebuilt
+    model.attachServerMeta(profiles, (connectionId, nodeId) => this.serverMeta.get(`${connectionId}\0${nodeId}`) || null);
+    const self = this;
+    const indexRev = {
+      get rev() {
+        return profiles.rev === undefined ? undefined : `${profiles.rev}:${self._metaVer}`;
+      }
+    };
 
-    // Compiled index, rebuilt on profile-store revision change.
-    this.index = compiledView(profiles, () => {
+    // Compiled index, rebuilt on profile-store revision change (and on new OPC UA server metadata).
+    this.index = compiledView(indexRev, () => {
       const byKey = new Map(); // `${type} ${id} ${address}` -> [{ unit, tag }]
       const bySource = new Map(); // `${type} ${id}` -> [unit]
       const heartbeat = [];
@@ -343,6 +372,59 @@ class TagBindings {
     this._publishMetaAll();
     this._refreshSparkplugMeta();
     this._publishStatusForNewUnits(changed);
+    // New OPC UA tags on a connection that is already online get the server's metadata now.
+    for (const [sk, st] of this.sourceState) if (st.state === 'online' && sk.startsWith('opcua ')) this._describeOpcua(sk.slice(6));
+  }
+
+  /**
+   * Read what the OPC UA server says about every node an enabled mapping uses on this connection
+   * (EngineeringUnits, EURange, Description, DataType) and merge it below the mapping's own settings.
+   * Off the hot path: started on 'online' and after config changes, at most DESCRIBE_BATCH nodes in
+   * flight, at most DESCRIBE_MAX nodes and DESCRIBE_BUDGET_MS per pass, each node once per session.
+   * When anything changed, _meta documents and Sparkplug BIRTH properties are republished.
+   */
+  _describeOpcua(connectionId) {
+    const adapter = this.sources.get('opcua')?.adapter;
+    if (!adapter?.describe || !this.started) return null;
+    if (this._describing.has(connectionId)) {
+      this._describeAgain.add(connectionId);
+      return this._describing.get(connectionId);
+    }
+    const sk = `opcua ${connectionId}`;
+    const run = (async () => {
+      const want = new Set();
+      for (const unit of this.index().bySource.get(sk) || []) for (const t of unit.tags) want.add(t.address);
+      const todo = [...want].filter((a) => !this._described.has(`${connectionId}\0${a}`)).slice(0, DESCRIBE_MAX);
+      const deadline = Date.now() + DESCRIBE_BUDGET_MS;
+      let changed = false;
+      for (let i = 0; i < todo.length && Date.now() < deadline; i += DESCRIBE_BATCH) {
+        if (!this.started || this.sourceState.get(sk)?.state !== 'online') break;
+        const batch = todo.slice(i, i + DESCRIBE_BATCH);
+        const answers = await Promise.all(batch.map((a) => Promise.resolve(adapter.describe(connectionId, a)).catch(() => undefined)));
+        batch.forEach((address, j) => {
+          if (answers[j] === undefined) return; // failed: tried again on the next (re)connect
+          const key = `${connectionId}\0${address}`;
+          this._described.add(key);
+          const meta = serverMetaFrom(answers[j]);
+          if (JSON.stringify(this.serverMeta.get(key) || null) === JSON.stringify(meta)) return;
+          if (meta) this.serverMeta.set(key, meta);
+          else this.serverMeta.delete(key);
+          changed = true;
+        });
+      }
+      if (changed && this.started) {
+        this._metaVer++;
+        this._publishMetaAll();
+        this._refreshSparkplugMeta();
+      }
+    })()
+      .catch(() => {})
+      .finally(() => {
+        this._describing.delete(connectionId);
+        if (this._describeAgain.delete(connectionId)) this._describeOpcua(connectionId);
+      });
+    this._describing.set(connectionId, run);
+    return run;
   }
 
   /**
@@ -521,6 +603,11 @@ class TagBindings {
       // Session is (re)usable: monitored items may be gone, so re-request them.
       for (const k of [...this.monitored]) if (k.startsWith(`${sk} `)) this.monitored.delete(k);
       this.syncMonitors();
+      if (evt.sourceType === 'opcua') {
+        // A new session may be a changed server: describe its nodes again (once per connect).
+        for (const k of [...this._described]) if (k.startsWith(`${evt.sourceId}\0`)) this._described.delete(k);
+        this._describeOpcua(evt.sourceId);
+      }
     }
     for (const unit of this.index().bySource.get(sk) || []) {
       this._status(unit.binding.id).sourceState = { ...st };

@@ -7,7 +7,10 @@
 
 The **Overview** page surfaces platform health live. Top to bottom: **Needs
 attention** (what is wrong, worst first, each row linking to where it is fixed; a
-single quiet line when nothing is), **Sources** (MQTT brokers, Devices, OPC UA servers,
+single quiet line when nothing is: connections that are down, routes and historians
+with rejected points or a pending backlog that keeps growing, alert rules firing or
+breached, enabled mappings that are not publishing with the first reason, and stored
+objects with a broken reference, from `GET /api/system/broken-references`), **Sources** (MQTT brokers, Devices, OPC UA servers,
 Topics, Ingest rate), **Data flow** (pipeline routes and what they delivered, historian
 points and what is queued, tag values published and how many the deadband held back,
 alert events and rules configured), **Connections** (every broker, device and OPC UA

@@ -18,7 +18,9 @@ const ACCESSORS = {
 };
 
 const stateOf = (r) => {
-  if (!r.verified) return { tone: 'neutral', text: 'Open port' };
+  // Unverified: an open MQTT port that did not answer CONNECT, or an OPC UA server that answered the
+  // Hello but not GetEndpoints (a port that does not answer the Hello is not a result at all).
+  if (!r.verified) return r.method === 'tcp-connect' ? { tone: 'neutral', text: 'Open port' } : { tone: 'warn', text: 'Not confirmed' };
   return { tone: 'good', text: isDeviceResult(r) ? 'Identified' : 'Verified' };
 };
 

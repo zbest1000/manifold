@@ -107,7 +107,8 @@ version) and **Cancel** (back to editing, nothing lost).
 - A line states the value pipeline for the tag, for example `published = raw x 0.1, 1 dp`.
 
 Every field shows where its value comes from: **device** (the tag definition on the
-Devices page), **mapping** (your override) or nothing (the default), with a reset
+Devices page), **from server** (an OPC UA node's EngineeringUnits, EURange, Description
+or data type, read once per connect), **mapping** (your override) or nothing (the default), with a reset
 arrow beside an override. A field you leave empty keeps following the device. The origins
 are the server's answer for that one tag (the preview's `origins`, `metadata` and
 `contextOrigins`); a value you just typed is marked *mapping* at once. For an MQTT topic the
@@ -841,7 +842,7 @@ and shows the result in the Preview column; viewers may call it. It returns, for
 | `meta[]`, `status[]` | the `_meta` documents (at most 10) and `_status` topics that would be published |
 | `units`, `unitErrors[]`, `totalTags`, `truncated` | how many assets, which could not resolve a path, how many tags in all |
 | `warnings[]` | the same non-blocking warnings a save returns |
-| per tag (in `tags[]` and `members[]`) | `metadata` (effective name, type, unit, description, range, displayName, limits, states, transform, deadband, context), `origins` (`device`, `mapping` or `default` per field), `contextOrigins` (`asset`, `device` or `mapping` per context key), `warnings` (this tag's), `bytes` and `worstCaseBytes`; the example `payload` applies fields, transform, states and context to the latest raw value |
+| per tag (in `tags[]` and `members[]`) | `metadata` (effective name, type, unit, description, range, displayName, limits, states, transform, deadband, context), `origins` (`device`, `server` (OPC UA node metadata), `mapping` or `default` per field), `contextOrigins` (`asset`, `device` or `mapping` per context key), `warnings` (this tag's), `bytes` and `worstCaseBytes`; the example `payload` applies fields, transform, states and context to the latest raw value |
 | `members[]` | object-per-asset only: one entry per member with `topic` (the object topic), `member` and the per-tag fields above |
 | `selection` | `{ matched, excluded, truncated, rows: [{ unitId, key, property, matched, rule?, pattern?, missing? }] }`, at most 500 rows |
 | `contexts[]`, `fields`, `contextMode` | the resolved asset context per unit, the field lists in use, the context mode |

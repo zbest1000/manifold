@@ -228,6 +228,99 @@ test('source adapter: describe() supplies unit, range, type and description from
   }
 });
 
+test('server metadata reaches mappings: unit, range, description and type merged below the mapping, _meta at a real broker, BIRTH refreshed', async () => {
+  const net = require('net');
+  const mqtt = require('mqtt');
+  const MqttManager = require('../services/mqttManager');
+  const model = require('../services/bindingModel');
+  const aedesModule = require('aedes');
+  const Aedes = aedesModule.Aedes || aedesModule;
+  const broker = Aedes.createBroker ? await Aedes.createBroker() : new Aedes();
+  const brokerServer = net.createServer(broker.handle);
+  await new Promise((r) => brokerServer.listen(0, '127.0.0.1', r));
+  const brokerPort = brokerServer.address().port;
+  const own = await startOpcuaTestServer({ largeCount: 1 });
+  const { io } = makeIo();
+  const mgr = new OpcuaManager(io, FAST);
+  const mqttMgr = new MqttManager({ emit() {} });
+  const describes = [];
+  const spbCalls = [];
+  const spb = { refreshMetadata: (x) => spbCalls.push(x), setDeviceOnline() {}, publishData() {} };
+  const binding = {
+    id: 'meta1',
+    enabled: true,
+    source: {
+      type: 'opcua',
+      connectionId: 'cm',
+      samplingInterval: 0,
+      tags: [
+        { address: own.nodeId('Analog.Temperature'), name: 'temperature' },
+        // the mapping's own unit wins over the server's kPa; the server's range still fills in
+        { address: own.nodeId('Analog.Pressure'), name: 'pressure', unit: 'bar' }
+      ]
+    },
+    target: { mode: 'mqtt', brokerId: 'meta-broker', assetPath: 'acme/area/pump', format: 'envelope' }
+  };
+  const spBinding = { id: 'meta2', enabled: true, source: { type: 'opcua', connectionId: 'cm', samplingInterval: 0, tags: [{ address: own.nodeId('Analog.Temperature'), name: 'temperature' }] }, target: { mode: 'sparkplug', brokerId: 'meta-broker', group: 'G', edge: 'E', device: 'pump' } };
+  const profiles = profilesWith([binding, spBinding]);
+  const tb = new TagBindings({ mqttManager: mqttMgr, opcuaManager: mgr, profiles, sparkplugPublisher: spb, retryMs: 200, ledgerFile: null });
+  const adapter = tb.sources.get('opcua').adapter;
+  const describe = adapter.describe.bind(adapter);
+  adapter.describe = (c, a) => {
+    describes.push(a);
+    return describe(c, a);
+  };
+  const sub = mqtt.connect(`mqtt://127.0.0.1:${brokerPort}`, { reconnectPeriod: 0 });
+  const subReady = new Promise((r) => sub.once('connect', r));
+  const metas = [];
+  sub.on('message', (topic, payload) => metas.push(JSON.parse(payload.toString())));
+  try {
+    mqttMgr.connectToBroker({ id: 'meta-broker', host: '127.0.0.1', port: brokerPort, name: 'meta broker' });
+    await until(() => mqttMgr.getConnection('meta-broker')?.status === 'connected', 10_000, 'broker connected');
+    tb.start();
+    await mgr.connect({ id: 'cm', endpointUrl: own.endpointUrl }, { supervise: true });
+    await subReady;
+    await new Promise((r) => sub.subscribe('acme/area/pump/_meta', { qos: 1 }, r));
+
+    const props = () => metas.at(-1)?.properties || {};
+    await until(() => props().temperature?.unit === '°C', 15_000, '_meta at the broker carries the server unit');
+    assert.deepStrictEqual(props().temperature.range, { min: 0, max: 150 });
+    assert.strictEqual(props().temperature.type, 'float64');
+    assert.strictEqual(props().pressure.unit, 'bar', 'the mapping setting wins');
+    assert.deepStrictEqual(props().pressure.range, { min: 0, max: 1000 }, 'the server range fills what the mapping leaves unset');
+
+    // the preview reports where each field came from
+    const [unit] = model.expandUnits(binding, profiles, { details: true });
+    const temp = unit.tags.find((t) => t.name === 'temperature');
+    const pres = unit.tags.find((t) => t.name === 'pressure');
+    assert.deepStrictEqual([temp.origins.unit, temp.origins.range, temp.origins.type], ['server', 'server', 'server']);
+    assert.deepStrictEqual([pres.origins.unit, pres.origins.range], ['mapping', 'server']);
+
+    // Sparkplug: the BIRTH properties were refreshed with the server's metadata
+    await until(() => spbCalls.some((c) => c.properties?.temperature?.engUnit === '°C'), 5000, 'Sparkplug BIRTH refresh');
+
+    // once per (re)connect, never per sample: values flow without new describe calls
+    const n = describes.length;
+    assert.strictEqual(n, 2, `each node described once (${describes.join(', ')})`);
+    own.set('Analog.Temperature', 42);
+    await new Promise((r) => setTimeout(r, 500));
+    assert.strictEqual(describes.length, n);
+    const metaCount = metas.length;
+    await own.restart();
+    await until(() => describes.length === n + 2, 20_000, 'described again after the reconnect');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.strictEqual(metas.length, metaCount, 'unchanged metadata is not republished');
+  } finally {
+    sub.end(true);
+    tb.stop();
+    await mgr.shutdown();
+    mqttMgr.shutdown?.();
+    await own.close();
+    await new Promise((r) => broker.close(r));
+    await new Promise((r) => brokerServer.close(r));
+  }
+});
+
 // ---------------------------------------------------------------------------
 // HTTP: the routes the OPC UA page, the Tags page and UNS mounts use
 // ---------------------------------------------------------------------------
@@ -252,6 +345,37 @@ test('HTTP: connect, browse, tags browse for type=opcua, UNS mount of the connec
     const created = await call('POST', '/api/opcua/connections', { id: 'h1', name: 'Test server', endpointUrl: srv.endpointUrl });
     assert.strictEqual(created.status, 201, JSON.stringify(created.body));
 
+    // exact duplicates are refused, naming the existing connection (URL normalised: case, localhost, default port, slash)
+    const sameUrl = srv.endpointUrl.replace('127.0.0.1', 'LOCALHOST') + '/';
+    const dup = await call('POST', '/api/opcua/connections', { name: 'Again', endpointUrl: sameUrl, securityMode: 'None', securityPolicy: 'None' });
+    assert.strictEqual(dup.status, 409, JSON.stringify(dup.body));
+    assert.strictEqual(dup.body.code, 'duplicate');
+    assert.deepStrictEqual(dup.body.existing, { id: 'h1', name: 'Test server' });
+    assert.match(dup.body.error, /already connected as "Test server"/);
+    // a different user is a different identity
+    const other = await call('POST', '/api/opcua/connections', { id: 'h2', name: 'As operator', endpointUrl: srv.endpointUrl, username: 'operator', password: 'secret' });
+    assert.strictEqual(other.status, 201, JSON.stringify(other.body));
+
+    // rev: the list hands it out, a stale PUT is refused before the session is touched, a current one saves
+    const listed = await call('GET', '/api/opcua/connections');
+    const h2 = listed.body.connections.find((c) => c.id === 'h2');
+    assert.ok(Number.isInteger(h2.rev) && h2.rev >= 1);
+    const ok = await call('PUT', '/api/opcua/connections/h2', { name: 'Operator view', endpointUrl: srv.endpointUrl, username: 'operator', rev: h2.rev });
+    assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+    assert.strictEqual(ok.body.rev, h2.rev + 1);
+    const stale = await call('PUT', '/api/opcua/connections/h2', { name: 'Old edit', endpointUrl: srv.endpointUrl, username: 'operator', rev: h2.rev });
+    assert.strictEqual(stale.status, 409);
+    assert.strictEqual(stale.body.code, 'stale');
+    assert.strictEqual(stale.body.current.name, 'Operator view');
+    assert.strictEqual(stale.body.current.rev, h2.rev + 1);
+    assert.ok(!('password' in stale.body.current), 'the password never travels');
+    assert.strictEqual(services.opcuaManager.getConnections().find((c) => c.id === 'h2').name, 'Operator view', 'the refused edit changed nothing');
+    // an edit that would make it an exact duplicate of h1 is refused too
+    const intoDup = await call('PUT', '/api/opcua/connections/h2', { name: 'x', endpointUrl: srv.endpointUrl });
+    assert.strictEqual(intoDup.status, 409);
+    assert.strictEqual(intoDup.body.code, 'duplicate');
+    assert.strictEqual((await call('DELETE', '/api/opcua/connections/h2')).status, 200);
+
     const sources = await call('GET', '/api/tags/sources');
     assert.ok(sources.body.sources.some((s) => s.type === 'opcua' && s.id === 'h1' && s.label === 'Test server'));
 
@@ -263,6 +387,11 @@ test('HTTP: connect, browse, tags browse for type=opcua, UNS mount of the connec
     const scalars = await call('GET', `/api/tags/browse?type=opcua&id=h1&node=${encodeURIComponent(srv.nodeId('Scalars'))}`);
     const dbl = scalars.body.children.find((c) => c.name === 'Double');
     assert.deepStrictEqual({ kind: dbl.kind, address: dbl.address }, { kind: 'tag', address: srv.nodeId('Scalars.Double') });
+    assert.strictEqual(dbl.meta.type, 'float64', 'Variables carry the server type');
+    const analog = await call('GET', `/api/tags/browse?type=opcua&id=h1&node=${encodeURIComponent(srv.nodeId('Analog'))}`);
+    const t = analog.body.children.find((c) => c.name === 'Temperature');
+    assert.deepStrictEqual([t.meta.unit, t.meta.range, t.meta.origin], ['°C', { min: 0, max: 150 }, 'server']);
+    assert.ok(!top.body.children.find((c) => c.kind === 'folder').meta, 'folders carry no meta');
     const large = await call('GET', `/api/tags/browse?type=opcua&id=h1&node=${encodeURIComponent(srv.nodeId('Large'))}`);
     assert.strictEqual(large.body.children.length, 20);
 
@@ -284,7 +413,40 @@ test('HTTP: connect, browse, tags browse for type=opcua, UNS mount of the connec
       under.body.references.map((r) => r.browseName.replace(/^\d+:/, '')).sort(),
       ['Analog', 'Arrays', 'Deep', 'Large', 'Quality', 'Scalars', 'Slow', 'Structs']
     );
+    // the UNS view's structure of the mount, walked on the server: one browse request per level
+    const tree = await call('GET', `/api/uns/mounts/${m.id}/tree`);
+    assert.strictEqual(tree.status, 200, JSON.stringify(tree.body));
+    assert.deepStrictEqual(tree.body.root.children.map((c) => c.name).sort(), ['Analog', 'Arrays', 'Deep', 'Large', 'Quality', 'Scalars', 'Slow', 'Structs']);
+    assert.deepStrictEqual(tree.body.root.children.find((c) => c.name === 'Analog').children.map((c) => c.name).sort(), ['Pressure', 'Temperature']);
+    assert.strictEqual(tree.body.root.children.find((c) => c.name === 'Large').children.length, 20);
+    assert.strictEqual(tree.body.requests, 2, 'two levels, two batched browse requests (not one per node)');
+    assert.ok(tree.body.root.children.every((c) => c.children.every((g) => g.children.length === 0)), 'two levels deep, no more');
     assert.strictEqual((await call('DELETE', `/api/uns/mounts/${m.id}`)).status, 200);
+
+    // bounds: at most 50 children per node and 400 nodes; a whole-server mount from Root
+    const big = await startOpcuaTestServer({ largeCount: 120 });
+    try {
+      assert.strictEqual((await call('POST', '/api/opcua/connections', { id: 'big', name: 'Big', endpointUrl: big.endpointUrl })).status, 201);
+      const bigMount = await call('POST', '/api/uns/mounts', { type: 'opcua', connectionId: 'big', label: 'Big', nodeId: big.nodeId('Large') });
+      const capped = await call('GET', `/api/uns/mounts/${bigMount.body.id}/tree`);
+      assert.strictEqual(capped.body.root.children.length, 50);
+      assert.strictEqual(capped.body.truncated, true);
+      const whole = await call('POST', '/api/uns/mounts', { type: 'opcua', connectionId: 'big', label: 'Whole' });
+      const fromRoot = await call('GET', `/api/uns/mounts/${whole.body.id}/tree`);
+      assert.ok(fromRoot.body.root.children.some((c) => c.name === 'Objects'));
+      assert.ok(fromRoot.body.total <= 400 && fromRoot.body.requests <= 2, JSON.stringify({ total: fromRoot.body.total, requests: fromRoot.body.requests }));
+      await call('DELETE', `/api/uns/mounts/${bigMount.body.id}`);
+      await call('DELETE', `/api/uns/mounts/${whole.body.id}`);
+      // a mount whose server is gone says so instead of hanging
+      await call('DELETE', '/api/opcua/connections/big');
+      const orphan = await call('POST', '/api/uns/mounts', { type: 'opcua', connectionId: 'big', label: 'Gone' });
+      const off = await call('GET', `/api/uns/mounts/${orphan.body.id}/tree`);
+      assert.strictEqual(off.status, 409);
+      assert.match(off.body.error, /not connected/);
+      await call('DELETE', `/api/uns/mounts/${orphan.body.id}`);
+    } finally {
+      await big.close();
+    }
 
     assert.strictEqual((await call('DELETE', '/api/opcua/connections/h1')).status, 200);
     assert.strictEqual(srv.sessionCount(), 0);
