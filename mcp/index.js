@@ -30,7 +30,7 @@ async function api(path, options = {}) {
       }
     });
   } catch (error) {
-    throw new Error(`Cannot reach Manifold backend at ${API_URL}: ${error.message}`);
+    throw new Error(`Cannot reach Manifold backend at ${API_URL}: ${error.message}`, { cause: error });
   }
   const text = await res.text();
   let body;

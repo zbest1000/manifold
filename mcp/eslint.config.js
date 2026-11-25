@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import globals from 'globals';
 
 /**
- * MCP server lint (flat config, ESLint 9). Deliberately modest: eslint:recommended
+ * MCP server lint (flat config, ESLint 10). Deliberately modest: eslint:recommended
  * plus a few rules that catch real defects. The MCP server is an ES module on Node >= 20.
  */
 export default [

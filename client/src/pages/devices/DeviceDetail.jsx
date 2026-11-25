@@ -169,7 +169,7 @@ export default function DeviceDetail({ device, live, host, issues, profile, prot
       }
     >
       <div className="flex h-full min-h-0 flex-col">
-        <div tabIndex={-1} data-autofocus className="shrink-0 space-y-2 px-4 pb-0 pt-3 focus:outline-none">
+        <div tabIndex={-1} data-autofocus className="shrink-0 space-y-2 px-4 pb-0 pt-3 focus:outline-hidden">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
             <StatusText tone={view.tone} className="font-medium">{view.label}</StatusText>
             {view.since && view.key !== 'disabled' && (

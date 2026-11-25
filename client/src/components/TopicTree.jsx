@@ -175,7 +175,7 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
         }}
-        className="relative flex-1 overflow-auto focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
+        className="relative flex-1 overflow-auto focus:outline-hidden focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
       >
         {total === 0 ? (
           <p className="px-4 py-8 text-center text-sm text-muted">No topics match. Clear the filter to see everything.</p>

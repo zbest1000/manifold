@@ -288,7 +288,7 @@ class EipSimulator {
     data.writeUInt32LE(id.serial >>> 0, o); o += 4;
     data[o++] = name.length;
     name.copy(data, o); o += name.length;
-    data[o++] = id.state;
+    data[o] = id.state;
     const head = Buffer.alloc(4);
     head.writeUInt16LE(0x000c, 0);
     head.writeUInt16LE(data.length, 2);

@@ -369,7 +369,7 @@ async function guardedFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS, d
       res = await doFetch(current.toString(), opts);
     } catch (error) {
       if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-        throw new Error(`request to ${url} timed out after ${timeoutMs}ms`);
+        throw new Error(`request to ${url} timed out after ${timeoutMs}ms`, { cause: error });
       }
       throw error;
     }

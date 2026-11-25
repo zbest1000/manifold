@@ -307,7 +307,7 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
                     else expand(item);
                   }}
                   className={clsx(
-                    'grid h-8 cursor-pointer items-center gap-2 pr-3 text-sm outline-none transition-colors duration-100',
+                    'grid h-8 cursor-pointer items-center gap-2 pr-3 text-sm outline-hidden transition-colors duration-100',
                     'hover:bg-[rgb(var(--tint)/0.035)] focus-visible:shadow-[inset_0_0_0_2px_rgb(var(--focus))]',
                     selected && 'bg-accent/[0.07] shadow-[inset_2px_0_0_rgb(var(--accent))]',
                     showMeta ? 'grid-cols-[minmax(0,1fr)_4.5rem] sm:grid-cols-[minmax(0,1fr)_4.5rem_4rem_4.5rem]' : 'grid-cols-[minmax(0,1fr)_4.5rem]'

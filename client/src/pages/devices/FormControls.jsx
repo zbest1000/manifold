@@ -6,7 +6,7 @@ import { Input, Select, Checkbox, SegmentedControl, Badge } from '@/components/u
 /** Compact input / select for table cells; always labelled with aria-label. 28px tall, same tokens as Input. */
 export const cellCls =
   'h-7 w-full min-w-0 rounded border border-line-strong bg-field px-2 text-xs text-fg placeholder:text-faint transition-colors duration-150 ' +
-  'hover:border-line-stronger focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-bad';
+  'hover:border-line-stronger focus:border-accent focus:outline-hidden focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-bad';
 
 /** A labelled control with optional help text and error, wired with htmlFor / aria-describedby. */
 export function FormField({ label, help, error, className, children }) {

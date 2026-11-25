@@ -14,7 +14,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_M
     return await fetch(url, { ...options, signal });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-      throw new Error(`request to ${url} timed out after ${timeoutMs}ms`);
+      throw new Error(`request to ${url} timed out after ${timeoutMs}ms`, { cause: error });
     }
     throw error;
   }

@@ -28,7 +28,7 @@ const { EventEmitter } = require('events');
  * a localized name still carry the right severity in the code.
  */
 function opcQuality(status) {
-  let code = null;
+  let code;
   if (typeof status === 'number') code = status;
   else if (status && typeof status === 'object' && typeof status.value === 'number') code = status.value;
   else {

@@ -279,7 +279,7 @@ class DiscoveryService extends EventEmitter {
     try {
       k = this.deps.known ? this.deps.known() : null;
     } catch {
-      k = null;
+      /* a failing lookup means nothing is known yet: keep k = null */
     }
     return k;
   }

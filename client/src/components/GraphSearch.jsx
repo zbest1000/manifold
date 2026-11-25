@@ -62,7 +62,7 @@ export default function GraphSearch({ nodes, onMatches, onFit, inline = false, c
           if (e.key === 'Escape') setQuery('');
         }}
         placeholder="Search nodes or topic/#"
-        className="w-36 min-w-0 flex-1 bg-transparent text-sm text-fg placeholder:text-faint focus:outline-none sm:w-44"
+        className="w-36 min-w-0 flex-1 bg-transparent text-sm text-fg placeholder:text-faint focus:outline-hidden sm:w-44"
       />
       {query && (
         <>

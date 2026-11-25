@@ -64,7 +64,7 @@ class I3xClient extends EventEmitter {
         body: body ? JSON.stringify(body) : undefined
       }, timeoutMs);
     } catch (error) {
-      throw new Error(`i3X request failed: ${error.message}`);
+      throw new Error(`i3X request failed: ${error.message}`, { cause: error });
     }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {

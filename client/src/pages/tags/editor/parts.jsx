@@ -190,7 +190,7 @@ export function PatternInput({ label, values, onChange, placeholder, suggestions
           }}
           onBlur={() => draft.trim() && add(draft)}
           placeholder={values.length ? '' : placeholder}
-          className={clsx('h-6 min-w-[6rem] flex-1 bg-transparent px-1 text-sm text-fg placeholder:text-faint focus:outline-none', mono && 'font-mono text-xs')}
+          className={clsx('h-6 min-w-[6rem] flex-1 bg-transparent px-1 text-sm text-fg placeholder:text-faint focus:outline-hidden', mono && 'font-mono text-xs')}
         />
         {suggestions.length > 0 && (
           <datalist id={listId}>

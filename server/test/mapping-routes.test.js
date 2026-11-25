@@ -208,7 +208,7 @@ test('bindings: profile binding save returns warnings; preview is read-only', as
   r = await api('DELETE', `/api/devices/profiles/${pid}`);
   assert.strictEqual(r.status, 409);
   assert.strictEqual(r.body.bindings[0].id, 'pb');
-  r = await api('DELETE', `/api/tags/bindings/dup`);
+  await api('DELETE', `/api/tags/bindings/dup`);
   r = await api('DELETE', `/api/devices/${devA.id}`);
   assert.strictEqual(r.status, 200, 'profile instances are not pinned by profile bindings');
 });

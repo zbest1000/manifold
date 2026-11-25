@@ -109,7 +109,7 @@ export function IconButton({ icon: Icon, label, side = 'top', size = 16, active 
 
 const CONTROL_BASE =
   'rounded-md border border-line-strong bg-field px-2.5 py-[5px] text-sm text-fg placeholder:text-faint transition-colors duration-150 ' +
-  'hover:border-line-stronger focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent ' +
+  'hover:border-line-stronger focus:border-accent focus:outline-hidden focus:ring-1 focus:ring-accent ' +
   'disabled:cursor-not-allowed disabled:opacity-50 aria-[invalid=true]:border-bad';
 
 // An explicit w-*/min-w-*/max-w-* in className replaces the default full width.

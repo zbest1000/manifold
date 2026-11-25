@@ -141,8 +141,8 @@ function renderDevices(devices) {
   let out = '';
   const gauge = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} gauge\n`);
   const counter = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} counter\n`);
-  let list = [];
-  let hosts = {};
+  let list;
+  let hosts;
   try {
     list = devices.list().slice(0, MAX_DEVICES);
     hosts = devices.hosts() || {};
