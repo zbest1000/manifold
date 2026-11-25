@@ -184,6 +184,38 @@ function isAllowedAddress(ip, { device = false } = {}) {
   return false; // hard-blocked or invalid
 }
 
+/**
+ * Network-discovery policy for one IPv4 scan target. Discovery is the only caller
+ * that classifies a whole range, so it needs to know WHY an address is refused and
+ * which flag (if any) would allow it:
+ *
+ *   public                    always scanned
+ *   private  (RFC1918)        scanned with MANIFOLD_ALLOW_PRIVATE_TARGETS=1
+ *   loopback (127/8)          scanned with MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 (the same
+ *                             explicit opt-in device drivers use for local simulators)
+ *   link-local / metadata     never (169.254/16 incl. 169.254.169.254, Azure/Alibaba/Oracle helpers)
+ *   multicast                 never
+ *   reserved                  never (0/8, CGNAT, TEST-NETs, benchmarking, 240/4, IETF assignments)
+ *
+ * `category` is a stable machine word; `flag` is the environment variable that would
+ * allow the address, or null when nothing will.
+ * @returns {{ allowed: boolean, category: string, flag: string|null }}
+ */
+function classifyScanTarget(ip) {
+  const d = classifyDetail(ip);
+  if (net.isIP(ip) !== 4) return { allowed: false, category: 'invalid', flag: null };
+  if (d.cls === 'public') return { allowed: true, category: 'public', flag: null };
+  if (d.cls === 'private') {
+    return { allowed: allowPrivate(), category: 'private', flag: 'MANIFOLD_ALLOW_PRIVATE_TARGETS' };
+  }
+  if (d.loopback) return { allowed: allowLoopbackDevices(), category: 'loopback', flag: 'MANIFOLD_ALLOW_LOOPBACK_DEVICES' };
+  const n = ipv4ToInt(ip);
+  if (n !== null && inCidrV4(n, '169.254.0.0', 16)) return { allowed: false, category: 'link-local', flag: null };
+  if (n !== null && inCidrV4(n, '168.63.129.16', 32)) return { allowed: false, category: 'link-local', flag: null };
+  if (n !== null && inCidrV4(n, '224.0.0.0', 4)) return { allowed: false, category: 'multicast', flag: null };
+  return { allowed: false, category: 'reserved', flag: null };
+}
+
 class EgressBlockedError extends Error {
   constructor(target, reason, purpose) {
     super(
@@ -382,6 +414,7 @@ module.exports = {
   assertAllowedDeviceTarget,
   isAllowedAddress,
   classifyAddress,
+  classifyScanTarget,
   hostFromTarget,
   EgressBlockedError,
   ALLOW_PRIVATE,

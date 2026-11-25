@@ -1,19 +1,31 @@
-import { Banner, Code } from '@/components/ui';
+import { Banner, Checkbox } from '@/components/ui';
 
-/** The plain-language warning shown whenever device protocols are ticked for a scan. */
-export default function OtNotice() {
+/**
+ * Shown whenever a PLC protocol is ticked. The first time, scanning stays disabled until the user
+ * confirms (the choice is remembered in this browser); afterwards it is a reminder.
+ */
+export default function OtNotice({ acknowledged, onAcknowledge, disabled }) {
   return (
-    <Banner variant="warn" title="Scanning an OT network is intrusive">
+    <Banner variant="warn" title="Looking for PLCs and meters touches an OT network">
       <div role="note" className="space-y-2">
         <p>
-          Finding devices opens a TCP connection to every address in the range and sends one identification request per ticked protocol: a Modbus read of a single register (function 3), an S7 connection
-          request (no S7 job is sent) or an EtherNet/IP ListIdentity. The probes are read-only, nothing is ever written to a device. Even so, fragile PLCs and gateways can react badly to unexpected
-          connections: scan only networks you are allowed to scan, keep the range small, and prefer a maintenance window.
+          Device probing opens a TCP connection to every address in the range and, where a port is open, sends one identification request per ticked protocol: a Modbus device-identification or single-register
+          read, an S7 connection request (and, if the controller accepts it, a read of its identity records), or an EtherNet/IP ListIdentity. The probes only read; nothing is ever written to a device.
         </p>
         <p>
-          The server refuses to scan private (LAN) ranges unless it was started with <Code>MANIFOLD_ALLOW_PRIVATE_TARGETS=1</Code> (only safe on a trusted network). Loopback, link-local and cloud-metadata
-          addresses are always refused.
+          Even so, fragile PLCs and gateways can react badly to unexpected connections, and intrusion-detection systems may raise an alert. Scan only networks you are allowed to scan, keep the range small,
+          and prefer a maintenance window. Each device receives at most a couple of connections at a time (see Advanced options).
         </p>
+        {!acknowledged && (
+          <Checkbox
+            className="pt-1"
+            checked={false}
+            disabled={disabled}
+            onChange={(on) => on && onAcknowledge()}
+            label={<span className="font-medium text-fg">I understand, and I am allowed to probe this network</span>}
+            description="Required once. This browser remembers it."
+          />
+        )}
       </div>
     </Banner>
   );

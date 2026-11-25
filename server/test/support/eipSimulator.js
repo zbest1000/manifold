@@ -252,6 +252,49 @@ class EipSimulator {
     });
   }
 
+  /**
+   * ListIdentity CPF item (type 0x000C): encapsulation protocol version, the socket
+   * address (big endian, sin_family 2), then the CIP Identity object: vendor, device
+   * type, product code, revision, status, serial, product name (SHORT_STRING), state.
+   * A test can override any field by assigning `sim.identity = { productName: '...' }`.
+   */
+  _identityItem(socket) {
+    const id = {
+      vendorId: 1, // Rockwell Automation / Allen-Bradley
+      deviceType: 0x0e, // Programmable Logic Controller
+      productCode: 166,
+      revMajor: 32,
+      revMinor: 11,
+      status: 0x0030,
+      serial: 0x006c5f2a,
+      productName: '1769-L33ER/A LOGIX5333ER',
+      state: 3,
+      ...(this.identity || {}),
+    };
+    const name = Buffer.from(id.productName, 'latin1');
+    const data = Buffer.alloc(2 + 16 + 14 + 1 + name.length + 1);
+    let o = 0;
+    data.writeUInt16LE(1, o); o += 2;
+    data.writeUInt16BE(2, o); o += 2; // sin_family AF_INET
+    data.writeUInt16BE(this.port || 44818, o); o += 2;
+    Buffer.from((socket.localAddress || '127.0.0.1').replace(/^::ffff:/, '').split('.').map(Number)).copy(data, o); o += 4;
+    o += 8; // sin_zero
+    data.writeUInt16LE(id.vendorId, o); o += 2;
+    data.writeUInt16LE(id.deviceType, o); o += 2;
+    data.writeUInt16LE(id.productCode, o); o += 2;
+    data[o++] = id.revMajor;
+    data[o++] = id.revMinor;
+    data.writeUInt16LE(id.status, o); o += 2;
+    data.writeUInt32LE(id.serial >>> 0, o); o += 4;
+    data[o++] = name.length;
+    name.copy(data, o); o += name.length;
+    data[o++] = id.state;
+    const head = Buffer.alloc(4);
+    head.writeUInt16LE(0x000c, 0);
+    head.writeUInt16LE(data.length, 2);
+    return Buffer.concat([head, data]);
+  }
+
   _send(socket, buf, isData) {
     let delay = this.faults.delayMs || 0;
     if (isData && this.faults.lateReply) {
@@ -292,8 +335,8 @@ class EipSimulator {
       return;
     }
     if (cmd === 0x63) {
-      const item = Buffer.alloc(4);
-      this._send(socket, Buffer.concat([this._header(0x63, 2 + 4, 0, ctx), Buffer.from([1, 0]), item]));
+      const item = this._identityItem(socket);
+      this._send(socket, Buffer.concat([this._header(0x63, 2 + item.length, 0, ctx), Buffer.from([1, 0]), item]));
       return;
     }
     if (session !== st.session || !st.session) {

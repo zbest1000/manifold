@@ -336,42 +336,98 @@ Map the whole set to the UNS with one profile binding; see
 
 ![The Discovery page with its scan options, including the opt-in PLC and meter protocols](images/discovery.png)
 
-The **Discovery** page's CIDR scan can also look for PLCs and meters. It is
-**opt-in**: tick **Modbus TCP**, **Siemens S7** and/or **EtherNet/IP** under
-"Also find PLCs and meters" (each with its port list; default 502, 102 and
-44818). Over the API the same thing is `includeDevices: true` or explicit
-`modbusPorts`, `s7Ports`, `eipPorts` in `POST /api/system/discovery/start`;
-without them the scan only looks for MQTT brokers, OPC UA servers and i3X.
+The **Discovery** page runs a CIDR scan that finds **MQTT brokers**, **OPC UA servers** and **i3X servers** and,
+opt-in, **Modbus TCP**, **Siemens S7** and **EtherNet/IP** devices, and lets you add what it found.
 
-Each ticked port of each address gets **one TCP connection and one
-identification request**, read-only by construction (the frames are built with
-the drivers' own allowlisted encoders, which throw on any write service):
+### Running a scan
 
-| Protocol | What is sent | What counts as an answer |
+1. **Range.** An IPv4 CIDR (`192.168.1.0/24`), a single address, or a hostname (resolved to one IPv4 address). **This
+   subnet** fills in the server's own /24; blank scans it. IPv6 is not supported.
+2. **What to look for.** MQTT, OPC UA and i3X are ticked; Modbus TCP, S7 and EtherNet/IP are **off** until you tick
+   them. The first time you tick one, a banner explains what device probing does to an OT network and the scan stays
+   disabled until you tick *I understand, and I am allowed to probe this network* (remembered in that browser).
+3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840, i3X 80, 443 and 8080,
+   Modbus 502, S7 102, EtherNet/IP 44818), MQTT over WebSocket ports (none by default), and the pacing below.
+4. Before you start, the page shows what the server's own planner says: hosts, ports, probes, and how long it can take
+   (*usually* about N s; *at most* about M if nothing answers, plus up to a few seconds for each open port that never
+   replies). A range the server refuses, or one that is too large, is explained there with the exact setting to change.
+5. **Start scan.** Progress shows probes done of total, found so far and the time left, with **Cancel scan**. Cancel
+   destroys every socket at once (within a second) and keeps what was found. Results stay until the next scan and are
+   still there after a reload (the server keeps the last scan; a server restart clears it).
+
+API: `POST /api/system/discovery/start`, `/stop`, `/plan` (what a scan would do, no traffic), `GET .../results`
+(`{ scanning, scan, results }`) and `GET .../defaults` (local subnet, defaults, bounds, what the guard allows). Errors
+carry `code` (`RANGE_REFUSED`, `RANGE_TOO_LARGE`, `RANGE_INVALID`, `OPTION_INVALID`, `SCAN_RUNNING`, a 409) and, for a
+refused range, `flag` (the setting that would allow it).
+
+### What is sent
+
+Each host:port gets **one TCP connect** (nothing is sent). **Only if it is open** is it identified, with one
+handshake per protocol, read-only by construction:
+
+| Protocol | What is sent | What counts as an answer, and what the result shows |
 |---|---|---|
-| Modbus TCP (502) | one **Read Holding Registers** (function 3) request for one register at address 0, unit 1 | any well-formed Modbus reply, registers or an exception (for example "illegal data address"), with a matching transaction id |
-| S7 (102) | one **COTP Connection Request** (rack 0, slot 1 TSAP) and nothing else: no S7 setup, no S7 job | a COTP Connection Confirm, or a Disconnect/Error from a CPU that refuses the TSAP (the CPU still speaks ISO-on-TCP) |
-| EtherNet/IP (44818) | the encapsulation **ListIdentity** command (an identification request, no CIP service) | a ListIdentity reply; the identity (vendor, product name, revision ...) is decoded when present |
+| MQTT (1883, 8883, optional WebSocket) | an anonymous **CONNECT**, then DISCONNECT | a CONNACK (anonymous access allowed) or an auth refusal (authentication required) = **verified**; TCP, TLS or WebSocket is shown. Open but silent = **open port**, labelled as such |
+| OPC UA (4840) | the UA-TCP **Hello** (connection level, before any secure channel or session) | an Acknowledge or Error message = **verified**; silent = open port |
+| i3X (80, 443, 8080) | `GET /info` at `/`, `/v1`, `/i3x`, `/i3x/v1` | a valid i3X info document (server name, spec version). An open HTTP port that is not i3X is not reported |
+| Modbus TCP (502) | **FC 43 / MEI 14 Read Device Identification** (vendor, product code, revision, product name), then, if the device refuses or ignores it, **FC 3** for one register at address 0, unit 1, on the same connection | any well-formed Modbus reply. `method` records which request answered (`fc43-device-id` or `fc3-register-read`) |
+| S7 (102) | one **COTP Connection Request** (rack 0 slot 1; slot 2 if refused), then, if the CPU accepts, the S7 driver's read-only **identity read** (setup communication and read SZL, on a second connection opened after the first closed) | a COTP Connection Confirm or a Disconnect from a CPU that refuses the TSAP. With the identity read: CPU type, order code, firmware, serial, run state |
+| EtherNet/IP (44818) | the encapsulation **ListIdentity** command (no CIP service) | vendor, device type, product code, revision, serial, product name, state |
 
-A port that does not answer the protocol within about 3 seconds is **not
-reported** (an open port is not a finding by itself). A result shows what
-answered and a suggested device (name, protocol, host, port). **Add as device**
-opens the Devices page with that device pre-filled; nothing is created until
-you save it. **Add all** shows a review list (devices at a `host:port` that
-already exists start unticked) and creates the ticked ones **all-or-nothing** (the same
-bulk request as above) when you confirm.
+An open port that does not answer a **device or i3X** protocol is **never reported**; MQTT and OPC UA ports that are
+open but silent are shown as **Open port** (not *Verified*), since those ports are conventional. One result per
+host:port; a port listed for two protocols is probed once and identified by whichever answers.
 
-**Why it is opt-in, and what it does not protect.** The probes cannot write, but
-scanning an OT network is still intrusive: it opens connections to every address
-in the range, and fragile PLCs and gateways can react badly to unexpected
-connections. Scan only networks you are allowed to scan, keep
-the range small, and prefer a maintenance window. The scan uses the egress
-guard: **private (LAN) ranges are refused unless the server runs with
-`MANIFOLD_ALLOW_PRIVATE_TARGETS=1`**, and **loopback, link-local (including
-cloud metadata), multicast and reserved addresses are always refused**, whatever
-`MANIFOLD_ALLOW_LOOPBACK_DEVICES` says; that variable affects saved devices,
-not the scanner. To try the scan against the demo simulators, add the devices by
-hand instead.
+The Modbus FC 43 request is a fixed 11-byte frame built in `server/services/deviceIdentify.js`; it is **not** added to
+the Modbus driver's read-only allowlist, which still refuses every function code except 1 to 4. The simulators count
+writes and the tests assert the count stays 0 and that no socket remains open after a scan or a cancel.
+
+### Pacing
+
+The defaults are conservative for an OT network and bound both the load and the total time:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| connections at once | 32 | sockets in flight across the whole scan |
+| connections per host | 2 | to any one address, probe and identification together. PLCs have few connection slots |
+| connect timeout | 1200 ms | a dropped (filtered) address costs this per port |
+| identify timeout | 3000 ms | an open port that never answers (a tarpit) costs this once per protocol tried |
+
+A /24 with six ports (1,524 probes) finishes in seconds when closed ports answer with a reset, and in at most about a
+minute when every address silently drops packets. **A scan is limited to 1,024 hosts (a /22)**; a bigger range is
+refused with its size and duration and the advice to scan it in pieces (`MANIFOLD_DISCOVERY_MAX_HOSTS` raises the limit
+if you mean it).
+
+### Results and adding what was found
+
+Results show the endpoint, protocol, state (*Verified* / *Identified* / *Open port*), the identity text, and whether
+Manifold **already has it**: the server marks each result with `known: { kind, id, name }` when a broker, OPC UA
+connection, i3X server or device exists at that host and port, so the table, **Add all** and a re-scan agree. Filter by
+protocol, then use the action that fits: **Add broker**, **Add OPC UA connection**, **Connect** (i3X) or **Add as
+device**. A broker that needs credentials sends you to the Brokers page instead. **Add as device** opens the Devices page
+with the form pre-filled; nothing is created until you save it. **Add all N new** shows a review list (known endpoints
+and ports that never answered start unticked) and adds the ticked ones: devices **all-or-nothing** (the bulk request
+above), brokers and OPC UA connections one by one.
+
+### Which addresses may be scanned
+
+Every address passes the egress guard:
+
+| Range | Scanned when |
+|---|---|
+| public | always |
+| private RFC1918 (10/8, 172.16/12, 192.168/16) | `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` |
+| loopback (127.0.0.0/8) | `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, the same opt-in device drivers use for local simulators. Not probed for i3X, whose client cannot connect to loopback |
+| link-local and cloud metadata (169.254/16), multicast, reserved (0/8, CGNAT, TEST-NET, 240/4) | never |
+
+The refusal says exactly which flag would allow the range you asked for, or that nothing will. A range that is only
+partly blocked scans the rest and lists what it skipped. See [SECURITY.md](../../SECURITY.md#network-discovery).
+
+### Try it against the simulators
+
+`node server/tools/simulators.js` starts the Modbus, S7 and EtherNet/IP simulators; scan them from a local server with
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`. [DOCKER.md](../../DOCKER.md#scan-the-demo-stack) has the exact commands for both
+the local and the Docker demo.
 
 ## Polling health
 
@@ -466,8 +522,7 @@ What this does and does not mean:
 ## Egress: which addresses a device may use
 
 Device hosts pass the egress guard when you save, test or start a device (the
-Discovery scan checks every candidate address too, and never allows loopback;
-see above).
+Discovery scan checks every candidate address too, with the same flags; see above).
 Private networks are refused unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` (the
 normal setting on a plant network). **Loopback is refused** unless
 `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, which exists for local simulators and
@@ -493,9 +548,10 @@ refused. See [Operations](Operations#network-safety-egress-guard).
   be wrong), template sizes, Multiple Service Packet limits, behaviour after a
   controller download, and route paths through a bridge. The Rockwell and ODVA
   documents were not available when the driver was written.
-- **Discovery probes** (Modbus FC 3 at address 0 unit 1, S7 COTP CR with rack 0
-  slot 1, ListIdentity) have also only been run against the simulators; how
-  real devices and gateways react to them is part of the checklist.
+- **Discovery probes** (Modbus FC 43/14 then FC 3 at address 0 unit 1, S7 COTP CR
+  with rack 0 slot 1 and the SZL identity read, ListIdentity, the OPC UA Hello)
+  have also only been run against the simulators; how real devices, gateways and
+  intrusion-detection systems react to them is part of the checklist.
 - The design intent is that S7 and EtherNet/IP leave "experimental" only after
   verification against real hardware. The consolidated, ordered procedure is
   [Verifying on real hardware](Verifying-on-Real-Hardware); the design is in

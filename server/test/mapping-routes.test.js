@@ -325,6 +325,7 @@ test('discovery: read-only identification of Modbus, S7 and EtherNet/IP', async 
   // Minimal ListIdentity responder with a real identity item.
   const eip = net.createServer((sock) => {
     sock.on('data', (req) => {
+      if (req.length < 24) return; // not an encapsulation header (e.g. a Modbus probe aimed at this port)
       const name = Buffer.from('1769-L33ER/A LOGIX5333ER', 'latin1');
       const ident = Buffer.alloc(15);
       ident.writeUInt16LE(1, 0); // vendor Rockwell

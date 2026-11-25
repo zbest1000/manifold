@@ -119,7 +119,7 @@ export const useStore = create((set) => ({
   authRole: null, // 'admin' | 'viewer' | null (unknown/open) — from /api/whoami
   brokers: [],
   opcua: [],
-  discovery: { scanning: false, results: [], progress: null },
+  discovery: { scanning: false, results: [], progress: null, scan: null },
 
   // Reactive change signals for the high-frequency data (see note above).
   dataTick: 0,
@@ -383,12 +383,33 @@ export function initRealtime() {
   });
   socket.on('devices-changed', () => useStore.setState((st) => ({ devicesVersion: st.devicesVersion + 1 })));
 
-  socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
-  socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
+  // Network discovery. `progress` is monotonic (a late event for an older scan is ignored); `scan` is the
+  // summary the server keeps for the current or last scan, so the page reads the same after a reload.
+  socket.on('discovery-started', (d) =>
+    s.setDiscovery({
+      scanning: true,
+      results: [],
+      scan: { id: d.scanId, range: d.range, status: 'running', totalProbes: d.totalProbes, completed: 0, found: 0, startedAt: d.startedAt, notes: d.notes, settings: d.settings, estimate: d.estimate },
+      progress: { scanId: d.scanId, range: d.range, total: d.totalProbes, completed: 0, found: 0, etaMs: d.estimate?.worstCaseMs }
+    })
+  );
+  socket.on('discovery-progress', (p) => {
+    const cur = useStore.getState().discovery.progress;
+    if (cur && p.scanId && cur.scanId && p.scanId !== cur.scanId) return;
+    if (cur && typeof cur.completed === 'number' && p.completed < cur.completed) return;
+    s.setDiscovery({ progress: { ...cur, ...p } });
+  });
   socket.on('discovery-result', (r) => s.addDiscoveryResult(r));
-  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [] }));
+  socket.on('discovery-complete', (d) =>
+    s.setDiscovery({
+      scanning: false,
+      results: d.results || [],
+      scan: { ...(useStore.getState().discovery.scan || {}), id: d.scanId, range: d.range, status: d.status || (d.aborted ? 'cancelled' : 'complete'), completed: d.completed, totalProbes: d.total, found: d.found, elapsedMs: d.elapsedMs, notes: d.notes },
+      progress: { scanId: d.scanId, range: d.range, total: d.total, completed: d.completed, found: d.found, etaMs: 0 }
+    })
+  );
   socket.on('discovery-error', ({ error } = {}) => {
-    s.setDiscovery({ scanning: false });
+    s.setDiscovery({ scanning: false, scan: { ...(useStore.getState().discovery.scan || {}), status: 'error', error } });
     if (error) reportError(s, 'discovery', error);
   });
 
@@ -407,7 +428,7 @@ export function initRealtime() {
     s.pushLog('verbose', 'mqtt', `Published "${topic}"`, { brokerId, topic }));
   socket.on('discovery-started', () => s.pushLog('info', 'discovery', 'Discovery started'));
   socket.on('discovery-complete', (d) =>
-    s.pushLog('info', 'discovery', `Discovery complete — ${d?.results?.length ?? 0} host(s)`));
+    s.pushLog('info', 'discovery', `Discovery ${d?.status === 'cancelled' ? 'cancelled' : 'complete'}: ${d?.results?.length ?? 0} endpoint(s) found`));
   socket.on('opcua-connected', () => s.pushLog('info', 'opcua', 'OPC UA connected'));
   socket.on('opcua-disconnected', () => s.pushLog('info', 'opcua', 'OPC UA disconnected'));
   socket.on('opcua-reconnecting', () => s.pushLog('warning', 'opcua', 'OPC UA reconnecting'));

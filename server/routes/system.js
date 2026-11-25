@@ -25,14 +25,61 @@ router.get('/status', (req, res) => {
   });
 });
 
-// POST /api/system/discovery/start { range, mqttPorts, opcuaPorts }
+// ---- network discovery ----------------------------------------------------------------
+// The engine lives in services/discovery.js. Results carry a server-side `known`
+// marker (already a broker / OPC UA connection / i3X server / device), so every client
+// shows the same thing. The engine learns about those registries from the first request
+// that reaches this router.
+router.use('/discovery', (req, res, next) => {
+  const services = req.app.locals.services;
+  services.discovery.bindServices(services);
+  next();
+});
+
+// Errors the engine raises on purpose carry a code the UI keys off (RANGE_REFUSED names the
+// flag that would allow the range; SCAN_RUNNING is a conflict, the rest are bad input).
+function sendDiscoveryError(res, error) {
+  const status = error.code === 'SCAN_RUNNING' ? 409 : 400;
+  const body = { error: error.message };
+  if (error.code) body.code = error.code;
+  if (error.flag) body.flag = error.flag;
+  if (error.categories) body.categories = error.categories;
+  res.status(status).json(body);
+}
+
+// GET /api/system/discovery/defaults - local subnet, default settings and bounds, port defaults, policy
+router.get('/discovery/defaults', (req, res) => {
+  res.json(req.app.locals.services.discovery.describe());
+});
+
+// POST /api/system/discovery/plan { range, ...options } - what a scan WOULD do (hosts, probes, ETA, refusal)
+router.post('/discovery/plan', async (req, res) => {
+  const { discovery } = req.app.locals.services;
+  try {
+    const p = await discovery.plan(req.body || {});
+    res.json({ range: p.range, resolvedFrom: p.resolvedFrom, hosts: p.hosts.length, totalProbes: p.totalProbes, ports: p.ports, settings: p.settings, estimate: p.estimate, skipped: p.skipped, notes: p.notes });
+  } catch (error) {
+    // ?soft=1: the page asks for a plan on every edit, and a refused range is an expected answer there, not a
+    // failed request (it would otherwise show up as a console error in the browser). 200 with `refused`.
+    if (req.query.soft === '1' && error.code && error.code !== 'SCAN_RUNNING') {
+      const refused = { error: error.message, code: error.code };
+      if (error.flag) refused.flag = error.flag;
+      if (error.categories) refused.categories = error.categories;
+      return res.json({ refused });
+    }
+    sendDiscoveryError(res, error);
+  }
+});
+
+// POST /api/system/discovery/start { range, includeDevices, mqttPorts, opcuaPorts, i3xPorts, modbusPorts,
+//   s7Ports, eipPorts, mqttWsPorts, concurrency, perHost, timeoutMs, identifyTimeoutMs }
 router.post('/discovery/start', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {
     const result = await discovery.startScan(req.body || {});
     res.status(202).json(result);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    sendDiscoveryError(res, error);
   }
 });
 
@@ -42,10 +89,10 @@ router.post('/discovery/stop', (req, res) => {
   res.json(discovery.stopScan());
 });
 
-// GET /api/system/discovery/results
+// GET /api/system/discovery/results - the last scan until the next one starts (survives a page reload)
 router.get('/discovery/results', (req, res) => {
   const { discovery } = req.app.locals.services;
-  res.json({ scanning: discovery.isScanning(), results: discovery.getLastResults() });
+  res.json(discovery.getState());
 });
 
 // ---- config as code -----------------------------------------------------------

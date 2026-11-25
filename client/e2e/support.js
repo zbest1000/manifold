@@ -367,3 +367,15 @@ export async function startBroker() {
     }
   };
 }
+
+// ---- discovery lab -----------------------------------------------------------------------
+
+/**
+ * Everything a Discovery scan can find on 127.0.0.1, in this worker (server/test/support/discoveryLab.js):
+ * Modbus / S7 / EtherNet/IP simulators, an MQTT broker (TCP and WebSocket), a UA-TCP server, plus a silent
+ * port, a tarpit and a resetting port. Returns { modbus, s7, eip, mqttPort, mqttWsPort, opcua, silent, tarpit,
+ * reset, closedPort, openSockets(), totalOpen(), writes(), close() }.
+ */
+export function startDiscoveryLab() {
+  return requireServer('./test/support/discoveryLab.js').startDiscoveryLab({ withWs: true });
+}

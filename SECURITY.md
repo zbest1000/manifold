@@ -56,12 +56,28 @@ instance beyond your own machine:
   the standard setup. The residual risk is that anyone holding an admin token can
   make the server connect to any host it can reach through those three paths,
   internal services included, so protect admin tokens and use network policy.
-- **Discovery of devices is opt-in and read-only, but intrusive.** The scan can
-  send one identification request per ticked protocol to every address in a range
-  (a Modbus read of one register, an S7 COTP connection request, an EtherNet/IP
-  ListIdentity), built with the drivers' allowlisted encoders. Scan only networks
-  you are allowed to scan; the scanner refuses loopback and link-local always and
-  private ranges unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
+- **Network discovery** <a id="network-discovery"></a>(the CIDR scan) is opt-in for PLC protocols, read-only
+  and bounded, but it is still a port scanner. The rules, in one place:
+  - *Which addresses.* Every address goes through the egress guard. Public: scanned. RFC1918
+    (`10/8`, `172.16/12`, `192.168/16`): only with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`. Loopback
+    (`127.0.0.0/8`): only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, the same explicit opt-in device
+    drivers use for local simulators, honoured for every probe kind except i3X (whose client cannot
+    connect to loopback, so a hit would be a dead end). Link-local and cloud metadata
+    (`169.254/16`, including `169.254.169.254`), multicast and reserved space (`0/8`, CGNAT,
+    TEST-NET, `240/4`): never, whatever you set. Why loopback is an opt-in and not on: a scan of
+    `127.0.0.1` is an unauthenticated port probe of the server's own host (databases, admin ports).
+    The startup warning for `MANIFOLD_ALLOW_LOOPBACK_DEVICES` covers scans too. A refused range's
+    message names the one flag that would allow it, or says that nothing will.
+  - *What is sent.* A TCP connect to each selected port; only open ports get an identification
+    handshake (MQTT CONNECT, OPC UA Hello, i3X `GET /info`, Modbus FC 43/14 then FC 3, S7 COTP and the
+    read-only SZL identity read, EtherNet/IP ListIdentity), built with the drivers' allowlisted
+    encoders (Modbus FC 43 is a fixed 11-byte frame outside the driver's allowlist, which still refuses
+    everything but FC 1 to 4). Nothing is ever written; the simulators count writes and the tests
+    assert zero.
+  - *How hard.* At most 32 sockets at once and 2 per address by default, bounded timeouts, a limit of
+    1,024 hosts per scan (`MANIFOLD_DISCOVERY_MAX_HOSTS`), and Cancel destroys every socket at once.
+    Starting a scan needs an admin token (a viewer token is refused). Even so, fragile PLCs and gateways can
+    react badly and intrusion-detection systems will notice: scan only networks you are allowed to scan.
 - **Treat device networks as writable by everyone on them.** Modbus TCP, S7comm
   and plain EtherNet/IP do not authenticate clients, and enabling PUT/GET on an
   S7 CPU (required for Manifold to read it) makes its data blocks readable and

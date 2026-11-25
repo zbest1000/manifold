@@ -107,6 +107,25 @@ What each simulator serves (enter these on the Devices page, **Add device**, or 
 The EtherNet/IP simulator also has arrays, a matrix, a BOOL array and a few
 tags with restricted External Access; `GET /api/devices/<id>/browse` lists them.
 
+### Scan the simulators with Discovery
+
+The simulators are scannable. Each answers the same read-only identification the scanner sends (Modbus register read, S7 COTP connect plus SZL identity read, EtherNet/IP ListIdentity), so a scan shows them as verified devices with an identity.
+
+**Docker demo stack.** `app` already sets `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`, and `device-sim` is a private compose address. In the Discovery page, tick **Modbus TCP**, **Siemens S7** and **EtherNet/IP** (acknowledge the OT notice), set the range to the compose subnet (`docker network inspect` shows it; the page's "this subnet" helper fills in the app container's own /24) and scan.
+
+**Without Docker** (the commands this was verified with):
+
+```bash
+node server/tools/simulators.js --modbus 15020 --s7 15102 --eip 15818 --quiet &
+(cd server && MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 PORT=15099 npm start) &
+curl -s -X POST localhost:15099/api/system/discovery/start -H 'Content-Type: application/json' -d '{
+  "range":"127.0.0.1/32","includeDevices":true,"includeI3x":false,
+  "modbusPorts":[15020],"s7Ports":[15102],"eipPorts":[15818],"mqttPorts":[],"opcuaPorts":[]}'
+sleep 3; curl -s localhost:15099/api/system/discovery/results
+```
+
+Expected: three verified results: an S7 CPU 1516-3 PN/DP (firmware V2.9.4), an EtherNet/IP 1769-L33ER/A LOGIX5333ER and a Modbus TCP server (answered by register read; the simulator has no FC 43 device identification). `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` is required: loopback ranges are refused otherwise.
+
 ### Run the simulators without Docker
 
 Needs only Node and `npm ci` in `server/` (the simulators use no packages, but
