@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown, Pin, ArrowDownAZ, Hash, Clock } from 'lucide-react';
 import clsx from 'clsx';
 import { topicMatches } from '@/lib/mqtt';
@@ -19,6 +19,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(600);
   const scrollerRef = useRef(null);
+  const [focusIdx, setFocusIdx] = useState(0); // keyboard cursor (row index)
+  const uid = useId();
 
   const root = useMemo(() => buildTree(topics), [topics]);
 
@@ -63,7 +65,7 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
     };
     walk(root, 0);
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- expandedKey is the stable string form of `expanded`
   }, [root, expandedKey, visiblePaths, sortBy]);
 
   const toggle = (path) =>
@@ -75,6 +77,70 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
     });
 
   const total = rows.length;
+  const cursor = Math.min(focusIdx, Math.max(total - 1, 0));
+  const rowId = (i) => `${uid}-row-${i}`;
+
+  // Keep the keyboard cursor row inside the scroll viewport.
+  const reveal = (i) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const top = i * ROW_H;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight;
+    setScrollTop(el.scrollTop);
+    setViewH(el.clientHeight);
+  };
+  const moveTo = (i) => {
+    const n = Math.max(0, Math.min(total - 1, i));
+    setFocusIdx(n);
+    reveal(n);
+  };
+
+  // WAI-ARIA tree keys: Up/Down move, Right expands or enters, Left collapses
+  // or goes to the parent, Enter/Space selects (or toggles a branch), Home/End jump.
+  const onKeyDown = (e) => {
+    if (!total) return;
+    const row = rows[cursor];
+    if (!row) return;
+    const { c, depth, hasChildren, open } = row;
+    let handled = true;
+    if (e.key === 'ArrowDown') moveTo(cursor + 1);
+    else if (e.key === 'ArrowUp') moveTo(cursor - 1);
+    else if (e.key === 'Home') moveTo(0);
+    else if (e.key === 'End') moveTo(total - 1);
+    else if (e.key === 'ArrowRight') {
+      if (hasChildren && !open) toggle(c.path);
+      else if (hasChildren && open) moveTo(cursor + 1);
+    } else if (e.key === 'ArrowLeft') {
+      if (hasChildren && open && !visiblePaths) toggle(c.path);
+      else {
+        for (let i = cursor - 1; i >= 0; i--) {
+          if (rows[i].depth < depth) {
+            moveTo(i);
+            break;
+          }
+        }
+      }
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      if (c.stat) onSelect(c);
+      else if (hasChildren) toggle(c.path);
+    } else handled = false;
+    if (handled) e.preventDefault();
+  };
+
+  // Pointer activation is delegated to the tree (the keyboard path is onKeyDown),
+  // so rows stay plain presentational treeitems under aria-activedescendant.
+  const onTreeClick = (e) => {
+    const el = e.target.closest?.('[data-row]');
+    if (!el) return;
+    const i = Number(el.dataset.row);
+    const row = rows[i];
+    if (!row) return;
+    setFocusIdx(i);
+    if (row.c.stat) onSelect(row.c);
+    else if (row.hasChildren) toggle(row.c.path);
+  };
+
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
   const slice = rows.slice(start, end);
@@ -91,22 +157,28 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 border-b border-white/5 px-3 py-2 text-[11px] text-slate-500">
-        <span className="mr-auto">{total.toLocaleString()} rows</span>
+      <div className="flex items-center gap-1 border-b border-line px-3 py-1.5 text-xs text-muted">
+        <span className="mr-auto tabular-nums">{total.toLocaleString()} rows</span>
         <SortBtn active={sortBy === 'name'} onClick={() => setSortBy('name')} icon={ArrowDownAZ} label="Name" />
         <SortBtn active={sortBy === 'messages'} onClick={() => setSortBy('messages')} icon={Hash} label="Msgs" />
         <SortBtn active={sortBy === 'recent'} onClick={() => setSortBy('recent')} icon={Clock} label="Recent" />
       </div>
       <div
         ref={scrollerRef}
+        role="tree"
+        aria-label="Topic tree"
+        aria-activedescendant={total ? rowId(cursor) : undefined}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        onClick={onTreeClick}
         onScroll={(e) => {
           setScrollTop(e.currentTarget.scrollTop);
           setViewH(e.currentTarget.clientHeight);
         }}
-        className="relative flex-1 overflow-auto"
+        className="relative flex-1 overflow-auto focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[rgb(var(--focus))]"
       >
         {total === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-slate-500">No topics.</p>
+          <p className="px-4 py-8 text-center text-sm text-muted">No topics match. Clear the filter to see everything.</p>
         ) : (
           <div style={{ height: total * ROW_H, position: 'relative' }}>
             {slice.map((row, i) => {
@@ -115,41 +187,50 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
               return (
                 <div
                   key={c.path}
-                  onClick={() => (c.stat ? onSelect(c) : hasChildren && toggle(c.path))}
+                  id={rowId(start + i)}
+                  role="treeitem"
+                  aria-level={depth + 1}
+                  aria-expanded={hasChildren ? open : undefined}
+                  aria-selected={Boolean(isSelected)}
+                  data-row={start + i}
                   className={clsx(
-                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-white/5',
-                    isSelected && 'bg-accent-500/15'
+                    'absolute left-0 right-0 flex cursor-pointer items-center gap-1.5 pr-2 text-sm hover:bg-raised',
+                    isSelected && 'bg-accent/[0.07] shadow-[inset_2px_0_0_rgb(var(--accent))]',
+                    start + i === cursor && 'outline outline-1 -outline-offset-1 outline-[rgb(var(--focus)/0.6)]'
                   )}
                   style={{ top: (start + i) * ROW_H, height: ROW_H, paddingLeft: `${depth * 14 + 8}px` }}
                 >
                   <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label={open ? `Collapse ${c.name}` : `Expand ${c.name}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (hasChildren) toggle(c.path);
                     }}
-                    className={clsx('shrink-0 text-slate-500', !hasChildren && 'invisible')}
+                    className={clsx('shrink-0 text-subtle', !hasChildren && 'invisible')}
                   >
                     {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   </button>
 
-                  <span className={clsx('truncate', c.stat ? 'text-slate-200' : 'font-medium text-slate-300')}>
+                  <span className={clsx('truncate', c.stat ? 'text-fg' : 'font-medium text-fg')}>
                     {c.name}
                   </span>
 
-                  {c.stat?.retain && <Pin size={10} className="shrink-0 text-amber-400" />}
+                  {c.stat?.retain && <Pin size={10} className="shrink-0 text-subtle" aria-label="Retained" />}
 
                   {hasChildren && (
-                    <span className="shrink-0 rounded bg-white/5 px-1.5 text-[10px] text-slate-500">
+                    <span className="shrink-0 rounded border border-line bg-raised px-1 text-xs tabular-nums text-muted">
                       {c.descendants.toLocaleString()}
                     </span>
                   )}
 
                   {c.stat && (
                     <span className="ml-auto flex min-w-0 items-center gap-2">
-                      <span key={c.stat.lastActivity} className="valueflash mono truncate text-xs text-accent-200" style={{ maxWidth: 150 }}>
+                      <span key={c.stat.lastActivity} className="valueflash mono truncate text-xs text-muted" style={{ maxWidth: 150 }}>
                         {formatValue(c.stat.payload)}
                       </span>
-                      <span className="shrink-0 text-[10px] text-slate-600">{c.stat.messageCount}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-subtle">{Number(c.stat.messageCount || 0).toLocaleString()}</span>
                     </span>
                   )}
                 </div>
@@ -160,8 +241,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
       </div>
 
       {selectedProps && (
-        <div className="border-t border-white/5 px-3 py-2 text-[11px]">
-          <p className="mb-1 font-medium uppercase tracking-wide text-slate-500">MQTT 5 properties</p>
+        <div className="border-t border-line px-3 py-2 text-xs">
+          <p className="mb-1 font-medium text-muted">MQTT 5 properties</p>
           <div className="space-y-0.5">
             {selectedProps.contentType && <PropRow name="contentType" value={selectedProps.contentType} />}
             {selectedProps.responseTopic && <PropRow name="responseTopic" value={selectedProps.responseTopic} />}
@@ -180,8 +261,8 @@ export default function TopicTree({ topics, selectedTopic, onSelect, filter = ''
 function PropRow({ name, value }) {
   return (
     <div className="flex items-baseline gap-2">
-      <span className="shrink-0 text-slate-500">{name}</span>
-      <span className="mono min-w-0 truncate text-slate-300" title={value}>
+      <span className="shrink-0 text-muted">{name}</span>
+      <span className="mono min-w-0 truncate text-fg" title={value}>
         {value}
       </span>
     </div>
@@ -191,13 +272,15 @@ function PropRow({ name, value }) {
 function SortBtn({ active, onClick, icon: Icon, label }) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={clsx(
-        'flex items-center gap-1 rounded px-1.5 py-0.5 transition',
-        active ? 'bg-accent-500/20 text-accent-200' : 'hover:bg-white/5 hover:text-slate-300'
+        'flex h-6 items-center gap-1 rounded px-1.5 font-medium transition-colors',
+        active ? 'bg-raised text-fg shadow-[inset_0_0_0_1px_rgb(var(--border-strong))]' : 'hover:bg-raised hover:text-fg'
       )}
     >
-      <Icon size={12} />
+      <Icon size={12} aria-hidden="true" />
       {label}
     </button>
   );

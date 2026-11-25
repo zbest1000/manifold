@@ -120,7 +120,7 @@ export default function Bench() {
       <WebGLGraph data={graph} styleId="constellation" labelDensity={density} positions={positions} />
       <div
         data-testid="bench-status"
-        className="pointer-events-none absolute left-2 top-2 rounded bg-white/10 px-2 py-1 font-mono text-[11px] text-white"
+        className="pointer-events-none absolute left-2 top-2 rounded border border-line bg-panel px-2 py-1 font-mono text-2xs text-fg"
       >
         {renderer} · req {n.toLocaleString()} · nodes {graph.nodes.length.toLocaleString()} · links{' '}
         {graph.links.length.toLocaleString()} · build {buildMs}ms · {phase}

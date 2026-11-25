@@ -21,6 +21,42 @@ flowchart LR
 > the filter against the topics actually observed on the broker and shows the
 > exact in→out topic and payload mapping — nothing is published.
 
+## The Pipelines page
+
+**Pipelines** (`/pipelines`) has five tabs, kept in the URL (`?tab=`): **Routes**, **Models**,
+**Historians**, **Recorder** and **Contracts**. Each is a dense table with one primary action
+(**New route**, **New model**, **Add historian**, ...), a dialog for the form, and the same
+read-only behaviour for viewer sessions.
+
+![The Routes tab: three running routes with in, out, blocked and error counters](images/pipelines.png)
+
+**Routes.** One row per route: its name, `source filter -> N transforms -> target`, **State**
+(*Running*, *Paused*, *Failing* when it has errors, *Loop blocked* when a loop guard fired),
+and the counters **In**, **Out**, **Blocked** and **Errors**. For a route into a historian, **Out** means *admitted to the outbox*, which is not the same as stored: the row also shows **Delivered** (accepted by the historian), **Pending** (queued or spilled to disk) and **Rejected** (dead-lettered or unrepresentable), so a historian that refuses everything is visible. The same numbers are on `/metrics` (`manifold_pipeline_messages_total{result=routed|delivered|rejected}`, `manifold_pipeline_pending_points`, `manifold_outbox_pending_points`) and per historian on the Historians tab. Per row: a **Pause route** /
+**Resume route** button, **Edit route** and **Delete route**. Pausing keeps the route and stops it.
+
+**The route editor** (a dialog; **New route** or **Edit route**) reads top to bottom as the
+route does:
+
+- **Source**: **Name**, **Source broker** and **Source filter** (MQTT wildcards, `+` for one level and
+  `#` for the rest; an invalid filter is refused).
+- **Transforms**: an ordered list, applied top to bottom, with move up, move down and delete
+  on each, and **Add a transform...** at the end. With none, the message is forwarded unchanged. The
+  kinds are **Re-path**, **Pick fields**, **Rename fields**, **Set values**, **Scale**, **To number**,
+  **Flatten Sparkplug** and **Wrap as TVQ** (the table below).
+- **Target**: **Type** (*Publish to a broker* with **Broker** and **Publish as retained messages**, or a
+  **Historian**).
+- **Dry run**: **Run dry run** applies the current, unsaved settings to recent messages and shows
+  each input topic and payload beside what would come out. Nothing is published.
+
+![The route editor with a three-step transform chain](images/route-editor.png)
+
+> **The TVQ hint.** When the source topic carries a `{ v, t, q }` envelope (a mapping's output, for
+> example) and the target is a historian, the editor shows **This topic carries a value/time/quality
+> envelope** with a one-click **Add numeric transform on v**. Without it a historian stores the whole
+> JSON object as text and the history cannot be trended. A mapping's *direct historian target* does
+> not have this problem.
+
 ## Transform reference
 
 | Transform | Effect | Example |
@@ -49,7 +85,7 @@ flowchart LR
 ```
 
 The hop counter catches indirect A→B→A cycles that no static check can see
-through templates. Blocked counts appear on the route card.
+through templates. Blocked counts appear in the route's **Blocked** column (and the state turns to *Loop blocked*).
 
 ## Models — many topics, one object
 
@@ -64,11 +100,25 @@ flowchart LR
     M --> OUT["uns/site/area/Pump-7<br/>{ temp, rpm, status }"]
 ```
 
-Publish on change (debounced) or on an interval. In envelope mode each
+Models have their own tab (**New model**: **Name**, **Target broker**, the source topics and fields, and when to publish). Publish on change (debounced) or on an interval. In envelope mode each
 attribute carries `{v, t, q}` with staleness-derived quality — good 192,
 uncertain 64, bad 0 — so a stale sensor is visible in the data itself.
 
 ## Delivering to a historian
 
 Pick a configured historian as the route target; delivery rides the
-store-and-forward outbox described in [Historians](Historians).
+store-and-forward outbox described in [Historians](Historians). A historian that a route (or a
+recording, or a mapping) still writes to cannot be deleted: the **Historians** tab answers with a
+*still in use* dialog that names them.
+
+## Recorder and contracts
+
+- **Recorder tab.** **New recording**: **Name**, **Broker**, **Filter**, **Record to** (a local file, or a historian).
+  Each row shows the captured points and the last error. **Pause recording** keeps everything captured so far and
+  stops appending; **Resume recording** continues in the same recording (the API is `enabled: false` and `true` on
+  `POST /api/recorder`). A recording can be **peeked** (the first points, in a drawer) and **replayed**
+  (**Start replay** with **Speed**, **Topic prefix** and **Loop until stopped**); only one replay runs at a time, and
+  a banner with **Stop** shows it. A recording to a file is also a **Trends** source with no external database.
+- **Contracts tab.** **New contract** locks the payload shape inferred from an observed topic (**Name**, **Broker**,
+  **Topic**, then infer and lock); **Recent violations** lists drift. A contract's topic is tied to its inferred schema:
+  changing the topic discards the inference, so a stale schema can never be locked under another topic.

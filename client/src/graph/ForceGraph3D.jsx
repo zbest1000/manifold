@@ -1,7 +1,9 @@
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as THREE from 'three';
-import { GRAPH_STYLES } from './graphStyles';
-import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { resolveGraphStyle } from './graphStyles';
+import { groupColor } from './buildGraph';
+import { useCanvasTokens, FONT } from './canvasTokens';
+import { attachPinchZoom, createGlide, keepInView, registerTestHook, sanitizePositions, watchCanvasSize, wheelFactor } from './canvasKit';
 
 /**
  * Real three.js 3D node graph. Nodes are placed with the deterministic
@@ -11,13 +13,16 @@ import { groupColor, PROTOCOL_COLORS } from './buildGraph';
  * Rendering is on-demand: frames are only produced during/shortly after
  * interaction, and the loop pauses while the tab is hidden.
  */
-const CAM_DIST = 950;
+const CAM_DIST = 950; // fallback before the first layout
 const FOV = 50;
 const MAX_3D_NODES = 50000; // GPU instancing keeps this smooth
 const LABEL_COUNT = 40; // sprite labels for the highest-degree nodes only
 const LINK_OPACITY = 0.35;
 const IDLE_MS = 2000; // keep the rAF loop alive this long after interaction
 const AUTO_ROTATE_SPEED = 0.0022; // rad/frame — a slow, cinematic spin
+// The usable part of the canvas (CSS px clear of the toolbar row, the replay
+// strip and the legend): the selected node is kept inside it.
+const DEFAULT_INSET = { top: 40, right: 40, bottom: 88, left: 40 };
 
 /** Strip the alpha channel from an rgba() color (link opacity is constant here). */
 function opaqueColor(color) {
@@ -41,7 +46,7 @@ function truncateLabel(label) {
 function makeLabelSprite(text, labelStyle) {
   const fontSize = 28;
   const pad = 10;
-  const font = `600 ${fontSize}px Inter, sans-serif`;
+  const font = `500 ${fontSize}px ${FONT}`;
   const canvas = document.createElement('canvas');
   let ctx = canvas.getContext('2d');
   ctx.font = font;
@@ -63,9 +68,30 @@ function makeLabelSprite(text, labelStyle) {
   texture.colorSpace = THREE.SRGBColorSpace;
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(material);
+  sprite.userData.text = text; // re-rasterised in place on a theme change
   const worldH = 15; // world units; perspective scales it with distance
   sprite.scale.set(worldH * (w / h), worldH, 1);
   return sprite;
+}
+
+/**
+ * Camera distance that fits a sphere of `radius` (around the origin) in a
+ * perspective view with vertical field of view `fovDeg` and the given aspect,
+ * with a little margin. Exported for tests.
+ */
+export function fitDistance(radius, fovDeg, aspect) {
+  const r = Math.max(Number.isFinite(radius) ? radius : 0, 10);
+  const v = (fovDeg * Math.PI) / 360;
+  const h = Math.atan(Math.tan(v) * (aspect > 0 ? aspect : 1));
+  return (r / Math.sin(Math.min(v, h))) * 1.08;
+}
+
+function applySceneTheme(scene, ambient, dirLight, style) {
+  scene.background = new THREE.Color(style.background);
+  ambient.color.set(style.scene3d.ambient);
+  ambient.intensity = style.scene3d.ambientIntensity;
+  dirLight.color.set(style.scene3d.directional);
+  dirLight.intensity = style.scene3d.directionalIntensity;
 }
 
 function positionLabel(sprite, n) {
@@ -84,14 +110,15 @@ function disposeObject(obj) {
 const ForceGraph3D = forwardRef(function ForceGraph3D(
   {
     data,
-    styleId = 'constellation',
+    styleId = 'standard',
     selectedId = null,
     onSelect,
     colorByProtocol = false,
     nodeScale = 1, // 0.5–2  point-size multiplier
     linkOpacity = LINK_OPACITY, // 0–0.8  link line opacity
     autoRotate = false, // gentle continuous spin
-    beautify = false // depth-graded colours + glow + auto-rotate
+    beautify = false, // depth-graded colours + glow + auto-rotate
+    inset = DEFAULT_INSET // clear of the floating overlays: where the selection is kept
   },
   ref
 ) {
@@ -103,17 +130,41 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
   const byIdRef = useRef(new Map());
   const rotRef = useRef({ yaw: 0.6, pitch: -0.35 });
   const zoomRef = useRef(1);
+  // Camera pan in its own x/y plane (world units). The orbit rotates the scene
+  // group; panning moves the camera sideways, so a selected node that a docked
+  // panel would cover can be brought back into the visible viewport.
+  const panRef = useRef({ x: 0, y: 0 });
+  const glideRef = useRef(null); // a pan glide in progress (createGlide), cancelled by user input
+  const insetRef = useRef(inset);
+  useEffect(() => {
+    insetRef.current = inset;
+  }, [inset]);
+  const radiusRef = useRef(0); // bounding radius of the current layout (fits the camera)
   const selSpriteRef = useRef(null);
   const autoRotateRef = useRef(false); // read by the render loop each frame
   const nodeScaleRef = useRef(nodeScale); // keeps the selection ring hugging scaled nodes
   const onSelectRef = useRef(onSelect);
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+  const linkOpacityRef = useRef(linkOpacity); // initial opacity for a rebuilt scene (the look effect keeps it current)
+  useEffect(() => {
+    linkOpacityRef.current = linkOpacity;
+  }, [linkOpacity]);
   onSelectRef.current = onSelect;
 
-  const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
+  // Theme-derived style (canvasTokens). The scene is built once per dataset; a
+  // theme or style change updates materials, lights, background and label
+  // textures IN PLACE (see the theme effect), keeping camera and selection.
+  const tokens = useCanvasTokens();
+  const style = useMemo(() => resolveGraphStyle(styleId, tokens), [styleId, tokens]);
+  const styleRef = useRef(style);
   const colorFor = useCallback(
-    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
-    [colorByProtocol, style]
+    (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style, tokens]
   );
+  const colorForRef = useRef(colorFor);
 
   const capped = data && data.nodes.length > MAX_3D_NODES;
 
@@ -128,11 +179,26 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 20000);
     camera.position.set(0, 0, CAM_DIST);
+    let frames = 0;
+    // Distance that frames the whole layout at zoom 1 (the old fixed 950 put the
+    // camera INSIDE a 6-level tree: you only ever saw a corner of it).
+    const baseDist = () => (radiusRef.current ? fitDistance(radiusRef.current, FOV, camera.aspect) : CAM_DIST);
+    const placeCamera = () => {
+      const d = baseDist() / zoomRef.current;
+      camera.position.set(panRef.current.x, panRef.current.y, d);
+      const far = d + radiusRef.current * 2 + 100;
+      if (Math.abs(camera.far - far) > 1) {
+        camera.far = far;
+        camera.updateProjectionMatrix();
+      }
+    };
     // Everything orbits by rotating this group; the camera only moves along z for zoom.
     const rotGroup = new THREE.Group();
     scene.add(rotGroup);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+    // Light colours come from the style preset (set in the scene-build effect).
+    const ambient = new THREE.AmbientLight(undefined, 0.9);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(undefined, 1.6);
     dirLight.position.set(0.5, 1, 2);
     scene.add(dirLight);
     const raycaster = new THREE.Raycaster();
@@ -143,33 +209,76 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const renderFrame = () => {
       const rot = rotRef.current;
       rotGroup.rotation.set(rot.pitch, rot.yaw, 0); // Rx(pitch) ∘ Ry(yaw), same as the old projection
-      camera.position.z = CAM_DIST / zoomRef.current;
+      placeCamera();
       renderer.render(scene, camera);
+      frames++;
     };
     const loop = () => {
       raf = 0;
       if (autoRotateRef.current) rotRef.current.yaw += AUTO_ROTATE_SPEED;
+      const g = glideRef.current;
+      if (g) {
+        const { values, done } = g.step(performance.now());
+        panRef.current = values;
+        if (done) glideRef.current = null;
+      }
       renderFrame();
       const interacting = performance.now() - lastActive < IDLE_MS;
-      if ((interacting || autoRotateRef.current) && !document.hidden) raf = requestAnimationFrame(loop);
+      if ((interacting || autoRotateRef.current || glideRef.current) && !document.hidden) raf = requestAnimationFrame(loop);
     };
     const requestRender = (sustain = false) => {
       if (sustain) lastActive = performance.now();
       if (!raf && !document.hidden) raf = requestAnimationFrame(loop);
     };
 
-    const resize = () => {
-      const { width, height } = wrap.getBoundingClientRect();
+    // Where the selected node lands on screen (CSS px) and its drawn radius there.
+    const tmpV = new THREE.Vector3();
+    const selectedOnScreen = () => {
+      const id = selectedIdRef.current;
+      const n = id != null ? byIdRef.current.get(id) : null;
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (!n || !w || !h) return null;
+      rotGroup.rotation.set(rotRef.current.pitch, rotRef.current.yaw, 0);
+      rotGroup.updateMatrixWorld();
+      placeCamera();
+      camera.updateMatrixWorld();
+      tmpV.set(n.x, n.y, n.z).applyMatrix4(rotGroup.matrixWorld);
+      const depth = camera.position.z - tmpV.z; // camera looks down -z, unrotated
+      if (!(depth > 1)) return null; // behind the camera
+      const unitsPerPx = (2 * depth * Math.tan((FOV * Math.PI) / 360)) / h;
+      tmpV.project(camera);
+      return { id: n.id, sx: ((tmpV.x + 1) / 2) * w, sy: ((1 - tmpV.y) / 2) * h, r: (nodeRadius(n) * nodeScaleRef.current) / unitsPerPx, unitsPerPx, w, h };
+    };
+    // Keep the selection inside the visible viewport (canvas minus the overlay
+    // insets): the least sideways camera move, as a short glide (instant with
+    // reduced motion). Called when the canvas resizes (a details panel opening
+    // narrows it) and when the selection changes. User input cancels the glide.
+    const keepSelected = () => {
+      const p = selectedOnScreen();
+      if (!p) return;
+      const { dx, dy } = keepInView(p.sx, p.sy, p.r + 10, { w: p.w, h: p.h }, insetRef.current);
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      // A screen move of (dx, dy) = the camera moving the other way: x right, world y up.
+      const from = glideRef.current ? glideRef.current.to : panRef.current;
+      const to = { x: from.x - dx * p.unitsPerPx, y: from.y + dy * p.unitsPerPx };
+      glideRef.current = createGlide({ ...panRef.current }, to);
+      requestRender(true);
+    };
+
+    // Container resize (incl. sidebar collapse) AND device-pixel-ratio changes.
+    const unwatch = watchCanvasSize(wrap, ({ w: width, h: height, dpr }) => {
       if (!width || !height) return;
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      renderer.setPixelRatio(dpr);
       renderer.setSize(width, height);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      requestRender();
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
+      renderFrame(); // a resized canvas is cleared: paint synchronously
+      keepSelected();
+    });
+    // three.js keeps its scene through a context loss; repaint once restored.
+    const onRestored = () => requestRender();
+    canvas.addEventListener('webglcontextrestored', onRestored);
 
     const onVisibility = () => {
       if (document.hidden) {
@@ -194,7 +303,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       const rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return null;
       ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
-      camera.position.z = CAM_DIST / zoomRef.current;
+      placeCamera();
       camera.updateMatrixWorld();
       raycaster.setFromCamera(ndc, camera);
       rotGroup.rotation.set(rotRef.current.pitch, rotRef.current.yaw, 0);
@@ -202,11 +311,12 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       invWorld.copy(rotGroup.matrixWorld).invert();
       localRay.copy(raycaster.ray).applyMatrix4(invWorld);
       const { positions, radii } = objs;
+      const scale = nodeScaleRef.current; // the DRAWN radius, so picking matches the point-size slider
       let best = -1;
       let bestD = Infinity;
       for (let i = 0; i < radii.length; i++) {
         sphere.center.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-        sphere.radius = radii[i] + 1.5;
+        sphere.radius = radii[i] * scale + 1.5;
         if (localRay.intersectSphere(sphere, hitPoint)) {
           const d = hitPoint.distanceToSquared(localRay.origin);
           if (d < bestD) {
@@ -222,7 +332,23 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     let moved = 0;
     let lastX = 0;
     let lastY = 0;
+    let pinching = false;
+    const unpinch = attachPinchZoom(
+      canvas,
+      (factor) => {
+        zoomRef.current = Math.max(0.15, Math.min(6, zoomRef.current * factor));
+        glideRef.current = null;
+        moved = Infinity;
+        requestRender(true);
+      },
+      (on) => {
+        pinching = on;
+      }
+    );
     const onDown = (e) => {
+      if (e.button > 0) return;
+      e.preventDefault(); // no text selection / native touch scrolling while orbiting
+      glideRef.current = null; // the user takes the camera
       dragging = true;
       moved = 0;
       lastX = e.clientX;
@@ -230,7 +356,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       canvas.style.cursor = 'grabbing';
     };
     const onMove = (e) => {
-      if (!dragging) return;
+      if (!dragging || pinching) return;
       const dx = e.clientX - lastX;
       const dy = e.clientY - lastY;
       lastX = e.clientX;
@@ -242,8 +368,9 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       requestRender(true);
     };
     const onUp = (e) => {
+      if (!dragging) return;
       canvas.style.cursor = 'grab';
-      if (dragging && moved < 5) {
+      if (moved < 5 && !pinching) {
         const node = pick(e);
         if (node && onSelectRef.current) onSelectRef.current(node);
       }
@@ -251,7 +378,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     };
     const onWheel = (e) => {
       e.preventDefault();
-      zoomRef.current = Math.max(0.15, Math.min(6, zoomRef.current * (e.deltaY < 0 ? 1.12 : 0.89)));
+      glideRef.current = null;
+      zoomRef.current = Math.max(0.15, Math.min(6, zoomRef.current * wheelFactor(e)));
       requestRender(true);
     };
     canvas.style.cursor = 'grab';
@@ -270,12 +398,108 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     canvas.addEventListener('wheel', onWheel, { passive: false });
     canvas.addEventListener('contextmenu', onContext);
 
-    threeRef.current = { renderer, scene, camera, rotGroup, requestRender };
+    window.addEventListener('pointercancel', onUp);
+    threeRef.current = { renderer, scene, camera, rotGroup, requestRender, ambient, dirLight, keepSelected };
     requestRender();
+
+    const v = new THREE.Vector3();
+    const unhook = registerTestHook('graph3d', {
+      get selectedId() {
+        return selectedIdRef.current ?? null;
+      },
+      get frames() {
+        return frames;
+      },
+      get animating() {
+        return raf !== 0;
+      },
+      get camera() {
+        return { z: camera.position.z, far: camera.far, aspect: camera.aspect, radius: radiusRef.current, zoom: zoomRef.current };
+      },
+      /** Camera pan (world units) and whether a keep-in-view glide is running. */
+      get pan() {
+        return { ...panRef.current, gliding: Boolean(glideRef.current) };
+      },
+      /** The visible viewport: canvas minus the overlay insets (canvas-relative CSS px). */
+      get viewport() {
+        const i = insetRef.current;
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        return { x0: i.left, y0: i.top, x1: w - i.right, y1: h - i.bottom };
+      },
+      /** The selected node on screen: { id, sx, sy, r } (canvas-relative CSS px) or null. */
+      selectedScreen() {
+        const p = selectedOnScreen();
+        return p ? { id: p.id, sx: p.sx, sy: p.sy, r: p.r } : null;
+      },
+      /** Rotate and pan as a user drag would (test setup: put the selection somewhere). */
+      setView({ yaw, pitch, pan } = {}) {
+        glideRef.current = null;
+        if (yaw != null) rotRef.current.yaw = yaw;
+        if (pitch != null) rotRef.current.pitch = pitch;
+        if (pan) panRef.current = { x: pan.x, y: pan.y };
+        renderFrame();
+      },
+      get size() {
+        return { w: canvas.clientWidth, h: canvas.clientHeight, bw: canvas.width, bh: canvas.height };
+      },
+      /** Screen positions (canvas-relative CSS px) of nodes in front of the camera. */
+      nodes(limit = 500) {
+        renderFrame();
+        rotGroup.updateMatrixWorld();
+        camera.updateMatrixWorld();
+        const out = [];
+        for (const n of nodesRef.current) {
+          v.set(n.x, n.y, n.z).applyMatrix4(rotGroup.matrixWorld).project(camera);
+          if (v.z < -1 || v.z > 1 || Math.abs(v.x) > 1 || Math.abs(v.y) > 1) continue;
+          out.push({ id: n.id, sx: ((v.x + 1) / 2) * canvas.clientWidth, sy: ((1 - v.y) / 2) * canvas.clientHeight, depth: v.z });
+          if (out.length >= limit) break;
+        }
+        return out;
+      },
+      get rotation() {
+        return { ...rotRef.current };
+      },
+      /** The colour of the top-left corner (the scene background) as [r, g, b]. */
+      bgPixel() {
+        renderFrame();
+        const gl = renderer.getContext();
+        const px = new Uint8Array(4);
+        gl.readPixels(1, gl.drawingBufferHeight - 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        return [px[0], px[1], px[2]];
+      },
+      loseContext: () => renderer.forceContextLoss(),
+      restoreContext: () => renderer.forceContextRestore(),
+      /**
+       * Paint now and read back pixels (the drawing buffer is not preserved
+       * between frames). `points` are canvas-relative CSS px (e.g. from nodes());
+       * default: an 8x8 grid. Returns how many distinct colours were seen.
+       */
+      sample(points = null) {
+        renderFrame();
+        const gl = renderer.getContext();
+        const px = new Uint8Array(4);
+        const seen = new Set();
+        const sx = gl.drawingBufferWidth / (canvas.clientWidth || 1);
+        const sy = gl.drawingBufferHeight / (canvas.clientHeight || 1);
+        const pts = points || Array.from({ length: 64 }, (_, i) => ({ sx: ((i % 8) + 0.5) * (canvas.clientWidth / 8), sy: (Math.floor(i / 8) + 0.5) * (canvas.clientHeight / 8) }));
+        pts.push({ sx: 2, sy: 2 }); // a background corner
+        for (const p of pts) {
+          gl.readPixels(Math.floor(p.sx * sx), Math.floor(gl.drawingBufferHeight - 1 - p.sy * sy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          seen.add(px.join(','));
+        }
+        return { distinct: seen.size, lost: gl.isContextLost() };
+      }
+    });
 
     return () => {
       if (raf) cancelAnimationFrame(raf);
-      ro.disconnect();
+      raf = 0;
+      unhook();
+      unwatch();
+      unpinch();
+      window.removeEventListener('pointercancel', onUp);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
       document.removeEventListener('visibilitychange', onVisibility);
       canvas.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointermove', onMove);
@@ -284,6 +508,12 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       canvas.removeEventListener('contextmenu', onContext);
       threeRef.current = null;
       renderer.dispose();
+      // Release the GL context once the canvas has really left the page (a
+      // StrictMode re-mount reuses the same canvas), so repeated navigation never
+      // hits the browser's live-context limit.
+      setTimeout(() => {
+        if (!canvas.isConnected) renderer.forceContextLoss();
+      }, 0);
     };
   }, []);
 
@@ -296,18 +526,27 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const keep = new Set(nodes.map((n) => n.id));
     const links = data.links.filter((l) => keep.has(l.source) && keep.has(l.target)).map((l) => ({ ...l }));
     const maxDepth = sphericalTreeLayout(nodes, links);
+    sanitizePositions(nodes, { minSep: 6, keys: ['x', 'y', 'z'] });
+    let radius = 0;
+    for (const n of nodes) radius = Math.max(radius, Math.hypot(n.x, n.y, n.z) + nodeRadius(n) * 2);
+    radiusRef.current = radius;
     nodesRef.current = nodes;
     const byId = new Map(nodes.map((n) => [n.id, n]));
     byIdRef.current = byId;
 
-    const { scene, rotGroup, requestRender } = three;
-    scene.background = new THREE.Color(style.background);
+    const { scene, rotGroup, requestRender, ambient, dirLight } = three;
+    const style = styleRef.current;
+    const colorFor = colorForRef.current;
+    applySceneTheme(scene, ambient, dirLight, style);
 
     const group = new THREE.Group();
 
     // Nodes: one instanced low-poly sphere with per-instance color + scale.
-    const nodeGeo = new THREE.SphereGeometry(1, 12, 8);
-    const nodeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    // Fewer triangles per instance as the graph grows: 11k x 12x8-segment spheres
+    // is ~2M triangles per frame, and at that density a node is a few pixels anyway.
+    const seg = nodes.length > 20000 ? [6, 4] : nodes.length > 4000 ? [8, 6] : [12, 8];
+    const nodeGeo = new THREE.SphereGeometry(1, seg[0], seg[1]);
+    const nodeMat = new THREE.MeshLambertMaterial({ color: new THREE.Color(style.scene3d.nodeBase) });
     const nodeMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, Math.max(1, nodes.length));
     nodeMesh.count = nodes.length;
     const m4 = new THREE.Matrix4();
@@ -354,7 +593,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       lineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(opaqueColor(style.link.color)),
         transparent: true,
-        opacity: linkOpacity,
+        opacity: linkOpacityRef.current,
         depthWrite: false
       });
       group.add(new THREE.LineSegments(lineGeo, lineMat));
@@ -362,11 +601,15 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
 
     // Labels: sprites for the highest-degree nodes only (text is expensive).
     const labelGroup = new THREE.Group();
+    // Labels scale with the layout so they stay readable when the camera is fit to a big tree.
+    const labelScale = Math.max(1, radius / 450);
     const labeled = new Set();
     const byDegree = nodes.slice().sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, LABEL_COUNT);
     for (const n of byDegree) {
       if (!n.label) continue;
       const sprite = makeLabelSprite(truncateLabel(n.label), style.label);
+      sprite.scale.multiplyScalar(labelScale);
+      sprite.userData.scale = labelScale;
       positionLabel(sprite, n);
       labelGroup.add(sprite);
       labeled.add(n.id);
@@ -391,7 +634,30 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       selSpriteRef.current = null;
       objsRef.current = null;
     };
-  }, [data, style, colorFor]);
+  }, [data]);
+
+  // Theme / style change: recolour the existing scene in place (no rebuild).
+  useEffect(() => {
+    styleRef.current = style;
+    colorForRef.current = colorFor;
+    const three = threeRef.current;
+    if (!three) return;
+    applySceneTheme(three.scene, three.ambient, three.dirLight, style);
+    const objs = objsRef.current;
+    if (objs) {
+      objs.lineMat?.color.set(opaqueColor(style.link.color));
+      objs.highlight.material.color.set(style.selectedRing);
+      for (const sprite of objs.labelGroup.children) {
+        const next = makeLabelSprite(sprite.userData.text, style.label);
+        sprite.material.map?.dispose();
+        sprite.material.map = next.material.map;
+        sprite.material.needsUpdate = true;
+        sprite.scale.copy(next.scale).multiplyScalar(sprite.userData.scale || 1);
+        next.material.dispose();
+      }
+    }
+    three.requestRender();
+  }, [style, colorFor]);
 
   // Auto-rotate is driven by a ref the render loop reads; Beautify also spins.
   useEffect(() => {
@@ -406,8 +672,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     if (!three || !objs?.nodeMesh) return;
     const nodes = nodesRef.current;
     const { nodeMesh, maxDepth } = objs;
-    const inner = new THREE.Color(style.palette[0]);
-    const outer = new THREE.Color(style.palette[style.palette.length - 1]);
+    const inner = new THREE.Color(style.linkHighlight);
+    const outer = new THREE.Color(style.palette[6]);
     const c = new THREE.Color();
     for (let i = 0; i < nodes.length; i++) {
       if (beautify) {
@@ -427,7 +693,7 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     const three = threeRef.current;
     const lineMat = objsRef.current?.lineMat;
     if (!three || !lineMat) return;
-    const glow = beautify && style.id !== 'slate';
+    const glow = beautify && style.mode !== 'light'; // additive blending washes out on a light surface
     lineMat.opacity = beautify ? Math.max(linkOpacity, 0.5) : linkOpacity;
     lineMat.blending = glow ? THREE.AdditiveBlending : THREE.NormalBlending;
     lineMat.needsUpdate = true;
@@ -477,6 +743,8 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
       highlight.scale.setScalar(nodeRadius(node) * nodeScaleRef.current + 3);
       if (node.label && !labeled.has(node.id)) {
         const sprite = makeLabelSprite(truncateLabel(node.label), style.label);
+        sprite.userData.scale = Math.max(1, radiusRef.current / 450);
+        sprite.scale.multiplyScalar(sprite.userData.scale);
         positionLabel(sprite, node);
         labelGroup.add(sprite);
         selSpriteRef.current = sprite;
@@ -487,20 +755,37 @@ const ForceGraph3D = forwardRef(function ForceGraph3D(
     three.requestRender();
   }, [selectedId, data, style, colorFor]);
 
+  // A newly selected node that sits outside the visible viewport (or under the
+  // details panel's edge) is brought back in, the same as on a resize.
+  useEffect(() => {
+    if (selectedId == null) return;
+    threeRef.current?.keepSelected?.();
+  }, [selectedId, data]);
+
   useImperativeHandle(ref, () => ({
+    // Default angle, zoom 1 = the whole layout framed (camera distance is fit to it).
     resetView: () => {
       rotRef.current = { yaw: 0.6, pitch: -0.35 };
       zoomRef.current = 1;
+      panRef.current = { x: 0, y: 0 };
+      glideRef.current = null;
       if (threeRef.current) threeRef.current.requestRender();
     }
   }), []);
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas
+        ref={canvasRef}
+        className="graph-canvas absolute left-0 top-0"
+        data-testid="graph3d"
+        style={{ touchAction: 'none', userSelect: 'none' }}
+        role="img"
+        aria-label="3D node graph. Use the Tree view for a keyboard-accessible list."
+      />
       {capped && (
-        <div className="pointer-events-none absolute right-4 top-16 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 backdrop-blur">
-          3D view showing the first {MAX_3D_NODES.toLocaleString()} nodes — use the 2D graph or tree for the full set.
+        <div role="status" className="pointer-events-none absolute bottom-16 right-4 max-w-xs rounded-md border border-line bg-panel px-3 py-2 text-xs text-muted shadow-overlay">
+          Showing the first {MAX_3D_NODES.toLocaleString()} nodes. Use the 2D graph or the tree for the full set.
         </div>
       )}
     </div>

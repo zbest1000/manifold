@@ -21,6 +21,15 @@
  *   once the value falls back to <= clearValue — no flapping in the deadband).
  *   `topic` may be exact or an MQTT filter with +/#.
  *
+ * A breached value rule that holds still (a retained or change-only value, so no
+ * further messages arrive) still fires once `sustainMs` has elapsed: a per-state
+ * timer promotes it, the next message is not needed.
+ *
+ * Per-rule state (`getRuleState`) is what GET /api/alerts/rules shows:
+ * idle | breached | firing | disabled | broken, plus when it began, the current
+ * value, the time left until it fires, the last transition and webhook health.
+ * State changes are pushed on the socket as `alert-state`.
+ *
  * Every firing is emitted on the socket (`alert`), kept in a bounded history
  * ring (GET /api/alerts/events), and optionally POSTed to the rule's
  * `webhookUrl` (5s timeout, failures logged and swallowed — a dead webhook
@@ -28,10 +37,17 @@
  */
 
 const { matchParts, compiledView } = require('./mqttMatch');
+const { guardedFetch } = require('./egressGuard');
+const { brokenRefs } = require('./references');
 
 const EVAL_MS = 15_000;
 const HISTORY_MAX = 500;
 const WEBHOOK_TIMEOUT_MS = 5_000;
+
+// Webhook delivery goes through the egress guard (SSRF: private/metadata targets,
+// redirects and DNS rebinding are blocked). An injected `fetchImpl` is a TEST SEAM
+// and bypasses the guard — production wiring never passes one.
+const guardedWebhookFetch = (url, opts) => guardedFetch(url, opts, WEBHOOK_TIMEOUT_MS);
 // A wildcard value-threshold rule keeps one state machine PER concrete topic it
 // matches; bound that fan-out so a rule over a huge namespace can't grow state
 // without limit. Oldest-inserted topic is evicted past the cap.
@@ -71,7 +87,7 @@ function extractValue(payload, fieldParts) {
 }
 
 class AlertEngine {
-  constructor({ io, profiles, mqttManager, fetchImpl = globalThis.fetch, intervalMs = EVAL_MS }) {
+  constructor({ io, profiles, mqttManager, fetchImpl = guardedWebhookFetch, intervalMs = EVAL_MS }) {
     this.io = io;
     this.profiles = profiles;
     this.manager = mqttManager;
@@ -83,6 +99,7 @@ class AlertEngine {
     this.timer = null;
     this.webhookFailures = 0;
     this.lastWebhookError = null;
+    this.webhookStats = new Map(); // ruleId -> { ok, failures, lastError, lastAttemptAt, lastOkAt }
     this.tapping = false;
     this.onMessage = this.onMessage.bind(this);
     // Compiled value-rule table (filters and field paths pre-split, disabled
@@ -116,6 +133,7 @@ class AlertEngine {
   stop() {
     clearInterval(this.timer);
     this.timer = null;
+    for (const byTopic of this.valueState.values()) for (const s of byTopic.values()) this._clearTimer(s);
     if (this.tapping) {
       this.manager?.off?.('message', this.onMessage);
       this.tapping = false;
@@ -127,7 +145,11 @@ class AlertEngine {
     const rules = this.profiles?.alertRules() || [];
     const liveIds = new Set(rules.map((r) => r.id));
     for (const id of this.state.keys()) if (!liveIds.has(id)) this.state.delete(id);
-    for (const id of this.valueState.keys()) if (!liveIds.has(id)) this.valueState.delete(id);
+    for (const [id, byTopic] of this.valueState) {
+      if (liveIds.has(id)) continue;
+      for (const s of byTopic.values()) this._clearTimer(s);
+      this.valueState.delete(id);
+    }
 
     for (const rule of rules) {
       try {
@@ -167,9 +189,11 @@ class AlertEngine {
     let s = byTopic.get(topic);
     if (!s) {
       if (byTopic.size >= VALUE_STATE_MAX_TOPICS) {
-        byTopic.delete(byTopic.keys().next().value); // evict oldest-inserted
+        const oldest = byTopic.keys().next().value; // evict oldest-inserted
+        this._clearTimer(byTopic.get(oldest));
+        byTopic.delete(oldest);
       }
-      s = { firing: false, since: 0, breachedSince: 0, lastValue: null };
+      s = { firing: false, since: 0, breachedSince: 0, lastValue: null, timer: null };
       byTopic.set(topic, s);
     }
     return s;
@@ -199,9 +223,11 @@ class AlertEngine {
         lastActivity: last || null,
         detail: last > 0 ? `Silent for ${Math.round(silentFor / 1000)}s (threshold ${Math.round(threshold / 1000)}s)` : 'No data ever observed'
       });
+      this._pushState(rule);
     } else if (!shouldFire && s.firing) {
       s.firing = false;
       this._emit(rule, 'resolved', { lastActivity: last, detail: 'Data is flowing again' });
+      this._pushState(rule);
     }
   }
 
@@ -277,21 +303,19 @@ class AlertEngine {
     const label = rule.field || 'value';
 
     if (breached) {
-      if (!s.breachedSince) s.breachedSince = now;
+      const began = !s.breachedSince;
+      if (began) s.breachedSince = now;
       if (!s.firing && now - s.breachedSince >= sustainMs) {
-        s.firing = true;
-        s.since = now;
-        this._emit(rule, 'firing', {
-          topic: msg.topic,
-          value: v,
-          detail:
-            `${label} = ${v} (${rule.op} ${limit}` +
-            (sustainMs ? `, sustained ${Math.round(sustainMs / 1000)}s` : '') +
-            `) on ${msg.topic}`
-        });
+        this._clearTimer(s);
+        this._fireValue(rule, msg.topic, s, v, now);
+      } else if (!s.firing) {
+        if (began) this._pushState(rule);
+        this._armTimer(rule, msg.topic, s, sustainMs - (now - s.breachedSince));
       }
     } else {
+      const wasBreached = s.breachedSince > 0;
       s.breachedSince = 0; // sustain clock only counts continuous breach
+      this._clearTimer(s);
       if (s.firing && this._isCleared(rule, v)) {
         s.firing = false;
         this._emit(rule, 'resolved', {
@@ -299,8 +323,144 @@ class AlertEngine {
           value: v,
           detail: `${label} = ${v} back within limit on ${msg.topic}`
         });
+        this._pushState(rule);
+      } else if (wasBreached && !s.firing) {
+        this._pushState(rule); // breach ended inside the sustain window: back to idle
       }
     }
+  }
+
+  _fireValue(rule, topic, s, v, now) {
+    const limit = Number(rule.value);
+    const sustainMs = Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0;
+    s.firing = true;
+    s.since = now;
+    this._emit(rule, 'firing', {
+      topic,
+      value: v,
+      detail:
+        `${rule.field || 'value'} = ${v} (${rule.op} ${limit}` +
+        (sustainMs ? `, sustained ${Math.round(sustainMs / 1000)}s` : '') +
+        `) on ${topic}`
+    });
+    this._pushState(rule);
+  }
+
+  // A breached state that is waiting out `sustainMs` gets a timer, so a value that simply stays
+  // there (no new message) still fires on time. The timer re-reads the rule: an edit that
+  // lengthened sustainMs re-arms it, one that disabled or removed the rule cancels it.
+  _armTimer(rule, topic, s, delayMs) {
+    this._clearTimer(s);
+    s.timer = setTimeout(() => {
+      s.timer = null;
+      try {
+        this._promote(rule.id, topic, s);
+      } catch (error) {
+        console.warn(`alertEngine: rule ${rule.id}: ${error.message}`);
+      }
+    }, Math.max(1, Math.ceil(delayMs)));
+    s.timer.unref?.();
+  }
+
+  _clearTimer(s) {
+    if (s && s.timer) {
+      clearTimeout(s.timer);
+      s.timer = null;
+    }
+  }
+
+  _promote(ruleId, topic, s, now = Date.now()) {
+    const rule = (this.profiles?.alertRules() || []).find((r) => r.id === ruleId);
+    if (!rule || rule.enabled === false || !s.breachedSince || s.firing || s.lastValue === null) return;
+    const sustainMs = Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0;
+    const left = sustainMs - (now - s.breachedSince);
+    if (left > 0) return this._armTimer(rule, topic, s, left);
+    if (!OPS[rule.op]?.(s.lastValue, Number(rule.value))) return;
+    this._fireValue(rule, topic, s, s.lastValue, now);
+  }
+
+  _pushState(rule) {
+    this.io?.emit('alert-state', { ruleId: rule.id, ...this.getRuleState(rule) });
+  }
+
+  /**
+   * What the engine believes about one rule right now:
+   *   { state: 'idle'|'breached'|'firing'|'disabled'|'broken', since, value, topic, remainingMs,
+   *     sustainMs, firingTopics, lastTransition: { status, ts }|null, broken?, webhook }
+   * `since` is when the current state began (breach start, firing start). `remainingMs` is the time
+   * left until a breached rule fires (0 once due). `webhook` carries health only, never the URL.
+   */
+  getRuleState(rule, now = Date.now()) {
+    const events = this.history;
+    let last = null;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].ruleId === rule.id) {
+        last = events[i];
+        break;
+      }
+    }
+    const wh = this.webhookStats.get(rule.id);
+    const out = {
+      state: 'idle',
+      since: null,
+      value: null,
+      topic: null,
+      remainingMs: null,
+      sustainMs: Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0,
+      firingTopics: 0,
+      lastTransition: last ? { status: last.status, ts: last.ts } : null,
+      webhook: {
+        configured: Boolean(rule.webhookUrl),
+        failures: wh?.failures || 0,
+        lastError: wh?.lastError || null,
+        lastAttemptAt: wh?.lastAttemptAt || null,
+        lastOkAt: wh?.lastOkAt || null
+      }
+    };
+    const missing = brokenRefs('alertRules', rule, { profiles: this.profiles, mqttManager: this.manager });
+    if (missing.length) {
+      out.state = 'broken';
+      out.broken = missing;
+      return out;
+    }
+    if (rule.enabled === false) {
+      out.state = 'disabled';
+      return out;
+    }
+    if (rule.type === 'value-threshold') {
+      const byTopic = this.valueState.get(rule.id);
+      let firing = null;
+      let breached = null;
+      let latest = null;
+      for (const [topic, s] of byTopic || []) {
+        if (s.firing) {
+          out.firingTopics++;
+          if (!firing || s.since < firing.s.since) firing = { topic, s };
+        } else if (s.breachedSince && (!breached || s.breachedSince < breached.s.breachedSince)) breached = { topic, s };
+        if (s.lastValue !== null) latest = { topic, s };
+      }
+      if (firing) {
+        Object.assign(out, { state: 'firing', since: firing.s.since, value: firing.s.lastValue, topic: firing.topic });
+      } else if (breached) {
+        Object.assign(out, {
+          state: 'breached',
+          since: breached.s.breachedSince,
+          value: breached.s.lastValue,
+          topic: breached.topic,
+          remainingMs: Math.max(0, out.sustainMs - (now - breached.s.breachedSince))
+        });
+      } else if (latest) {
+        Object.assign(out, { value: latest.s.lastValue, topic: latest.topic });
+      }
+      return out;
+    }
+    const s = this.state.get(rule.id);
+    if (s?.firing) Object.assign(out, { state: 'firing', since: s.since });
+    return out;
+  }
+
+  getRuleStates(now = Date.now()) {
+    return Object.fromEntries((this.profiles?.alertRules() || []).map((r) => [r.id, this.getRuleState(r, now)]));
   }
 
   /** Hysteresis clear check — see the _evalValue state machine notes. */
@@ -327,6 +487,15 @@ class AlertEngine {
     if (this.history.length > HISTORY_MAX) this.history.splice(0, this.history.length - HISTORY_MAX);
     this.io?.emit('alert', evt);
     if (rule.webhookUrl && typeof this.fetchImpl === 'function') {
+      const wh = this.webhookStats.get(rule.id) || { failures: 0, lastError: null, lastAttemptAt: null, lastOkAt: null };
+      this.webhookStats.set(rule.id, wh);
+      wh.lastAttemptAt = Date.now();
+      const fail = (message) => {
+        this.webhookFailures++;
+        wh.failures++;
+        wh.lastError = message;
+        this.lastWebhookError = `rule ${rule.id}: ${message}`;
+      };
       const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) : undefined;
       // Failures are recorded, not console-logged: this fires from an async
       // callback, and stray console writes from library code are noise in the
@@ -336,15 +505,22 @@ class AlertEngine {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(evt),
         signal
-      }).catch((error) => {
-        this.webhookFailures++;
-        this.lastWebhookError = `rule ${rule.id}: ${error.message}`;
-      });
+      }).then(
+        (r) => {
+          if (r && r.ok === false) fail(`HTTP ${r.status}`);
+          else {
+            wh.lastOkAt = Date.now();
+            wh.lastError = null;
+          }
+        },
+        (error) => fail(error.message)
+      );
     }
   }
 
-  getEvents(limit = 200) {
-    return this.history.slice(-limit).reverse();
+  getEvents(limit = 200, { ruleId = null } = {}) {
+    const list = ruleId ? this.history.filter((e) => e.ruleId === ruleId) : this.history;
+    return list.slice(-limit).reverse();
   }
 }
 

@@ -1,115 +1,111 @@
 /**
- * Visual style presets for the node graph.
+ * Visual styles for the node graphs: THE theme object for the 2D canvas graph
+ * (ForceGraph), the WebGL big-graph renderer and the three.js 3D view. Every
+ * colour those renderers draw comes from the resolved style (no literals in
+ * draw paths).
  *
- * Each preset is a self-contained theme describing how nodes, links, labels and
- * the background are drawn on the canvas. Users pick a style from the toolbar;
- * the renderer reads these values every frame. The looks are inspired by a range
- * of well-loved graph visualizations, but the presets stand on their own and are
- * named for the aesthetic they produce, not their inspiration.
+ * Styles are derived at runtime from the design tokens (canvasTokens.js) and
+ * the data palette (dataPalette.js), so they follow the app theme: the canvas
+ * background is the page surface, labels are the text tokens, selection is the
+ * accent, message flow is the good state colour. A style only changes the
+ * drawing language (shape, grid, how much colour), never the theme:
+ *
+ *   standard    filled discs coloured by node group
+ *   schematic   square nodes on a fine grid, for structure-first reading
+ *   mono        neutral nodes: colour is left to selection, search and flow
+ *
+ * Older preset ids (constellation, blueprint, aurora, neon, circuit, slate),
+ * still stored in users' settings, resolve to the closest new style.
  */
+import { FALLBACK_TOKENS, FONT, getCanvasTokens } from './canvasTokens';
+import { SERIES } from './dataPalette';
+import { mix, withAlpha } from './colorMath';
 
-const shared = {
-  linkWidth: 1,
-  nodeMinRadius: 4,
-  nodeMaxRadius: 22,
-  labelFont: '12px Inter, sans-serif',
-  showLabelsAtZoom: 0.75
+const PRESETS = {
+  standard: { id: 'standard', name: 'Standard', description: 'Discs coloured by node group on the page surface.' },
+  schematic: { id: 'schematic', name: 'Schematic', description: 'Square nodes on a fine grid, for reading structure.' },
+  mono: { id: 'mono', name: 'Monochrome', description: 'Neutral nodes; colour only for selection, search and flow.' }
 };
 
-export const GRAPH_STYLES = {
-  constellation: {
-    id: 'constellation',
-    name: 'Constellation',
-    description: 'Dark field of glowing nodes with faint links. Sizes scale with connections.',
-    ...shared,
-    background: '#0a0f1c',
-    grid: null,
-    link: { color: 'rgba(120,140,180,0.28)', width: 1 },
-    linkHighlight: '#7dd3fc',
-    node: { glow: 14, stroke: 'rgba(255,255,255,0.85)', strokeWidth: 1.2 },
-    palette: ['#7dd3fc', '#a78bfa', '#f472b6', '#34d399', '#fbbf24', '#60a5fa'],
-    label: { color: '#cbd5e1', halo: '#0a0f1c' },
-    selectedRing: '#f8fafc'
-  },
+export const LEGACY_STYLE_IDS = { constellation: 'standard', aurora: 'standard', neon: 'standard', blueprint: 'schematic', circuit: 'schematic', slate: 'mono' };
+export const DEFAULT_STYLE = 'standard';
 
-  blueprint: {
-    id: 'blueprint',
-    name: 'Blueprint',
-    description: 'Technical schematic look — cyan lines over a fine grid.',
-    ...shared,
-    background: '#0b1f2a',
-    grid: { color: 'rgba(56,189,248,0.10)', size: 28 },
-    link: { color: 'rgba(56,189,248,0.45)', width: 1 },
-    linkHighlight: '#e0f2fe',
-    node: { glow: 0, stroke: '#38bdf8', strokeWidth: 1.5, square: true },
-    palette: ['#38bdf8', '#22d3ee', '#67e8f9', '#0ea5e9', '#7dd3fc'],
-    label: { color: '#bae6fd', halo: '#0b1f2a' },
-    selectedRing: '#e0f2fe'
-  },
+/** A stored style id (current or legacy) -> a current preset id. */
+export function resolveStyleId(id) {
+  if (PRESETS[id]) return id;
+  return LEGACY_STYLE_IDS[id] || DEFAULT_STYLE;
+}
 
-  aurora: {
-    id: 'aurora',
-    name: 'Aurora',
-    description: 'Soft gradient pastels on deep indigo — calm and readable.',
-    ...shared,
-    background: '#11142b',
-    grid: null,
-    link: { color: 'rgba(167,139,250,0.30)', width: 1.2 },
-    linkHighlight: '#c4b5fd',
-    node: { glow: 18, stroke: 'rgba(255,255,255,0.65)', strokeWidth: 1 },
-    palette: ['#c4b5fd', '#f9a8d4', '#a5f3fc', '#fca5a5', '#fcd34d', '#86efac'],
-    label: { color: '#e2e8f0', halo: '#11142b' },
-    selectedRing: '#ffffff'
-  },
+const cache = new WeakMap();
 
-  neon: {
-    id: 'neon',
-    name: 'Neon',
-    description: 'High-contrast vivid nodes with bright links for dense graphs.',
-    ...shared,
-    background: '#050510',
-    grid: null,
-    link: { color: 'rgba(236,72,153,0.35)', width: 1 },
-    linkHighlight: '#f0abfc',
-    node: { glow: 22, stroke: '#ffffff', strokeWidth: 1.2 },
-    palette: ['#f0abfc', '#22d3ee', '#a3e635', '#fb7185', '#facc15', '#818cf8'],
-    label: { color: '#f5f3ff', halo: '#050510' },
-    selectedRing: '#ffffff'
-  },
-
-  circuit: {
-    id: 'circuit',
-    name: 'Circuit',
-    description: 'Industrial terminal aesthetic — phosphor green on near-black.',
-    ...shared,
-    background: '#04120a',
-    grid: { color: 'rgba(34,197,94,0.10)', size: 24 },
-    link: { color: 'rgba(74,222,128,0.35)', width: 1 },
-    linkHighlight: '#bbf7d0',
-    node: { glow: 8, stroke: '#4ade80', strokeWidth: 1.4, square: true },
-    palette: ['#4ade80', '#22c55e', '#a3e635', '#86efac', '#65a30d'],
-    label: { color: '#bbf7d0', halo: '#04120a' },
-    selectedRing: '#dcfce7'
-  },
-
-  slate: {
-    id: 'slate',
-    name: 'Slate',
-    description: 'Minimal light theme — grayscale nodes, subtle links, print-friendly.',
-    ...shared,
-    background: '#f8fafc',
-    grid: { color: 'rgba(15,23,42,0.05)', size: 28 },
-    link: { color: 'rgba(71,85,105,0.35)', width: 1 },
-    linkHighlight: '#0ea5e9',
-    node: { glow: 0, stroke: '#334155', strokeWidth: 1.2 },
-    palette: ['#0ea5e9', '#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#3b82f6'],
-    label: { color: '#334155', halo: '#f8fafc' },
-    selectedRing: '#0f172a'
+/** The full style object for a preset id and a token snapshot (memoised). */
+export function resolveGraphStyle(styleId, tokens = getCanvasTokens()) {
+  const id = resolveStyleId(styleId);
+  let per = cache.get(tokens);
+  if (!per) {
+    per = {};
+    cache.set(tokens, per);
   }
-};
+  if (per[id]) return per[id];
+  const dark = tokens.mode !== 'light';
+  const s = SERIES[dark ? 'dark' : 'light'];
+  const mono = id === 'mono';
+  // Node group colours, in buildGraph's GROUP_ORDER:
+  // broker, server, topic (branch), telemetry, data, command, config, alarm, sparkplug.
+  // Structure (hubs, branches) and plain data leaves stay neutral; only the
+  // categories that mean something (telemetry, command, config, alarm,
+  // Sparkplug) take a data-palette hue, and state keeps its own colours.
+  const palette = mono
+    ? [tokens.text, tokens.text, tokens.textSubtle, tokens.textMuted, tokens.textMuted, tokens.textMuted, tokens.textMuted, tokens.textMuted, tokens.textMuted]
+    : [tokens.text, tokens.text, tokens.textFaint, s[0], tokens.textMuted, s[1], s[2], s[5], s[7]];
+  const style = {
+    ...PRESETS[id],
+    linkWidth: 1,
+    nodeMinRadius: 4,
+    nodeMaxRadius: 20,
+    labelFont: `400 12px ${FONT}`,
+    showLabelsAtZoom: 0.75,
+    background: tokens.bg,
+    grid: id === 'schematic' ? { color: withAlpha(tokens.borderStrong, dark ? 0.55 : 0.6), size: 28 } : null,
+    link: { color: dark ? mix(tokens.bg, tokens.borderStronger, 0.9) : mix(tokens.bg, tokens.borderStronger, 0.85), width: 1 },
+    linkHighlight: tokens.accent,
+    flow: tokens.good,
+    node: { glow: 0, stroke: tokens.bg, strokeWidth: 1.25, square: id === 'schematic' },
+    palette,
+    protocol: { mqtt: s[0], opcua: s[2], i3x: s[4] },
+    label: { color: tokens.textMuted, halo: tokens.bg, strong: tokens.text },
+    value: tokens.text,
+    selectedRing: tokens.accent,
+    badgeFill: tokens.raised,
+    badgeInk: tokens.text,
+    badgeBorder: tokens.borderStrong,
+    // Minimap: a floating panel like the rest of the chrome (solid, hairline).
+    minimap: { bg: tokens.panel, border: tokens.borderStrong },
+    // three.js: lights and the neutral base the per-instance colours multiply.
+    scene3d: { ambient: '#ffffff', directional: '#ffffff', nodeBase: '#ffffff', ambientIntensity: dark ? 0.9 : 1.0, directionalIntensity: dark ? 1.1 : 0.6 },
+    mode: tokens.mode
+  };
+  per[id] = style;
+  return style;
+}
 
-export const STYLE_LIST = Object.values(GRAPH_STYLES);
-export const DEFAULT_STYLE = 'constellation';
+/**
+ * Live preset views for code that reads a style outside a renderer (the Settings
+ * picker, the legend): each property resolves against the CURRENT tokens.
+ */
+function liveStyle(id) {
+  const o = {};
+  for (const key of Object.keys(resolveGraphStyle(id, FALLBACK_TOKENS.dark))) {
+    Object.defineProperty(o, key, { enumerable: true, get: () => resolveGraphStyle(id)[key] });
+  }
+  return o;
+}
+
+export const GRAPH_STYLES = {};
+for (const id of Object.keys(PRESETS)) GRAPH_STYLES[id] = liveStyle(id);
+for (const [legacy, id] of Object.entries(LEGACY_STYLE_IDS)) GRAPH_STYLES[legacy] = GRAPH_STYLES[id];
+
+export const STYLE_LIST = Object.keys(PRESETS).map((id) => GRAPH_STYLES[id]);
 
 // Layout presets. `mode` selects the positioning strategy; the force fields
 // (charge/linkDistance/gravity) tune the three free-form force layouts.

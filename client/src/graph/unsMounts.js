@@ -13,8 +13,6 @@ import { api } from '@/lib/api';
  * mirroring structure, not subscribing to data).
  */
 
-const OPCUA_CHILD_CAP = 50; // per browsed level
-const OPCUA_TOTAL_CAP = 400; // per mount
 const I3X_NODE_CAP = 2000;
 
 function makeNode(mountKey, path, name, depth) {
@@ -75,34 +73,30 @@ async function buildI3xRoot(mount) {
   return root;
 }
 
-/** OPC UA: shallow browse (2 levels, capped) from the mount's start node. */
+/**
+ * OPC UA: the server walks the mount (two levels below the start node, one browse request per
+ * level, at most 50 children per node and 400 nodes; GET /api/uns/mounts/:id/tree) and the tree
+ * is built from that one answer.
+ */
 async function buildOpcuaRoot(mount, connection) {
   const mountKey = `mount:${mount.id}`;
   const root = makeNode(mountKey, '', mount.label || connection?.name || 'OPC UA', 0);
   root.sourceType = 'opcua';
-  let total = 0;
+  const { root: walked, truncated } = await api.mountTree(mount.id);
+  root.truncated = Boolean(truncated);
 
-  const browseInto = async (parentNode, nodeId, depth) => {
-    if (depth > 2 || total >= OPCUA_TOTAL_CAP) return;
-    let res;
-    try {
-      res = await api.opcuaBrowse(mount.connectionId, nodeId);
-    } catch {
-      return; // node not browsable — keep what we have
-    }
-    for (const ref of (res.references || []).slice(0, OPCUA_CHILD_CAP)) {
-      if (total >= OPCUA_TOTAL_CAP) break;
-      const name = ref.displayName || ref.browseName || ref.nodeId;
+  const graft = (parentNode, items) => {
+    for (const item of items || []) {
+      const name = item.name || item.nodeId;
       if (parentNode.children.has(name)) continue;
       const path = parentNode.path ? `${parentNode.path}/${name}` : name;
       const node = makeNode(mountKey, path, name, parentNode.depth + 1);
-      node.meta = { nodeId: ref.nodeId };
+      node.meta = { nodeId: item.nodeId };
       parentNode.children.set(name, node);
-      total++;
-      await browseInto(node, ref.nodeId, depth + 1);
+      graft(node, item.children);
     }
   };
-  await browseInto(root, mount.nodeId || undefined, 1);
+  graft(root, walked?.children);
 
   const count = (n) => {
     if (n.children.size === 0) {

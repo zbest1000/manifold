@@ -233,6 +233,7 @@ export function buildSparkplugGraph(broker, topology) {
         id: edgeId,
         label: e.id,
         group: stateGroup(e.online),
+        state: e.online ? 'good' : 'bad', // drawn in the state token colours (bad = hollow)
         kind: 'sparkplug-edge',
         degree: 0,
         meta: {
@@ -254,6 +255,7 @@ export function buildSparkplugGraph(broker, topology) {
           id: devId,
           label: d.id,
           group: stateGroup(d.online),
+          state: d.online ? 'good' : 'bad',
           kind: 'sparkplug-device',
           degree: 0,
           meta: {
@@ -342,6 +344,7 @@ export function buildLineageGraph(broker, { clients = [], subscriptions = [] }, 
         id: fid,
         label: r ? `${s.topic}  ·  ${r.matchCount.toLocaleString()}` : s.topic,
         group: dormant ? 'alarm' : 'topic',
+        ...(dormant ? { state: 'warn' } : {}), // drawn hollow in the warn colour
         kind: 'sub-filter',
         degree: 0,
         meta: {
@@ -589,9 +592,5 @@ export function mergeGraphs(parts) {
   return { nodes, links };
 }
 
-// Protocol → accent color for the unified cross-source view.
-export const PROTOCOL_COLORS = {
-  mqtt: '#38bdf8',
-  opcua: '#a78bfa',
-  i3x: '#34d399'
-};
+// Protocol colours for the unified cross-source view live in the graph style
+// (graphStyles.js `protocol`), derived from the data palette for the current theme.

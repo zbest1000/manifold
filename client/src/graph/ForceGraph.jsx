@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
   forceSimulation,
   forceLink,
@@ -12,8 +12,39 @@ import {
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import { drag } from 'd3-drag';
-import { GRAPH_STYLES, LAYOUTS } from './graphStyles';
-import { groupColor, PROTOCOL_COLORS } from './buildGraph';
+import { resolveGraphStyle, LAYOUTS } from './graphStyles';
+import { groupColor } from './buildGraph';
+import { useCanvasTokens, FONT, MONO } from './canvasTokens';
+import { withAlpha } from './colorMath';
+import { LOD_MIN_NODES, computeBranchSizes, orderByImportance, selectLabelIds } from './labelLod';
+import {
+  applyCanvasSize,
+  boundsOf,
+  createFrameScheduler,
+  ellipsize,
+  fitBounds,
+  prefersReducedMotion,
+  registerTestHook,
+  sanitizePositions,
+  watchCanvasSize
+} from './canvasKit';
+
+// Labels are drawn at a constant on-screen size (they used to scale with the
+// world, so at the zoom a typical graph fits at they were a 4px smear).
+const LABEL_PX = 12;
+const VALUE_PX = 11;
+const LABEL_MAX_W = 150; // CSS px; longer names get a measured ellipsis
+// Overlays float above the canvas (toolbar/search on top, replay + hints at the
+// bottom): fit-to-view keeps the graph clear of them.
+const DEFAULT_FIT_INSET = { top: 72, right: 40, bottom: 104, left: 40 };
+
+/** Structural identity of a graph: node ids + link endpoints (not their payloads). */
+function graphSignature(data) {
+  let s = `${data.nodes.length}|${data.links.length}|`;
+  for (const n of data.nodes) s += `${n.id}\u0001`;
+  for (const l of data.links) s += `${l.source}>${l.target}\u0001`;
+  return s;
+}
 
 /**
  * Canvas node graph: pan/zoom, drag, hover, selection, live message-flow
@@ -27,7 +58,7 @@ import { groupColor, PROTOCOL_COLORS } from './buildGraph';
 const ForceGraph = forwardRef(function ForceGraph(
   {
     data,
-    styleId = 'constellation',
+    styleId = 'standard',
     layoutId = 'organic',
     selectedId = null,
     onSelect,
@@ -36,11 +67,16 @@ const ForceGraph = forwardRef(function ForceGraph(
     activitySource = null,
     activitySize = false,
     nodeValues = null,
+    nodeValuesRef = null, // ref whose .current is read each frame (keeps per-tick work out of React)
+    ariaLabel = null,
     valueZoom = 1.1,
     matchIds = null,
     focusId = null,
     minimap = false,
-    colorByProtocol = false
+    labelDensity = 0.5,
+    colorByProtocol = false,
+    fitInset = DEFAULT_FIT_INSET,
+    testId = 'graph2d'
   },
   ref
 ) {
@@ -51,8 +87,14 @@ const ForceGraph = forwardRef(function ForceGraph(
   const hoverRef = useRef(null);
   const nodesRef = useRef([]);
   const linksRef = useRef([]);
-  const dprRef = useRef(1);
-  const sizeRef = useRef({ w: 0, h: 0 });
+  const sizeRef = useRef({ w: 0, h: 0, sx: 1, sy: 1 });
+  const sigRef = useRef(''); // graphSignature of the data the simulation was built for
+  const builtLayoutRef = useRef(null); // the LAYOUTS preset the simulation was built with
+  const schedRef = useRef(null);
+  const minimapBoundsRef = useRef({ nodes: null, bounds: null });
+  const reducedRef = useRef(false);
+  const fitInsetRef = useRef(fitInset);
+  fitInsetRef.current = fitInset;
   const centeredRef = useRef(false);
   const selRef = useRef(null);
   const zoomRef = useRef(null);
@@ -68,11 +110,15 @@ const ForceGraph = forwardRef(function ForceGraph(
   const lastFrameRef = useRef(0);
   const drawRef = useRef(() => {});
   const bigRef = useRef(false);
+  const lodRef = useRef({ nodes: null, count: 0, order: [] }); // importance-ordered nodes for label LOD
   const gridRef = useRef(null);
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
-  const style = GRAPH_STYLES[styleId] || GRAPH_STYLES.constellation;
+  // Theme-derived style: a new object when the app theme (tokens) or the style
+  // changes, which repaints through `draw` without touching the simulation.
+  const tokens = useCanvasTokens();
+  const style = useMemo(() => resolveGraphStyle(styleId, tokens), [styleId, tokens]);
   const layout = LAYOUTS[layoutId] || LAYOUTS.organic;
 
   // Props the mount-once interaction effect needs at CALL time, not mount time.
@@ -81,26 +127,25 @@ const ForceGraph = forwardRef(function ForceGraph(
   // servers browsed the wrong (old) server, and style/selection changes didn't
   // repaint on interaction. Refreshed every render, read via cbRef.current.
   const cbRef = useRef({});
-  cbRef.current = { onSelect, onExpand, style };
+  cbRef.current = { onSelect, onExpand, style, testId, selectedId };
 
   const colorFor = useCallback(
-    (n) => (colorByProtocol && n.protocol ? PROTOCOL_COLORS[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
-    [colorByProtocol, style]
+    (n) => (n.state ? tokens[n.state] || style.palette[0] : colorByProtocol && n.protocol ? style.protocol[n.protocol] || style.palette[0] : groupColor(n.group, style.palette)),
+    [colorByProtocol, style, tokens]
   );
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const dpr = dprRef.current;
-    const width = canvas.width / dpr;
-    const height = canvas.height / dpr;
+    const { w: width, h: height, sx, sy } = sizeRef.current;
+    if (!width || !height) return;
     const t = transformRef.current;
     const nodes = nodesRef.current;
     const links = linksRef.current;
 
     ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(sx, 0, 0, sy, 0, 0);
 
     ctx.fillStyle = style.background;
     ctx.fillRect(0, 0, width, height);
@@ -112,13 +157,18 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.strokeStyle = style.grid.color;
       ctx.lineWidth = 1;
       ctx.beginPath();
+      // Snap 1px grid lines to the device pixel grid (otherwise they straddle two
+      // pixels and render as blurry 2px half-tone lines).
+      const snapX = (x) => (Math.round(x * sx) + 0.5) / sx;
+      const snapY = (y) => (Math.round(y * sy) + 0.5) / sy;
+      ctx.lineWidth = 1 / sx;
       for (let x = offX; x < width; x += size) {
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
+        ctx.moveTo(snapX(x), 0);
+        ctx.lineTo(snapX(x), height);
       }
       for (let y = offY; y < height; y += size) {
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
+        ctx.moveTo(0, snapY(y));
+        ctx.lineTo(width, snapY(y));
       }
       ctx.stroke();
     }
@@ -203,11 +253,49 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = 1;
     }
 
-    const showLabels = t.k >= style.showLabelsAtZoom;
-    const showValues = nodeValues && t.k >= valueZoom;
+    // Label level-of-detail: in dense graphs only a prioritised, collision-free
+    // subset of labels is drawn (see labelLod.js); leaf labels wait for zoom.
+    // Collision culling applies at every size (small graphs used to draw every
+    // label, so siblings' names overprinted each other); below LOD_MIN_NODES the
+    // leaf-zoom gate is off, so a small graph still labels its leaves.
+    const lod = !big;
+    const dense = nodes.length > LOD_MIN_NODES;
+    // Screen-sized labels stay legible at any zoom; collision culling decides how many.
+    const showLabels = lod;
+    let labelSet = null;
+    if (lod && showLabels) {
+      const cache = lodRef.current;
+      if (cache.nodes !== nodes || cache.count !== nodes.length) {
+        cache.nodes = nodes;
+        cache.count = nodes.length;
+        cache.order = orderByImportance(nodes, computeBranchSizes(nodes, links));
+      }
+      const forced = new Set();
+      if (selectedId) forced.add(selectedId);
+      if (hover) forced.add(hover.id);
+      if (matching && matching.size <= 40) for (const id of matching) forced.add(id);
+      for (const [id, r] of rateRef.current) if (r >= 1) forced.add(id);
+      labelSet = selectLabelIds(
+        cache.order,
+        { k: t.k, tx: t.x, ty: t.y, w: width, h: height },
+        {
+          leafZoom: dense ? valueZoom : 0,
+          maxLabels: 60 + Math.round(labelDensity * 240),
+          forced,
+          labelOf: (n) => n.label || '',
+          radiusOf: (n) => nodeRadius(n, style),
+          screenSized: true,
+          fontPx: LABEL_PX
+        }
+      );
+    }
+    const nv = nodeValuesRef ? nodeValuesRef.current : nodeValues;
+    const showValues = nv && t.k >= valueZoom;
 
+    const labelQueue = [];
     for (const n of nodes) {
       if (big && !inView(n.x, n.y)) continue;
+      if (!big && !inView(n.x, n.y)) continue; // cull: no work for off-screen nodes
       const baseR = nodeRadius(n, style);
       const rate = rateRef.current.get(n.id) || 0;
       const r = activitySize ? baseR * (1 + Math.min(rate, 6) * 0.18) : baseR;
@@ -227,16 +315,19 @@ const ForceGraph = forwardRef(function ForceGraph(
 
       ctx.globalAlpha = alpha;
 
-      let glow = 0;
-      if (!heavy) glow = (style.node.glow || 0) + Math.min(rate, 4) * 6;
-      if (glow > 0) {
-        ctx.shadowColor = color;
-        ctx.shadowBlur = glow;
-      } else if (ctx.shadowBlur) {
-        ctx.shadowBlur = 0;
+
+      if (n.id === selectedId) {
+        // Selection: a soft accent halo under the node, an accent ring around it.
+        ctx.fillStyle = withAlpha(style.selectedRing, 0.18);
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, r + 7 / t.k, 0, Math.PI * 2);
+        ctx.fill();
       }
 
-      ctx.fillStyle = color;
+      // A node in a failing state (Sparkplug DEATH, a dormant filter) is drawn
+      // hollow: the state is carried by shape as well as by the state colour.
+      const hollow = n.state === 'bad' || n.state === 'warn';
+      ctx.fillStyle = hollow ? style.background : color;
       ctx.beginPath();
       if (style.node.square) {
         const s = r * 1.7;
@@ -245,57 +336,67 @@ const ForceGraph = forwardRef(function ForceGraph(
         ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
       }
       ctx.fill();
-      ctx.shadowBlur = 0;
 
-      if (style.node.strokeWidth) {
+      if (hollow) {
+        ctx.lineWidth = 2 / t.k;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      } else if (style.node.strokeWidth) {
         ctx.lineWidth = style.node.strokeWidth / t.k;
         ctx.strokeStyle = style.node.stroke;
         ctx.stroke();
       }
 
       if (n.id === selectedId) {
-        ctx.lineWidth = 2.5 / t.k;
+        ctx.lineWidth = 2 / t.k;
         ctx.strokeStyle = style.selectedRing;
         ctx.beginPath();
-        ctx.arc(n.x, n.y, r + 5 / t.k, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, r + 4 / t.k, 0, Math.PI * 2);
         ctx.stroke();
       }
 
       // Collapsed-subtree badge
       if (n.collapsedCount) {
-        drawBadge(ctx, n.x + r, n.y - r, `+${n.collapsedCount}`, t.k, style.linkHighlight);
+        drawBadge(ctx, n.x + r, n.y - r, `+${n.collapsedCount}`, t.k, style);
       }
 
       ctx.globalAlpha = 1;
 
-      if (showLabels && alpha > 0.3) {
+      if (showLabels && alpha > 0.3 && (!labelSet || labelSet.has(n.id))) labelQueue.push({ n, r });
+    }
+    // Labels in a second pass, so a label is never painted UNDER the next node
+    // in the array (z-order: links < nodes < labels). Screen-constant size.
+    if (labelQueue.length) {
+      const inv = 1 / t.k;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.lineJoin = 'round';
+      for (const { n, r } of labelQueue) {
+        // measure at screen size (font set in CSS px, under a 1/k-scaled frame)
+        ctx.save();
+        ctx.translate(n.x, n.y + r + 2 * inv);
+        ctx.scale(inv, inv);
         ctx.font = style.labelFont;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        const label = n.label.length > 22 ? `${n.label.slice(0, 21)}…` : n.label;
-        ctx.lineWidth = 3 / t.k;
+        const label = ellipsize(ctx, n.label || '', LABEL_MAX_W);
+        ctx.lineWidth = 3;
         ctx.strokeStyle = style.label.halo;
-        ctx.strokeText(label, n.x, n.y + r + 2);
+        ctx.strokeText(label, 0, 0);
         ctx.fillStyle = style.label.color;
-        ctx.fillText(label, n.x, n.y + r + 2);
-
-        // Value overlay + sparkline for leaf nodes above the zoom threshold
-        if (showValues && alpha > 0.5) {
-          const v = nodeValues[n.id];
-          if (v) {
-            if (v.text != null) {
-              ctx.font = `600 11px 'JetBrains Mono', monospace`;
-              const vt = String(v.text).slice(0, 18);
-              ctx.lineWidth = 3 / t.k;
-              ctx.strokeStyle = style.label.halo;
-              ctx.strokeText(vt, n.x, n.y + r + 16);
-              ctx.fillStyle = style.linkHighlight;
-              ctx.fillText(vt, n.x, n.y + r + 16);
-            }
-            if (v.series && v.series.length > 1) {
-              drawSparkline(ctx, v.series, n.x, n.y - r - 4, 34, 12, t.k, style.linkHighlight);
-            }
+        ctx.fillText(label, 0, 0);
+        if (showValues && nodeAlpha(n) > 0.5) {
+          const v = nv[n.id];
+          if (v && v.text != null) {
+            ctx.font = `500 ${VALUE_PX}px ${MONO}`;
+            const vt = ellipsize(ctx, String(v.text), LABEL_MAX_W);
+            ctx.strokeText(vt, 0, LABEL_PX + 3);
+            ctx.fillStyle = style.value;
+            ctx.fillText(vt, 0, LABEL_PX + 3);
           }
+        }
+        ctx.restore();
+        if (showValues && nodeAlpha(n) > 0.5) {
+          const v = nv[n.id];
+          if (v?.series && v.series.length > 1) drawSparkline(ctx, v.series, n.x, n.y - r - 4 / t.k, 34, 12, t.k, style.value);
         }
       }
     }
@@ -303,7 +404,7 @@ const ForceGraph = forwardRef(function ForceGraph(
     // Live-flow overlay: expanding pulse rings + travelling dots.
     const byId = nodeByIdRef.current;
     if (pulseRef.current.size) {
-      ctx.strokeStyle = style.linkHighlight;
+      ctx.strokeStyle = style.flow;
       for (const [id, s] of pulseRef.current) {
         const n = byId.get(id);
         if (!n) continue;
@@ -317,11 +418,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       ctx.globalAlpha = 1;
     }
     if (particlesRef.current.length) {
-      ctx.fillStyle = style.linkHighlight;
-      if (!heavy) {
-        ctx.shadowColor = style.linkHighlight;
-        ctx.shadowBlur = 8;
-      }
+      ctx.fillStyle = style.flow;
       const dot = 3.5 / t.k;
       for (const p of particlesRef.current) {
         const pos = particlePosition(p, byId);
@@ -335,8 +432,18 @@ const ForceGraph = forwardRef(function ForceGraph(
 
     ctx.restore();
 
-    if (minimap) drawMinimap(ctx, nodes, transformRef.current, sizeRef.current, style, colorFor);
-  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor]);
+    if (minimap) {
+      const mb = minimapBoundsRef.current;
+      // Bounds are cached per node array while positions are frozen (no running
+      // simulation); during a simulation they are recomputed (cheap loop).
+      if (mb.nodes !== nodes || simRef.current?.alpha() > simRef.current?.alphaMin()) mb.bounds = boundsOf(nodes);
+      mb.nodes = nodes;
+      ctx.save();
+      ctx.setTransform(sx, 0, 0, sy, 0, 0);
+      drawMinimap(ctx, nodes, mb.bounds, transformRef.current, sizeRef.current, style, colorFor);
+      ctx.restore();
+    }
+  }, [style, selectedId, activitySize, nodeValues, valueZoom, matchIds, focusId, minimap, colorFor, labelDensity, nodeValuesRef]);
 
   useEffect(() => {
     drawRef.current = draw;
@@ -347,7 +454,25 @@ const ForceGraph = forwardRef(function ForceGraph(
     const canvas = canvasRef.current;
     if (!canvas || !data) return;
 
+    // Same node/link set as before (a periodic poll handing in a fresh but
+    // identical topology): refresh node payloads in place and repaint — do NOT
+    // rebuild and re-heat the simulation, which made the layout jump every few
+    // seconds and kept the animation loop running forever.
+    const sig = graphSignature(data);
+    if (sig === sigRef.current && nodesRef.current.length === data.nodes.length && builtLayoutRef.current === layout) {
+      const byId = nodeByIdRef.current;
+      for (const src of data.nodes) {
+        const n = byId.get(src.id);
+        if (!n) continue;
+        for (const k of Object.keys(src)) if (k !== 'x' && k !== 'y' && k !== 'vx' && k !== 'vy' && k !== 'fx' && k !== 'fy') n[k] = src[k];
+      }
+      schedRef.current?.request();
+      return undefined;
+    }
+    sigRef.current = sig;
+    builtLayoutRef.current = layout;
     const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
+    const known = data.nodes.reduce((c, n) => c + (prev.has(n.id) ? 1 : 0), 0);
     const nodes = data.nodes.map((n) => {
       const old = prev.get(n.id);
       return old ? { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...n };
@@ -386,21 +511,41 @@ const ForceGraph = forwardRef(function ForceGraph(
     bigRef.current = big;
     if (big) {
       radialTreeLayout(nodes, links, depth);
+      sanitizePositions(nodes);
+      for (const n of nodes) {
+        n.fx = n.x;
+        n.fy = n.y;
+      }
       buildGrid(nodes, gridRef);
       simRef.current = null;
-      requestAnimationFrame(() => {
-        draw();
+      const raf = requestAnimationFrame(() => {
+        drawRef.current();
         autoFit(); // positions are final immediately for the big radial layout
       });
-      return undefined;
+      return () => cancelAnimationFrame(raf);
     }
+    // Seed brand-new nodes next to their parent instead of all at the origin
+    // (d3 would put them on a phyllotaxis spiral around 0,0 — far from a parent
+    // that already moved — and the graph would "explode" on every growth step).
+    const parentOfNew = new Map(links.map((l) => [l.target, l.source]));
+    for (const n of nodes) {
+      if (Number.isFinite(n.x)) continue;
+      const p = nodeById.get(parentOfNew.get(n.id));
+      if (p && Number.isFinite(p.x)) {
+        const a = Math.random() * Math.PI * 2;
+        n.x = p.x + Math.cos(a) * 20;
+        n.y = p.y + Math.sin(a) * 20;
+      }
+    }
+    // Mostly-known graph (a few topics appeared): warm restart, don't explode it.
+    const warm = known > 0 && known >= nodes.length * 0.6;
 
     const sim = forceSimulation(nodes)
       .force('link', forceLink(links).id((d) => d.id).distance(layout.linkDistance || 55).strength(0.6))
       .force('collide', forceCollide().radius((d) => nodeRadius(d, style) + 4))
-      .alpha(0.9)
+      .alpha(warm ? 0.3 : 0.9)
       .alphaDecay(0.028)
-      .on('tick', draw);
+      .on('tick', () => drawRef.current());
 
     if (layout.mode === 'radial') {
       sim
@@ -415,6 +560,7 @@ const ForceGraph = forwardRef(function ForceGraph(
         .force('y', forceY((d) => centers.get(d.group)?.y || 0).strength(0.25));
     } else if (layout.mode === 'tree') {
       const pos = treePositions(nodes, links, layout);
+      sanitizePositions([...pos.values()], { minSep: 10 });
       for (const n of nodes) {
         const p = pos.get(n.id);
         if (p) {
@@ -435,14 +581,21 @@ const ForceGraph = forwardRef(function ForceGraph(
 
     // Fit once the force layout has settled (nodes start clustered at origin, so
     // fitting immediately would frame a dot); 'end' fires when alpha decays out.
-    sim.on('end', autoFit);
+    // Guard: a force layout can never produce NaN/coincident output at the end.
+    sim.on('end', () => {
+      if (sanitizePositions(nodes)) drawRef.current();
+      autoFit();
+    });
     simRef.current = sim;
     return () => sim.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, layout, draw]);
+    // Restarts the simulation only for new data/layout. Style, selection, focus
+    // and search changes repaint (effect below) — they used to be in this
+    // dependency list through `draw`, so every click re-heated the whole layout.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- style for collide radius is read at build time on purpose
+  }, [data, layout]);
 
   useEffect(() => {
-    draw();
+    schedRef.current?.request();
   }, [draw]);
 
   // ---- Live message-flow animation ----
@@ -471,10 +624,18 @@ const ForceGraph = forwardRef(function ForceGraph(
         else rateRef.current.set(id, next);
       }
 
-      drawRef.current();
+      if (!document.hidden) drawRef.current();
 
       if (particles.length || pulseRef.current.size || rateRef.current.size) {
-        rafRef.current = requestAnimationFrame(step);
+        // Only rate decay left (activity sizing) or reduced motion: the change
+        // per frame is invisible, so ~10 fps is plenty.
+        const slow = (!particles.length && !pulseRef.current.size) || reducedRef.current;
+        if (slow) {
+          rafRef.current = -1;
+          setTimeout(() => {
+            if (rafRef.current === -1) rafRef.current = requestAnimationFrame(step);
+          }, 100);
+        } else rafRef.current = requestAnimationFrame(step);
       } else {
         rafRef.current = 0;
         lastFrameRef.current = 0;
@@ -504,7 +665,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       path.reverse();
 
       rateRef.current.set(nodeId, (rateRef.current.get(nodeId) || 0) + 1);
-      if (flow || force) {
+      if ((flow && !reducedRef.current) || force) {
         pulseRef.current.set(nodeId, 1);
         if (path.length >= 2) {
           const dur = 450 + (path.length - 1) * 130;
@@ -530,7 +691,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   // Clear transient animation state when both live features are off.
   useEffect(() => {
     if (flow || activitySize) return;
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (rafRef.current > 0) cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
     particlesRef.current = [];
     pulseRef.current.clear();
@@ -538,7 +699,13 @@ const ForceGraph = forwardRef(function ForceGraph(
     draw();
   }, [flow, activitySize, draw]);
 
-  useEffect(() => () => rafRef.current && cancelAnimationFrame(rafRef.current), []);
+  useEffect(
+    () => () => {
+      if (rafRef.current > 0) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    },
+    []
+  );
 
   // ---- Imperative handle: fit-to and export ----
   const fitTo = useCallback((ids) => {
@@ -548,21 +715,15 @@ const ForceGraph = forwardRef(function ForceGraph(
     const set = ids && ids.size ? ids : null;
     const nodes = nodesRef.current.filter((n) => (set ? set.has(n.id) : true));
     if (!nodes.length || w === 0) return;
-    const xs = nodes.map((n) => n.x);
-    const ys = nodes.map((n) => n.y);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    const pad = 90;
-    const k = Math.min((w - pad) / Math.max(maxX - minX, 1), (h - pad) / Math.max(maxY - minY, 1), 2.5);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const t = zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k);
+    // Loop-based bounds (Math.min(...xs) overflows the call stack past ~100k nodes)
+    // padded by the biggest node, framed clear of the floating overlays.
+    const f = fitBounds(boundsOf(nodes, cbRef.current.style.nodeMaxRadius + 4), { w, h }, { inset: fitInsetRef.current, minK: 0.05, maxK: set && set.size === 1 ? 1.6 : 2.5 });
+    if (!f) return;
+    const t = zoomIdentity.translate(f.x, f.y).scale(f.k);
     if (selRef.current && zoomRef.current) selRef.current.call(zoomRef.current.transform, t);
     transformRef.current = t;
-    draw();
-  }, [draw]);
+    drawRef.current();
+  }, []);
 
   useEffect(() => {
     fitToRef.current = fitTo;
@@ -572,6 +733,10 @@ const ForceGraph = forwardRef(function ForceGraph(
     ref,
     () => ({
       fitTo,
+      redraw: () => drawRef.current(),
+      isSettled: () => !simRef.current || simRef.current.alpha() <= simRef.current.alphaMin(),
+      hasNode: (id) => nodeByIdRef.current.has(id),
+      size: () => ({ ...sizeRef.current }),
       pulseNode: (nodeId) => emitPulse(nodeId, true),
       exportPng: () => canvasRef.current?.toDataURL('image/png'),
       exportGraph: () => ({
@@ -595,31 +760,49 @@ const ForceGraph = forwardRef(function ForceGraph(
       .scaleExtent([0.05, 8])
       .on('zoom', (event) => {
         transformRef.current = event.transform;
-        drawRef.current();
+        schedRef.current?.request(); // coalesced to one paint per frame
       });
     zoomRef.current = zoomBehavior;
     sel.call(zoomBehavior);
 
-    const resize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      dprRef.current = dpr;
-      const { width, height } = wrap.getBoundingClientRect();
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      sizeRef.current = { w: width, h: height };
+    const sched = createFrameScheduler(() => drawRef.current(), { el: wrap });
+    schedRef.current = sched;
+    reducedRef.current = prefersReducedMotion();
+
+    // Integer backing store at the current DPR; follows container resizes (incl.
+    // sidebar collapse) and DPR changes (monitor move / browser zoom).
+    const unwatch = watchCanvasSize(wrap, ({ w: width, h: height, dpr }) => {
+      sizeRef.current = applyCanvasSize(canvas, width, height, dpr);
       if (!centeredRef.current && width > 0 && height > 0) {
         centeredRef.current = true;
         const initial = zoomIdentity.translate(width / 2, height / 2);
         transformRef.current = initial;
         sel.call(zoomBehavior.transform, initial);
-      }
-      drawRef.current();
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
+      } else keepSelectionVisible();
+      drawRef.current(); // a resized canvas is cleared: repaint synchronously
+    });
+
+    // A details panel opening beside the graph narrows the canvas: if that left
+    // the selected node outside the usable area (canvas minus the fit insets of
+    // the floating overlays), pan the least distance that brings it back.
+    function keepSelectionVisible() {
+      const id = cbRef.current.selectedId;
+      const n = id ? nodeByIdRef.current.get(id) : null;
+      const { w, h } = sizeRef.current;
+      if (!n || !w || !h) return;
+      const t = transformRef.current;
+      const ins = fitInsetRef.current;
+      const r = nodeRadius(n, cbRef.current.style) * t.k + 8;
+      const sx = n.x * t.k + t.x;
+      const sy = n.y * t.k + t.y;
+      const lo = (a, b) => Math.min(a, b);
+      const dx = sx - r < ins.left ? ins.left - (sx - r) : sx + r > w - ins.right ? lo(0, w - ins.right - (sx + r)) : 0;
+      const dy = sy - r < ins.top ? ins.top - (sy - r) : sy + r > h - ins.bottom ? lo(0, h - ins.bottom - (sy + r)) : 0;
+      if (!dx && !dy) return;
+      const next = zoomIdentity.translate(t.x + dx, t.y + dy).scale(t.k);
+      transformRef.current = next;
+      sel.call(zoomBehavior.transform, next);
+    }
 
     const toGraphCoords = (event) => {
       const rect = canvas.getBoundingClientRect();
@@ -673,7 +856,13 @@ const ForceGraph = forwardRef(function ForceGraph(
 
     let downPos = null;
     const onDown = (e) => {
-      downPos = { x: e.clientX, y: e.clientY };
+      downPos = e.button > 0 ? null : { x: e.clientX, y: e.clientY };
+    };
+    const onLeave = () => {
+      if (hoverRef.current) {
+        hoverRef.current = null;
+        sched.request();
+      }
     };
     const onUp = (e) => {
       if (!downPos) return;
@@ -695,7 +884,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       if (hit !== hoverRef.current) {
         hoverRef.current = hit;
         canvas.style.cursor = hit ? 'pointer' : 'grab';
-        drawRef.current();
+        sched.request();
       }
     };
 
@@ -714,21 +903,74 @@ const ForceGraph = forwardRef(function ForceGraph(
     canvas.addEventListener('dblclick', onDblClick);
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('contextmenu', onContext);
+    canvas.addEventListener('pointerleave', onLeave);
+
+    const unhook = registerTestHook(cbRef.current.testId, {
+      get transform() {
+        const t = transformRef.current;
+        return { x: t.x, y: t.y, k: t.k };
+      },
+      get size() {
+        return { ...sizeRef.current };
+      },
+      get selectedId() {
+        return cbRef.current.selectedId ?? null;
+      },
+      get settled() {
+        return !simRef.current || simRef.current.alpha() <= simRef.current.alphaMin();
+      },
+      get animating() {
+        return rafRef.current !== 0;
+      },
+      get frames() {
+        return sched.stats.frames;
+      },
+      /** Visible nodes with their canvas-relative screen position (CSS px). */
+      nodes(limit = 5000) {
+        const t = transformRef.current;
+        const { w, h } = sizeRef.current;
+        const out = [];
+        for (const n of nodesRef.current) {
+          const sx = n.x * t.k + t.x;
+          const sy = n.y * t.k + t.y;
+          if (sx < 0 || sy < 0 || sx > w || sy > h) continue;
+          out.push({ id: n.id, label: n.label, sx, sy, r: nodeRadius(n, cbRef.current.style) * t.k });
+          if (out.length >= limit) break;
+        }
+        return out;
+      },
+      zoomTo(k, cx, cy) {
+        const t = zoomIdentity.translate(cx - (cx - transformRef.current.x) * (k / transformRef.current.k), cy - (cy - transformRef.current.y) * (k / transformRef.current.k)).scale(k);
+        sel.call(zoomBehavior.transform, t);
+      },
+      fit: () => fitToRef.current()
+    });
 
     return () => {
-      ro.disconnect();
+      unwatch();
+      unhook();
+      sched.dispose();
+      schedRef.current = null;
+      sel.on('.zoom', null).on('.drag', null);
+      if (simRef.current) simRef.current.stop();
+      canvas.removeEventListener('pointerleave', onLeave);
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointerup', onUp);
       canvas.removeEventListener('dblclick', onDblClick);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('contextmenu', onContext);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
-      <canvas ref={canvasRef} className="graph-canvas" />
+      <canvas
+        ref={canvasRef}
+        className="graph-canvas absolute left-0 top-0"
+        data-testid={testId}
+        role="img"
+        aria-label={ariaLabel || `Node graph with ${(data?.nodes || []).length.toLocaleString()} nodes${selectedId ? `, one selected` : ''}. Use the Tree view for a keyboard-accessible list.`}
+      />
     </div>
   );
 });
@@ -776,18 +1018,19 @@ function particlePosition(p, byId) {
   return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
 }
 
-function drawBadge(ctx, x, y, text, k, color) {
+function drawBadge(ctx, x, y, text, k, style) {
   ctx.save();
-  ctx.font = `600 ${10 / k}px Inter, sans-serif`;
+  ctx.font = `500 ${11 / k}px ${FONT}`;
   const padX = 4 / k;
   const w = ctx.measureText(text).width + padX * 2;
-  const h = 13 / k;
-  ctx.fillStyle = color;
-  ctx.globalAlpha = 0.9;
-  roundRect(ctx, x - w / 2, y - h / 2, w, h, 4 / k);
+  const h = 15 / k;
+  ctx.fillStyle = style.badgeFill;
+  roundRect(ctx, x - w / 2, y - h / 2, w, h, 3 / k);
   ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = '#0a0f1c';
+  ctx.lineWidth = 1 / k;
+  ctx.strokeStyle = style.badgeBorder;
+  ctx.stroke();
+  ctx.fillStyle = style.badgeInk;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y);
@@ -828,19 +1071,14 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawMinimap(ctx, nodes, t, size, style, colorFor) {
-  if (!nodes.length || size.w === 0) return;
+function drawMinimap(ctx, nodes, bounds, t, size, style, colorFor) {
+  if (!nodes.length || size.w === 0 || !bounds) return;
   const mw = 168;
   const mh = 112;
   const mx = size.w - mw - 16;
   const my = size.h - mh - 16;
 
-  const xs = nodes.map((n) => n.x);
-  const ys = nodes.map((n) => n.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  const { minX, maxX, minY, maxY } = bounds;
   const gw = Math.max(maxX - minX, 1);
   const gh = Math.max(maxY - minY, 1);
   const pad = 8;
@@ -850,19 +1088,20 @@ function drawMinimap(ctx, nodes, t, size, style, colorFor) {
 
   ctx.save();
   ctx.globalAlpha = 0.92;
-  ctx.fillStyle = 'rgba(10,15,28,0.85)';
+  ctx.fillStyle = style.minimap.bg;
   roundRect(ctx, mx, my, mw, mh, 10);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.strokeStyle = style.minimap.border;
   ctx.lineWidth = 1;
   ctx.stroke();
   ctx.clip();
 
-  for (const n of nodes) {
+  // Thousands of nodes: squares batched by colour instead of one arc path each.
+  const step = Math.max(1, Math.floor(nodes.length / 6000));
+  for (let i = 0; i < nodes.length; i += step) {
+    const n = nodes[i];
     ctx.fillStyle = colorFor(n);
-    ctx.beginPath();
-    ctx.arc(toMx(n.x), toMy(n.y), 1.6, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillRect(toMx(n.x) - 1.2, toMy(n.y) - 1.2, 2.4, 2.4);
   }
 
   // Viewport rectangle: which graph area is currently visible
@@ -1018,10 +1257,13 @@ function radialTreeLayout(nodes, links, depth) {
 
   const guard = new Set();
   const totalLeaves = roots.reduce((s, r) => s + (leaves.get(r.id) || 1), 0) || 1;
+  // One root sits at the centre; several roots would ALL sit at radius 0 (the
+  // exact same point), so with more than one they start on the first ring.
+  const d0 = roots.length > 1 ? 1 : 0;
   let a = 0;
   for (const r of roots) {
     const span = ((leaves.get(r.id) || 1) / totalLeaves) * Math.PI * 2;
-    place(r.id, a, a + span, 0, guard);
+    place(r.id, a, a + span, d0, guard);
     a += span;
   }
 }

@@ -1,10 +1,32 @@
 const express = require('express');
+const { expectedRev, handleRevisionError } = require('../services/revision');
 const router = express.Router();
+
+/** A connection as GET lists it, with the stored revision (`rev`) editors send back. Never the password. */
+function connectionView(opcuaManager, profiles, id) {
+  const live = opcuaManager.getConnections().find((c) => c.id === id);
+  const saved = profiles?.opcuaEndpoints?.().find((c) => c.id === id);
+  if (!live && !saved) return null;
+  const { password: _pw, ...cfg } = saved || {};
+  return { ...(live || { id, name: cfg.name || cfg.endpointUrl, endpointUrl: cfg.endpointUrl, securityMode: cfg.securityMode || 'None', securityPolicy: cfg.securityPolicy || 'None', username: cfg.username || null, status: 'disconnected' }), rev: saved?.rev || 0, updatedAt: saved?.updatedAt || null };
+}
+
+/** Saved configs as identity candidates (a saved connection that is not connected right now still counts). */
+const savedConfigs = (profiles) => (profiles?.opcuaEndpoints?.() || []).map(({ password: _pw, ...c }) => c);
+
+function duplicateResponse(res, dup) {
+  return res.status(409).json({
+    error: `This OPC UA server is already connected as "${dup.name}": same endpoint URL, security mode and policy, and user. A second identical connection would open a second session reading the same data. Edit "${dup.name}" instead, or use a different security setting or user.`,
+    code: 'duplicate',
+    existing: dup
+  });
+}
 
 // GET /api/opcua/connections
 router.get('/connections', (req, res) => {
-  const { opcuaManager } = req.app.locals.services;
-  res.json({ connections: opcuaManager.getConnections() });
+  const { opcuaManager, profiles } = req.app.locals.services;
+  const revs = new Map((profiles?.opcuaEndpoints?.() || []).map((c) => [c.id, c.rev || 0]));
+  res.json({ connections: opcuaManager.getConnections().map((c) => ({ ...c, rev: revs.get(c.id) || 0 })) });
 });
 
 // POST /api/opcua/discover { endpointUrl } — connect with security None, list
@@ -64,11 +86,16 @@ router.post('/trust', async (req, res) => {
 });
 
 // POST /api/opcua/connections — connect to an endpoint (profile persisted)
+// An exact duplicate (endpoint, security, user) of an existing connection is refused with
+// 409 { code: 'duplicate', existing: { id, name } }.
 router.post('/connections', async (req, res) => {
   const { opcuaManager, profiles } = req.app.locals.services;
+  const { rev: _rev, ...body } = req.body || {};
+  const dup = opcuaManager.findDuplicateConnection(body, null, savedConfigs(profiles));
+  if (dup) return duplicateResponse(res, dup);
   try {
-    const result = await opcuaManager.connect(req.body || {});
-    profiles?.upsertOpcua(result.connectionId, { ...(req.body || {}), id: result.connectionId });
+    const result = await opcuaManager.connect(body);
+    profiles?.upsertOpcua(result.connectionId, { ...body, id: result.connectionId });
     res.status(201).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -78,6 +105,9 @@ router.post('/connections', async (req, res) => {
 // PUT /api/opcua/connections/:connectionId — update a saved endpoint in place:
 // disconnect the existing session, reconnect under the SAME id, persist the new
 // config on success (like POST). Validated like POST (endpointUrl is required).
+// Optimistic concurrency: body `rev` / If-Match = the revision the editor loaded; a stale edit is
+// refused with 409 { code: 'stale', current } BEFORE the running session is touched. Turning the
+// connection into an exact duplicate of another one is refused like POST.
 router.put('/connections/:connectionId', async (req, res) => {
   const { opcuaManager, profiles } = req.app.locals.services;
   const connectionId = req.params.connectionId;
@@ -85,15 +115,23 @@ router.put('/connections/:connectionId', async (req, res) => {
   if (!opcuaManager.getConnections().some((c) => c.id === connectionId) && !saved) {
     return res.status(404).json({ error: 'OPC UA connection not found' });
   }
-  const body = req.body || {};
+  try {
+    if (saved) profiles?.assertRev('opcua', connectionId, expectedRev(req));
+  } catch (error) {
+    if (handleRevisionError(res, error, () => connectionView(opcuaManager, profiles, connectionId))) return;
+    throw error;
+  }
+  const { rev: _rev, ...body } = req.body || {};
+  const dup = opcuaManager.findDuplicateConnection(body, connectionId, savedConfigs(profiles));
+  if (dup) return duplicateResponse(res, dup);
   // Leave-blank-to-keep: an omitted password keeps the stored one.
   if (body.password === undefined && saved?.password !== undefined) {
     body.password = saved.password;
   }
   try {
     const result = await opcuaManager.updateConnection(connectionId, body);
-    profiles?.upsertOpcua(connectionId, { ...body, id: connectionId });
-    res.json(result);
+    const stored = profiles?.upsertOpcua(connectionId, { ...body, id: connectionId });
+    res.json({ ...result, rev: stored?.rev });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

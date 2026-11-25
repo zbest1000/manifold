@@ -15,13 +15,14 @@
  *   2. The curated industrial subset (~130 icons, tree-shaken named imports —
  *      bundled synchronously, no 700 KB chunk)
  *   3. The full Lucide library — an explicit opt-in via loadFullLibrary()
- *      (dynamic import of `lucide`, its own lazy chunk, cached)
+ *      (dynamic import of the full `lucide-react` icon data, its own lazy chunk, cached)
  * Unknown names fall through to the renderer's built-in geometric glyphs, so
  * nothing ever blocks on icon data.
  */
 
 import { api } from '@/lib/api';
 import { CURATED_ICONS, curatedIconNames } from './curatedIcons';
+import { namespaceIconName } from './unsLevels';
 
 export { curatedIconNames };
 
@@ -73,13 +74,13 @@ export async function deleteCustomIcon(name) {
 
 // ---- full lucide library (explicit lazy opt-in) ------------------------------
 let fullPromise = null;
-let fullIcons = null; // { PascalName: IconNode }
+let fullIcons = null; // { 'kebab-name': IconNode }
 
 /** Dynamic-import the full ~2,000-icon Lucide set (its own chunk). Cached. */
 export function loadFullLibrary() {
   if (!fullPromise) {
-    fullPromise = import('lucide').then((m) => {
-      fullIcons = m.icons || {};
+    fullPromise = import('./fullIconLibrary').then((m) => {
+      fullIcons = m.FULL_ICONS;
       return fullIcons;
     });
   }
@@ -108,16 +109,8 @@ export function iconsLoaded() {
 export function allIconNames() {
   const names = new Set(customIcons.keys());
   for (const n of CURATED_ICONS.keys()) names.add(n);
-  if (fullIcons) for (const k of Object.keys(fullIcons)) names.add(pascalToKebab(k));
+  if (fullIcons) for (const k of Object.keys(fullIcons)) names.add(k);
   return [...names];
-}
-
-function pascalToKebab(s) {
-  return s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
-}
-
-function kebabToPascal(s) {
-  return s.replace(/(^|-)([a-z0-9])/g, (_, __, c) => c.toUpperCase());
 }
 
 // ---- mapping ---------------------------------------------------------------
@@ -238,6 +231,8 @@ export function getIconOverride(brokerId, path) {
 export function resolveIconName(node) {
   const manual = overrides[`${node.brokerId}:${node.path}`];
   if (manual) return manual;
+  const ns = namespaceIconName(node);
+  if (ns) return ns;
   const lower = node.name.toLowerCase();
   for (const [kw, icon] of KEYWORD_ICONS) {
     if (lower.includes(kw)) return icon;
@@ -275,7 +270,7 @@ function resolveIconNode(name) {
   if (custom) return custom.node;
   const curated = CURATED_ICONS.get(name);
   if (curated) return curated;
-  if (fullIcons) return fullIcons[kebabToPascal(name)] || null;
+  if (fullIcons) return fullIcons[name] || null;
   return null;
 }
 

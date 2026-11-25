@@ -1,14 +1,20 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const { filterProblem } = require('../services/mqttMatch');
+const { checkpoint, handleRevisionError } = require('../services/revision');
+const { missingRefsMessage, brokenRefs } = require('../services/references');
 
 // Recordings (time-series capture) + replay control.
 
 // GET /api/recorder — recordings with live status
 router.get('/', (req, res) => {
-  const { profiles, recorder, replayer } = req.app.locals.services;
+  const { profiles, recorder, replayer, mqttManager } = req.app.locals.services;
   res.json({
-    recordings: profiles.listIn('recordings').map((r) => ({ ...r, status: recorder.getStatus(r.id) })),
+    recordings: profiles.listIn('recordings').map((r) => {
+      const broken = brokenRefs('recordings', r, { profiles, mqttManager });
+      return { ...r, status: recorder.getStatus(r.id), ...(broken.length ? { broken } : {}) };
+    }),
     replay: replayer.getStatus()
   });
 });
@@ -33,20 +39,36 @@ router.delete('/replay', (req, res) => {
 
 // POST /api/recorder { id?, name, brokerId, filter, target?, maxBytes?, enabled? }
 router.post('/', (req, res) => {
-  const { profiles } = req.app.locals.services;
+  const { profiles, recorder, mqttManager } = req.app.locals.services;
   const { id, name, brokerId, filter, target, maxBytes, enabled } = req.body || {};
+  const expectRev = checkpoint(req, res, profiles, 'recordings', id, () => {
+    const r = profiles.getIn('recordings', id);
+    return r ? { ...r, status: recorder.getStatus(id) } : null;
+  });
+  if (expectRev === false) return;
   if (!brokerId || !filter) return res.status(400).json({ error: 'brokerId and filter are required' });
+  const fp = filterProblem(filter);
+  if (fp) return res.status(400).json({ error: `filter "${filter}" ${fp}` });
   if (target && target.type === 'historian' && !target.historianId) {
     return res.status(400).json({ error: 'target.historianId is required for historian targets' });
   }
-  const saved = profiles.upsertIn('recordings', id || uuidv4(), {
+  const next = {
     name: name || null,
     brokerId,
     filter,
     target: target?.type === 'historian' ? { type: 'historian', historianId: target.historianId } : { type: 'file' },
     maxBytes: Number(maxBytes) > 0 ? Number(maxBytes) : undefined,
     enabled: enabled !== false
-  });
+  };
+  const missing = missingRefsMessage('recordings', next, { profiles, mqttManager });
+  if (missing) return res.status(400).json({ error: missing });
+  let saved;
+  try {
+    saved = profiles.upsertIn('recordings', id || uuidv4(), next, { expectRev });
+  } catch (error) {
+    if (handleRevisionError(res, error, (x) => x)) return;
+    throw error;
+  }
   res.status(201).json(saved);
 });
 

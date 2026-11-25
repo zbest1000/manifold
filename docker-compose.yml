@@ -4,9 +4,11 @@
 #   → open http://localhost:5000
 #
 # Brings up the app plus a Mosquitto MQTT broker, a Microsoft OPC-PLC OPC UA
-# server, and a data simulator. The app is pre-seeded to auto-connect to the
-# broker and OPC UA server, and the simulator publishes MQTT + Sparkplug B
-# traffic, so every view has live data immediately.
+# server, a data simulator, and `device-sim` (simulated Modbus TCP, Siemens S7
+# and EtherNet/IP devices). The app is pre-seeded to auto-connect to the broker
+# and OPC UA server, to poll the three simulated devices, and to publish the
+# Modbus device into the UNS under demo/plant1/pump1/. The simulator publishes
+# MQTT + Sparkplug B traffic, so every view has live data immediately.
 
 services:
   mqtt:
@@ -83,10 +85,41 @@ services:
       # The app reaches it in-cluster as http://cesmii-mock:4000 regardless.
       - "127.0.0.1:14000:4000"
 
+  # Simulated PLCs for the southbound drivers: Modbus TCP :5020, S7 :10102,
+  # EtherNet/IP :44818. It runs the same code the test suite uses
+  # (server/tools/simulators.js on top of server/test/support/*) from the app
+  # image, so there is nothing extra to build. These are test doubles, not real
+  # devices. Reachable from the app as host `device-sim`.
+  device-sim:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    # Same tag as the app service: one image, built once, used twice.
+    image: manifold-demo-app
+    container_name: manifold-device-sim
+    hostname: device-sim
+    restart: unless-stopped
+    # Replace the app entrypoint (which seeds profiles and waits for the broker).
+    entrypoint: ["node", "/app/server/tools/simulators.js"]
+    command: ["--modbus", "5020", "--s7", "10102", "--eip", "44818", "--host", "0.0.0.0", "--quiet"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(5020,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    ports:
+      # Host loopback only, for pointing a local tool (a Modbus client, Snap7,
+      # a CIP client) at the simulators. The app does not need these mappings.
+      - "127.0.0.1:5020:5020"
+      - "127.0.0.1:10102:10102"
+      - "127.0.0.1:44818:44818"
+
   app:
     build:
       context: .
       dockerfile: docker/app/Dockerfile
+    image: manifold-demo-app
     container_name: manifold-app
     restart: unless-stopped
     environment:
@@ -99,6 +132,13 @@ services:
       # This is a local-only demo (mapped to host loopback), so let Discovery scan
       # the demo's Docker subnet and reach the bundled broker/OPC UA. The shipped
       # default is fail-closed — do NOT set this on an internet-exposed instance.
+      #
+      # This flag is also what lets the app talk to the simulated devices: device
+      # targets pass the egress guard, which refuses RFC1918 addresses by default,
+      # and `device-sim` resolves to a private address on the compose network.
+      # (Loopback device targets are a separate opt-in, MANIFOLD_ALLOW_LOOPBACK_DEVICES,
+      # which this stack does not need because the simulators are in another
+      # container.)
       MANIFOLD_ALLOW_PRIVATE_TARGETS: "1"
       # This demo runs UNAUTHENTICATED. To expose it beyond this host you MUST
       # set a token AND widen the port mapping below to "5000:5000".
@@ -114,6 +154,8 @@ services:
         condition: service_healthy
       opcua:
         condition: service_started
+      device-sim:
+        condition: service_healthy
 
 volumes:
   app-data:

@@ -39,11 +39,29 @@ async function request(path, options = {}) {
   } catch {
     body = { raw: text };
   }
+  if (res.status === 401 && token) {
+    // The stored token was rejected (rotated or revoked while the page was open): forget it and reload,
+    // which brings up the unlock screen instead of leaving every control failing with "Unauthorized".
+    setAuthToken('');
+    window.location.reload();
+  }
   if (!res.ok) {
     const raw = body.error || `Request failed (${res.status})`;
     const h = humanizeError(raw);
     useStore.getState().pushLog('error', 'api', h.summary, { path, status: res.status, raw, code: h.code, hint: h.hint });
-    throw new Error(h.summary);
+    const err = new Error(h.summary);
+    // Field-level validation errors ({ key, error }[]) travel with the error.
+    if (Array.isArray(body.details)) err.details = body.details;
+    err.status = res.status;
+    // 409 carries structure the pages act on: stale (another writer saved first: `current` is the saved
+    // object), duplicate (`existing` names the connection that is already there), in-use (`usedBy`).
+    if (res.status === 409) {
+      err.code = body.code || null;
+      if (body.current !== undefined) err.current = body.current;
+      if (body.existing) err.existing = body.existing;
+      if (Array.isArray(body.usedBy)) err.usedBy = body.usedBy;
+    }
+    throw err;
   }
   return body;
 }
@@ -96,6 +114,8 @@ export const api = {
   // UNS mounts (external sources grafted into the namespace view)
   listMounts: () => request('/api/uns/mounts'),
   addMount: (mount) => request('/api/uns/mounts', { method: 'POST', body: JSON.stringify(mount) }),
+  /** OPC UA mount structure, walked on the server (bounded: see GET /api/uns/mounts/:id/tree). */
+  mountTree: (id) => request(`/api/uns/mounts/${encodeURIComponent(id)}/tree`),
   removeMount: (id) => request(`/api/uns/mounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // UNS custom icons (user-defined single-path SVGs for the icon picker)
@@ -115,6 +135,8 @@ export const api = {
 
   // Pipelines
   listPipelines: () => request('/api/pipelines'),
+  /** Stored objects pointing at a broker or historian that no longer exists: { broken: [{ type, id, name, missing }] }. */
+  brokenReferences: () => request('/api/system/broken-references'),
   savePipeline: (route) => request('/api/pipelines', { method: 'POST', body: JSON.stringify(route) }),
   deletePipeline: (id) => request(`/api/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   previewPipeline: (route, sampleLimit = 25) =>
@@ -171,7 +193,7 @@ export const api = {
   listAlertRules: () => request('/api/alerts/rules'),
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  alertEvents: (limit = 200) => request(`/api/alerts/events?limit=${limit}`),
+  alertEvents: (limit = 200, ruleId = '') => request(`/api/alerts/events?limit=${limit}${ruleId ? `&ruleId=${encodeURIComponent(ruleId)}` : ''}`),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
@@ -228,10 +250,24 @@ export const api = {
   i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // In-place edits (disconnect → upsert same id → reconnect on the server)
+  getBroker: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}`),
   updateBroker: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
   updateOpcuaConnection: (id, config) =>
     request(`/api/opcua/connections/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
+
+  // Southbound device drivers (Modbus TCP, …)
+  devices: () => request('/api/devices'),
+  createDevice: (device) => request('/api/devices', { method: 'POST', body: JSON.stringify(device) }),
+  updateDevice: (id, device) =>
+    request(`/api/devices/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(device) }),
+  deleteDevice: (id) => request(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testDevice: (device) => request('/api/devices/test', { method: 'POST', body: JSON.stringify({ device }) }),
+  validateDeviceTags: (protocol, options, tags) =>
+    request('/api/devices/validate-tags', { method: 'POST', body: JSON.stringify({ protocol, options, tags }) }),
+  probeDevice: (id, body) =>
+    request(`/api/devices/${encodeURIComponent(id)}/probe`, { method: 'POST', body: JSON.stringify(body) }),
+  deviceValues: (id) => request(`/api/devices/${encodeURIComponent(id)}/values`),
 
   // Sparkplug host application STATE (Manifold as primary host)
   sparkplugState: (body) => request('/api/tags/sparkplug/state', { method: 'POST', body: JSON.stringify(body) }),

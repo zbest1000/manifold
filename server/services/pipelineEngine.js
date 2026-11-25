@@ -49,10 +49,24 @@ function applyTemplate(template, topic) {
 
 /** Best available quality for a tapped MQTT message (OPC 0-255 scale). */
 function messageQuality(msg) {
-  // Sparkplug metrics may carry explicit quality properties; a decoded payload
-  // that failed to parse is the one case we can honestly call bad.
+  // The intake surfaces quality from TVQ envelopes and Sparkplug payloads; a
+  // payload that failed to decode is the one case we can call bad ourselves.
   if (msg.sparkplugError) return 0; // bad
+  if (msg.quality === 0 || msg.quality === 64 || msg.quality === 192) return msg.quality;
   return 192; // good — the value did arrive over a live session
+}
+
+const MIN_SOURCE_TS = Date.UTC(2000, 0, 1);
+
+/**
+ * Timestamp for a tapped message: the source timestamp when the payload
+ * carried a plausible one (TVQ `t`, Sparkplug timestamp), else arrival time.
+ * A device clock that is unset or far in the future must not corrupt history.
+ */
+function messageTime(msg, now = Date.now()) {
+  const src = Number(msg.sourceTimestamp);
+  if (Number.isFinite(src) && src >= MIN_SOURCE_TS && src <= now + 86_400_000) return src;
+  return new Date(msg.timestamp).getTime() || now;
 }
 
 /**
@@ -122,7 +136,7 @@ function applyTransforms(transforms, msg) {
         // quality — so consumers can tell "value is 0" from "value is dead".
         payload = {
           v: payload,
-          t: new Date(msg.timestamp).getTime() || Date.now(),
+          t: messageTime(msg),
           q: messageQuality(msg)
         };
         break;
@@ -235,15 +249,19 @@ class PipelineEngine {
           m.lastError = error.message;
         });
     } else if (target.type === 'historian') {
-      this.outbox.enqueue(target.historianId, [
-        {
-          tag: out.topic,
-          ts: new Date(msg.timestamp).getTime() || Date.now(),
-          value: out.payload,
-          quality: messageQuality(msg)
-        }
-      ]);
-      m.published++; // admitted to the store-and-forward outbox
+      this.outbox.enqueue(
+        target.historianId,
+        [
+          {
+            tag: out.topic,
+            ts: messageTime(msg),
+            value: out.payload,
+            quality: messageQuality(msg)
+          }
+        ],
+        { route: route.id }
+      );
+      m.published++; // admitted to the store-and-forward outbox (delivery is counted by the outbox: see getMetrics)
     }
   }
 
@@ -281,9 +299,36 @@ class PipelineEngine {
     return { matchCount: result.matchCount, sampleTruncated: result.sampleTruncated, rows };
   }
 
+  /**
+   * Per-route counters. `routed` = points the route handed on; for an MQTT target that is also
+   * `delivered` (the broker publish resolved). For a HISTIAN target they diverge on purpose:
+   * `routed` = admitted to the store-and-forward outbox, `delivered` = accepted by the historian,
+   * `rejected` = dead-lettered or unrepresentable, `pending` = routed - delivered - rejected (queued,
+   * spilled to disk, or lost to a spill cap), never negative. `published` is kept as an alias of
+   * `routed` for older clients.
+   */
   getMetrics() {
-    return Object.fromEntries(this.metrics);
+    const routeStats = this.outbox?.getRouteStats?.() || {};
+    const out = {};
+    for (const [routeId, m] of this.metrics) {
+      const route = this.profiles.getIn('pipelines', routeId);
+      const target = route?.target?.type || null;
+      const entry = { ...m, routed: m.published, target };
+      if (target === 'historian') {
+        const r = routeStats[routeId] || { delivered: 0, rejected: 0 };
+        Object.assign(entry, {
+          historianId: route.target.historianId,
+          delivered: r.delivered,
+          rejected: r.rejected,
+          pending: Math.max(0, m.published - r.delivered - r.rejected)
+        });
+      } else {
+        Object.assign(entry, { delivered: m.published, rejected: 0, pending: 0 });
+      }
+      out[routeId] = entry;
+    }
+    return out;
   }
 }
 
-module.exports = { PipelineEngine, applyTransforms, applyTemplate };
+module.exports = { PipelineEngine, applyTransforms, applyTemplate, messageQuality, messageTime };

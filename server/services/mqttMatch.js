@@ -52,4 +52,30 @@ function compiledView(profiles, build) {
   };
 }
 
-module.exports = { matchFilter, matchParts, compiledView };
+/**
+ * Why `filter` is not a valid MQTT topic filter, or null. `#` must be a whole, final level; `+` a whole
+ * level; the filter may not be empty or contain NUL.
+ */
+function filterProblem(filter) {
+  if (typeof filter !== 'string' || filter.length === 0) return 'must not be empty';
+  if (filter.length > 65535 || filter.includes('\u0000')) return 'is not a valid MQTT topic';
+  const parts = filter.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p === '#') {
+      if (i !== parts.length - 1) return 'has a # wildcard that is not the last level (# must end the filter)';
+    } else if (p.includes('#')) return 'uses # inside a level (# must be a whole level)';
+    else if (p !== '+' && p.includes('+')) return 'uses + inside a level (+ must be a whole level, like a/+/b)';
+  }
+  return null;
+}
+
+/** Why `topic` cannot be published to (empty, NUL, or contains wildcards), or null. */
+function topicProblem(topic) {
+  if (typeof topic !== 'string' || topic.length === 0) return 'must not be empty';
+  if (/[+#]/.test(topic)) return 'must not contain the wildcards + or # (it is published to, not subscribed to)';
+  if (topic.includes('\u0000') || topic.length > 65535) return 'is not a valid MQTT topic';
+  return null;
+}
+
+module.exports = { matchFilter, matchParts, compiledView, filterProblem, topicProblem };

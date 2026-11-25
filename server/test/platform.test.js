@@ -101,7 +101,7 @@ test('opcua binding publishes with deadband suppression and TVQ envelope', async
   const m = new MqttManager({ emit() {} });
   const published = [];
   m.publish = async (brokerId, topic, payload, opts) => {
-    published.push({ brokerId, topic, payload, opts });
+    if (!topic.endsWith('/_meta')) published.push({ brokerId, topic, payload, opts }); // retained _meta doc (phase 4) is not a value
   };
   const opcua = new EventEmitter();
   opcua.monitor = async () => ({ status: 'monitoring' });
@@ -164,9 +164,14 @@ test('sparkplug-source binding republishes selected metrics to UNS paths', async
     sparkplug: { metrics: [{ name: 'temp', value: 99 }] } // wrong device
   }));
   await new Promise((r) => setImmediate(r));
-  assert.strictEqual(published.length, 1);
-  assert.strictEqual(published[0].topic, 'uns/plant/temp');
-  assert.strictEqual(published[0].payload, 21);
+  // The first message also brings the source online (retained _status, as for other sources).
+  const status = published.filter((p) => p.topic === 'uns/plant/_status');
+  assert.strictEqual(status.length, 1);
+  assert.strictEqual(status[0].payload.online, true);
+  const values = published.filter((p) => p.topic !== 'uns/plant/_status');
+  assert.strictEqual(values.length, 1);
+  assert.strictEqual(values[0].topic, 'uns/plant/temp');
+  assert.strictEqual(values[0].payload, 21);
   tb.stop();
   m.shutdown();
 });

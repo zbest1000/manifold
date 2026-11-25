@@ -1,21 +1,34 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+const { topicProblem } = require('../services/mqttMatch');
+const { checkpoint, handleRevisionError } = require('../services/revision');
+const { missingRefsMessage, brokenRefs } = require('../services/references');
 
 // Models: multi-source attribute bindings published as one merged object at a
 // UNS path (the contextualization layer).
 
 // GET /api/models
 router.get('/', (req, res) => {
-  const { profiles, models } = req.app.locals.services;
-  res.json({ models: profiles.listIn('models'), status: models.getStatus() });
+  const { profiles, models, mqttManager } = req.app.locals.services;
+  res.json({
+    models: profiles.listIn('models').map((m) => {
+      const broken = brokenRefs('models', m, { profiles, mqttManager });
+      return broken.length ? { ...m, broken } : m;
+    }),
+    status: models.getStatus()
+  });
 });
 
 // POST /api/models { id?, name, enabled, target, publishMode, intervalMs?, attributes }
 router.post('/', (req, res) => {
-  const { profiles, models } = req.app.locals.services;
+  const { profiles, models, mqttManager } = req.app.locals.services;
   const { id, name, enabled, target, publishMode, intervalMs, attributes } = req.body || {};
+  const expectRev = checkpoint(req, res, profiles, 'models', id, () => profiles.getIn('models', id));
+  if (expectRev === false) return;
   if (!target?.brokerId || !target?.topic) return res.status(400).json({ error: 'target.brokerId and target.topic are required' });
+  const tp = topicProblem(target.topic);
+  if (tp) return res.status(400).json({ error: `target.topic "${target.topic}" ${tp}` });
   if (!Array.isArray(attributes) || attributes.length === 0) {
     return res.status(400).json({ error: 'attributes[] is required' });
   }
@@ -27,14 +40,23 @@ router.post('/', (req, res) => {
       return res.status(400).json({ error: `attribute "${a.name}" sources the model's own output topic (loop)` });
     }
   }
-  const saved = profiles.upsertIn('models', id || uuidv4(), {
+  const next = {
     name: name || null,
     enabled: enabled !== false,
     target: { brokerId: target.brokerId, topic: target.topic, retain: Boolean(target.retain) },
     publishMode: publishMode === 'interval' ? 'interval' : 'on-change',
     intervalMs: Number(intervalMs) > 0 ? Number(intervalMs) : 5000,
     attributes
-  });
+  };
+  const missing = missingRefsMessage('models', next, { profiles, mqttManager });
+  if (missing) return res.status(400).json({ error: missing });
+  let saved;
+  try {
+    saved = profiles.upsertIn('models', id || uuidv4(), next, { expectRev });
+  } catch (error) {
+    if (handleRevisionError(res, error, (x) => x)) return;
+    throw error;
+  }
   models.syncTimers();
   res.status(201).json(saved);
 });

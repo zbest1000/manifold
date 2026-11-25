@@ -2,6 +2,7 @@ const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const historians = require('../services/historians');
 const router = express.Router();
+const { checkpoint, handleRevisionError } = require('../services/revision');
 
 // Historian connections (InfluxDB v2, Timebase). Secrets are stored
 // server-side and never echoed back (publicConfig redacts).
@@ -22,6 +23,11 @@ router.post('/', (req, res) => {
     id, name, type, url, org, bucket, token, measurement, dataset, writePath,
     apiKey, host, port, database, user, password, ssl, sslInsecure, sslRootCert, table, dropPolicy
   } = req.body || {};
+  const expectRev = checkpoint(req, res, profiles, 'historians', id, () => {
+    const h = profiles.getIn('historians', id);
+    return h ? historians.publicConfig(h) : null;
+  });
+  if (expectRev === false) return;
   if (!historians.supportedTypes().includes(type)) {
     return res.status(400).json({ error: `type must be one of: ${historians.supportedTypes().join(', ')}` });
   }
@@ -34,7 +40,9 @@ router.post('/', (req, res) => {
   if (type === 'timebase' && !dataset) return res.status(400).json({ error: 'dataset is required for timebase' });
 
   const existing = id ? profiles.getIn('historians', id) : null;
-  const saved = profiles.upsertIn('historians', id || uuidv4(), {
+  let saved;
+  try {
+    saved = profiles.upsertIn('historians', id || uuidv4(), {
     name: name || null,
     type,
     url: url || null,
@@ -56,13 +64,31 @@ router.post('/', (req, res) => {
     token: token !== undefined ? token : existing?.token || null,
     apiKey: apiKey !== undefined ? apiKey : existing?.apiKey || null,
     password: password !== undefined ? password : existing?.password || null
-  });
+    }, { expectRev });
+  } catch (error) {
+    if (handleRevisionError(res, error, historians.publicConfig)) return;
+    throw error;
+  }
   res.status(201).json(historians.publicConfig(saved));
 });
 
 // DELETE /api/historians/:id
 router.delete('/:id', (req, res) => {
   const { profiles } = req.app.locals.services;
+  // Refuse while something still writes to it: the route / recording / binding would otherwise keep
+  // running and silently lose every point ("historian missing").
+  const id = req.params.id;
+  const users = [
+    ...profiles.listIn('pipelines').filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `route "${r.name || r.source?.filter}"`),
+    ...profiles.listIn('recordings').filter((r) => r.target?.type === 'historian' && r.target.historianId === id).map((r) => `recording "${r.name || r.filter}"`),
+    ...profiles.listIn('bindings').filter((b) => b.target?.historian?.historianId === id).map((b) => `binding "${b.name || b.id}"`)
+  ];
+  if (users.length && profiles.getIn('historians', id)) {
+    return res.status(409).json({
+      error: `Historian is still used by ${users.length} item(s): ${users.slice(0, 5).join(', ')}${users.length > 5 ? ', …' : ''}. Point them elsewhere or delete them first.`,
+      usedBy: users
+    });
+  }
   if (!profiles.removeIn('historians', req.params.id)) {
     return res.status(404).json({ error: 'Historian not found' });
   }

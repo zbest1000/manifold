@@ -2,12 +2,139 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-  --toast-bg: #1e293b;
-  --toast-color: #f1f5f9;
+/* ===================================================================== */
+/* Fonts: IBM Plex Sans (variable) for UI, IBM Plex Mono for data.         */
+/* Self-hosted from npm (@fontsource*), latin + latin-ext only, so the UI   */
+/* renders identically on air-gapped plant networks. No CDN.               */
+/* ===================================================================== */
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500 700;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* ===================================================================== */
+/* Tokens. Values are "R G B" triplets so Tailwind can add alpha:          */
+/* bg-panel, bg-bad/10, ... Contrast ratios: docs/design/ui-design-system.md */
+/* Theme is set on <html data-theme> by /theme-init.js before first paint.  */
+/* ===================================================================== */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: 15 15 16;
+  --panel: 22 22 23;
+  --raised: 30 30 32;
+  --overlay: 35 35 37;
+  --border: 42 42 45;
+  --border-strong: 58 58 62;
+  --border-stronger: 74 74 79;
+  --text: 236 236 238;
+  --text-muted: 163 163 169;
+  --text-subtle: 143 143 149;
+  --text-faint: 133 133 139;
+  --accent: 44 197 207;
+  --accent-hover: 90 212 220;
+  --accent-fg: 4 25 27;
+  --accent-text: 79 210 219;
+  --good: 63 193 132;
+  --warn: 227 163 58;
+  --bad: 240 106 99;
+  --info: 106 166 248;
+  --aux: 179 154 245;
+  /* foreground tint for hover fills: hover:bg-[rgb(var(--tint)/0.035)] */
+  --tint: 255 255 255;
+  --scrim: 0 0 0 / 0.6;
+  --shadow-overlay: 0 0 0 1px rgb(var(--border-strong)), 0 12px 32px -8px rgb(0 0 0 / 0.6);
+  --focus: var(--accent-text);
+  --field: 18 18 19;
+  --control-off: 107 107 114;
+  --danger: 201 48 44;
+  --danger-hover: 216 58 53;
+  --danger-fg: 255 255 255;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: 246 246 247;
+  --panel: 255 255 255;
+  --raised: 240 240 242;
+  --overlay: 255 255 255;
+  --border: 226 226 229;
+  --border-strong: 205 205 210;
+  --border-stronger: 169 169 176;
+  --text: 23 23 26;
+  --text-muted: 85 85 92;
+  --text-subtle: 100 100 107;
+  --text-faint: 107 107 114;
+  --accent: 0 116 125;
+  --accent-hover: 0 99 107;
+  --accent-fg: 255 255 255;
+  --accent-text: 0 109 117;
+  --good: 19 122 72;
+  --warn: 151 90 0;
+  --bad: 196 40 46;
+  --info: 31 95 194;
+  --aux: 107 71 201;
+  --tint: 23 23 26;
+  --scrim: 23 23 26 / 0.32;
+  --shadow-overlay: 0 0 0 1px rgb(var(--border-strong)), 0 12px 32px -10px rgb(23 23 26 / 0.22);
+  --focus: var(--accent-text);
+  --field: 255 255 255;
+  --control-off: 142 142 150;
+  --danger: 196 40 46;
+  --danger-hover: 168 30 36;
+  --danger-fg: 255 255 255;
+}
+
+/* Higher contrast on request: stronger hairlines, muted text closer to body text. */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-theme='dark'] {
+    --border: 74 74 79;
+    --border-strong: 110 110 117;
+    --text-muted: 205 205 210;
+    --text-subtle: 190 190 196;
+    --text-faint: 180 180 186;
+  }
+  :root[data-theme='light'] {
+    --border: 169 169 176;
+    --border-strong: 120 120 128;
+    --text-muted: 50 50 56;
+    --text-subtle: 60 60 66;
+    --text-faint: 66 66 72;
+  }
+}
+
+/* ===================================================================== */
+/* Base                                                                    */
+/* ===================================================================== */
 html,
 body,
 #root {
@@ -16,28 +143,55 @@ body,
 }
 
 body {
-  /* System font stack — no external CDN so the UI renders identically on
-     air-gapped / on-prem plant networks that have no outbound internet. */
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  font-family: theme('fontFamily.sans');
+  font-size: 0.875rem;
+  line-height: 1.375rem;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  font-feature-settings: 'ss02' 0;
 }
 
-/* Thin scrollbars for panels */
+/* Every number in a table, a stat or mono text lines up. */
+table,
+.mono,
+.font-mono,
+.tabular-nums,
+[data-numeric] {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-color: rgb(var(--border-strong)) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgb(var(--border-strong));
   border-radius: 4px;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.3);
+}
+
+/* Visible keyboard focus everywhere (mouse clicks do not trigger it). */
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
+}
+
+::placeholder {
+  color: rgb(var(--text-faint));
+  opacity: 1;
 }
 
 .graph-canvas {
@@ -52,21 +206,146 @@ body {
 }
 
 .mono {
-  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-family: theme('fontFamily.mono');
+  font-feature-settings: 'zero' 0;
 }
 
-/* Value-change flash for the topic tree (remounted via key to replay). */
+@layer components {
+  /* Helper text under a control. */
+  .helper {
+    color: rgb(var(--text-subtle));
+    font-size: 0.75rem; /* 12px */
+    line-height: 1rem;
+  }
+  /* Overline: the ONE place uppercase is allowed (group captions in dense
+     sidebars). Use sparingly. */
+  .overline {
+    color: rgb(var(--text-subtle));
+    font-size: 0.6875rem;
+    line-height: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
+
+/* Value-change flash for live values (remounted via key to replay). */
 @keyframes valueflash {
   0% {
-    background-color: rgba(56, 189, 248, 0.5);
-    color: #e0f2fe;
+    background-color: rgb(var(--accent) / 0.28);
   }
   100% {
     background-color: transparent;
   }
 }
 .valueflash {
-  animation: valueflash 0.9s ease-out;
-  border-radius: 4px;
+  animation: valueflash 0.8s ease-out;
+  border-radius: 3px;
   padding: 0 4px;
+}
+
+/* Off-canvas drawers (mobile nav, log panel) slide in from their edge. */
+@keyframes drawer-in-left {
+  from {
+    transform: translateX(-24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes drawer-in-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+@keyframes dialog-in {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.drawer-in-left {
+  animation: drawer-in-left 0.16s cubic-bezier(0.2, 0, 0, 1);
+}
+.drawer-in-right {
+  animation: drawer-in-right 0.16s cubic-bezier(0.2, 0, 0, 1);
+}
+.dialog-in {
+  animation: dialog-in 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Keyboard users: skip link. */
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -4rem;
+  z-index: 200;
+  border-radius: 4px;
+  background: rgb(var(--accent));
+  padding: 0.375rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: rgb(var(--accent-fg));
+  transition: top 0.12s;
+}
+.skip-link:focus {
+  top: 0.75rem;
+}
+
+/* ===================================================================== */
+/* Charts                                                                  */
+/* ===================================================================== */
+
+/* uPlot (charts-uplot.css hard-codes a navy palette): re-tone with tokens. */
+:root .uplot,
+:root .u-wrap,
+:root .u-legend {
+  color: rgb(var(--text-subtle));
+  font-family: theme('fontFamily.sans');
+}
+:root .u-ts .u-legend {
+  background: rgb(var(--overlay));
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: 6px;
+  box-shadow: var(--shadow-overlay);
+}
+:root .u-legend .u-series th {
+  color: rgb(var(--text-muted));
+}
+:root .u-legend .u-series:first-child th {
+  color: rgb(var(--text-subtle));
+}
+:root .u-legend .u-value {
+  font-family: theme('fontFamily.mono');
+  font-weight: 500;
+  color: rgb(var(--text));
+}
+:root .u-cursor-x,
+:root .u-cursor-y {
+  border-color: rgb(var(--border-stronger)) !important;
+}
+
+/* ===================================================================== */
+/* Motion: respect the user's setting.                                     */
+/* ===================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

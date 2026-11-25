@@ -10,9 +10,11 @@ const TopicStore = require('../services/topicStore');
 const { AlertEngine, RULE_TYPES } = require('../services/alertEngine');
 const HistoryStore = require('../services/historyStore');
 
+// `emitted` holds the 'alert' events (firings/resolutions); the engine's state pushes ('alert-state') are kept apart.
 const fakeIo = () => {
   const emitted = [];
-  return { emit: (ev, data) => emitted.push({ ev, data }), emitted };
+  const states = [];
+  return { emit: (ev, data) => (ev === 'alert-state' ? states : emitted).push({ ev, data }), emitted, states };
 };
 
 function managerWith(brokerId, topics) {
@@ -94,6 +96,20 @@ test('webhook is POSTed with the alert payload; failures are swallowed', async (
   assert.strictEqual(calls[0].url, 'http://hook.local/x');
   assert.strictEqual(calls[0].body.status, 'firing');
   assert.strictEqual(eng.getEvents()[0].status, 'firing');
+  m.shutdown();
+});
+
+test('default webhook delivery goes through the egress guard (metadata/loopback blocked)', async () => {
+  const m = managerWith('b5', ['a/b']);
+  const rules = [
+    { id: 'r5', type: 'branch-silent', brokerId: 'b5', path: 'a', thresholdMs: 1000, webhookUrl: 'http://169.254.169.254/latest/meta-data/' }
+  ];
+  // no fetchImpl: the production default (guarded) is used
+  const eng = new AlertEngine({ io: { emit() {} }, profiles: { alertRules: () => rules }, mqttManager: m });
+  eng.evaluate(Date.now() + 10_000);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(eng.webhookFailures, 1);
+  assert.match(eng.lastWebhookError, /blocked/);
   m.shutdown();
 });
 

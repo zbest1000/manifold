@@ -35,6 +35,28 @@ function emitActivity(msg) {
   }
 }
 
+// Device live values (southbound drivers) also bypass React until flushed: batches
+// arrive throttled from the server, we coalesce them and replace only the
+// touched device's map, so only components selecting that device re-render.
+const pendingDeviceValues = new Map(); // deviceId -> { tagKey: sample }
+let deviceFlushScheduled = false;
+const DEVICE_FLUSH_MS = 500;
+function scheduleDeviceFlush(store) {
+  if (deviceFlushScheduled) return;
+  deviceFlushScheduled = true;
+  setTimeout(() => {
+    deviceFlushScheduled = false;
+    if (!pendingDeviceValues.size) return;
+    const batch = [...pendingDeviceValues];
+    pendingDeviceValues.clear();
+    store.setState((s) => {
+      const deviceValues = { ...s.deviceValues };
+      for (const [id, vals] of batch) deviceValues[id] = { ...(deviceValues[id] || {}), ...vals };
+      return { deviceValues };
+    });
+  }, DEVICE_FLUSH_MS);
+}
+
 let tickScheduled = false;
 let errorSeq = 0;
 
@@ -92,16 +114,24 @@ function scheduleTick(store) {
   }, TICK_MS);
 }
 
-export const useStore = create((set, get) => ({
+export const useStore = create((set) => ({
   connected: false,
   authRole: null, // 'admin' | 'viewer' | null (unknown/open) — from /api/whoami
   brokers: [],
   opcua: [],
-  discovery: { scanning: false, results: [], progress: null },
+  discovery: { scanning: false, results: [], progress: null, scan: null },
 
   // Reactive change signals for the high-frequency data (see note above).
   dataTick: 0,
   topicVersion: {}, // brokerId -> integer, bumped only when the topic SET changes
+
+  // Southbound devices: live phase per device id, last value/quality per tag, and a
+  // counter pages watch to refetch the list after `devices-changed`.
+  deviceStates: {}, // deviceId -> { state, phase, reason, since }
+  deviceValues: {}, // deviceId -> { tagKey: { v, q, qReason, tRead, type } }
+  devicesVersion: 0,
+  setDeviceState: (deviceId, st) => set((s) => ({ deviceStates: { ...s.deviceStates, [deviceId]: st } })),
+  seedDeviceValues: (deviceId, values) => set((s) => ({ deviceValues: { ...s.deviceValues, [deviceId]: values || {} } })),
 
   opcuaValues: {}, // connectionId -> { nodeId: { value, ... } } (low frequency)
 
@@ -333,17 +363,53 @@ export function initRealtime() {
     for (const st of stats) s.upsertBroker({ id: st.brokerId, status: st.status, metrics: st.metrics });
   });
 
-  socket.on('opcua-connection-attempt', () => refreshOpcua());
-  socket.on('opcua-connected', () => refreshOpcua());
-  socket.on('opcua-disconnected', () => refreshOpcua());
+  // The connection list carries status, monitored nodes and errors: re-read it on every change of
+  // those (coalesced, so a burst of monitor events costs one request).
+  for (const e of ['opcua-connection-attempt', 'opcua-connected', 'opcua-disconnected', 'opcua-reconnecting', 'opcua-monitor-started', 'opcua-monitor-stopped', 'opcua-error']) socket.on(e, () => refreshOpcuaSoon());
   socket.on('opcua-value', ({ connectionId, nodeId, ...rest }) => s.setOpcuaValue(connectionId, nodeId, rest));
 
-  socket.on('discovery-started', (d) => s.setDiscovery({ scanning: true, results: [], progress: { ...d, completed: 0 } }));
-  socket.on('discovery-progress', (p) => s.setDiscovery({ progress: p }));
+  socket.on('device-state', ({ deviceId, ...st } = {}) => deviceId && useStore.getState().setDeviceState(deviceId, st));
+  // The server sends one event per flush: { batch: [{ deviceId, values }] }.
+  // A bare { deviceId, values } (older servers) is accepted too.
+  socket.on('device-values', (msg = {}) => {
+    const entries = Array.isArray(msg.batch) ? msg.batch : [msg];
+    let any = false;
+    for (const { deviceId, values } of entries) {
+      if (!deviceId || !values) continue;
+      pendingDeviceValues.set(deviceId, { ...(pendingDeviceValues.get(deviceId) || {}), ...values });
+      any = true;
+    }
+    if (any) scheduleDeviceFlush(useStore);
+  });
+  socket.on('devices-changed', () => useStore.setState((st) => ({ devicesVersion: st.devicesVersion + 1 })));
+
+  // Network discovery. `progress` is monotonic (a late event for an older scan is ignored); `scan` is the
+  // summary the server keeps for the current or last scan, so the page reads the same after a reload.
+  socket.on('discovery-started', (d) =>
+    s.setDiscovery({
+      scanning: true,
+      results: [],
+      scan: { id: d.scanId, range: d.range, status: 'running', totalProbes: d.totalProbes, completed: 0, found: 0, startedAt: d.startedAt, notes: d.notes, settings: d.settings, estimate: d.estimate },
+      progress: { scanId: d.scanId, range: d.range, total: d.totalProbes, completed: 0, found: 0, etaMs: d.estimate?.worstCaseMs }
+    })
+  );
+  socket.on('discovery-progress', (p) => {
+    const cur = useStore.getState().discovery.progress;
+    if (cur && p.scanId && cur.scanId && p.scanId !== cur.scanId) return;
+    if (cur && typeof cur.completed === 'number' && p.completed < cur.completed) return;
+    s.setDiscovery({ progress: { ...cur, ...p } });
+  });
   socket.on('discovery-result', (r) => s.addDiscoveryResult(r));
-  socket.on('discovery-complete', (d) => s.setDiscovery({ scanning: false, results: d.results || [] }));
+  socket.on('discovery-complete', (d) =>
+    s.setDiscovery({
+      scanning: false,
+      results: d.results || [],
+      scan: { ...(useStore.getState().discovery.scan || {}), id: d.scanId, range: d.range, status: d.status || (d.aborted ? 'cancelled' : 'complete'), completed: d.completed, totalProbes: d.total, found: d.found, elapsedMs: d.elapsedMs, notes: d.notes },
+      progress: { scanId: d.scanId, range: d.range, total: d.total, completed: d.completed, found: d.found, etaMs: 0 }
+    })
+  );
   socket.on('discovery-error', ({ error } = {}) => {
-    s.setDiscovery({ scanning: false });
+    s.setDiscovery({ scanning: false, scan: { ...(useStore.getState().discovery.scan || {}), status: 'error', error } });
     if (error) reportError(s, 'discovery', error);
   });
 
@@ -362,12 +428,16 @@ export function initRealtime() {
     s.pushLog('verbose', 'mqtt', `Published "${topic}"`, { brokerId, topic }));
   socket.on('discovery-started', () => s.pushLog('info', 'discovery', 'Discovery started'));
   socket.on('discovery-complete', (d) =>
-    s.pushLog('info', 'discovery', `Discovery complete — ${d?.results?.length ?? 0} host(s)`));
+    s.pushLog('info', 'discovery', `Discovery ${d?.status === 'cancelled' ? 'cancelled' : 'complete'}: ${d?.results?.length ?? 0} endpoint(s) found`));
   socket.on('opcua-connected', () => s.pushLog('info', 'opcua', 'OPC UA connected'));
   socket.on('opcua-disconnected', () => s.pushLog('info', 'opcua', 'OPC UA disconnected'));
   socket.on('opcua-reconnecting', () => s.pushLog('warning', 'opcua', 'OPC UA reconnecting'));
-  socket.on('opcua-error', ({ error } = {}) => {
-    if (error) reportError(s, 'opcua', error);
+  socket.on('opcua-error', ({ error, initial } = {}) => {
+    // A refused first connect is answered by the HTTP request that started it (the connection form's
+    // banner, Discovery's toast): log it, but do not toast it a second time.
+    if (!error) return;
+    if (initial) s.pushLog('error', 'opcua', humanizeError(error).summary, { raw: error });
+    else reportError(s, 'opcua', error);
   });
 }
 
@@ -375,6 +445,16 @@ export function initRealtime() {
 // index directly (the render path is identical to live ingestion).
 if (import.meta.env?.DEV && typeof window !== 'undefined') {
   window.__tcStore = useStore;
+}
+
+let opcuaRefreshTimer = null;
+/** Re-read the OPC UA connection list once, shortly (bursts of events coalesce into one request). */
+export function refreshOpcuaSoon(delayMs = 150) {
+  if (opcuaRefreshTimer) return;
+  opcuaRefreshTimer = setTimeout(() => {
+    opcuaRefreshTimer = null;
+    refreshOpcua();
+  }, delayMs);
 }
 
 async function refreshOpcua() {

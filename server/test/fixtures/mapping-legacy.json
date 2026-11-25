@@ -1,0 +1,1293 @@
+{
+ "envelopeAssetPath": {
+  "publishes": [
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/_meta",
+    "payload": "{\"properties\":{\"temperature\":{\"type\":\"float32\",\"unit\":\"degC\",\"description\":\"Supply temp\",\"range\":{\"min\":0,\"max\":200},\"source\":{\"deviceId\":\"dev1\",\"address\":\"temp\"}},\"count\":{\"type\":\"uint16\",\"source\":{\"deviceId\":\"dev1\",\"address\":\"count\"}},\"rawCount\":{\"type\":\"uint16\",\"source\":{\"deviceId\":\"dev1\",\"address\":\"raw\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/temperature",
+    "payload": "{\"v\":21.5,\"t\":1699999999900,\"q\":192,\"u\":\"degC\"}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/temperature",
+    "payload": "{\"v\":23,\"t\":1699999999900,\"q\":192,\"u\":\"degC\"}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/count",
+    "payload": "{\"v\":7,\"t\":1699999999900,\"q\":192}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/rawCount",
+    "payload": "{\"v\":3,\"t\":1699999999900,\"q\":192}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/temperature",
+    "payload": "{\"v\":23,\"t\":1700000000000,\"q\":0,\"u\":\"degC\"}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/count",
+    "payload": "{\"v\":7,\"t\":1700000000000,\"q\":0}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/rawCount",
+    "payload": "{\"v\":3,\"t\":1700000000000,\"q\":0}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/_status",
+    "payload": "{\"online\":false,\"since\":1700000000000,\"reason\":\"timeout\"}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   }
+  ],
+  "sparkplug": [],
+  "retained": [
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/_meta"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/temperature"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/count"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/dallas/meter1/rawCount"
+   }
+  ],
+  "dataTopics": [
+   {
+    "topic": "acme/dallas/meter1/temperature",
+    "name": "temperature",
+    "address": "temp",
+    "unitId": "b1"
+   },
+   {
+    "topic": "acme/dallas/meter1/count",
+    "name": "count",
+    "address": "count",
+    "unitId": "b1"
+   },
+   {
+    "topic": "acme/dallas/meter1/rawCount",
+    "name": "rawCount",
+    "address": "raw",
+    "unitId": "b1"
+   }
+  ],
+  "metaDocs": [
+   {
+    "properties": {
+     "temperature": {
+      "type": "float32",
+      "unit": "degC",
+      "description": "Supply temp",
+      "range": {
+       "min": 0,
+       "max": 200
+      },
+      "source": {
+       "deviceId": "dev1",
+       "address": "temp"
+      }
+     },
+     "count": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "count"
+      }
+     },
+     "rawCount": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "raw"
+      }
+     }
+    }
+   }
+  ],
+  "preview": {
+   "layout": "topic-per-tag",
+   "format": "envelope",
+   "units": 1,
+   "unitErrors": [],
+   "totalTags": 3,
+   "truncated": false,
+   "tags": [
+    {
+     "name": "temperature",
+     "address": "temp",
+     "unitId": "b1",
+     "hasValue": true,
+     "topic": "acme/dallas/meter1/temperature",
+     "payload": {
+      "v": 1.5,
+      "t": 1699999999995,
+      "q": 192,
+      "u": "degC"
+     }
+    },
+    {
+     "name": "count",
+     "address": "count",
+     "unitId": "b1",
+     "hasValue": false,
+     "topic": "acme/dallas/meter1/count",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0
+     }
+    },
+    {
+     "name": "rawCount",
+     "address": "raw",
+     "unitId": "b1",
+     "hasValue": false,
+     "topic": "acme/dallas/meter1/rawCount",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0
+     }
+    }
+   ],
+   "objects": [],
+   "meta": [
+    {
+     "topic": "acme/dallas/meter1/_meta",
+     "payload": {
+      "properties": {
+       "temperature": {
+        "type": "float32",
+        "unit": "degC",
+        "description": "Supply temp",
+        "range": {
+         "min": 0,
+         "max": 200
+        },
+        "source": {
+         "deviceId": "dev1",
+         "address": "temp"
+        }
+       },
+       "count": {
+        "type": "uint16",
+        "source": {
+         "deviceId": "dev1",
+         "address": "count"
+        }
+       },
+       "rawCount": {
+        "type": "uint16",
+        "source": {
+         "deviceId": "dev1",
+         "address": "raw"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    }
+   ],
+   "status": [
+    "acme/dallas/meter1/_status"
+   ],
+   "warnings": []
+  },
+  "warnings": []
+ },
+ "plainTemplate": {
+  "publishes": [
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/_meta",
+    "payload": "{\"properties\":{\"40005\":{\"type\":\"uint16\",\"source\":{\"deviceId\":\"dev1\",\"address\":\"raw\"}},\"temperature\":{\"type\":\"float32\",\"unit\":\"degC\",\"description\":\"Supply temp\",\"range\":{\"min\":0,\"max\":200},\"source\":{\"deviceId\":\"dev1\",\"address\":\"temp\"}},\"count\":{\"type\":\"uint16\",\"source\":{\"deviceId\":\"dev1\",\"address\":\"count\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/temperature",
+    "payload": "21.5",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/temperature",
+    "payload": "21.7",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/temperature",
+    "payload": "23",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/count",
+    "payload": "7",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/40005",
+    "payload": "3",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/_status",
+    "payload": "{\"online\":false,\"since\":1700000000000,\"reason\":\"timeout\"}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   }
+  ],
+  "sparkplug": [],
+  "retained": [
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "legacy/meter/_meta"
+   }
+  ],
+  "dataTopics": [
+   {
+    "topic": "legacy/meter/temperature",
+    "name": "temperature",
+    "address": "temp",
+    "unitId": "b2"
+   },
+   {
+    "topic": "legacy/meter/count",
+    "name": "count",
+    "address": "count",
+    "unitId": "b2"
+   },
+   {
+    "topic": "legacy/meter/40005",
+    "name": "40005",
+    "address": "raw",
+    "unitId": "b2"
+   }
+  ],
+  "metaDocs": [
+   {
+    "properties": {
+     "40005": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "raw"
+      }
+     },
+     "temperature": {
+      "type": "float32",
+      "unit": "degC",
+      "description": "Supply temp",
+      "range": {
+       "min": 0,
+       "max": 200
+      },
+      "source": {
+       "deviceId": "dev1",
+       "address": "temp"
+      }
+     },
+     "count": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "count"
+      }
+     }
+    }
+   }
+  ],
+  "preview": {
+   "layout": "topic-per-tag",
+   "format": "plain",
+   "units": 1,
+   "unitErrors": [],
+   "totalTags": 3,
+   "truncated": false,
+   "tags": [
+    {
+     "name": "temperature",
+     "address": "temp",
+     "unitId": "b2",
+     "hasValue": true,
+     "topic": "legacy/meter/temperature",
+     "payload": 1.5
+    },
+    {
+     "name": "count",
+     "address": "count",
+     "unitId": "b2",
+     "hasValue": false,
+     "topic": "legacy/meter/count",
+     "payload": null
+    },
+    {
+     "name": "40005",
+     "address": "raw",
+     "unitId": "b2",
+     "hasValue": false,
+     "topic": "legacy/meter/40005",
+     "payload": null
+    }
+   ],
+   "objects": [],
+   "meta": [
+    {
+     "topic": "legacy/meter/_meta",
+     "payload": {
+      "properties": {
+       "40005": {
+        "type": "uint16",
+        "source": {
+         "deviceId": "dev1",
+         "address": "raw"
+        }
+       },
+       "temperature": {
+        "type": "float32",
+        "unit": "degC",
+        "description": "Supply temp",
+        "range": {
+         "min": 0,
+         "max": 200
+        },
+        "source": {
+         "deviceId": "dev1",
+         "address": "temp"
+        }
+       },
+       "count": {
+        "type": "uint16",
+        "source": {
+         "deviceId": "dev1",
+         "address": "count"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    }
+   ],
+   "status": [
+    "legacy/meter/_status"
+   ],
+   "warnings": [
+    {
+     "type": "raw-address",
+     "topic": "legacy/meter/40005",
+     "name": "40005",
+     "message": "\"40005\" looks like a raw device address; give the tag a property name (e.g. \"speed\") so the UNS does not depend on PLC addressing"
+    }
+   ]
+  },
+  "warnings": [
+   {
+    "type": "raw-address",
+    "topic": "legacy/meter/40005",
+    "name": "40005",
+    "message": "\"40005\" looks like a raw device address; give the tag a property name (e.g. \"speed\") so the UNS does not depend on PLC addressing"
+   }
+  ]
+ },
+ "objectPerAsset": {
+  "publishes": [
+   {
+    "brokerId": "br",
+    "topic": "acme/obj/_meta",
+    "payload": "{\"properties\":{\"temperature\":{\"type\":\"float32\",\"unit\":\"degC\",\"description\":\"Supply temp\",\"range\":{\"min\":0,\"max\":200},\"source\":{\"deviceId\":\"dev1\",\"address\":\"temp\"}},\"count\":{\"type\":\"uint16\",\"source\":{\"deviceId\":\"dev1\",\"address\":\"count\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj",
+    "payload": "{\"t\":1699999999900,\"values\":{\"temperature\":{\"v\":23,\"q\":192,\"u\":\"degC\"},\"count\":{\"v\":7,\"q\":192}}}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj",
+    "payload": "{\"t\":1700000000000,\"values\":{\"temperature\":{\"v\":23,\"q\":0,\"u\":\"degC\"},\"count\":{\"v\":7,\"q\":0}}}",
+    "opts": {
+     "qos": 0,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj/_status",
+    "payload": "{\"online\":false,\"since\":1700000000000,\"reason\":\"timeout\"}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   }
+  ],
+  "sparkplug": [],
+  "retained": [
+   {
+    "brokerId": "br",
+    "topic": "acme/obj/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj/_meta"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/obj"
+   }
+  ],
+  "dataTopics": [
+   {
+    "topic": "acme/obj",
+    "name": null,
+    "address": null,
+    "unitId": "b3"
+   }
+  ],
+  "metaDocs": [
+   {
+    "properties": {
+     "temperature": {
+      "type": "float32",
+      "unit": "degC",
+      "description": "Supply temp",
+      "range": {
+       "min": 0,
+       "max": 200
+      },
+      "source": {
+       "deviceId": "dev1",
+       "address": "temp"
+      }
+     },
+     "count": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "count"
+      }
+     }
+    }
+   }
+  ],
+  "preview": {
+   "layout": "object-per-asset",
+   "format": "plain",
+   "units": 1,
+   "unitErrors": [],
+   "totalTags": 2,
+   "truncated": false,
+   "tags": [],
+   "objects": [
+    {
+     "topic": "acme/obj",
+     "unitId": "b3",
+     "payload": {
+      "t": 1699999999995,
+      "values": {
+       "temperature": {
+        "v": 1.5,
+        "q": 192,
+        "u": "degC"
+       },
+       "count": {
+        "v": null,
+        "q": 0
+       }
+      }
+     },
+     "bytes": 98,
+     "worstCaseBytes": 146,
+     "capBytes": 65536
+    }
+   ],
+   "meta": [
+    {
+     "topic": "acme/obj/_meta",
+     "payload": {
+      "properties": {
+       "temperature": {
+        "type": "float32",
+        "unit": "degC",
+        "description": "Supply temp",
+        "range": {
+         "min": 0,
+         "max": 200
+        },
+        "source": {
+         "deviceId": "dev1",
+         "address": "temp"
+        }
+       },
+       "count": {
+        "type": "uint16",
+        "source": {
+         "deviceId": "dev1",
+         "address": "count"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    }
+   ],
+   "status": [
+    "acme/obj/_status"
+   ],
+   "warnings": []
+  },
+  "warnings": []
+ },
+ "profileAll": {
+  "publishes": [
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/_meta",
+    "payload": "{\"properties\":{\"activePower\":{\"type\":\"float32\",\"unit\":\"kW\",\"range\":{\"min\":0,\"max\":500},\"source\":{\"deviceId\":\"m1\",\"address\":\"kw\",\"profileId\":\"pm\"}},\"powerFactor\":{\"type\":\"float32\",\"source\":{\"deviceId\":\"m1\",\"address\":\"pf\",\"profileId\":\"pm\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/_meta",
+    "payload": "{\"properties\":{\"activePower\":{\"type\":\"float32\",\"unit\":\"kW\",\"range\":{\"min\":0,\"max\":500},\"source\":{\"deviceId\":\"m2\",\"address\":\"kw\",\"profileId\":\"pm\"}},\"powerFactor\":{\"type\":\"float32\",\"source\":{\"deviceId\":\"m2\",\"address\":\"pf\",\"profileId\":\"pm\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/_meta",
+    "payload": "{\"properties\":{\"activePower\":{\"type\":\"float32\",\"unit\":\"kW\",\"range\":{\"min\":0,\"max\":500},\"source\":{\"deviceId\":\"m3\",\"address\":\"kw\",\"profileId\":\"pm\"}},\"powerFactor\":{\"type\":\"float32\",\"source\":{\"deviceId\":\"m3\",\"address\":\"pf\",\"profileId\":\"pm\"}}},\"updatedAt\":1700000000000}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/_status",
+    "payload": "{\"online\":true,\"since\":1700000000000,\"reason\":null}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/activePower",
+    "payload": "{\"v\":10.25,\"t\":1699999999900,\"q\":192,\"u\":\"kW\"}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/powerFactor",
+    "payload": "{\"v\":0.97,\"t\":1699999999900,\"q\":192}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/activePower",
+    "payload": "{\"v\":10.25,\"t\":1699999999900,\"q\":192,\"u\":\"kW\"}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/powerFactor",
+    "payload": "{\"v\":0.97,\"t\":1699999999900,\"q\":192}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/activePower",
+    "payload": "{\"v\":10.25,\"t\":1699999999900,\"q\":192,\"u\":\"kW\"}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/powerFactor",
+    "payload": "{\"v\":0.97,\"t\":1699999999900,\"q\":192}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/activePower",
+    "payload": "{\"v\":10.25,\"t\":1700000000000,\"q\":0,\"u\":\"kW\"}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/powerFactor",
+    "payload": "{\"v\":0.97,\"t\":1700000000000,\"q\":0}",
+    "opts": {
+     "qos": 0,
+     "retain": false
+    }
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/_status",
+    "payload": "{\"online\":false,\"since\":1700000000000,\"reason\":\"timeout\"}",
+    "opts": {
+     "qos": 1,
+     "retain": true
+    }
+   }
+  ],
+  "sparkplug": [],
+  "retained": [
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l1/Meter_1/_meta"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/l2/Meter_2/_meta"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/_status"
+   },
+   {
+    "brokerId": "br",
+    "topic": "acme/special/meter3/_meta"
+   }
+  ],
+  "dataTopics": [
+   {
+    "topic": "acme/l1/Meter_1/activePower",
+    "name": "activePower",
+    "address": "kw",
+    "unitId": "pb#m1"
+   },
+   {
+    "topic": "acme/l1/Meter_1/powerFactor",
+    "name": "powerFactor",
+    "address": "pf",
+    "unitId": "pb#m1"
+   },
+   {
+    "topic": "acme/l2/Meter_2/activePower",
+    "name": "activePower",
+    "address": "kw",
+    "unitId": "pb#m2"
+   },
+   {
+    "topic": "acme/l2/Meter_2/powerFactor",
+    "name": "powerFactor",
+    "address": "pf",
+    "unitId": "pb#m2"
+   },
+   {
+    "topic": "acme/special/meter3/activePower",
+    "name": "activePower",
+    "address": "kw",
+    "unitId": "pb#m3"
+   },
+   {
+    "topic": "acme/special/meter3/powerFactor",
+    "name": "powerFactor",
+    "address": "pf",
+    "unitId": "pb#m3"
+   }
+  ],
+  "metaDocs": [
+   {
+    "properties": {
+     "activePower": {
+      "type": "float32",
+      "unit": "kW",
+      "range": {
+       "min": 0,
+       "max": 500
+      },
+      "source": {
+       "deviceId": "m1",
+       "address": "kw",
+       "profileId": "pm"
+      }
+     },
+     "powerFactor": {
+      "type": "float32",
+      "source": {
+       "deviceId": "m1",
+       "address": "pf",
+       "profileId": "pm"
+      }
+     }
+    }
+   },
+   {
+    "properties": {
+     "activePower": {
+      "type": "float32",
+      "unit": "kW",
+      "range": {
+       "min": 0,
+       "max": 500
+      },
+      "source": {
+       "deviceId": "m2",
+       "address": "kw",
+       "profileId": "pm"
+      }
+     },
+     "powerFactor": {
+      "type": "float32",
+      "source": {
+       "deviceId": "m2",
+       "address": "pf",
+       "profileId": "pm"
+      }
+     }
+    }
+   },
+   {
+    "properties": {
+     "activePower": {
+      "type": "float32",
+      "unit": "kW",
+      "range": {
+       "min": 0,
+       "max": 500
+      },
+      "source": {
+       "deviceId": "m3",
+       "address": "kw",
+       "profileId": "pm"
+      }
+     },
+     "powerFactor": {
+      "type": "float32",
+      "source": {
+       "deviceId": "m3",
+       "address": "pf",
+       "profileId": "pm"
+      }
+     }
+    }
+   }
+  ],
+  "preview": {
+   "layout": "topic-per-tag",
+   "format": "envelope",
+   "units": 3,
+   "unitErrors": [],
+   "totalTags": 6,
+   "truncated": false,
+   "tags": [
+    {
+     "name": "activePower",
+     "address": "kw",
+     "unitId": "pb#m1",
+     "hasValue": false,
+     "topic": "acme/l1/Meter_1/activePower",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0,
+      "u": "kW"
+     }
+    },
+    {
+     "name": "powerFactor",
+     "address": "pf",
+     "unitId": "pb#m1",
+     "hasValue": false,
+     "topic": "acme/l1/Meter_1/powerFactor",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0
+     }
+    },
+    {
+     "name": "activePower",
+     "address": "kw",
+     "unitId": "pb#m2",
+     "hasValue": false,
+     "topic": "acme/l2/Meter_2/activePower",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0,
+      "u": "kW"
+     }
+    },
+    {
+     "name": "powerFactor",
+     "address": "pf",
+     "unitId": "pb#m2",
+     "hasValue": false,
+     "topic": "acme/l2/Meter_2/powerFactor",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0
+     }
+    },
+    {
+     "name": "activePower",
+     "address": "kw",
+     "unitId": "pb#m3",
+     "hasValue": false,
+     "topic": "acme/special/meter3/activePower",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0,
+      "u": "kW"
+     }
+    },
+    {
+     "name": "powerFactor",
+     "address": "pf",
+     "unitId": "pb#m3",
+     "hasValue": false,
+     "topic": "acme/special/meter3/powerFactor",
+     "payload": {
+      "v": null,
+      "t": 1700000000000,
+      "q": 0
+     }
+    }
+   ],
+   "objects": [],
+   "meta": [
+    {
+     "topic": "acme/l1/Meter_1/_meta",
+     "payload": {
+      "properties": {
+       "activePower": {
+        "type": "float32",
+        "unit": "kW",
+        "range": {
+         "min": 0,
+         "max": 500
+        },
+        "source": {
+         "deviceId": "m1",
+         "address": "kw",
+         "profileId": "pm"
+        }
+       },
+       "powerFactor": {
+        "type": "float32",
+        "source": {
+         "deviceId": "m1",
+         "address": "pf",
+         "profileId": "pm"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    },
+    {
+     "topic": "acme/l2/Meter_2/_meta",
+     "payload": {
+      "properties": {
+       "activePower": {
+        "type": "float32",
+        "unit": "kW",
+        "range": {
+         "min": 0,
+         "max": 500
+        },
+        "source": {
+         "deviceId": "m2",
+         "address": "kw",
+         "profileId": "pm"
+        }
+       },
+       "powerFactor": {
+        "type": "float32",
+        "source": {
+         "deviceId": "m2",
+         "address": "pf",
+         "profileId": "pm"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    },
+    {
+     "topic": "acme/special/meter3/_meta",
+     "payload": {
+      "properties": {
+       "activePower": {
+        "type": "float32",
+        "unit": "kW",
+        "range": {
+         "min": 0,
+         "max": 500
+        },
+        "source": {
+         "deviceId": "m3",
+         "address": "kw",
+         "profileId": "pm"
+        }
+       },
+       "powerFactor": {
+        "type": "float32",
+        "source": {
+         "deviceId": "m3",
+         "address": "pf",
+         "profileId": "pm"
+        }
+       }
+      },
+      "updatedAt": 1700000000000
+     }
+    }
+   ],
+   "status": [
+    "acme/l1/Meter_1/_status",
+    "acme/l2/Meter_2/_status",
+    "acme/special/meter3/_status"
+   ],
+   "warnings": []
+  },
+  "warnings": []
+ },
+ "sparkplug": {
+  "publishes": [],
+  "sparkplug": [
+   {
+    "online": {
+     "brokerId": "br",
+     "group": "G",
+     "edge": "E",
+     "device": "M1",
+     "online": true
+    }
+   },
+   {
+    "brokerId": "br",
+    "group": "G",
+    "edge": "E",
+    "device": "M1",
+    "metrics": [
+     {
+      "name": "temperature",
+      "value": 21.5,
+      "ts": 1699999999900,
+      "type": "float32",
+      "properties": {
+       "engUnit": "degC",
+       "description": "Supply temp",
+       "engLow": 0,
+       "engHigh": 200
+      }
+     }
+    ]
+   },
+   {
+    "brokerId": "br",
+    "group": "G",
+    "edge": "E",
+    "device": "M1",
+    "metrics": [
+     {
+      "name": "temperature",
+      "value": 21.7,
+      "ts": 1699999999900,
+      "type": "float32",
+      "properties": {
+       "engUnit": "degC",
+       "description": "Supply temp",
+       "engLow": 0,
+       "engHigh": 200
+      }
+     }
+    ]
+   },
+   {
+    "brokerId": "br",
+    "group": "G",
+    "edge": "E",
+    "device": "M1",
+    "metrics": [
+     {
+      "name": "temperature",
+      "value": 23,
+      "ts": 1699999999900,
+      "type": "float32",
+      "properties": {
+       "engUnit": "degC",
+       "description": "Supply temp",
+       "engLow": 0,
+       "engHigh": 200
+      }
+     }
+    ]
+   },
+   {
+    "brokerId": "br",
+    "group": "G",
+    "edge": "E",
+    "device": "M1",
+    "metrics": [
+     {
+      "name": "count",
+      "value": 7,
+      "ts": 1699999999900,
+      "type": "uint16"
+     }
+    ]
+   },
+   {
+    "online": {
+     "brokerId": "br",
+     "group": "G",
+     "edge": "E",
+     "device": "M1",
+     "online": false
+    }
+   }
+  ],
+  "retained": [],
+  "dataTopics": [],
+  "metaDocs": [
+   {
+    "properties": {
+     "temperature": {
+      "type": "float32",
+      "unit": "degC",
+      "description": "Supply temp",
+      "range": {
+       "min": 0,
+       "max": 200
+      },
+      "source": {
+       "deviceId": "dev1",
+       "address": "temp"
+      }
+     },
+     "count": {
+      "type": "uint16",
+      "source": {
+       "deviceId": "dev1",
+       "address": "count"
+      }
+     }
+    }
+   }
+  ],
+  "preview": {
+   "layout": "topic-per-tag",
+   "format": "sparkplug",
+   "units": 1,
+   "unitErrors": [],
+   "totalTags": 2,
+   "truncated": false,
+   "tags": [
+    {
+     "name": "temperature",
+     "address": "temp",
+     "unitId": "b5",
+     "hasValue": true,
+     "topic": "spBv1.0/G/DDATA/E/M1",
+     "metric": "temperature",
+     "payload": {
+      "name": "temperature",
+      "value": 1.5,
+      "type": "float32",
+      "properties": {
+       "engUnit": "degC",
+       "description": "Supply temp",
+       "engLow": 0,
+       "engHigh": 200
+      }
+     }
+    },
+    {
+     "name": "count",
+     "address": "count",
+     "unitId": "b5",
+     "hasValue": false,
+     "topic": "spBv1.0/G/DDATA/E/M1",
+     "metric": "count",
+     "payload": {
+      "name": "count",
+      "value": null,
+      "type": "uint16"
+     }
+    }
+   ],
+   "objects": [],
+   "meta": [],
+   "status": [],
+   "warnings": []
+  },
+  "warnings": []
+ }
+}

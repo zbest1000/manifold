@@ -30,8 +30,224 @@
       "name": "Built-in historian",
       "brokerId": "demo-mqtt",
       "filter": "factory/#",
-      "target": { "type": "file" },
+      "target": {
+        "type": "file"
+      },
       "enabled": true
+    }
+  },
+  "devices": {
+    "demo-modbus": {
+      "enabled": true,
+      "options": {},
+      "limits": {},
+      "id": "demo-modbus",
+      "name": "Demo pump (Modbus TCP)",
+      "protocol": "modbus-tcp",
+      "host": "device-sim",
+      "port": 5020,
+      "unitId": 1,
+      "pollGroups": [
+        {
+          "id": "fast",
+          "intervalMs": 1000
+        }
+      ],
+      "tags": [
+        {
+          "key": "temperature",
+          "address": "holding:0",
+          "type": "int16",
+          "scale": 0.1,
+          "unit": "degC",
+          "property": "temperature",
+          "pollGroup": "fast"
+        },
+        {
+          "key": "rpm",
+          "address": "holding:1",
+          "type": "uint16",
+          "property": "rpm",
+          "pollGroup": "fast"
+        },
+        {
+          "key": "flow",
+          "address": "holding:2",
+          "type": "float32",
+          "property": "flow",
+          "pollGroup": "fast"
+        },
+        {
+          "key": "pressure",
+          "address": "holding:4",
+          "type": "float32",
+          "wordOrder": "little",
+          "property": "pressure",
+          "pollGroup": "fast"
+        },
+        {
+          "key": "counter",
+          "address": "holding:6",
+          "type": "uint32",
+          "property": "counter",
+          "pollGroup": "fast"
+        },
+        {
+          "key": "running",
+          "address": "coil:0",
+          "type": "bool",
+          "property": "running",
+          "pollGroup": "fast"
+        }
+      ]
+    },
+    "demo-s7": {
+      "enabled": true,
+      "options": {},
+      "limits": {},
+      "id": "demo-s7",
+      "name": "Demo CPU (S7)",
+      "protocol": "s7",
+      "host": "device-sim",
+      "port": 10102,
+      "rack": 0,
+      "slot": 1,
+      "pollGroups": [
+        {
+          "id": "default",
+          "intervalMs": 1000
+        }
+      ],
+      "tags": [
+        {
+          "key": "temperature_x10",
+          "address": "DB1.DBW0",
+          "type": "INT",
+          "pollGroup": "default"
+        },
+        {
+          "key": "pressure",
+          "address": "DB1.DBD2",
+          "type": "REAL",
+          "pollGroup": "default"
+        },
+        {
+          "key": "running",
+          "address": "DB1.DBX6.0",
+          "type": "BOOL",
+          "pollGroup": "default"
+        },
+        {
+          "key": "counter",
+          "address": "DB1.DBD8",
+          "type": "DINT",
+          "pollGroup": "default"
+        }
+      ]
+    },
+    "demo-eip": {
+      "enabled": true,
+      "options": {},
+      "limits": {},
+      "id": "demo-eip",
+      "name": "Demo Logix (EtherNet/IP)",
+      "protocol": "ethernet-ip",
+      "host": "device-sim",
+      "port": 44818,
+      "slot": 0,
+      "pollGroups": [
+        {
+          "id": "default",
+          "intervalMs": 1000
+        }
+      ],
+      "tags": [
+        {
+          "key": "RealTag",
+          "address": "RealTag",
+          "pollGroup": "default"
+        },
+        {
+          "key": "DintTag",
+          "address": "DintTag",
+          "pollGroup": "default"
+        },
+        {
+          "key": "MotorSpeed",
+          "address": "Motor.Speed",
+          "pollGroup": "default"
+        }
+      ]
+    }
+  },
+  "bindings": {
+    "demo-bind-modbus": {
+      "id": "demo-bind-modbus",
+      "name": "Demo pump to UNS",
+      "enabled": true,
+      "source": {
+        "type": "device",
+        "deviceId": "demo-modbus",
+        "tags": [
+          {
+            "address": "temperature",
+            "name": "temperature"
+          },
+          {
+            "address": "rpm",
+            "name": "rpm"
+          },
+          {
+            "address": "flow",
+            "name": "flow"
+          },
+          {
+            "address": "pressure",
+            "name": "pressure"
+          },
+          {
+            "address": "counter",
+            "name": "counter"
+          },
+          {
+            "address": "running",
+            "name": "running"
+          }
+        ]
+      },
+      "target": {
+        "mode": "mqtt",
+        "brokerId": "demo-mqtt",
+        "pathTemplate": "demo/plant1/pump1/{name}",
+        "format": "envelope",
+        "qos": 0,
+        "retain": false
+      },
+      "rbe": {
+        "heartbeatMs": 10000
+      }
+    },
+    "demo-bind-modbus-object": {
+      "id": "demo-bind-modbus-object",
+      "name": "Demo pump as one object",
+      "enabled": true,
+      "source": {
+        "type": "device",
+        "deviceId": "demo-modbus",
+        "tags": "all"
+      },
+      "target": {
+        "mode": "mqtt",
+        "brokerId": "demo-mqtt",
+        "assetPath": "demo/plant1/pump1-object",
+        "layout": "object-per-asset",
+        "format": "envelope",
+        "qos": 0,
+        "retain": false
+      },
+      "rbe": {
+        "heartbeatMs": 10000
+      }
     }
   }
 }

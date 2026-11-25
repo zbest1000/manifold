@@ -1,5 +1,4 @@
 const protobuf = require('protobufjs');
-const path = require('path');
 
 class SparkplugDecoder {
   constructor() {

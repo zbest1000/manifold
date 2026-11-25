@@ -19,6 +19,7 @@ test('profiles persist across instances (restart survival)', () => {
   a.setCesmii({ endpoint: 'https://smip/graphql', userName: 'x' });
   a.setI3x({ baseUrl: 'http://i3x:8080' });
 
+  a.flush();
   const b = new ProfileStore(dir); // fresh instance = simulated restart
   assert.strictEqual(b.brokers().length, 1);
   assert.strictEqual(b.brokers()[0].config.host, '10.0.0.5');
@@ -35,6 +36,7 @@ test('removals persist too', () => {
   a.removeBroker('b1');
   a.setI3x({ baseUrl: 'http://x' });
   a.clearI3x();
+  a.flush();
 
   const b = new ProfileStore(dir);
   assert.strictEqual(b.brokers().length, 0);
@@ -45,6 +47,7 @@ test('profiles file is owner-only (0600)', () => {
   const dir = tmpDir();
   const a = new ProfileStore(dir);
   a.upsertBroker('b1', { id: 'b1', host: 'h', password: 'secret' });
+  a.flush();
   const mode = fs.statSync(path.join(dir, 'profiles.json')).mode & 0o777;
   assert.strictEqual(mode, 0o600);
 });

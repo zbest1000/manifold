@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const { redactSecrets } = require('../services/secrets');
+const { expectedRev, handleRevisionError } = require('../services/revision');
+const { usersOfBroker } = require('../services/references');
 
 const BROKER_PROTOCOLS = ['mqtt', 'mqtts', 'ws', 'wss'];
 
@@ -55,18 +58,37 @@ function validatePublishProperties(properties) {
 
 // GET /api/mqtt/brokers — list connections
 router.get('/brokers', (req, res) => {
-  const { mqttManager } = req.app.locals.services;
-  res.json({ brokers: mqttManager.getConnections() });
+  const { mqttManager, profiles } = req.app.locals.services;
+  res.json({ brokers: mqttManager.getConnections().map((b) => ({ ...b, rev: profiles?.getBroker?.(b.id)?.rev || 0 })) });
 });
+
+// What a broker looks like to a client: the stored config with credentials masked, plus its
+// revision. Used as `current` in a 409 so the editor can show what changed elsewhere.
+function brokerView(profiles, id) {
+  const entry = profiles?.getBroker?.(id);
+  if (!entry) return null;
+  return { ...redactSecrets(entry.config), rev: entry.rev || 0, updatedAt: entry.updatedAt || null };
+}
+
+function duplicateResponse(res, dup) {
+  return res.status(409).json({
+    error: `This broker is already connected as "${dup.name}": same protocol, host, port, user and subscribe filter. A second identical connection would double-count every message. Edit "${dup.name}" instead, or use a different subscribe filter or user.`,
+    code: 'duplicate',
+    existing: dup
+  });
+}
 
 // POST /api/mqtt/brokers — connect to a broker (profile persisted for restart)
 router.post('/brokers', (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
-  const invalid = validateBrokerConfig(req.body || {});
+  const { rev: _rev, ...body } = req.body || {};
+  const invalid = validateBrokerConfig(body);
   if (invalid) return res.status(400).json({ error: invalid });
+  const dup = mqttManager.findDuplicateBroker(body);
+  if (dup) return duplicateResponse(res, dup);
   try {
-    const result = mqttManager.connectToBroker(req.body || {});
-    profiles?.upsertBroker(result.brokerId, { ...(req.body || {}), id: result.brokerId });
+    const result = mqttManager.connectToBroker(body);
+    profiles?.upsertBroker(result.brokerId, { ...body, id: result.brokerId });
     res.status(202).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -84,7 +106,14 @@ router.put('/brokers/:brokerId', (req, res) => {
   if (!mqttManager.getConnection(brokerId) && !saved) {
     return res.status(404).json({ error: 'Broker not found' });
   }
-  const body = req.body || {};
+  const { rev: _bodyRev, ...body } = req.body || {};
+  try {
+    // Refuse a stale edit BEFORE the running connection is touched.
+    profiles?.assertRev('mqtt', brokerId, expectedRev(req));
+  } catch (error) {
+    if (handleRevisionError(res, error, () => brokerView(profiles, brokerId))) return;
+    throw error;
+  }
   // Leave-blank-to-keep: the list endpoint never echoes credentials, so a body
   // that omits the password keeps the stored one (same pattern as historians).
   if (body.password === undefined && saved?.config?.password !== undefined) {
@@ -92,10 +121,12 @@ router.put('/brokers/:brokerId', (req, res) => {
   }
   const invalid = validateBrokerConfig(body);
   if (invalid) return res.status(400).json({ error: invalid });
+  const dup = mqttManager.findDuplicateBroker(body, brokerId);
+  if (dup) return duplicateResponse(res, dup);
   try {
     const result = mqttManager.updateBroker(brokerId, body);
-    profiles?.upsertBroker(brokerId, { ...body, id: brokerId });
-    res.status(202).json(result);
+    const stored = profiles?.upsertBroker(brokerId, { ...body, id: brokerId });
+    res.status(202).json({ ...result, rev: stored?.rev });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -103,18 +134,33 @@ router.put('/brokers/:brokerId', (req, res) => {
 
 // GET /api/mqtt/brokers/:brokerId
 router.get('/brokers/:brokerId', (req, res) => {
-  const { mqttManager } = req.app.locals.services;
+  const { mqttManager, profiles } = req.app.locals.services;
   const connection = mqttManager.getConnection(req.params.brokerId);
   if (!connection) return res.status(404).json({ error: 'Broker not found' });
   res.json({
-    broker: connection,
+    broker: { ...connection, rev: profiles?.getBroker?.(req.params.brokerId)?.rev || 0 },
+    // The saved settings the list does not carry (timeouts, keep-alive, TLS verification...), credentials masked:
+    // what an editor needs to open with the real values instead of defaults.
+    config: brokerView(profiles, req.params.brokerId),
     subscriptions: mqttManager.getSubscriptions(req.params.brokerId)
   });
 });
 
 // DELETE /api/mqtt/brokers/:brokerId — disconnect (profile removed)
 router.delete('/brokers/:brokerId', (req, res) => {
-  const { mqttManager, profiles } = req.app.locals.services;
+  const { mqttManager, profiles, sparkplugPublisher } = req.app.locals.services;
+  // Refuse while something still points at it: those routes, mappings, recordings, alert rules,
+  // models, contracts and Sparkplug host sessions would otherwise keep running against a
+  // broker that no longer exists and silently lose data.
+  const users = usersOfBroker(req.params.brokerId, { profiles, mqttManager, sparkplugPublisher });
+  if (users.length && (profiles?.getBroker?.(req.params.brokerId) || mqttManager.getConnection(req.params.brokerId))) {
+    const names = users.slice(0, 8).map((u) => `${u.type} "${u.name}"`).join(', ');
+    return res.status(409).json({
+      error: `This broker is still used by ${users.length} item(s): ${names}${users.length > 8 ? ', …' : ''}. Point them at another broker or delete them first.`,
+      code: 'in-use',
+      usedBy: users
+    });
+  }
   try {
     const result = mqttManager.disconnectFromBroker(req.params.brokerId);
     profiles?.removeBroker(req.params.brokerId);

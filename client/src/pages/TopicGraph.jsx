@@ -1,152 +1,147 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Share2, X, Gauge, Clock, Hash, Send, ListTree, Search, Copy, Trash2, Boxes, Box, Tag, Waypoints, Loader2, Cpu, GitCompareArrows, Maximize2, Minimize2, ChevronDown, ChevronUp, Sparkles, RotateCw, PanelRight } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Share2, X, ListTree, Boxes, Box, PanelRight, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import clsx from 'clsx';
 import { useStore, onMessageActivity } from '@/store/store';
-import { Sparkline, TimeSeriesChart, fmtNum } from '@/components/charts';
+import { useGraphPrefs, useCoverage } from '@/store/selectors';
 import { api } from '@/lib/api';
 import ForceGraph from '@/graph/ForceGraph';
+import { buildMqttGraph, collapseGraph, groupColor, GROUP_ORDER } from '@/graph/buildGraph';
+import { DEFAULT_LAYOUT, resolveGraphStyle } from '@/graph/graphStyles';
+import { useCanvasTokens } from '@/graph/canvasTokens';
+import { deriveTopicCount } from '@/graph/topicCount';
+import GraphToolbar from '@/components/GraphToolbar';
+import { GROUP_LABELS } from '@/components/GraphLegend';
+import GraphSearch from '@/components/GraphSearch';
+import ReplayScrubber from '@/components/ReplayScrubber';
+import TopicTree from '@/components/TopicTree';
+import PageHeader from '@/components/PageHeader';
+import { downloadDataUrl, downloadJson } from '@/lib/download';
+import { Banner, Button, ButtonLink, EmptyState, IconButton, Input, SegmentedControl, Select, Spinner, StatusDot, StatusText, Timestamp } from '@/components/ui';
+import { BarDivider, CanvasNote, FloatingBar, ToolToggle } from '@/components/CanvasChrome';
+import TopicPanel from './topics/TopicPanel';
+import Graph3DControls from './topics/Graph3DControls';
+import { numericFromPayload, shortText } from './topics/topicUtils';
+import { dismissNote, loadSavedView, noteDismissed, saveView, resolveTopicsView } from './topics/viewPref';
 
 // Heavy renderers load on demand: three.js (3D view) and the WebGL big-graph
-// renderer aren't part of the initial bundle — most sessions never open them.
+// renderer aren't part of the initial bundle: most sessions never open them.
 const ForceGraph3D = lazy(() => import('@/graph/ForceGraph3D'));
 const WebGLGraph = lazy(() => import('@/graph/WebGLGraph'));
 
 function RendererLoading() {
   return (
-    <div className="flex h-full items-center justify-center text-xs text-slate-500">
-      <Loader2 size={14} className="mr-2 animate-spin" /> Loading renderer…
+    <div className="flex h-full items-center justify-center gap-2 text-sm text-muted" role="status">
+      <Spinner size={14} /> Loading renderer…
     </div>
   );
 }
-import { buildMqttGraph, collapseGraph } from '@/graph/buildGraph';
-import { DEFAULT_LAYOUT } from '@/graph/graphStyles';
-import GraphToolbar from '@/components/GraphToolbar';
-import GraphLegend from '@/components/GraphLegend';
-import GraphSearch from '@/components/GraphSearch';
-import ReplayScrubber from '@/components/ReplayScrubber';
-import TopicTree from '@/components/TopicTree';
-import JsonView from '@/components/JsonView';
-import { downloadDataUrl, downloadJson } from '@/lib/download';
-import { diffPayloads, formatDiffValue } from '@/lib/payloadDiff';
-import { Card, Button, Badge, EmptyState, Input } from '@/components/ui';
-import PageHeader from '@/components/PageHeader';
-import ViewTab from '@/components/ViewTab';
-import { formatDistanceToNow } from 'date-fns';
 
-function numericFromPayload(payload) {
-  if (typeof payload === 'number') return payload;
-  if (typeof payload === 'string') {
-    const n = Number(payload);
-    return Number.isFinite(n) ? n : null;
-  }
-  if (payload && typeof payload === 'object') {
-    for (const key of ['value', 'v', 'val', 'temperature', 'temp']) {
-      if (Number.isFinite(payload[key])) return payload[key];
-    }
-  }
-  return null;
-}
-
-function shortText(payload) {
-  if (payload == null) return '';
-  if (typeof payload === 'object') return JSON.stringify(payload);
-  return String(payload);
-}
+const FORCE_MAX = 30000; // force-layout worker node cap
+const GRAPH_MAX_NODES = 2500;
+const NO_HOSTS = []; // stable empty list
 
 export default function TopicGraph() {
   const brokers = useStore((s) => s.brokers);
-  const dataTick = useStore((s) => s.dataTick);
   const topicVersionMap = useStore((s) => s.topicVersion);
-  const graphStyle = useStore((s) => s.graphStyle);
-  const graphLayout = useStore((s) => s.graphLayout);
-  const setGraphLayout = useStore((s) => s.setGraphLayout);
-  const coverage = useStore((s) => s.coverage);
-  const setCoverage = useStore((s) => s.setCoverage);
-  const flowEnabled = useStore((s) => s.flowEnabled);
-  const activitySize = useStore((s) => s.activitySize);
-  const showValues = useStore((s) => s.showValues);
-  const showMinimap = useStore((s) => s.showMinimap);
   const setTopics = useStore((s) => s.setTopics);
+  const { graphStyle, graphLayout, setGraphLayout, flowEnabled, activitySize, showValues, showMinimap } = useGraphPrefs();
+  const { coverage, setCoverage } = useCoverage();
 
-  const [brokerId, setBrokerId] = useState(null);
-  const [spHosts, setSpHosts] = useState([]); // Sparkplug host applications (spBv1.0/STATE/*)
+  // Deep link: /topics?broker=<id>&topic=<a/b/c> selects that topic; selections keep the URL in sync.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [pickedBrokerId, setBrokerId] = useState(() => searchParams.get('broker') || null);
+  const [pendingTopic, setPendingTopic] = useState(() => searchParams.get('topic') || null);
+  const [fitTarget, setFitTarget] = useState(null); // node id to frame once the graph has laid it out
+  // Sparkplug host applications (spBv1.0/STATE/*), remembered with the broker they belong to
+  const [spState, setSpState] = useState({ brokerId: null, hosts: NO_HOSTS });
   const [selected, setSelected] = useState(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  // The selection, mirrored into the URL (replaceState) so it can be shared.
+  const syncUrl = useCallback(
+    (topic, broker) =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (topic) {
+            next.set('topic', topic);
+            if (broker) next.set('broker', broker);
+          } else {
+            next.delete('topic');
+          }
+          return next;
+        },
+        { replace: true }
+      ),
+    [setSearchParams]
+  );
   // Selecting a node opens its details panel; the Properties button reopens it.
   const selectNode = (n) => {
+    setFitTarget(null); // a newer selection wins over a pending deep-link framing
     setSelected(n);
     setPanelOpen(Boolean(n));
+    setPendingTopic(null);
+    syncUrl(n?.meta?.fullTopic || null, brokerIdRef.current);
   };
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [matchIds, setMatchIds] = useState(null);
-  const [view, setView] = useState('graph'); // 'graph' | 'tree'
+  // Explicit view choices made on this page (per broker); a broker without one
+  // falls back to its remembered choice (localStorage, per broker) or the size default.
+  const [viewChoices, setViewChoices] = useState({});
+  const [noteHidden, setNoteHidden] = useState({}); // brokers whose "showing the tree" note was dismissed now
   const [treeFilter, setTreeFilter] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [labelDensity, setLabelDensity] = useState(0.5); // 0 (off) .. 1 (dense)
-  const [forcePositions, setForcePositions] = useState(null); // worker-computed force coords for show-all
+  const [forceState, setForceState] = useState(null); // { graph, positions }: worker-computed force coords for show-all
   const [forceBusy, setForceBusy] = useState(false);
-  // 3D look-and-feel controls (local — only the style is shared with the 2D views).
+  const [topicsError, setTopicsError] = useState(null);
+  const [topicsTry, setTopicsTry] = useState(0);
+  // 3D look-and-feel controls (local: only the style is shared with the 2D views).
   const [nodeScale3d, setNodeScale3d] = useState(1);
   const [linkOpacity3d, setLinkOpacity3d] = useState(0.35);
   const [autoRotate3d, setAutoRotate3d] = useState(false);
   const [beautify3d, setBeautify3d] = useState(false);
-  const FORCE_MAX = 30000; // force-layout worker node cap
   const graphRef = useRef(null);
   const graph3dRef = useRef(null);
+  const nodeValuesRef = useRef(null);
 
-  // Select a topic from the tree, shaping it like a graph node so the shared
-  // detail panel works for both views.
-  const selectTopic = useCallback(
-    (c) => {
-      setSelected({
-        id: `topic:${brokerId}:${c.path}`,
-        label: c.name,
-        kind: 'topic',
-        meta: {
-          fullTopic: c.path,
-          isLeaf: true,
-          messageCount: c.stat?.messageCount,
-          type: c.stat?.type,
-          lastActivity: c.stat?.lastActivity
-        }
-      });
-      setPanelOpen(true);
-    },
-    [brokerId]
-  );
+  const connected = useMemo(() => brokers.filter((b) => b.status === 'connected'), [brokers]);
 
-  const connected = brokers.filter((b) => b.status === 'connected');
-
-  // Default to the first connected broker
+  // The picked broker while it still exists, otherwise the first connected one.
+  const brokerId = pickedBrokerId && brokers.some((b) => b.id === pickedBrokerId) ? pickedBrokerId : connected[0]?.id || null;
+  const brokerIdRef = useRef(brokerId);
   useEffect(() => {
-    if (!brokerId && connected.length) setBrokerId(connected[0].id);
-    if (brokerId && !brokers.some((b) => b.id === brokerId)) setBrokerId(connected[0]?.id || null);
-  }, [connected, brokerId, brokers]);
+    brokerIdRef.current = brokerId;
+  }, [brokerId]);
+  const spHosts = spState.brokerId === brokerId ? spState.hosts : NO_HOSTS;
 
   // Pull the authoritative topic list when broker changes
   useEffect(() => {
-    if (!brokerId) return;
+    if (!brokerId) return undefined;
+    let alive = true;
     api
       .brokerTopics(brokerId)
-      .then((res) => setTopics(brokerId, res.topics))
-      .catch(() => {});
-  }, [brokerId, setTopics]);
+      .then((res) => {
+        if (!alive) return;
+        setTopicsError(null);
+        setTopics(brokerId, res.topics);
+      })
+      .catch((e) => alive && setTopicsError(e?.message || 'Could not load the topic list'));
+    return () => {
+      alive = false;
+    };
+  }, [brokerId, setTopics, topicsTry]);
 
-  // Sparkplug host applications (spBv1.0/STATE/*) — polled from the topology
+  // Sparkplug host applications (spBv1.0/STATE/*), polled from the topology
   // snapshot; the strip only shows when the broker actually carries host STATE.
   useEffect(() => {
-    if (!brokerId) {
-      setSpHosts([]);
-      return;
-    }
+    if (!brokerId) return undefined;
     let alive = true;
     const load = () =>
       api
         .brokerSparkplug(brokerId)
-        .then((res) => alive && setSpHosts(res.hosts || []))
-        .catch(() => alive && setSpHosts([]));
+        .then((res) => alive && setSpState({ brokerId, hosts: res.hosts || NO_HOSTS }))
+        .catch(() => alive && setSpState({ brokerId, hosts: NO_HOSTS })); // optional strip: absence is the honest empty state
     load();
     const t = setInterval(() => {
       if (document.visibilityState === 'visible') load();
@@ -164,42 +159,98 @@ export default function TopicGraph() {
   // topic SET changes (topicVersion), not on every message.
   const brokerTopics = useMemo(
     () => useStore.getState().getTopics(brokerId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- topicVersion signals topic-set changes; topics come from the non-reactive index
     [brokerId, topicVersion]
   );
+  // Same derivation as Overview: the larger of the client index and the server's exact count.
+  const topicCount = deriveTopicCount(brokerTopics.length, broker?.metrics?.topicCount);
 
-  const GRAPH_MAX_NODES = 2500;
+  const userView = viewChoices[brokerId] ?? loadSavedView(brokerId);
+  const view = resolveTopicsView(userView, topicCount);
+  const autoTree = userView == null && view === 'tree';
+  const showTreeNote = autoTree && !noteHidden[brokerId] && !noteDismissed(brokerId);
+  const setView = (v) => {
+    setViewChoices((prev) => ({ ...prev, [brokerId]: v }));
+    saveView(v, brokerId);
+  };
+
   const fullGraph = useMemo(() => {
     if (!broker) return { nodes: [], links: [] };
     return buildMqttGraph(broker, brokerTopics, { maxNodes: showAll ? Infinity : GRAPH_MAX_NODES });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- depends on broker id and topic set, not on every broker field
   }, [broker?.id, brokerTopics, showAll]);
 
   // Apply collapsed subtrees. Keyed on the collapsed set so toggling re-filters.
   const collapseKey = [...collapsed].sort().join('|');
   const graph = useMemo(
     () => collapseGraph(fullGraph, collapsed),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- collapseKey is the stable string form of `collapsed`
     [fullGraph, collapseKey]
   );
+  // Resolve a pending deep link once its topic exists (topics may stream in
+  // after the first render). Adjusted during render, not in an effect.
+  let deepLinkMiss = null;
+  if (pendingTopic && brokerId) {
+    const id = `topic:${brokerId}:${pendingTopic}`;
+    const node = graph.nodes.find((n) => n.id === id);
+    const stat = node ? null : brokerTopics.find((t) => (t.topic || t) === pendingTopic);
+    if (node || stat) {
+      setPendingTopic(null);
+      setSelected(
+        node || {
+          id,
+          label: pendingTopic.split('/').pop(),
+          kind: 'topic',
+          meta: { fullTopic: pendingTopic, isLeaf: true, messageCount: stat?.messageCount, type: stat?.type, lastActivity: stat?.lastActivity }
+        }
+      );
+      setPanelOpen(true);
+      if (node) setFitTarget(id);
+    } else if (brokerTopics.length > 0) {
+      deepLinkMiss = pendingTopic;
+    }
+  }
+  // Frame a deep-linked node once it can be framed for good: the force layout
+  // has settled (positions final) and the canvas size has been stable for a
+  // few polls (the details panel opens with the selection and narrows it).
+  // Not on a timer: under load the layout can take longer than any fixed delay.
+  useEffect(() => {
+    if (!fitTarget || view !== 'graph') return undefined;
+    let lastSize = '';
+    let stable = 0;
+    let tries = 0;
+    const t = setInterval(() => {
+      const g = graphRef.current;
+      tries += 1;
+      const size = g?.size ? `${g.size().w}x${g.size().h}` : '';
+      stable = size && size === lastSize ? stable + 1 : 0;
+      lastSize = size;
+      if ((g?.isSettled?.() && g.hasNode?.(fitTarget) && stable >= 2) || tries > 200) {
+        clearInterval(t);
+        if (g?.hasNode?.(fitTarget)) g.fitTo(new Set([fitTarget]));
+        setFitTarget(null);
+      }
+    }, 100);
+    return () => clearInterval(t);
+  }, [fitTarget, view]);
+
   // Groups actually present, for the color legend.
   const groupsPresent = useMemo(() => new Set(graph.nodes.map((n) => n.group)), [graph]);
 
   // "Show coverage on topic map" from the Flows view: jump to the graph so the
-  // painted trail is immediately visible.
-  useEffect(() => {
-    if (coverage?.brokerId === brokerId) setView('graph');
-  }, [coverage, brokerId]);
+  // painted trail is immediately visible (without overwriting the saved preference).
+  // Adjusted during render (when coverage or broker changes) rather than in an effect.
+  const [coverageSeen, setCoverageSeen] = useState({ coverage, brokerId });
+  if (coverageSeen.coverage !== coverage || coverageSeen.brokerId !== brokerId) {
+    setCoverageSeen({ coverage, brokerId });
+    if (coverage?.brokerId === brokerId) setViewChoices((prev) => ({ ...prev, [brokerId]: 'graph' }));
+  }
 
-  // A batch force layout is a snapshot for a specific node set — drop it
-  // when the graph changes (new topics, collapse) so stale coordinates aren't
-  // applied to different nodes; the view falls back to the radial layout.
-  useEffect(() => {
-    setForcePositions(null);
-  }, [graph]);
+  // A batch force layout is a snapshot for a specific node set: it only applies
+  // to the graph it was computed for, so stale coordinates never reach other nodes.
+  const forcePositions = forceState && forceState.graph === graph ? forceState.positions : null;
 
-  // Big-graph force layout, computed off the main thread in a Web Worker so the
-  // UI stays responsive. The worker is spawned per run and terminated after it
-  // posts back positions.
+  // Big-graph force layout, computed off the main thread in a Web Worker.
   const runForceLayout = useCallback(() => {
     if (graph.nodes.length > FORCE_MAX) {
       toast.error(`Force layout supports up to ${FORCE_MAX.toLocaleString()} nodes (this has ${graph.nodes.length.toLocaleString()}).`);
@@ -217,7 +268,7 @@ export default function TopicGraph() {
       if (error || !positions) {
         toast.error(error || 'Layout failed', { id: t });
       } else {
-        setForcePositions(positions);
+        setForceState({ graph, positions });
         toast.success(`Force layout: ${count.toLocaleString()} nodes`, { id: t });
       }
       finish();
@@ -232,32 +283,42 @@ export default function TopicGraph() {
     });
   }, [graph]);
 
-  // Live buffer snapshot, refreshed at the throttled tick (not per message).
-  const liveMsgs = useMemo(
-    () => useStore.getState().getLiveMessages(brokerId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [brokerId, dataTick]
-  );
-
-  // Latest value + numeric sparkline per leaf topic, for the on-node overlay.
-  const nodeValues = useMemo(() => {
-    if (!brokerId) return null;
-    const byTopic = new Map();
-    for (const m of liveMsgs) {
-      if (!byTopic.has(m.topic)) byTopic.set(m.topic, []);
-      byTopic.get(m.topic).push(m);
+  // Latest value + numeric sparkline per leaf topic for the on-node overlay.
+  // Computed OUTSIDE React render, at the store's throttled tick, and only while
+  // the 2D graph with values is actually on screen and the tab is visible; the
+  // renderer reads it through a ref and is asked to repaint (no page re-render).
+  const wantValues = view === 'graph' && !showAll && showValues && Boolean(brokerId);
+  useEffect(() => {
+    if (!wantValues) {
+      nodeValuesRef.current = null;
+      return undefined;
     }
-    const out = {};
-    for (const [topic, msgs] of byTopic) {
-      const ordered = msgs.slice().reverse(); // oldest→newest
-      const series = ordered.map((m) => numericFromPayload(m.payload)).filter((v) => v != null);
-      out[`topic:${brokerId}:${topic}`] = { text: shortText(msgs[0].payload), series: series.slice(-24) };
-    }
-    return out;
-  }, [brokerId, liveMsgs]);
+    const compute = () => {
+      const msgs = useStore.getState().getLiveMessages(brokerId);
+      const byTopic = new Map();
+      for (const m of msgs) {
+        if (!byTopic.has(m.topic)) byTopic.set(m.topic, []);
+        byTopic.get(m.topic).push(m);
+      }
+      const out = {};
+      for (const [topic, list] of byTopic) {
+        const series = list
+          .slice()
+          .reverse() // oldest to newest
+          .map((m) => numericFromPayload(m.payload))
+          .filter((v) => v != null);
+        out[`topic:${brokerId}:${topic}`] = { text: shortText(list[0].payload), series: series.slice(-24) };
+      }
+      nodeValuesRef.current = out;
+      graphRef.current?.redraw?.();
+    };
+    compute();
+    return useStore.subscribe((s, prev) => {
+      if (s.dataTick !== prev.dataTick && document.visibilityState === 'visible') compute();
+    });
+  }, [wantValues, brokerId]);
 
-  // Feed live message activity to the graph's flow animation. Maps an incoming
-  // message on this broker to its leaf node id (see buildMqttGraph node ids).
+  // Feed live message activity to the graph's flow animation.
   const activitySource = useCallback(
     (pulse) =>
       onMessageActivity((msg) => {
@@ -265,6 +326,23 @@ export default function TopicGraph() {
         pulse(`topic:${brokerId}:${msg.topic}`);
       }),
     [brokerId]
+  );
+
+  // Select a topic from the tree, shaping it like a graph node so the shared
+  // detail panel works for both views.
+  const selectTopic = useCallback(
+    (c) => {
+      setSelected({
+        id: `topic:${brokerId}:${c.path}`,
+        label: c.name,
+        kind: 'topic',
+        meta: { fullTopic: c.path, isLeaf: true, messageCount: c.stat?.messageCount, type: c.stat?.type, lastActivity: c.stat?.lastActivity }
+      });
+      setPanelOpen(true);
+      setPendingTopic(null);
+      syncUrl(c.path, brokerId);
+    },
+    [brokerId, syncUrl]
   );
 
   // Double-click a branch node to collapse/expand its subtree.
@@ -279,6 +357,7 @@ export default function TopicGraph() {
   }, []);
 
   const replayNodeId = useCallback((m) => `topic:${brokerId}:${m.topic}`, [brokerId]);
+  const getReplayMessages = useCallback(() => useStore.getState().getLiveMessages(brokerId), [brokerId]);
 
   // Frame the whole network when Show all is toggled on.
   useEffect(() => {
@@ -286,101 +365,213 @@ export default function TopicGraph() {
       const t = setTimeout(() => graphRef.current?.fitTo(), 250);
       return () => clearTimeout(t);
     }
+    return undefined;
   }, [showAll]);
 
   if (connected.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader title="Topic Graph" subtitle="Interactive node graph of the MQTT topic namespace" />
+        <PageHeader title="Topics" />
         <EmptyState
           icon={Share2}
           title="No connected brokers"
-          hint="Connect to an MQTT broker to visualize its live topic tree as a node graph."
+          hint="Connect to an MQTT broker to see its live topic tree as a graph."
           action={
-            <Link to="/brokers">
-              <Button>Connect a broker</Button>
-            </Link>
+            <ButtonLink to="/brokers" variant="primary">
+              Connect a broker
+            </ButtonLink>
           }
         />
       </div>
     );
   }
 
+  const coverageOn = coverage?.brokerId === brokerId && !showAll && view === 'graph';
+  const panelShown = selected && panelOpen;
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         title="Topics"
-        subtitle={broker ? `${brokerTopics.length} topics · ${graph.nodes.length} nodes` : 'Select a broker'}
+        subtitle={broker ? `${topicCount.toLocaleString()} topics · ${graph.nodes.length.toLocaleString()} nodes${graph.capped && !showAll ? ' shown' : ''}` : 'Select a broker'}
         actions={
-          <div className="flex items-center gap-2">
-            <div className="flex overflow-hidden rounded-xl border border-white/10">
-              <ViewTab active={view === 'graph'} onClick={() => setView('graph')} icon={Share2} label="Graph" />
-              <ViewTab active={view === '3d'} onClick={() => setView('3d')} icon={Box} label="3D" />
-              <ViewTab active={view === 'tree'} onClick={() => setView('tree')} icon={ListTree} label="Tree" />
-            </div>
-            <select
-              value={brokerId || ''}
-              onChange={(e) => {
-                setBrokerId(e.target.value);
-                setSelected(null);
-              }}
-              className="rounded-xl border border-white/10 bg-surface-950/60 px-3 py-2 text-sm text-slate-200 focus:border-accent-500/60 focus:outline-none"
-            >
-              {connected.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Select
+            aria-label="Broker"
+            value={brokerId || ''}
+            onChange={(e) => {
+              setBrokerId(e.target.value);
+              selectNode(null);
+            }}
+            className="w-auto max-w-[14rem]"
+          >
+            {connected.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </Select>
         }
       />
 
-      {spHosts.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-white/5 bg-surface-900/40 px-4 py-2">
-          <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-            <Cpu size={12} className="text-accent-400" /> Host applications
-          </span>
-          {spHosts.map((h) => (
-            <span
-              key={h.id}
-              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-surface-950/60 px-2 py-1 text-[11px]"
-              title={`spBv1.0/STATE/${h.id}`}
+      {/* One toolbar row: view switch, then the controls of the current view. Nothing floats over the top of the canvas. */}
+      <div role="toolbar" aria-label="Topics view" className="relative flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line px-4 py-1.5 sm:px-6">
+        <SegmentedControl
+          label="View"
+          size="sm"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'graph', label: 'Graph', icon: Share2 },
+            { value: '3d', label: '3D', icon: Box },
+            { value: 'tree', label: 'Tree', icon: ListTree }
+          ]}
+        />
+        {view === 'graph' && (
+          <>
+            {!showAll && <GraphSearch inline nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} className="min-w-[10rem] max-w-xs flex-1" />}
+            {(graph.capped || showAll) && (
+              <ToolToggle
+                pressed={showAll}
+                onClick={() => setShowAll((v) => !v)}
+                icon={Boxes}
+                label={showAll ? `All ${graph.nodes.length.toLocaleString()} nodes` : `Show all ${topicCount.toLocaleString()}`}
+                title={showAll ? 'Back to the interactive graph' : 'Draw every topic with the GPU renderer'}
+                showLabel
+              />
+            )}
+            {showAll ? (
+              <>
+                <BarDivider />
+                <SegmentedControl
+                  label="Big graph layout"
+                  size="sm"
+                  value={forcePositions ? 'force' : 'radial'}
+                  onChange={(v) => (v === 'radial' ? setForceState(null) : runForceLayout())}
+                  options={[
+                    { value: 'radial', label: 'Radial' },
+                    { value: 'force', label: forceBusy ? 'Force…' : 'Force' }
+                  ]}
+                />
+                <label className="flex shrink-0 items-center gap-2 text-xs text-muted">
+                  Labels
+                  <input type="range" min="0" max="1" step="0.05" value={labelDensity} aria-label="Label density" onChange={(e) => setLabelDensity(Number(e.target.value))} className="h-1 w-20 cursor-pointer accent-accent" />
+                  <span className="w-8 tabular-nums text-fg">{labelDensity <= 0.001 ? 'Off' : `${Math.round(labelDensity * 100)} %`}</span>
+                </label>
+              </>
+            ) : (
+              <div className="ml-auto flex items-center">
+                <GraphToolbar
+                  inline
+                  showFlow
+                  onFit={() => graphRef.current?.fitTo()}
+                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
+                  onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
+                  onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
+                  onProperties={() => setPanelOpen(true)}
+                  hasSelection={Boolean(selected)}
+                />
+              </div>
+            )}
+          </>
+        )}
+        {view === '3d' && (
+          <>
+            <BarDivider />
+            <Graph3DControls
+              beautify={beautify3d}
+              onBeautify={() => setBeautify3d((v) => !v)}
+              autoRotate={autoRotate3d}
+              onAutoRotate={() => setAutoRotate3d((v) => !v)}
+              nodeScale={nodeScale3d}
+              onNodeScale={setNodeScale3d}
+              linkOpacity={linkOpacity3d}
+              onLinkOpacity={setLinkOpacity3d}
+            />
+            <div className="ml-auto flex items-center gap-0.5">
+              <IconButton icon={RotateCcw} label="Reset the camera" onClick={() => graph3dRef.current?.resetView()} />
+              <IconButton icon={PanelRight} label={selected ? 'Properties of the selected node' : 'Properties (select a node first)'} disabled={!selected} onClick={() => selected && setPanelOpen(true)} />
+            </div>
+          </>
+        )}
+        {view === 'tree' && <Input type="search" aria-label="Filter topics" value={treeFilter} onChange={(e) => setTreeFilter(e.target.value)} placeholder="Filter topics" className="h-8 min-w-[10rem] max-w-xs flex-1" />}
+      </div>
+
+      {(topicsError || showTreeNote || spHosts.length > 0 || deepLinkMiss) && (
+        <div className="space-y-2 border-b border-line px-4 py-2 sm:px-6">
+          {topicsError && (
+            <Banner
+              variant="error"
+              title="Could not load the topic list. Showing only topics seen live."
+              onRetry={() => {
+                setTopicsError(null);
+                setTopicsTry((v) => v + 1);
+              }}
             >
-              <span className={clsx('h-1.5 w-1.5 rounded-full', h.online ? 'bg-emerald-400' : h.online === false ? 'bg-rose-400' : 'bg-slate-500')} />
-              <span className="font-mono text-slate-200">{h.id}</span>
-              <Badge status={h.online ? 'connected' : 'offline'}>{h.online ? 'online' : h.online === false ? 'offline' : 'unknown'}</Badge>
-              {(h.timestamp || h.lastSeen) && (
-                <span className="text-slate-500">
-                  {formatDistanceToNow(new Date(h.timestamp || h.lastSeen), { addSuffix: true })}
+              {topicsError}
+            </Banner>
+          )}
+          {showTreeNote && (
+            <div role="status" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted" data-testid="tree-default-note">
+              <span className="min-w-0 flex-1 basis-56" title="Above 200 topics the graph is dense, so the tree opens first. Your choice of view is remembered for this broker.">
+                Showing the tree because this broker has {topicCount.toLocaleString()} topics.
+              </span>
+              <Button size="sm" variant="secondary" className="shrink-0" onClick={() => setView('graph')}>
+                Switch to Graph
+              </Button>
+              <IconButton
+                icon={X}
+                size={14}
+                label="Dismiss this note"
+                className="h-7 w-7"
+                onClick={() => {
+                  dismissNote(brokerId);
+                  setNoteHidden((prev) => ({ ...prev, [brokerId]: true }));
+                }}
+              />
+            </div>
+          )}
+          {deepLinkMiss && (
+            <p role="status" className="text-sm text-muted">
+              <span className="text-fg">No topic yet at</span> <code className="break-all font-mono text-xs text-fg">{deepLinkMiss}</code>. It is selected as soon as it publishes.
+            </p>
+          )}
+          {spHosts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted">Sparkplug host applications</span>
+              {spHosts.map((h) => (
+                <span key={h.id} className="inline-flex items-center gap-2" title={`spBv1.0/STATE/${h.id}`}>
+                  <StatusText tone={h.online ? 'good' : h.online === false ? 'bad' : 'neutral'}>
+                    <span className="font-mono text-xs">{h.id}</span>
+                    <span className="sr-only">{h.online ? ' online' : h.online === false ? ' offline' : ' unknown'}</span>
+                  </StatusText>
+                  {(h.timestamp || h.lastSeen) && <Timestamp value={h.timestamp || h.lastSeen} className="text-xs text-subtle" />}
                 </span>
-              )}
-            </span>
-          ))}
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      <div className="relative flex flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden max-md:flex-col">
         {view === 'tree' ? (
-          <div className="flex w-full max-w-md flex-col border-r border-white/5 bg-surface-900/30">
-            <div className="flex items-center gap-1.5 border-b border-white/5 px-3 py-2">
-              <Search size={14} className="text-slate-500" />
-              <input
-                value={treeFilter}
-                onChange={(e) => setTreeFilter(e.target.value)}
-                placeholder="Filter topics…"
-                className="w-full bg-transparent text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none"
+          <div className="flex min-h-0 w-full flex-col border-line md:max-w-md md:border-r">
+            {brokerTopics.length === 0 ? (
+              <EmptyState
+                icon={ListTree}
+                title="No topics yet"
+                hint="Topics appear as soon as the broker publishes. If nothing shows up, check the subscribe filter on the MQTT Brokers page."
+                action={
+                  <ButtonLink to="/brokers" size="sm">
+                    Open MQTT Brokers
+                  </ButtonLink>
+                }
               />
-            </div>
-            <TopicTree
-              topics={brokerTopics}
-              selectedTopic={selected?.meta?.fullTopic}
-              onSelect={selectTopic}
-              filter={treeFilter}
-            />
+            ) : (
+              <TopicTree topics={brokerTopics} selectedTopic={selected?.meta?.fullTopic} onSelect={selectTopic} filter={treeFilter} />
+            )}
           </div>
         ) : view === '3d' ? (
-          <div className="relative flex-1">
+          <div className="relative min-h-0 min-w-0 flex-1">
             <Suspense fallback={<RendererLoading />}>
               <ForceGraph3D
                 ref={graph3dRef}
@@ -392,65 +583,16 @@ export default function TopicGraph() {
                 linkOpacity={linkOpacity3d}
                 autoRotate={autoRotate3d}
                 beautify={beautify3d}
+                inset={FIT_INSET}
               />
             </Suspense>
-            <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
-              <button
-                onClick={() => selected && setPanelOpen(true)}
-                disabled={!selected}
-                title={selected ? 'Show properties of the selected node' : 'Select a node first'}
-                className={clsx(
-                  'flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-sm backdrop-blur transition',
-                  selected
-                    ? 'border-white/10 bg-surface-900/80 text-slate-300 hover:border-white/20 hover:text-slate-100'
-                    : 'cursor-not-allowed border-white/5 bg-surface-900/60 text-slate-600'
-                )}
-              >
-                <PanelRight size={15} />
-                <span className="hidden font-medium sm:inline">Properties</span>
-              </button>
-              <button
-                onClick={() => graph3dRef.current?.resetView()}
-                title="Reset the camera to the default angle and zoom"
-                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-surface-900/80 px-2.5 py-2 text-sm text-slate-300 backdrop-blur transition hover:border-white/20 hover:text-slate-100"
-              >
-                <Maximize2 size={15} />
-                <span className="hidden font-medium sm:inline">Reset view</span>
-              </button>
-            </div>
-            <Graph3DControls
-              beautify={beautify3d}
-              onBeautify={() => setBeautify3d((v) => !v)}
-              autoRotate={autoRotate3d}
-              onAutoRotate={() => setAutoRotate3d((v) => !v)}
-              nodeScale={nodeScale3d}
-              onNodeScale={setNodeScale3d}
-              linkOpacity={linkOpacity3d}
-              onLinkOpacity={setLinkOpacity3d}
-            />
-            <div className="pointer-events-none absolute bottom-4 left-4 rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-              Drag to rotate. Scroll to zoom. Click a node for details. The style dropdown up top restyles this view too.
-            </div>
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
+            <p className="pointer-events-none absolute bottom-4 left-4 hidden text-xs text-subtle sm:block">Drag to rotate · scroll to zoom · click a node for details</p>
+            <TopicsLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         ) : (
-          <div className="relative flex-1">
-            {!showAll && (
-              <>
-                <GraphSearch nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} />
-                <GraphToolbar
-                  showFlow
-                  onFit={() => graphRef.current?.fitTo()}
-                  onBeautify={() => setGraphLayout(graphLayout === 'radial' ? DEFAULT_LAYOUT : 'radial')}
-                  onExportPng={() => downloadDataUrl(graphRef.current?.exportPng(), `topic-graph-${brokerId}.png`)}
-                  onExportJson={() => downloadJson(graphRef.current?.exportGraph(), `topic-graph-${brokerId}.json`)}
-                  onProperties={() => setPanelOpen(true)}
-                  hasSelection={Boolean(selected)}
-                />
-              </>
-            )}
+          <div className="relative min-h-0 min-w-0 flex-1">
             {showAll ? (
-              // GPU renderer for the "show everything" view — one draw call per
+              // GPU renderer for the "show everything" view: one draw call per
               // frame plus a viewport-culled label overlay stays smooth at 60k+.
               <Suspense fallback={<RendererLoading />}>
                 <WebGLGraph data={graph} styleId={graphStyle} selectedId={selected?.id || null} onSelect={selectNode} labelDensity={labelDensity} positions={forcePositions} />
@@ -467,107 +609,53 @@ export default function TopicGraph() {
                 flow={flowEnabled}
                 activitySource={activitySource}
                 activitySize={activitySize}
-                nodeValues={showValues ? nodeValues : null}
-                matchIds={coverage?.brokerId === brokerId ? coverage.matchIds : matchIds}
+                nodeValuesRef={showValues ? nodeValuesRef : null}
+                labelDensity={labelDensity}
+                matchIds={coverageOn ? coverage.matchIds : matchIds}
                 minimap={showMinimap}
+                fitInset={FIT_INSET}
               />
             )}
-            <GraphLegend styleId={graphStyle} groups={groupsPresent} />
-            {coverage?.brokerId === brokerId && !showAll && (
-              // Coverage paint handed over from the Flows view: the highlighted
-              // trail is exactly what the chosen client actually receives.
-              <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-xl border border-accent-500/50 bg-accent-500/15 px-3 py-2 text-[11px] text-accent-200 backdrop-blur">
-                <span>{coverage.label}</span>
-                <button onClick={() => setCoverage(null)} title="Clear coverage highlight" className="rounded p-0.5 hover:bg-white/10">
-                  <X size={12} />
-                </button>
-              </div>
-            )}
-            {(graph.capped || showAll) && (
-              <div className="absolute left-4 top-16 flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => setShowAll((v) => !v)}
-                  className={clsx(
-                    'flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] backdrop-blur transition',
-                    showAll
-                      ? 'border-accent-500/60 bg-accent-500/15 text-accent-200'
-                      : 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'
-                  )}
-                >
-                  <Boxes size={13} />
-                  {showAll
-                    ? `Showing all ${graph.nodes.length.toLocaleString()} nodes`
-                    : `Show all ${brokerTopics.length.toLocaleString()} topics as nodes`}
-                </button>
-
-                {/* One unified control cluster for the big-graph view */}
-                {showAll && (
-                  <div className="flex items-stretch divide-x divide-white/10 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-[11px] backdrop-blur">
-                    <Segment>
-                      <SegLabel>Layout</SegLabel>
-                      <SegBtn active={!forcePositions} onClick={() => setForcePositions(null)} title="Deterministic radial layout">
-                        Radial
-                      </SegBtn>
-                      <SegBtn
-                        active={Boolean(forcePositions)}
-                        onClick={runForceLayout}
-                        disabled={forceBusy || graph.nodes.length > FORCE_MAX}
-                        title={
-                          graph.nodes.length > FORCE_MAX
-                            ? `Force layout supports up to ${FORCE_MAX.toLocaleString()} nodes`
-                            : 'Organic force-directed layout (computed in a Web Worker)'
-                        }
-                      >
-                        {forceBusy ? <Loader2 size={12} className="animate-spin" /> : <Waypoints size={12} />}
-                        Force
-                      </SegBtn>
-                    </Segment>
-
-                    <Segment>
-                      <SegLabel>
-                        <Tag size={11} /> Labels
-                      </SegLabel>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={labelDensity}
-                        onChange={(e) => setLabelDensity(Number(e.target.value))}
-                        className="h-1 w-20 cursor-pointer accent-accent-400"
-                        title="Label density"
-                      />
-                      <span className="w-7 tabular-nums text-slate-500">{labelDensity <= 0.001 ? 'off' : `${Math.round(labelDensity * 100)}%`}</span>
-                    </Segment>
-                  </div>
-                )}
-                {showAll && graph.nodes.length > 60000 && (
-                  <span className="rounded-lg bg-surface-900/70 px-2 py-1 text-[10px] text-slate-500 backdrop-blur">heavy — zoom in for detail</span>
-                )}
-              </div>
-            )}
-            <div className="pointer-events-none absolute bottom-4 left-4 flex flex-col gap-2">
-              {!showAll && (
-                <div className="pointer-events-auto">
-                  <ReplayScrubber messages={liveMsgs} toNodeId={replayNodeId} graphRef={graphRef} />
-                </div>
+            <div className="pointer-events-none absolute inset-x-4 top-3 z-10 flex flex-col items-start gap-2">
+              {coverageOn && (
+                // Coverage paint handed over from the Flows view: the highlighted
+                // trail is exactly what the chosen client receives.
+                <FloatingBar role="status" className="max-w-full gap-2 py-0.5 pl-2.5 pr-0.5 text-xs text-fg">
+                  <StatusDot tone="info" size={6} />
+                  <span className="truncate">{coverage.label}</span>
+                  <IconButton icon={X} size={12} label="Clear coverage highlight" className="h-7 w-7" onClick={() => setCoverage(null)} />
+                </FloatingBar>
               )}
-              <div className="rounded-xl border border-white/10 bg-surface-900/70 px-3 py-2 text-[11px] text-slate-500 backdrop-blur">
-                Drag · scroll to zoom · click for details · double-click a branch to collapse · messages animate live
-              </div>
+              {showAll && graph.nodes.length > 60000 && <CanvasNote className="mx-0 text-xs">Very large graph: zoom in for labels and detail.</CanvasNote>}
             </div>
+            {topicCount === 0 && (
+              <div className="pointer-events-none absolute inset-x-0 top-20 z-10">
+                <CanvasNote>No topics yet. They appear as soon as the broker publishes. If nothing arrives, check the subscribe filter on the MQTT Brokers page.</CanvasNote>
+              </div>
+            )}
+            {!showAll && (
+              <div className="pointer-events-none absolute bottom-4 left-4 right-4 z-10 flex items-end sm:right-auto">
+                <ReplayScrubber getMessages={getReplayMessages} toNodeId={replayNodeId} graphRef={graphRef} />
+              </div>
+            )}
+            <TopicsLegend styleId={graphStyle} groups={groupsPresent} />
           </div>
         )}
 
-        {selected && panelOpen && (
+        {view === 'tree' && !panelShown && (
+          <div className="hidden flex-1 place-items-center p-8 text-center text-sm text-muted md:grid">
+            <p className="max-w-xs">Select a topic to inspect its payload and history, or publish a test message.</p>
+          </div>
+        )}
+
+        {panelShown && (
           <TopicPanel
             node={selected}
             brokerId={brokerId}
-            messages={liveMsgs}
             graph={graph}
             onJump={(id) => {
               const n = graph.nodes.find((x) => x.id === id);
-              if (n) setSelected(n);
+              if (n) selectNode(n);
             }}
             onClose={() => setPanelOpen(false)}
           />
@@ -577,579 +665,47 @@ export default function TopicGraph() {
   );
 }
 
+// Fit-to-view keeps the graph clear of the replay control and legend at the bottom.
+const FIT_INSET = { top: 40, right: 40, bottom: 88, left: 40 };
 
-// Segmented-toolbar primitives for the unified big-graph control cluster.
-function Segment({ children }) {
-  return <div className="flex items-center gap-1.5 px-2 py-1.5">{children}</div>;
-}
-function SegLabel({ children }) {
-  return <span className="flex items-center gap-1 pr-0.5 text-[10px] uppercase tracking-wide text-slate-500">{children}</span>;
-}
-function SegBtn({ active, onClick, disabled, title, children }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={clsx(
-        'flex items-center gap-1 rounded-md px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-40',
-        active ? 'bg-accent-500/20 text-accent-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-// Legend + group labels now live in components/GraphLegend.jsx (shared).
-
-// Look-and-feel controls for the 3D view (Beautify + auto-rotate + size/link sliders).
-function Graph3DControls({ beautify, onBeautify, autoRotate, onAutoRotate, nodeScale, onNodeScale, linkOpacity, onLinkOpacity }) {
+/**
+ * Quiet inline key for the node colours of the current style (groups present
+ * in this graph only), bottom-right of the canvas; folds to a button on phones.
+ */
+function TopicsLegend({ styleId, groups }) {
+  const tokens = useCanvasTokens();
   const [open, setOpen] = useState(false);
+  const style = resolveGraphStyle(styleId, tokens);
+  const present = GROUP_ORDER.filter((g) => groups.has(g));
+  if (present.length === 0) return null;
+  const items = present.map((g) => (
+    <span key={g} className="inline-flex items-center gap-1.5">
+      <svg width="10" height="10" aria-hidden="true">
+        {style.node.square ? <rect x="1" y="1" width="8" height="8" fill={groupColor(g, style.palette)} /> : <circle cx="5" cy="5" r="4" fill={groupColor(g, style.palette)} />}
+      </svg>
+      {GROUP_LABELS[g] || g}
+    </span>
+  ));
   return (
-    <div className="absolute left-4 top-4 z-10 w-52 overflow-hidden rounded-xl border border-white/10 bg-surface-900/80 text-slate-300 backdrop-blur">
-      <div className="flex items-stretch">
+    <div className="pointer-events-none absolute bottom-4 right-4 z-10 flex max-w-[calc(100%-2rem)] flex-col items-end gap-1">
+      <div role="group" aria-label="Node colours" className="pointer-events-auto hidden max-w-md flex-wrap items-center justify-end gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay md:flex">
+        {items}
+      </div>
+      <div className="pointer-events-auto flex flex-col items-end gap-1 md:hidden">
+        {open && (
+          <div id="topics-key" role="group" aria-label="Node colours" className="flex max-w-[16rem] flex-wrap gap-x-3 gap-y-1 rounded-md border border-line bg-panel px-2.5 py-1.5 text-xs text-muted shadow-overlay">
+            {items}
+          </div>
+        )}
         <button
-          onClick={onBeautify}
-          title="Depth-graded colours, glowing links, and a slow spin"
-          className={clsx(
-            'flex flex-1 items-center gap-1.5 px-3 py-2 text-sm font-medium transition',
-            beautify ? 'bg-accent-500/20 text-accent-200' : 'text-slate-300 hover:text-slate-100'
-          )}
-        >
-          <Sparkles size={15} className={beautify ? 'text-accent-300' : ''} /> Beautify
-        </button>
-        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="topics-key"
           onClick={() => setOpen((v) => !v)}
-          title="Look and feel"
-          className="border-l border-white/10 px-2.5 text-slate-400 transition hover:text-slate-200"
+          className="inline-flex h-8 items-center rounded-md border border-line bg-panel px-2.5 text-xs font-medium text-muted shadow-overlay hover:text-fg"
         >
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          Key
         </button>
-      </div>
-      {open && (
-        <div className="space-y-3 border-t border-white/5 px-3 py-3">
-          <button
-            onClick={onAutoRotate}
-            className={clsx(
-              'flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition',
-              autoRotate ? 'border-accent-500/40 bg-accent-500/15 text-accent-200' : 'border-white/10 text-slate-400 hover:text-slate-200'
-            )}
-          >
-            <RotateCw size={13} className={autoRotate ? 'text-accent-300' : ''} /> Auto-rotate
-          </button>
-          <label className="block">
-            <span className="mb-1 flex justify-between text-[11px] text-slate-400">
-              Node size <span className="tabular-nums text-slate-500">{nodeScale.toFixed(1)}×</span>
-            </span>
-            <input type="range" min="0.5" max="2" step="0.1" value={nodeScale} onChange={(e) => onNodeScale(Number(e.target.value))} className="w-full accent-accent-500" />
-          </label>
-          <label className="block">
-            <span className="mb-1 flex justify-between text-[11px] text-slate-400">
-              Links <span className="tabular-nums text-slate-500">{Math.round(linkOpacity * 100)}%</span>
-            </span>
-            <input type="range" min="0.05" max="0.8" step="0.05" value={linkOpacity} onChange={(e) => onLinkOpacity(Number(e.target.value))} className="w-full accent-accent-500" />
-          </label>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Resolve a link endpoint whether it's still an id string or a d3-mutated node object.
-const endId = (e) => (e && typeof e === 'object' ? e.id : e);
-
-// One labelled row in the Location card (Parent / Siblings / Children).
-function RelRow({ label, children }) {
-  return (
-    <div className="mb-2 flex items-start gap-2 last:mb-0">
-      <span className="mt-1 w-16 shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</span>
-      <div className="min-w-0 flex-1">{children}</div>
-    </div>
-  );
-}
-
-// A jump-to-node chip for a neighbouring topic.
-function RelChip({ node, onJump }) {
-  return (
-    <button
-      onClick={() => onJump?.(node.id)}
-      title={`Jump to ${node.meta?.fullTopic || node.label}`}
-      className="mono inline-flex max-w-full items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[11px] text-slate-300 transition hover:border-accent-500/40 hover:bg-accent-500/10 hover:text-accent-200"
-    >
-      <span className="truncate">{node.label}</span>
-    </button>
-  );
-}
-
-function TopicPanel({ node, brokerId, messages, graph, onJump, onClose }) {
-  const meta = node.meta || {};
-  const fullTopic = meta.fullTopic;
-  const [history, setHistory] = useState([]);
-  const [publishValue, setPublishValue] = useState('');
-  const [qos, setQos] = useState(0);
-  const [retain, setRetain] = useState(false);
-  const [diffSel, setDiffSel] = useState([]); // up to two message ids for payload diff
-  const [historyOpen, setHistoryOpen] = useState(false); // full history-chart popup
-  const [expanded, setExpanded] = useState(false); // blow the panel up to a large modal
-
-  useEffect(() => {
-    if (!fullTopic) return;
-    api
-      .topicMessages(brokerId, fullTopic, 30)
-      .then((res) => setHistory(res.messages.slice().reverse()))
-      .catch(() => setHistory([]));
-  }, [brokerId, fullTopic]);
-
-  // Esc restores the expanded panel to its docked size.
-  useEffect(() => {
-    if (!expanded) return undefined;
-    const onKey = (e) => e.key === 'Escape' && setExpanded(false);
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [expanded]);
-
-  // Merge in live messages for this exact topic
-  const live = messages.filter((m) => m.topic === fullTopic);
-  const merged = [...live, ...history.filter((h) => !live.some((l) => l.id === h.id))].slice(0, 40);
-  const latest = merged[0];
-
-  const publish = async () => {
-    try {
-      await api.publish(brokerId, fullTopic, publishValue, { qos, retain });
-      toast.success(retain ? 'Published (retained)' : 'Published');
-      setPublishValue('');
-    } catch (e) {
-      toast.error(e.message);
-    }
-  };
-
-  const deleteRetained = async () => {
-    // This publishes an empty retained message to the LIVE broker — every other
-    // consumer of this topic loses its retained value (device configs, Sparkplug
-    // STATE, last-known values). Confirm the exact topic first.
-    if (!window.confirm(`Clear the retained message on "${fullTopic}"?\n\nThis publishes an empty retained payload to the broker. Every other client subscribed to this topic will lose its retained value.`)) {
-      return;
-    }
-    try {
-      await api.publish(brokerId, fullTopic, '', { retain: true });
-      toast.success('Cleared retained message');
-    } catch (e) {
-      toast.error(e.message);
-    }
-  };
-
-  const copy = (text) => {
-    navigator.clipboard?.writeText(text).then(
-      () => toast.success('Copied'),
-      () => toast.error('Copy failed')
-    );
-  };
-
-  // Numeric value history (oldest → newest), with timestamps for a real time
-  // axis in the history popup.
-  const numericPoints = merged
-    .slice()
-    .reverse()
-    .map((m) => ({ ts: new Date(m.timestamp).getTime(), v: numericFromPayload(m.payload) }))
-    .filter((p) => p.v != null && Number.isFinite(p.ts));
-  const numericSeries = numericPoints.map((p) => p.v);
-
-  // Neighbours in the topic tree, from the graph's parent→child links: the
-  // parent, the siblings under it, and this node's own children. Each is
-  // clickable to jump the selection there.
-  const links = graph?.links || [];
-  const nodeById = (id) => graph?.nodes.find((n) => n.id === id) || null;
-  const parentId = links.find((l) => endId(l.target) === node.id) ? endId(links.find((l) => endId(l.target) === node.id).source) : null;
-  const parentNode = parentId ? nodeById(parentId) : null;
-  const siblings = parentId
-    ? links.filter((l) => endId(l.source) === parentId).map((l) => endId(l.target)).filter((id) => id !== node.id).map(nodeById).filter(Boolean)
-    : [];
-  const children = links.filter((l) => endId(l.source) === node.id).map((l) => endId(l.target)).map(nodeById).filter(Boolean);
-  const segments = fullTopic ? fullTopic.split('/') : [];
-
-  const inner = (
-    <>
-      <div className="flex items-start justify-between gap-2 border-b border-white/5 px-4 py-3">
-        <div className="min-w-0">
-          <p className="text-xs uppercase tracking-wide text-slate-500">
-            {meta.isLeaf ? 'Topic' : node.kind === 'broker' ? 'Broker' : 'Topic branch'}
-          </p>
-          <div className="flex items-center gap-1.5">
-            <p className="mono mt-0.5 break-all text-sm font-medium text-slate-100">{fullTopic || node.label}</p>
-            {fullTopic && (
-              <button onClick={() => copy(fullTopic)} title="Copy topic" className="shrink-0 text-slate-500 hover:text-slate-300">
-                <Copy size={13} />
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            title={expanded ? 'Restore panel (Esc)' : 'Expand panel to a larger view'}
-            aria-label={expanded ? 'Restore panel' : 'Expand panel'}
-            className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300"
-          >
-            {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-          </button>
-          <button onClick={onClose} aria-label="Close panel" className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-300">
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        {meta.isLeaf && (
-          <div className="grid grid-cols-3 gap-2">
-            <Stat icon={Hash} label="Messages" value={meta.messageCount ?? '—'} />
-            <Stat icon={Gauge} label="Type" value={<Badge>{meta.type}</Badge>} />
-            <Stat
-              icon={Clock}
-              label="Last seen"
-              value={meta.lastActivity ? formatDistanceToNow(new Date(meta.lastActivity), { addSuffix: true }) : '—'}
-            />
-          </div>
-        )}
-
-        {/* Location in the topic tree: a clickable breadcrumb plus the parent,
-            siblings, and children as jump targets. */}
-        {fullTopic && (parentNode || siblings.length > 0 || children.length > 0 || segments.length > 1) && (
-          <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Location</p>
-            <div className="mb-3 flex flex-wrap items-center text-[11px]">
-              {segments.map((seg, i) => {
-                const last = i === segments.length - 1;
-                const path = segments.slice(0, i + 1).join('/');
-                return (
-                  <span key={i} className="flex items-center">
-                    {i > 0 && <span className="px-0.5 text-slate-600">/</span>}
-                    {last ? (
-                      <span className="mono font-medium text-slate-200">{seg}</span>
-                    ) : (
-                      <button
-                        onClick={() => onJump?.(`topic:${brokerId}:${path}`)}
-                        title={`Jump to ${path}`}
-                        className="mono rounded px-1 py-0.5 text-slate-400 transition hover:bg-white/10 hover:text-accent-300"
-                      >
-                        {seg}
-                      </button>
-                    )}
-                  </span>
-                );
-              })}
-            </div>
-            {parentNode && (
-              <RelRow label="Parent">
-                <RelChip node={parentNode} onJump={onJump} />
-              </RelRow>
-            )}
-            {siblings.length > 0 && (
-              <RelRow label={`Siblings ${siblings.length}`}>
-                <div className="flex flex-wrap gap-1">
-                  {siblings.slice(0, 30).map((s) => (
-                    <RelChip key={s.id} node={s} onJump={onJump} />
-                  ))}
-                  {siblings.length > 30 && <span className="self-center text-[10px] text-slate-500">+{siblings.length - 30} more</span>}
-                </div>
-              </RelRow>
-            )}
-            {children.length > 0 && (
-              <RelRow label={`Children ${children.length}`}>
-                <div className="flex flex-wrap gap-1">
-                  {children.slice(0, 30).map((c) => (
-                    <RelChip key={c.id} node={c} onJump={onJump} />
-                  ))}
-                  {children.length > 30 && <span className="self-center text-[10px] text-slate-500">+{children.length - 30} more</span>}
-                </div>
-              </RelRow>
-            )}
-          </div>
-        )}
-
-        {latest && (
-          <Card className="p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Latest payload</p>
-              <button
-                onClick={() =>
-                  copy(typeof latest.payload === 'object' ? JSON.stringify(latest.payload) : String(latest.payload))
-                }
-                title="Copy value"
-                className="text-slate-500 hover:text-slate-300"
-              >
-                <Copy size={13} />
-              </button>
-            </div>
-            {latest.sparkplug ? (
-              <JsonView data={latest.sparkplug} name="sparkplug" />
-            ) : typeof latest.payload === 'object' ? (
-              <JsonView data={latest.payload} />
-            ) : (
-              <pre className="mono max-h-56 overflow-auto whitespace-pre-wrap break-all text-xs text-emerald-300">
-                {String(latest.payload)}
-              </pre>
-            )}
-            {numericSeries.length >= 2 && <PanelPlot series={numericSeries} onExpand={() => setHistoryOpen(true)} />}
-          </Card>
-        )}
-
-        {historyOpen && (
-          <HistoryChartModal topic={fullTopic} points={numericPoints} onClose={() => setHistoryOpen(false)} />
-        )}
-
-        {meta.isLeaf && (
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Publish</p>
-              <div className="flex items-center gap-2">
-                <select
-                  value={qos}
-                  onChange={(e) => setQos(Number(e.target.value))}
-                  className="rounded-md border border-white/10 bg-surface-950/60 px-1.5 py-0.5 text-[11px] text-slate-300"
-                  title="QoS"
-                >
-                  <option value={0}>QoS 0</option>
-                  <option value={1}>QoS 1</option>
-                  <option value={2}>QoS 2</option>
-                </select>
-                <label className="flex items-center gap-1 text-[11px] text-slate-400">
-                  <input type="checkbox" checked={retain} onChange={(e) => setRetain(e.target.checked)} /> retain
-                </label>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Input
-                value={publishValue}
-                onChange={(e) => setPublishValue(e.target.value)}
-                placeholder="Payload…"
-                onKeyDown={(e) => e.key === 'Enter' && publish()}
-              />
-              <Button onClick={publish} disabled={!publishValue}>
-                <Send size={14} />
-              </Button>
-            </div>
-            <button
-              onClick={deleteRetained}
-              className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-rose-300"
-            >
-              <Trash2 size={12} /> Clear retained message
-            </button>
-          </div>
-        )}
-
-        {merged.length > 0 && (
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                History ({merged.length})
-              </p>
-              <span className="text-[10px] text-slate-600">
-                {diffSel.length === 0 ? 'pick two to diff' : diffSel.length === 1 ? 'pick one more' : ''}
-              </span>
-            </div>
-            <PayloadDiffCard messages={merged} sel={diffSel} onClear={() => setDiffSel([])} />
-            <div className="space-y-1">
-              {merged.map((m) => {
-                const inDiff = diffSel.includes(m.id);
-                return (
-                  <div
-                    key={m.id}
-                    className={clsx(
-                      'rounded-lg border px-2.5 py-1.5',
-                      inDiff ? 'border-accent-500/40 bg-accent-500/10' : 'border-white/5 bg-white/[0.02]'
-                    )}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-slate-500">
-                        {new Date(m.timestamp).toLocaleTimeString()}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-[11px] text-slate-600">QoS {m.qos}</span>
-                        <button
-                          title={inDiff ? 'Remove from diff' : 'Select for diff'}
-                          onClick={() =>
-                            setDiffSel((prev) =>
-                              prev.includes(m.id) ? prev.filter((id) => id !== m.id) : [...prev.slice(-1), m.id]
-                            )
-                          }
-                          className={clsx('rounded p-0.5', inDiff ? 'text-accent-300' : 'text-slate-600 hover:text-slate-300')}
-                        >
-                          <GitCompareArrows size={12} />
-                        </button>
-                      </span>
-                    </div>
-                    <p className="mono mt-0.5 truncate text-xs text-slate-300">
-                      {typeof m.payload === 'object' ? JSON.stringify(m.payload) : String(m.payload)}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    </>
-  );
-
-  // Expanded: reflow the same content into a large centered modal so the
-  // decoded Sparkplug metrics and the full history list have room to breathe.
-  if (expanded) {
-    return (
-      <div
-        className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-6 backdrop-blur-sm"
-        onClick={() => setExpanded(false)}
-      >
-        <div
-          className="flex h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-surface-900 shadow-2xl"
-          onClick={(e) => e.stopPropagation()}
-          role="dialog"
-          aria-label="Topic detail"
-        >
-          {inner}
-        </div>
-      </div>
-    );
-  }
-  return <aside className="flex w-96 shrink-0 flex-col border-l border-white/5 bg-surface-900/50">{inner}</aside>;
-}
-
-// Structural diff of two selected history messages (older → newer). Shows what
-// actually changed between publishes — the fastest way to spot a misbehaving
-// field in a fat JSON payload.
-function PayloadDiffCard({ messages, sel, onClear }) {
-  if (sel.length !== 2) return null;
-  const pair = messages.filter((m) => sel.includes(m.id));
-  if (pair.length !== 2) return null;
-  const [older, newer] = pair.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-  const changes = diffPayloads(older.payload, newer.payload);
-  const KIND_CLASS = { added: 'text-emerald-300', removed: 'text-rose-300', changed: 'text-amber-300' };
-  return (
-    <Card className="mb-2 p-2.5">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-          <GitCompareArrows size={12} className="text-accent-300" /> Payload diff
-        </span>
-        <span className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-500">
-            {new Date(older.timestamp).toLocaleTimeString()} → {new Date(newer.timestamp).toLocaleTimeString()}
-          </span>
-          <button onClick={onClear} className="text-slate-500 hover:text-slate-300">
-            <X size={12} />
-          </button>
-        </span>
-      </div>
-      {changes.length === 0 ? (
-        <p className="text-[11px] text-slate-500">Payloads are identical.</p>
-      ) : (
-        <div className="max-h-48 space-y-0.5 overflow-y-auto font-mono text-[11px]">
-          {changes.slice(0, 100).map((c, i) => (
-            <div key={i} className="flex items-baseline gap-1.5">
-              <span className={`shrink-0 ${KIND_CLASS[c.kind]}`}>{c.kind === 'added' ? '+' : c.kind === 'removed' ? '−' : '±'}</span>
-              <span className="shrink-0 text-slate-400">{c.path}</span>
-              <span className="truncate text-slate-500">
-                {c.kind === 'added'
-                  ? formatDiffValue(c.to)
-                  : c.kind === 'removed'
-                    ? formatDiffValue(c.from)
-                    : `${formatDiffValue(c.from)} → ${formatDiffValue(c.to)}`}
-              </span>
-            </div>
-          ))}
-          {changes.length > 100 && <p className="text-slate-500">…{changes.length - 100} more changes</p>}
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function Stat({ icon: Icon, label, value }) {
-  return (
-    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2.5">
-      <Icon size={14} className="text-slate-500" />
-      <p className="mt-1.5 text-sm font-medium text-slate-200">{value}</p>
-      <p className="text-[11px] text-slate-500">{label}</p>
-    </div>
-  );
-}
-
-// Compact value-history sparkline for the detail panel, with an expand action.
-function PanelPlot({ series, onExpand }) {
-  const min = Math.min(...series);
-  const max = Math.max(...series);
-  return (
-    <div className="mt-3 rounded-lg border border-white/5 bg-surface-950/50 p-2">
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-2xs font-semibold uppercase tracking-wide text-slate-500">Value history</span>
-        {onExpand && (
-          <button onClick={onExpand} className="flex items-center gap-1 rounded px-1.5 py-0.5 text-2xs text-slate-400 transition hover:bg-white/5 hover:text-accent-300">
-            <Maximize2 size={11} /> Expand
-          </button>
-        )}
-      </div>
-      <div className="cursor-pointer" onClick={onExpand}>
-        <Sparkline values={series} height={72} />
-      </div>
-      <div className="mono mt-1 flex justify-between text-2xs text-slate-500">
-        <span>min {fmtNum(min)}</span>
-        <span>{series.length} pts</span>
-        <span>max {fmtNum(max)}</span>
-      </div>
-    </div>
-  );
-}
-
-// Full value-history chart in a popup — the shared Recharts time-series (grid,
-// axes, hover tooltip) plus summary stats. Built from the in-memory
-// recent-message ring for the topic; no historian required.
-function HistoryChartModal({ topic, points, onClose }) {
-  useEffect(() => {
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const values = points.map((p) => p.v);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = values.reduce((s, v) => s + v, 0) / values.length;
-  const last = points[points.length - 1];
-  const tspan = points[points.length - 1].ts - points[0].ts || 1;
-  const durS = Math.max(1, Math.round(tspan / 1000));
-  const durLabel = durS < 90 ? `${durS}s` : durS < 5400 ? `${Math.round(durS / 60)}m` : `${(durS / 3600).toFixed(1)}h`;
-  const chartSeries = [{ tag: topic, points: points.map((p) => [p.ts, p.v]) }];
-
-  const Stat = ({ label, value }) => (
-    <div>
-      <p className="text-2xs uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mono text-sm font-semibold text-slate-100">{value}</p>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-6 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-3xl rounded-2xl border border-white/10 bg-surface-900 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Value history">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-2xs uppercase tracking-wide text-slate-500">Value history · last {durLabel}</p>
-            <p className="mono truncate text-sm font-medium text-slate-100">{topic}</p>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/5 hover:text-slate-200">
-            <X size={16} />
-          </button>
-        </div>
-        <div className="grid grid-cols-4 gap-3 rounded-xl border border-white/5 bg-surface-950/40 p-3">
-          <Stat label="Last" value={fmtNum(last.v)} />
-          <Stat label="Min" value={fmtNum(min)} />
-          <Stat label="Max" value={fmtNum(max)} />
-          <Stat label="Avg" value={fmtNum(avg)} />
-        </div>
-        <div className="mt-3 rounded-xl border border-white/5 bg-surface-950/40 p-2">
-          <TimeSeriesChart series={chartSeries} height={280} />
-          <div className="mono mt-1 px-1 text-center text-2xs text-slate-500">
-            {points.length} points · from the live message ring
-          </div>
-        </div>
       </div>
     </div>
   );

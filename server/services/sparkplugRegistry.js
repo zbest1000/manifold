@@ -31,6 +31,7 @@ class SparkplugRegistry {
     this.endpointCount = 0; // edges + devices (bounded by MAX_ENDPOINTS)
     this.droppedEndpoints = 0; // endpoints refused past the cap
     this.metricOverflows = 0; // endpoints that hit MAX_METRICS_PER_ENDPOINT
+    this.seqGaps = 0; // out-of-sequence messages across all edge nodes
   }
 
   _event(evt) {
@@ -54,7 +55,7 @@ class SparkplugRegistry {
         this.droppedEndpoints++;
         return null;
       }
-      e = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map(), devices: new Map() };
+      e = { id, online: false, lastBirth: null, lastDeath: null, lastSeen: null, msgCount: 0, metrics: new Set(), aliasMap: new Map(), devices: new Map(), lastSeq: null, seqGaps: 0 };
       group.edgeNodes.set(id, e);
       this.endpointCount++;
     }
@@ -162,6 +163,8 @@ class SparkplugRegistry {
       target.msgCount++;
     }
 
+    this._trackSeq(edge, type, decoded);
+
     if (type === 'NBIRTH' || type === 'DBIRTH') {
       target.online = true;
       target.lastBirth = ts;
@@ -222,6 +225,28 @@ class SparkplugRegistry {
   }
 
   /**
+   * Sparkplug sequence numbers: one 0-255 counter per edge node across NBIRTH,
+   * NDATA, DBIRTH, DDATA and DDEATH (NDEATH carries none). NBIRTH restarts the
+   * sequence. A seq other than lastSeq + 1 (mod 256) is a gap: upstream loss,
+   * or a message lost before it reached the registry. Needs every message, in
+   * order — which is why the manager delivers Sparkplug un-coalesced.
+   */
+  _trackSeq(edge, type, decoded) {
+    if (type === 'NDEATH') {
+      edge.lastSeq = null;
+      return;
+    }
+    if (!decoded || decoded.seq === undefined || decoded.seq === null) return;
+    const seq = Number(decoded.seq);
+    if (!Number.isInteger(seq) || seq < 0 || seq > 255) return;
+    if (type !== 'NBIRTH' && edge.lastSeq !== null && seq !== (edge.lastSeq + 1) % 256) {
+      edge.seqGaps++;
+      this.seqGaps++;
+    }
+    edge.lastSeq = seq;
+  }
+
+  /**
    * Stamp resolved names onto a decoded metrics array in place, using the
    * endpoint's learned alias map. Called by the manager on messageObj.sparkplug
    * before the DataOps tap emit, so pipelines / sparkplugFlatten see real metric
@@ -279,6 +304,8 @@ class SparkplugRegistry {
           lastDeath: e.lastDeath,
           lastSeen: e.lastSeen,
           msgCount: e.msgCount,
+          lastSeq: e.lastSeq,
+          seqGaps: e.seqGaps,
           metrics: Array.from(e.metrics),
           devices
         });
@@ -308,7 +335,8 @@ class SparkplugRegistry {
         // Surface the safety bounds when they bite, so truncation is visible
         // rather than silent.
         ...(this.droppedEndpoints ? { droppedEndpoints: this.droppedEndpoints } : {}),
-        ...(this.metricOverflows ? { metricOverflows: this.metricOverflows } : {})
+        ...(this.metricOverflows ? { metricOverflows: this.metricOverflows } : {}),
+        ...(this.seqGaps ? { seqGaps: this.seqGaps } : {})
       }
     };
   }
