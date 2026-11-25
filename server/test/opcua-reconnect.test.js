@@ -118,11 +118,14 @@ test('lost-for-good connection is retried; state sequence has no duplicates; mon
   const first = world.clients[0];
   first.emit('connection_lost'); // node-opcua retrying internally
   first.emit('connection_lost'); // duplicate must not duplicate the state
-  first.emit('close'); // gave up for good
-  assert.strictEqual(mgr.getConnections()[0].monitoredCount, 0);
+  first.emit('close');
+  // node-opcua's own reconnection is off: the manager owns the retry; the two nodes wait for the next session
+  assert.strictEqual(mgr.getConnections()[0].status, 'reconnecting');
+  assert.strictEqual(mgr.connections.get('c1').monitored.size, 0);
+  assert.strictEqual(mgr.getConnections()[0].monitoredCount, 2);
 
   await until(() => mgr.getConnections()[0].status === 'connected');
-  await until(() => mgr.getConnections()[0].monitoredCount === 2);
+  await until(() => states.length === 3 && mgr.connections.get('c1').monitored.size === 2);
   assert.deepStrictEqual(
     states.map((s) => s.split(':')[0]),
     ['online', 'offline', 'online']
@@ -132,16 +135,18 @@ test('lost-for-good connection is retried; state sequence has no duplicates; mon
   await mgr.shutdown();
 });
 
-test('connection_reestablished recovers monitors and goes online once', async () => {
+test('connection_lost hands over to the supervisor: fresh client, monitors recovered once, online once', async () => {
   const world = makeWorld();
   const { mgr, states } = makeManager(world);
   await mgr.connect({ id: 'c1', endpointUrl: 'opc.tcp://x' });
   await mgr.monitor('c1', 'ns=2;s=A');
   const c = world.clients[0];
   c.emit('connection_lost');
-  c.emit('connection_reestablished');
+  c.emit('connection_reestablished'); // a stale event of the old client changes nothing
   await until(() => states.length === 3);
   assert.deepStrictEqual(states.map((s) => s.split(':')[0]), ['online', 'offline', 'online']);
+  assert.strictEqual(world.clients.length, 2);
+  assert.ok(c.disconnected);
   assert.strictEqual(world.items.length, 2);
   await mgr.shutdown();
 });
@@ -221,7 +226,7 @@ test('socket values are coalesced per node; in-process value event is immediate'
   for (let i = 1; i <= 5; i++) world.items[0].emit('changed', dv(i));
   assert.strictEqual(direct.length, 5); // immediate, unchanged
   assert.deepStrictEqual(Object.keys(direct[0]).sort(), [
-    'connectionId', 'dataType', 'nodeId', 'serverTimestamp', 'sourceTimestamp', 'status', 'value'
+    'arrayType', 'connectionId', 'dataType', 'nodeId', 'serverTimestamp', 'sourceTimestamp', 'status', 'statusCode', 'value'
   ]);
   assert.strictEqual(emitted.filter(([n]) => n === 'opcua-value').length, 0);
   await sleep(60);

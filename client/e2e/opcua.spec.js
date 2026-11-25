@@ -2,9 +2,9 @@ import { test, expect } from './fixtures.js';
 import { api } from './support.js';
 
 /**
- * OPC UA, failure paths only: no OPC UA server is available to the suite (node-opcua's server is not a
- * dependency), so what is covered is validation before anything is sent (and not before the first
- * attempt), Enter to submit, and what a refused connection leaves behind.
+ * OPC UA connect form, failure paths: validation before anything is sent (and not before the first
+ * attempt), Enter to submit, and what a refused connection leaves behind. The live paths against a
+ * real OPC UA server are in opcua-live.spec.js and opcua-mapping.spec.js.
  */
 test('the connect form validates before sending, submits with Enter, and a refused connection leaves no ghost row', async ({ page }) => {
   await page.goto('/opcua');

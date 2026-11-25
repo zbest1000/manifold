@@ -27,7 +27,9 @@ const { encodePayload } = require('./sparkplugEncoder');
  * spec the reborn host must republish its STATE with a fresh timestamp.
  *
  * Connection config comes from the profile store (the manager doesn't retain
- * broker passwords, profiles do).
+ * broker passwords, profiles do). Running host and edge-node sessions follow
+ * edits and removals of their broker profile on their own (checkProfiles):
+ * clean offline STATE / DDEATH+NDEATH on the old connection, then the new one.
  */
 
 /**
@@ -58,95 +60,213 @@ function configSignature(cfg) {
   );
 }
 
+/** End an MQTT client gracefully (queued packets flush), forcibly after `ms`. */
+function endClient(client, ms = 2000) {
+  if (!client) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        client.end(true);
+      } catch {
+        /* already closed */
+      }
+      resolve();
+    }, ms);
+    timer.unref?.();
+    try {
+      client.end(false, {}, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
+
 class SparkplugPublisher {
-  constructor({ profiles }) {
+  /**
+   * @param profiles   profile store (brokers(), rev)
+   * @param watchMs    how often running sessions are checked against their
+   *                   broker profile (edits and removals); 0 = only on use
+   */
+  constructor({ profiles, watchMs = 1000 }) {
     this.profiles = profiles;
     this.sessions = new Map(); // `${brokerId} ${group} ${edge}` -> session
     this.hostSessions = new Map(); // `${brokerId} ${hostId}` -> host session
+    this._watchMs = watchMs;
+    this._watchTimer = null;
+    this._seenRev = undefined;
+    this._switching = new Set(); // in-flight switch promises (stop() waits for them)
+    this._stopped = false;
+  }
+
+  _brokerEntry(brokerId) {
+    return this.profiles.brokers().find((b) => b.config?.id === brokerId) || null;
   }
 
   _brokerConfig(brokerId) {
-    const entry = this.profiles.brokers().find((b) => b.config?.id === brokerId);
+    const entry = this._brokerEntry(brokerId);
     if (!entry) throw new Error(`broker ${brokerId} has no saved profile (needed for a dedicated Sparkplug connection)`);
     return entry.config;
   }
 
+  // ---- following broker profile edits ----------------------------------------
+  //
+  // Every running edge-node and host session remembers the signature of the
+  // broker settings it connected with. A cheap tick (and every use of a
+  // session) compares it with the profile store once its revision moved: an
+  // edited profile (host, port, credentials, TLS...) gets a clean offline
+  // message on the OLD connection (DDEATH/NDEATH, or the retained offline
+  // STATE) and only then a new connection with the new settings; a removed
+  // profile gets the clean offline message and the session ends.
+
+  _ensureWatch() {
+    if (this._watchTimer || !this._watchMs || this._stopped) return;
+    this._watchTimer = setInterval(() => this.checkProfiles(), this._watchMs);
+    this._watchTimer.unref?.();
+  }
+
+  _stopWatchIfIdle() {
+    if (this._watchTimer && this.sessions.size === 0 && this.hostSessions.size === 0) {
+      clearInterval(this._watchTimer);
+      this._watchTimer = null;
+    }
+  }
+
+  /** Compare running sessions with their broker profiles; switch or end the ones that changed. */
+  checkProfiles() {
+    const rev = this.profiles.rev;
+    if (rev !== undefined && rev === this._seenRev) return;
+    this._seenRev = rev;
+    for (const session of [...this.sessions.values(), ...this.hostSessions.values()]) {
+      if (session.switching || session.signature === undefined) continue; // not built from a profile (tests inject such)
+      const entry = this._brokerEntry(session.brokerId);
+      if (!entry) this._track(this._retire(session, null));
+      else if (configSignature(entry.config) !== session.signature) this._track(this._retire(session, entry.config));
+    }
+    this._stopWatchIfIdle();
+  }
+
+  _track(promise) {
+    this._switching.add(promise);
+    promise.finally(() => this._switching.delete(promise));
+    return promise;
+  }
+
+  /**
+   * Take a session off its current connection with a clean offline message,
+   * then reconnect it with `cfg` (edited profile) or drop it (cfg null).
+   */
+  async _retire(session, cfg) {
+    const isHost = session.hostId !== undefined;
+    const map = isHost ? this.hostSessions : this.sessions;
+    session.switching = true;
+    const client = session.client;
+    const wasOnline = session.online;
+    session.online = false;
+    if (!cfg) map.delete(session.key);
+    try {
+      if (wasOnline && client) {
+        if (isHost) await this._publishState(session, false, client);
+        else this._deathCertificates(session, client);
+      }
+      await endClient(client);
+    } finally {
+      session.switching = false;
+    }
+    if (!cfg || this._stopped || map.get(session.key) !== session) return;
+    if (isHost) this._connectHost(session, cfg);
+    else this._connectEdge(session, cfg);
+  }
+
+  _deathCertificates(s, client) {
+    for (const [deviceId, d] of s.devices) {
+      if (!d.birthed) continue;
+      d.birthed = false;
+      this._publish(s, `spBv1.0/${s.group}/DDEATH/${s.edge}/${deviceId}`, { seq: this._nextSeq(s), metrics: [] }, client);
+    }
+    this._publish(s, `spBv1.0/${s.group}/NDEATH/${s.edge}`, { seq: null, metrics: [{ name: 'bdSeq', value: s.bdSeq, isBdSeq: true }] }, client);
+  }
+
+  // ---- edge-node sessions ------------------------------------------------------
+
   _session(brokerId, group, edge) {
     const key = `${brokerId} ${group} ${edge}`;
-    let s = this.sessions.get(key);
-    // Fast path: nothing in the profile store changed since this session was
-    // checked, so its broker config cannot have changed either.
-    if (s && (s.signature === undefined || s.rev === this.profiles.rev)) return s;
-    const cfg = this._brokerConfig(brokerId);
-    const signature = configSignature(cfg);
-    if (s && s.signature === signature) {
-      s.rev = this.profiles.rev;
-      return s;
-    }
+    const s = this.sessions.get(key);
     if (s) {
-      // The broker profile was edited: never keep publishing with the old
-      // host or credentials.
-      try {
-        s.client?.end(true);
-      } catch {
-        /* already closed */
-      }
-      this.sessions.delete(key);
+      // A moved revision may mean an edited or removed broker profile: switch
+      // now instead of publishing one more message with the old settings.
+      if (this.profiles.rev === undefined || this.profiles.rev !== this._seenRev) this.checkProfiles();
+      if (this.sessions.get(key) === s) return s;
     }
-
-    const bdSeq = Math.floor(Math.random() * 256);
-    s = {
+    const cfg = this._brokerConfig(brokerId);
+    const fresh = {
       key,
       brokerId,
       group,
       edge,
-      bdSeq,
+      bdSeq: 0,
       seq: 0,
       online: false,
+      switching: false,
       devices: new Map(), // deviceId -> { metricNames: Set, lastValues: Map }
       stats: { published: 0, errors: 0, rebirths: 0, lastError: null },
       client: null
     };
+    this.sessions.set(key, fresh);
+    if (this._seenRev === undefined) this._seenRev = this.profiles.rev;
+    this._connectEdge(fresh, cfg);
+    this._ensureWatch();
+    return fresh;
+  }
 
+  /** (Re)connect an edge-node session; a new connection is a new bdSeq session. */
+  _connectEdge(s, cfg) {
+    const { group, edge } = s;
+    s.bdSeq = Math.floor(Math.random() * 256);
+    s.signature = configSignature(cfg);
+    s.online = false;
+    for (const d of s.devices.values()) d.birthed = false; // births flow on connect
     const { url, options } = connectTarget(cfg);
-    s.signature = signature;
-    s.rev = this.profiles.rev;
-    s.client = mqtt.connect(url, {
+    const client = mqtt.connect(url, {
       ...options,
       clientId: `manifold_spb_${edge}_${Date.now().toString(36)}`,
       clean: true,
       reconnectPeriod: 5000,
       will: {
         topic: `spBv1.0/${group}/NDEATH/${edge}`,
-        payload: encodePayload({ metrics: [{ name: 'bdSeq', value: bdSeq, isBdSeq: true }], seq: null }),
+        payload: encodePayload({ metrics: [{ name: 'bdSeq', value: s.bdSeq, isBdSeq: true }], seq: null }),
         qos: 0,
         retain: false
       }
     });
+    s.client = client;
+    const mine = () => s.client === client && !s.switching;
 
-    s.client.on('connect', () => {
+    client.on('connect', () => {
+      if (!mine()) return;
       s.online = true;
       this._birth(s);
-      s.client.subscribe(`spBv1.0/${group}/NCMD/${edge}`, { qos: 0 });
+      client.subscribe(`spBv1.0/${group}/NCMD/${edge}`, { qos: 0 });
     });
-    s.client.on('message', (topic) => {
+    client.on('message', (topic) => {
       // Any NCMD is treated as a rebirth request — we expose no other node
       // commands, and per spec an unknown command must not crash the node.
-      if (topic === `spBv1.0/${group}/NCMD/${edge}`) {
+      if (mine() && topic === `spBv1.0/${group}/NCMD/${edge}`) {
         s.stats.rebirths++;
         this._birth(s);
       }
     });
-    s.client.on('error', (error) => {
+    client.on('error', (error) => {
+      if (s.client !== client) return;
       s.stats.errors++;
       s.stats.lastError = error.message;
     });
-    s.client.on('close', () => {
-      s.online = false;
+    client.on('close', () => {
+      if (s.client === client) s.online = false;
     });
-
-    this.sessions.set(key, s);
-    return s;
   }
 
   _nextSeq(s) {
@@ -155,9 +275,9 @@ class SparkplugPublisher {
     return v;
   }
 
-  _publish(s, topic, payloadOpts) {
+  _publish(s, topic, payloadOpts, client = s.client) {
     try {
-      s.client.publish(topic, encodePayload(payloadOpts), { qos: 0 }, (error) => {
+      client.publish(topic, encodePayload(payloadOpts), { qos: 0 }, (error) => {
         if (error) {
           s.stats.errors++;
           s.stats.lastError = error.message;
@@ -298,10 +418,13 @@ class SparkplugPublisher {
     return `spBv1.0/STATE/${hostId}`;
   }
 
-  _publishState(h, online) {
+  _publishState(h, online, client = h.client) {
     const payload = JSON.stringify({ online, timestamp: Date.now() });
     return new Promise((resolve) => {
-      h.client.publish(this._stateTopic(h.hostId), payload, { qos: 1, retain: true }, (error) => {
+      const timer = setTimeout(resolve, 2000); // an unreachable broker must not hold a switch forever
+      timer.unref?.();
+      client.publish(this._stateTopic(h.hostId), payload, { qos: 1, retain: true }, (error) => {
+        clearTimeout(timer);
         if (error) {
           h.stats.errors++;
           h.stats.lastError = error.message;
@@ -314,63 +437,69 @@ class SparkplugPublisher {
     });
   }
 
-  /** Start (or return) a host-application session for (brokerId, hostId). */
+  /**
+   * Start (or return) a host-application session for (brokerId, hostId). A
+   * running session follows edits and removals of its broker profile on its
+   * own (see checkProfiles); calling startHost again is never required.
+   */
   startHost({ brokerId, hostId }) {
     const key = `${brokerId} ${hostId}`;
-    const cfg = this._brokerConfig(brokerId);
-    const signature = configSignature(cfg);
-    let h = this.hostSessions.get(key);
-    if (h && h.signature === signature) return h;
-    if (h) {
-      // Broker profile edited: reconnect with the new settings.
-      try {
-        h.client?.end(true);
-      } catch {
-        /* already closed */
-      }
-      this.hostSessions.delete(key);
+    const existing = this.hostSessions.get(key);
+    if (existing) {
+      if (this.profiles.rev === undefined || this.profiles.rev !== this._seenRev) this.checkProfiles();
+      if (this.hostSessions.get(key) === existing) return existing;
     }
-
-    h = {
+    const cfg = this._brokerConfig(brokerId);
+    const h = {
       key,
       brokerId,
       hostId,
       online: false,
+      switching: false,
       stats: { published: 0, errors: 0, lastError: null, lastStateTs: null },
       client: null,
-      signature
+      signature: null
     };
+    this.hostSessions.set(key, h);
+    if (this._seenRev === undefined) this._seenRev = this.profiles.rev;
+    this._connectHost(h, cfg);
+    this._ensureWatch();
+    return h;
+  }
 
+  _connectHost(h, cfg) {
+    h.signature = configSignature(cfg);
+    h.online = false;
     const { url, options } = connectTarget(cfg);
-    h.client = mqtt.connect(url, {
+    const client = mqtt.connect(url, {
       ...options,
-      clientId: `manifold_host_${hostId}_${Date.now().toString(36)}`,
+      clientId: `manifold_host_${h.hostId}_${Date.now().toString(36)}`,
       clean: true,
       reconnectPeriod: 5000,
       will: {
-        topic: this._stateTopic(hostId),
+        topic: this._stateTopic(h.hostId),
         payload: JSON.stringify({ online: false, timestamp: Date.now() }),
         qos: 1,
         retain: true
       }
     });
+    h.client = client;
 
     // Fires on every (re)connect: the spec requires the reborn host to
     // republish its online STATE with a fresh timestamp.
-    h.client.on('connect', () => {
+    client.on('connect', () => {
+      if (h.client !== client || h.switching) return;
       h.online = true;
       this._publishState(h, true);
     });
-    h.client.on('error', (error) => {
+    client.on('error', (error) => {
+      if (h.client !== client) return;
       h.stats.errors++;
       h.stats.lastError = error.message;
     });
-    h.client.on('close', () => {
-      h.online = false;
+    client.on('close', () => {
+      if (h.client === client) h.online = false;
     });
-
-    this.hostSessions.set(key, h);
-    return h;
   }
 
   /** Publish a clean retained offline STATE, then end the connection. */
@@ -378,10 +507,8 @@ class SparkplugPublisher {
     const key = `${brokerId} ${hostId}`;
     const h = this.hostSessions.get(key);
     if (!h) return false;
-    this.hostSessions.delete(key);
-    if (h.online) await this._publishState(h, false);
-    // Graceful end so the offline STATE flushes instead of the will firing.
-    await new Promise((resolve) => (h.client ? h.client.end(false, {}, resolve) : resolve()));
+    await this._track(this._retire(h, null));
+    this._stopWatchIfIdle();
     return true;
   }
 
@@ -398,30 +525,19 @@ class SparkplugPublisher {
   }
 
   async stop() {
-    const closing = [];
-    for (const [, h] of this.hostSessions) {
-      closing.push(
-        (h.online ? this._publishState(h, false) : Promise.resolve()).then(
-          () => new Promise((resolve) => (h.client ? h.client.end(false, {}, resolve) : resolve()))
-        )
-      );
+    this._stopped = true;
+    if (this._watchTimer) {
+      clearInterval(this._watchTimer);
+      this._watchTimer = null;
     }
-    this.hostSessions.clear();
-    for (const s of this.sessions.values()) {
-      if (s.online) {
-        for (const deviceId of s.devices.keys()) {
-          this._publish(s, `spBv1.0/${s.group}/DDEATH/${s.edge}/${deviceId}`, { seq: this._nextSeq(s), metrics: [] });
-        }
-        this._publish(s, `spBv1.0/${s.group}/NDEATH/${s.edge}`, {
-          seq: null,
-          metrics: [{ name: 'bdSeq', value: s.bdSeq, isBdSeq: true }]
-        });
-      }
-      // Graceful end: the death certificates above must FLUSH before the socket
-      // closes, or the broker-side will fires instead and the seq story lies.
-      closing.push(new Promise((resolve) => (s.client ? s.client.end(false, {}, resolve) : resolve())));
+    const closing = [...this._switching];
+    // Clean offline messages (retained STATE, DDEATH/NDEATH) flush before each
+    // socket closes, or the broker-side will fires instead and the seq story lies.
+    for (const session of [...this.hostSessions.values(), ...this.sessions.values()]) {
+      if (!session.switching) closing.push(this._retire(session, null));
     }
     await Promise.all(closing);
+    this.hostSessions.clear();
     this.sessions.clear();
   }
 }

@@ -1,8 +1,11 @@
 import { StatusText, Timestamp, Table, THead, Th, Tr, Td } from '@/components/ui';
 import { formatValue, qualityOf } from './helpers';
 
-/** Latest value of every node being monitored on the active connection, most recent first. */
-export default function MonitoredValues({ values }) {
+/**
+ * Latest value of every node being monitored on the active connection, most recent first. `stale`:
+ * the connection is down, so these are the last values received, not live ones.
+ */
+export default function MonitoredValues({ values, labels = {}, stale = false }) {
   const rows = Object.entries(values || {})
     .map(([nodeId, v]) => ({ nodeId, ...v }))
     .sort((a, b) => new Date(b.sourceTimestamp || 0) - new Date(a.sourceTimestamp || 0));
@@ -12,6 +15,7 @@ export default function MonitoredValues({ values }) {
         Monitored values
         <span className="font-mono text-xs font-normal text-subtle">{rows.length}</span>
       </h3>
+      {stale && rows.length > 0 && <p className="px-4 pb-2 text-xs text-warn">Last values received; live values resume when the connection is back.</p>}
       {rows.length === 0 ? (
         <p className="px-4 pb-4 text-xs text-subtle">Select a variable node and choose Monitor value. Live values appear here.</p>
       ) : (
@@ -25,8 +29,15 @@ export default function MonitoredValues({ values }) {
           <tbody>
             {rows.map((r) => (
               <Tr key={r.nodeId}>
-                <Td header className="mono max-w-[8rem] truncate py-1.5 text-xs" title={r.nodeId}>
-                  {r.nodeId}
+                <Td header className="max-w-[9rem] py-1.5 text-xs" title={r.nodeId}>
+                  {labels[r.nodeId] ? (
+                    <>
+                      <span className="block truncate text-fg">{labels[r.nodeId]}</span>
+                      <span className="mono block truncate text-subtle">{r.nodeId}</span>
+                    </>
+                  ) : (
+                    <span className="mono block truncate">{r.nodeId}</span>
+                  )}
                 </Td>
                 <Td align="right" className="mono max-w-[8rem] truncate py-1.5 text-xs tabular-nums" title={formatValue(r.value)}>
                   {formatValue(r.value)}

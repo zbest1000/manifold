@@ -44,7 +44,10 @@ export function formatValue(value) {
 export function nodeValueMap(connectionId, values) {
   const out = {};
   for (const [nodeId, v] of Object.entries(values || {})) {
-    out[`opcua:${connectionId}:${nodeId}`] = { text: formatValue(v.value) };
+    // A value that is not Good says so on the node too, not only in the side panel.
+    const q = v.status ? qualityOf(v.status) : null;
+    const text = formatValue(v.value);
+    out[`opcua:${connectionId}:${nodeId}`] = { text: q && q.tone !== 'good' ? `${text} · ${q.label}` : text };
   }
   return out;
 }
@@ -101,4 +104,20 @@ export function qualityOf(status) {
   if (!s || /^good/i.test(s)) return { label: 'Good', tone: 'good' };
   if (/^uncertain/i.test(s)) return { label: 'Uncertain', tone: 'warn' };
   return { label: 'Bad', tone: 'bad' };
+}
+
+/** The status code name when it says more than the quality word ("BadSensorFailure"), else null. */
+export function statusDetail(status) {
+  const name = String(status || '').replace(/\s*\(0x[0-9a-f]+\)\s*$/i, '').trim();
+  if (!name || /^(good|bad|uncertain)$/i.test(name)) return null;
+  return name;
+}
+
+/** Monitored values of a connection, limited to the nodes the server is still monitoring. */
+export function activeValues(connection, values) {
+  const nodes = connection?.monitoredNodes;
+  if (!Array.isArray(nodes)) return values || {};
+  const out = {};
+  for (const nodeId of nodes) if (values?.[nodeId]) out[nodeId] = values[nodeId];
+  return out;
 }

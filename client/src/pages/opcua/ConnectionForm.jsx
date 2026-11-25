@@ -10,7 +10,7 @@ import { SECURITY_MODES, SECURITY_POLICIES, problemField, withCurrent } from './
  * the certificate trust flow. `problem` is a validation message shown only after the first submit;
  * `submitError` is what the server answered.
  */
-export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, onDiscover, onSubmit, onCancel }) {
+export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, failedAttempts = 0, onDiscover, onSubmit, onCancel }) {
   const readOnly = useReadOnly();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const field = problem ? problemField(problem) : null;
@@ -121,7 +121,7 @@ export default function ConnectionForm({ form, setForm, editing, endpoints, disc
           </Field>
         </fieldset>
 
-        <CertificatesSection key={secure ? 'secure' : 'plain'} defaultOpen={secure} />
+        <CertificatesSection key={secure ? 'secure' : 'plain'} defaultOpen={secure} refreshKey={failedAttempts} />
       </div>
     </Dialog>
   );

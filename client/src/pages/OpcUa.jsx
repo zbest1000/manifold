@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, ListTree, Search, Share2, Box } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
@@ -6,6 +6,7 @@ import { useStore } from '@/store/store';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
 import ReadOnlyNote from '@/components/ReadOnlyNote';
 import { api } from '@/lib/api';
+import { socket } from '@/lib/socket';
 import { usePolled } from '@/lib/usePolled';
 import ForceGraph from '@/graph/ForceGraph';
 import ForceGraph3D from '@/graph/ForceGraph3D';
@@ -20,7 +21,7 @@ import ConnectionForm from './opcua/ConnectionForm';
 import ConnectionsTable from './opcua/ConnectionsTable';
 import NodePanel from './opcua/NodePanel';
 import MonitoredValues from './opcua/MonitoredValues';
-import { formProblem, ROOT, BLANK_FORM, formFromConnection, connectionLabel, connectionState, nodeValueMap, pickConnectionId } from './opcua/helpers';
+import { formProblem, ROOT, BLANK_FORM, formFromConnection, connectionLabel, connectionState, nodeValueMap, pickConnectionId, activeValues } from './opcua/helpers';
 
 const VIEWS = [
   { value: 'graph', label: 'Graph', icon: Share2 },
@@ -51,6 +52,7 @@ export default function OpcUa() {
   const [editingId, setEditingId] = useState(null);
   const [attempted, setAttempted] = useState(false); // validation shows only after the first submit
   const [submitError, setSubmitError] = useState(null);
+  const [failedAttempts, setFailedAttempts] = useState(0); // refreshes the certificate list after a refused connect
   const [endpoints, setEndpoints] = useState(null); // discovered endpoint list
   const [discovering, setDiscovering] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -66,6 +68,29 @@ export default function OpcUa() {
     setOpcua(list.connections);
     return list;
   });
+
+  // The store refreshes the list on connect/disconnect; monitor changes and the start of a reconnect
+  // are not among those, so the page refreshes on them itself (coalesced, a burst costs one request).
+  const refreshTimer = useRef(null);
+  const refreshList = useCallback(() => {
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = null;
+      api
+        .listOpcua()
+        .then((list) => setOpcua(list.connections))
+        .catch(() => {});
+    }, 150);
+  }, [setOpcua]);
+  useEffect(() => {
+    const events = ['opcua-monitor-started', 'opcua-monitor-stopped', 'opcua-reconnecting', 'opcua-error'];
+    for (const e of events) socket.on(e, refreshList);
+    return () => {
+      for (const e of events) socket.off(e, refreshList);
+      clearTimeout(refreshTimer.current);
+      refreshTimer.current = null;
+    };
+  }, [refreshList]);
 
   const connectionId = pickConnectionId(opcua, pickedId);
   const setConnectionId = setPickedId;
@@ -85,13 +110,21 @@ export default function OpcUa() {
   const setSelected = (node) => setSel({ connectionId, node });
 
   const connection = opcua.find((c) => c.id === connectionId);
+  // The graph depends on the connection's identity and label only: list refreshes (status, monitored
+  // counts) must not rebuild it and restart the layout.
+  const graphKey = connection ? `${connection.id}\u0000${connection.name || ''}\u0000${connection.endpointUrl}` : '';
   const graph = useMemo(() => {
-    if (!connection) return { nodes: [], links: [] };
-    return buildOpcuaGraph(connection, expanded);
-  }, [connection, expanded]);
+    if (!graphKey) return { nodes: [], links: [] };
+    const [id, name, endpointUrl] = graphKey.split('\u0000');
+    return buildOpcuaGraph({ id, name, endpointUrl }, expanded);
+  }, [graphKey, expanded]);
+  // Browse names of the nodes seen so far, so monitored values read "Double", not a truncated node id.
+  const labels = useMemo(() => Object.fromEntries(graph.nodes.filter((n) => n.meta?.nodeId).map((n) => [n.meta.nodeId, n.label])), [graph]);
 
   // Latest monitored value per node, for the on-node overlay.
-  const nodeValues = useMemo(() => nodeValueMap(connectionId, opcuaValues[connectionId]), [connectionId, opcuaValues]);
+  // Values of nodes no longer monitored stay in the store; show only what the server still samples.
+  const monitored = useMemo(() => activeValues(connection, opcuaValues[connectionId]), [connection, opcuaValues, connectionId]);
+  const nodeValues = useMemo(() => nodeValueMap(connectionId, monitored), [connectionId, monitored]);
 
   const problem = attempted ? formProblem(form) : '';
 
@@ -128,6 +161,7 @@ export default function OpcUa() {
       setOpcua(list.connections);
     } catch (e) {
       setSubmitError(e.message);
+      setFailedAttempts((n) => n + 1);
       // The server announces a connection while it is connecting and drops it again when that fails;
       // re-read the list so a failed attempt does not leave a ghost "connecting" row behind.
       api.listOpcua().then((list) => setOpcua(list.connections)).catch(() => {});
@@ -209,7 +243,6 @@ export default function OpcUa() {
   const upCount = opcua.filter((c) => c.status === 'connected').length;
   const showEmpty = opcua.length === 0 && !loading;
   const state = connection ? connectionState(connection) : null;
-  const monitored = opcuaValues[connectionId] || {};
 
   return (
     <div className="flex h-full flex-col">
@@ -251,7 +284,7 @@ export default function OpcUa() {
         )}
 
         {connection && (
-          <section aria-label="Address space explorer" className="flex h-[36rem] min-h-[28rem] flex-col overflow-hidden rounded-lg border border-line bg-panel">
+          <section aria-label="Address space explorer" className="flex h-[36rem] min-h-[28rem] flex-col overflow-clip rounded-lg border border-line bg-panel">
             <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-3 py-2">
               <SegmentedControl label="Explorer view" size="sm" options={VIEWS} value={view} onChange={setView} />
               <p className="min-w-0 flex-1 truncate text-xs text-muted">
@@ -305,12 +338,12 @@ export default function OpcUa() {
 
               <div className={clsx('flex min-h-0 flex-col border-l border-line bg-panel', selected ? 'absolute inset-y-0 right-0 z-10 w-full sm:static sm:w-96' : 'hidden lg:flex lg:w-96')}>
                 {selected ? (
-                  <NodePanel key={`${connectionId}:${selected.meta?.nodeId || selected.id}`} readOnly={readOnly} node={selected} connectionId={connectionId} values={monitored} onClose={() => setSelected(null)} />
+                  <NodePanel key={`${connectionId}:${selected.meta?.nodeId || selected.id}`} readOnly={readOnly} node={selected} connection={connection} values={monitored} onMonitorChange={refreshList} onClose={() => setSelected(null)} />
                 ) : (
                   <p className="flex-1 px-4 py-3 text-sm text-muted">Select a node to see its attributes and live value.</p>
                 )}
                 <div className={clsx('shrink-0', selected && 'hidden sm:block')}>
-                  <MonitoredValues values={monitored} />
+                  <MonitoredValues values={monitored} labels={labels} stale={state.tone !== 'good'} />
                 </div>
               </div>
             </div>
@@ -328,6 +361,7 @@ export default function OpcUa() {
           busy={busy}
           problem={problem}
           submitError={submitError}
+          failedAttempts={failedAttempts}
           onDiscover={discover}
           onSubmit={connect}
           onCancel={closeForm}

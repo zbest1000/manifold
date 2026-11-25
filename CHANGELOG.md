@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OPC UA is tested against a real server.** `node-opcua` (devDependency only) backs
+  `server/test/support/opcuaTestServer.js`: every scalar type, arrays, structures, engineering units and ranges,
+  controllable status codes and source timestamps, None/Sign/SignAndEncrypt with anonymous and user name logins,
+  restarts, outages, server-side session close and subscription deletion, slow reads, session limits and certificate
+  rejection both ways. Integration tests cover the manager, the tag bindings (envelope quality, Bad on loss, Good on
+  recovery, typed Sparkplug metrics), the HTTP routes, UNS mounts and discovery; the UI e2e drives the OPC UA page, the
+  trust step, a server restart, mapping from the Tags page and a UNS mount live.
+
+
 - **A new design system and a rebuilt interface.** Semantic colour tokens for a **light, dark and system theme**
   (the choice is stored in the browser and applied before the first paint), IBM Plex type, and shared primitives
   in `client/src/components/ui`. Every page was rebuilt on it: Overview (needs attention, sources, data flow,
@@ -322,6 +331,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OPC UA against a real server**: node-opcua's implicit session repair fought the supervisor after a server-side
+  session close, so values arrived twice; stopping a value on the OPC UA page (or just selecting another node) deleted
+  the monitored item a tag binding depended on; the certificate to trust never appeared in the connection form after a
+  refused secure connect; trust errors named REST endpoints instead of what to do. The page now shows which values are
+  still monitored and when they are stale, names instead of truncated node ids, and Bad quality on the tree nodes.
+- **Sparkplug sessions follow broker profile edits**: a running host STATE session was only rebuilt when `startHost`
+  was called again, and an edited edge-node session was dropped without NDEATH. Both now publish a clean offline STATE
+  or DDEATH/NDEATH on the old connection and reconnect with the new settings on their own; a removed profile ends them
+  cleanly.
+
 - Canvas defects: canvases sized in px stopped their flex container from shrinking; the UNS ran at 60 frames per
   second forever; the Topics graph re-heated its layout on every click; WebGL had no context-loss handling and drew a
   2,000-child branch as a giant disc; the 3D camera sat inside the layout; charts drew outages as straight lines and
@@ -403,6 +422,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restrict the network path.
 
 ### Known issues
+
+- **OPC UA was verified only against node-opcua's server.** Kepware, Siemens S7-1500, Ignition, Prosys and other
+  servers, their security policies and quirks, and tens of thousands of monitored items are unverified. Network
+  discovery reports any open OPC UA port without an OPC UA handshake, and OPC UA units (EUInformation) do not yet reach
+  `_meta` or the mapping editor automatically (the source adapter supplies them; the binding engine and the tag browser
+  do not ask).
 
 - **S7 and EtherNet/IP are experimental, and no driver was verified on real
   hardware.** Modbus TCP, S7 and EtherNet/IP were checked only against in-process

@@ -829,21 +829,68 @@ connecting.
 
 ### Supervised reconnect
 
-A connection that has been established and then drops is retried **forever**
-with jittered exponential backoff (1 s to 60 s): node-opcua's own short retry
-is only the first line, and when it gives up the manager's supervisor takes
-over. Saved connections are restored at startup with `supervise: true`
-(lightly staggered, 100 ms apart), so one that is unreachable when Manifold
-starts keeps retrying instead of being logged once and forgotten. A first
-connect started from the API that fails is reported to the caller and not kept.
-The manager emits a `connection-state` event (`online` / `offline`, with a
-reason) that the OPC UA tag source turns into `source-state`, which is what
-drives Bad-on-loss and re-monitoring in bindings. After any reconnect, the
-subscription and every monitored item are rebuilt from the recorded
-(nodeId, samplingInterval) pairs, serialized per connection so concurrent
-`monitor()` calls cannot create duplicate subscriptions — the UI never shows a
-live-looking value that stopped updating. Value updates to socket clients are
-coalesced (100 ms); the in-process tap used by bindings stays immediate.
+The manager alone owns reconnection. node-opcua's own strategies are switched
+off: `connectionStrategy.maxRetry: 0` (no transport-level reconnect) and the
+session's implicit repair (a request answered `BadSessionIdInvalid` would
+otherwise make node-opcua re-create the session and its subscriptions behind
+the manager's back, so every value arrived twice). A lost channel, a session
+the server closed and a subscription that went silent all end in the same
+place: the client is disposed and the supervisor builds a fresh client,
+session and subscription with jittered exponential backoff (1 s to 60 s),
+forever. The previous session is taken over and closed on the new channel when
+possible, so a flapping link does not pile up sessions (small PLCs allow only a
+handful: `BadTooManySessions`). A watchdog notices a subscription that stops
+publishing (`2 x publishingInterval x maxKeepAliveCount + 1 s`) while TCP looks
+healthy, probes the session, and rebuilds only the subscription or the whole
+session.
+
+Saved connections are restored at startup with `supervise: true` (lightly
+staggered, 100 ms apart), so one that is unreachable when Manifold starts keeps
+retrying instead of being logged once and forgotten. A first connect started
+from the API that fails is reported to the caller and not kept. The manager
+emits a `connection-state` event (`online` / `offline`, with a reason) that the
+OPC UA tag source turns into `source-state`, which drives Bad-on-loss and
+re-monitoring in bindings. After any reconnect the subscription and every
+monitored item are rebuilt from the recorded (nodeId, samplingInterval) pairs,
+batched into `CreateMonitoredItems` calls (500 per call, capped by the server's
+`MaxMonitoredItemsPerCall`) and serialized per connection, so recovery creates
+each item exactly once. Value updates to socket clients are coalesced (100 ms,
+latest per node); the in-process tap used by bindings stays immediate.
+
+**Monitor owners.** The page and tag bindings share one monitored item per
+node. Each node records its owners (`user` for the OPC UA page and REST,
+`bindings` for the tag source); `unmonitor` removes one owner and deletes the
+item only when none is left, so stopping a value on the page never cuts a
+binding's data.
+
+**Values.** Every value event carries `value` (plain JSON: Int64/UInt64 as
+exact decimal strings, DateTime as ISO strings, arrays as arrays, structures as
+objects, ByteString as base64), `dataType`, `arrayType`, `status` (name and
+code), the numeric `statusCode`, `sourceTimestamp` and `serverTimestamp`
+(DateTime.MinValue and missing timestamps become `null`; the tag source then
+falls back to the server timestamp). Quality maps from the severity bits of the
+status code (Good 192, Uncertain 64, Bad 0), not from name prefixes. Arrays and
+structures travel untyped to Sparkplug (they are not scalars of their element
+type). `describeNode` reads `EngineeringUnits` (EUInformation) and `EURange`
+for the tag source's `describe()`.
+
+### Testing against a real server
+
+`server/test/support/opcuaTestServer.js` starts a real node-opcua server
+(`node-opcua` is a **devDependency** only) on a random port in about a second:
+every scalar type, arrays, a standard and a server-defined structure (NodeSet2
+fixture), AnalogItems with EUInformation and EURange, a variable whose status
+code and source timestamp the test controls, a slow variable, a deep chain and
+a large folder for browse paging; endpoints None, Sign and SignAndEncrypt
+(Basic256Sha256, Aes128_Sha256_RsaOaep) with anonymous and user name logins.
+Helpers simulate a restart on the same port and certificate, an outage of any
+length, server-side session close and subscription deletion, slow reads, a
+session limit, and certificate rejection in both directions. It backs
+`opcua-real*.test.js`, `bindings-opcua-real.test.js`,
+`discovery-opcua-real.test.js` and the live UI specs `client/e2e/opcua-live.spec.js`
+and `opcua-mapping.spec.js` (started in the Playwright worker through
+`e2e/support.js`). Third-party servers (Kepware, Siemens S7-1500, Ignition,
+Prosys...) and tens of thousands of monitored items remain unverified.
 
 ## Client architecture
 

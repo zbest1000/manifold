@@ -252,3 +252,29 @@ export async function openDevice(page, name, tab) {
   if (tab) await drawer.getByRole('tab', { name: new RegExp(`^${tab}`) }).click();
   return drawer;
 }
+
+// ---- OPC UA ----------------------------------------------------------------------------
+
+/**
+ * The real OPC UA test server from server/test/support/opcuaTestServer.js (node-opcua, a server
+ * devDependency), started IN the test worker on 127.0.0.1 with an OS-chosen port. Endpoints None,
+ * Sign and SignAndEncrypt (Basic256Sha256); users operator/secret and viewer/viewer. Returns the
+ * server's helper API: endpointUrl, nodeId(name), set(name, value), setStatus(name, status),
+ * restart(), stop(), start(), close() — see that file's header.
+ */
+export async function startOpcua(options = {}) {
+  const { startOpcuaTestServer } = requireServer('./test/support/opcuaTestServer.js');
+  return startOpcuaTestServer({ largeCount: 40, ...options });
+}
+
+/** Remove OPC UA connections (by name) and UNS mounts (by label) a test created; never throws. */
+export async function cleanupOpcua({ connections = [], mounts = [] } = {}) {
+  const { json } = await api.get('/api/opcua/connections').catch(() => ({ json: null }));
+  for (const c of json?.connections || []) {
+    if (connections.includes(c.name)) await api.del(`/api/opcua/connections/${encodeURIComponent(c.id)}`).catch(() => {});
+  }
+  const m = await api.get('/api/uns/mounts').catch(() => ({ json: null }));
+  for (const x of m.json?.mounts || []) {
+    if (mounts.includes(x.label)) await api.del(`/api/uns/mounts/${x.id}`).catch(() => {});
+  }
+}

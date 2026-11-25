@@ -12,8 +12,10 @@ import { fmtDate } from './helpers';
  * The certificate trust flow of a secure OPC UA connection, in the order it happens: give the server
  * Manifold's application certificate, connect (the server's own certificate is refused the first time),
  * then trust it here and connect again. Opens by default when the form uses a secure mode.
+ * `refreshKey` changes after every failed connect, so a certificate the server just presented and
+ * Manifold refused shows up in step 3 without closing and reopening the section.
  */
-export default function CertificatesSection({ defaultOpen = false }) {
+export default function CertificatesSection({ defaultOpen = false, refreshKey = null }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div>
@@ -28,7 +30,7 @@ export default function CertificatesSection({ defaultOpen = false }) {
         Certificates and trust
         <span className="hidden font-normal text-subtle sm:inline">for Sign and SignAndEncrypt connections</span>
       </button>
-      {open && <CertificatesBody />}
+      {open && <CertificatesBody refreshKey={refreshKey} />}
     </div>
   );
 }
@@ -46,11 +48,14 @@ function Step({ n, title, children }) {
 }
 
 // Mounted only while the section is open, so nothing is fetched until then.
-function CertificatesBody() {
-  const { data, error, loading, reload } = usePolled(async () => {
-    const [cert, trust] = await Promise.all([api.opcuaCertificate(), api.opcuaTrustList()]);
-    return { cert, trust };
-  });
+function CertificatesBody({ refreshKey }) {
+  const { data, error, loading, reload } = usePolled(
+    async () => {
+      const [cert, trust] = await Promise.all([api.opcuaCertificate(), api.opcuaTrustList()]);
+      return { cert, trust };
+    },
+    { deps: [refreshKey] }
+  );
   const readOnly = useReadOnly();
   const cert = data?.cert;
   const trust = data?.trust;
