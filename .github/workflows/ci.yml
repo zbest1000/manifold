@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: CI only reads the repository (the token default can be read/write).
+permissions:
+  contents: read
+
 # A new push supersedes any still-running CI for the same ref — without this,
 # a hung integration job spins for the full 6-hour runner limit.
 concurrency:

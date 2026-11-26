@@ -59,7 +59,10 @@ const io = socketIo(server, {
   cors: {
     origin: process.env.CLIENT_URL || 'http://localhost:3000',
     methods: ['GET', 'POST']
-  }
+  },
+  // A WebSocket is not covered by CORS: without this any page an operator opens could connect
+  // (and, on an open instance, publish to brokers). See originAllowed / hostAllowed below.
+  allowRequest: (req, callback) => callback(null, originAllowed(req.headers.origin, req.headers.host) && hostAllowed(req.headers.host))
 });
 
 // CORS: in production the client is served same-origin, so no cross-origin
@@ -73,7 +76,27 @@ app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
 // different port can still load assets.
 app.use(
   helmet({
-    contentSecurityPolicy: false,
+    // The built SPA is self-contained (no inline or third-party script; theme-init.js is a file),
+    // so scripts are 'self' only: an injected <script> from a topic name or device label cannot
+    // run. Inline styles stay allowed (React style props). No upgrade-insecure-requests: plants
+    // reach Manifold over plain HTTP by IP, where it would break every request.
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        scriptSrcAttr: ["'none'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        fontSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'", 'ws:', 'wss:'],
+        workerSrc: ["'self'", 'blob:'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"]
+      }
+    },
     crossOriginResourcePolicy: { policy: 'cross-origin' }
   })
 );
@@ -112,6 +135,47 @@ for (const message of TOKENS_PARSED.errors) console.error(`[auth] ${message}`);
 // Fail closed: if tokens were configured at all (even if every entry was
 // rejected), auth stays ON — a typo must never turn into an open server.
 const AUTH_ENABLED = Boolean(AUTH_TOKEN || VIEWER_TOKEN || NAMED_TOKENS.length || TOKENS_PARSED.configured);
+
+// Bind address (see server.listen below). With no token the control plane binds loopback only.
+const HOST = process.env.MANIFOLD_HOST || (AUTH_ENABLED ? '0.0.0.0' : '127.0.0.1');
+const LOOPBACK_BIND = /^(127(?:\.\d{1,3}){3}|localhost|::1)$/i.test(HOST);
+const CLIENT_ORIGIN = process.env.CLIENT_URL || 'http://localhost:3000';
+const LOOPBACK_NAME = /^(localhost|127(?:\.\d{1,3}){3}|::1)$/i;
+const EXTRA_HOSTS = new Set(String(process.env.MANIFOLD_ALLOWED_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
+
+function hostnameOf(hostHeader) {
+  const h = String(hostHeader || '').trim().toLowerCase();
+  if (h.startsWith('[')) return h.slice(1, h.indexOf(']') === -1 ? undefined : h.indexOf(']'));
+  return h.split(':')[0];
+}
+
+/**
+ * DNS rebinding guard for the open (no token), loopback-bound instance: a page on evil.example that
+ * re-resolves to 127.0.0.1 is same-origin to the browser, so the only tell is the Host header.
+ * Loopback names pass, plus MANIFOLD_ALLOWED_HOSTS (comma-separated). With a token, or when the
+ * operator deliberately binds elsewhere, any Host is accepted (the token is the protection).
+ */
+function hostAllowed(hostHeader) {
+  if (AUTH_ENABLED || !LOOPBACK_BIND) return true;
+  const name = hostnameOf(hostHeader);
+  return LOOPBACK_NAME.test(name) || EXTRA_HOSTS.has(name);
+}
+
+/** Browser origins allowed on the socket: none sent (tools), the dev client, or the page's own origin. */
+function originAllowed(origin, hostHeader) {
+  if (origin === undefined || origin === '') return true;
+  if (origin === CLIENT_ORIGIN) return true;
+  try {
+    return new URL(origin).host === String(hostHeader || '').toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+app.use((req, res, next) => {
+  if (hostAllowed(req.headers.host)) return next();
+  res.status(421).json({ error: 'Misdirected request: this unauthenticated instance answers only to localhost (set MANIFOLD_ALLOWED_HOSTS to add a name, or MANIFOLD_AUTH_TOKEN)' });
+});
 
 function timingEqual(candidate, expected) {
   if (typeof candidate !== 'string' || candidate.length === 0 || !expected) return false;
@@ -510,8 +574,7 @@ const PORT = process.env.PORT || 5000;
 // only, so an accidentally-open instance is reachable solely from its own host.
 // Exposing an unauthenticated instance beyond localhost is now a deliberate act:
 // set MANIFOLD_HOST=0.0.0.0 explicitly (and you'll be warned). With auth on, the
-// default is all interfaces as before.
-const HOST = process.env.MANIFOLD_HOST || (AUTH_ENABLED ? '0.0.0.0' : '127.0.0.1');
+// default is all interfaces as before. (HOST is computed with the auth settings above.)
 server.listen(PORT, HOST, () => {
   console.log(`Manifold server listening on ${HOST}:${PORT}`);
   if (require('./services/egressGuard').ALLOW_PRIVATE) {

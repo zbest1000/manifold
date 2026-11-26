@@ -54,6 +54,24 @@ const { brokenRefs } = require('./references');
 const { stripUrlCredentials } = require('./secrets');
 const { parseQuery, queryEvents } = require('./alertHistory');
 
+/** `message` with every copy of the webhook URL cut to its origin, and URL passwords stripped. */
+function scrubWebhookUrl(message, url) {
+  let out = String(message ?? '');
+  if (typeof url === 'string' && url) {
+    let origin = '[webhook]';
+    const forms = [url];
+    try {
+      const u = new URL(url);
+      origin = u.origin;
+      forms.push(u.href);
+    } catch {
+      /* not a URL: cut it whole */
+    }
+    for (const f of forms) out = out.split(f).join(`${origin}/…`);
+  }
+  return stripUrlCredentials(out);
+}
+
 const EVAL_MS = 15_000;
 const HISTORY_MAX = 500;
 const WEBHOOK_TIMEOUT_MS = 5_000;
@@ -615,7 +633,10 @@ class AlertEngine {
       const wh = this.webhookStats.get(rule.id) || { failures: 0, lastError: null, lastAttemptAt: null, lastOkAt: null };
       this.webhookStats.set(rule.id, wh);
       wh.lastAttemptAt = Date.now();
-      const fail = (message) => {
+      const fail = (raw) => {
+        // Errors quote the URL ("request to <url> timed out"); its path is the credential of a
+        // Slack/Teams hook, and these messages are shown to every role.
+        const message = scrubWebhookUrl(raw, rule.webhookUrl);
         this.webhookFailures++;
         wh.failures++;
         wh.lastError = message;

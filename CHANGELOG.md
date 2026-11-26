@@ -730,6 +730,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A long wildcard pattern could freeze the server.** Mapping select patterns were turned into regular expressions
+  that backtrack catastrophically (a 25-character pattern blocked the server for over a minute, and a viewer could send
+  one through the preview endpoint). They are now matched in linear time.
+- **Web pages can no longer drive an open local instance.** The socket refuses foreign `Origin`s, and an instance with
+  no token bound to loopback refuses requests whose `Host` is not a loopback name (or listed in
+  `MANIFOLD_ALLOWED_HOSTS`), which closes cross-site WebSocket hijacking and DNS rebinding.
+- **Secrets in URLs no longer leak.** Passwords embedded in historian and broker-admin URLs are masked in every API
+  answer and stripped from error messages; a timed-out alert webhook no longer shows its URL (the path is the
+  credential for chat webhooks) to viewers.
+- CSV exports of device tags and mapping rows neutralise spreadsheet formulas; a Trends export comment can no longer
+  be broken onto a new line by a crafted name.
+- The built client is served with a Content-Security-Policy.
+- `GET /api/system/status` reports `degraded` when the configuration store or the alert journal cannot be written
+  (saves used to answer OK while the change existed only in memory).
+- The CI workflow runs with a read-only token.
+
 - **Hostile devices and bridge servers can no longer exhaust a driver's memory or stall it** (found by review, each
   proven with a failing test first): the WebSocket client caps fragments per message and replies queued for a peer that
   does not read; S7 caps empty transport fragments per PDU; MTConnect keeps only data items the agent declared and at

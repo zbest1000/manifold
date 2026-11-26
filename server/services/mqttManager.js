@@ -9,6 +9,7 @@ const brokerAdmin = require('./brokerAdmin');
 const { lintTrie } = require('./unsLint');
 const { BrokerCanary, validateCanaryConfig, normalizeCanaryConfig } = require('./brokerCanary');
 const { assess: assessPosture } = require('./brokerPosture');
+const { stripUrlCredentials } = require('./secrets');
 
 const STATS_INTERVAL_MS = 2000;
 const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1188,7 +1189,7 @@ class MqttManager extends EventEmitter {
   getBrokerAdmin(brokerId) {
     const cfg = this.admin.get(brokerId);
     if (!cfg) return { configured: false };
-    return { configured: true, type: cfg.type, url: cfg.url, hasKey: Boolean(cfg.apiKey) };
+    return { configured: true, type: cfg.type, url: stripUrlCredentials(cfg.url), hasKey: Boolean(cfg.apiKey) };
   }
 
   clearBrokerAdmin(brokerId) {

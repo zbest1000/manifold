@@ -16,8 +16,10 @@ const SECRET_KEY_RE = /pass|token|secret|key|credential|cert|authorization|webho
 
 const isSecretKey = (k) => SECRET_KEY_RE.test(String(k));
 
-// scheme://user:password@host — strip the password (and keep the user name).
-const URL_CREDS_RE = /^([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):[^/\s@]*@/i;
+// scheme://user:password@host — strip the password (and keep the user name), wherever the URL
+// sits in the text: error messages quote URLs mid-sentence ("... from a URL that includes
+// credentials: http://u:p@host").
+const URL_CREDS_RE = /([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):[^/\s@]*@/gi;
 function stripUrlCredentials(s) {
   return typeof s === 'string' ? s.replace(URL_CREDS_RE, '$1:***@') : s;
 }

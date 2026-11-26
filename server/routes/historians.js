@@ -1,6 +1,7 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const historians = require('../services/historians');
+const { stripUrlCredentials } = require('../services/secrets');
 const router = express.Router();
 const { checkpoint, handleRevisionError } = require('../services/revision');
 
@@ -45,7 +46,8 @@ router.post('/', (req, res) => {
     saved = profiles.upsertIn('historians', id || uuidv4(), {
     name: name || null,
     type,
-    url: url || null,
+    // GET masks a URL password (user:***@host); saving that masked URL back keeps the stored one.
+    url: (existing?.url && url === stripUrlCredentials(existing.url) ? existing.url : url) || null,
     org: org || null,
     bucket: bucket || null,
     measurement: measurement || null,

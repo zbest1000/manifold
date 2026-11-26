@@ -210,8 +210,12 @@ class ProfileStore {
     try {
       this._writeDurably(JSON.stringify({ schemaVersion: 1, ...this.data }, null, 2));
       dirtyStores.delete(this);
+      this.persistError = null;
     } catch (error) {
       this._dirty = true; // retry on the next save / exit
+      // Kept for GET /api/system/status: saves still answer 2xx (the change is live in memory),
+      // so the failure must be visible somewhere other than the server log.
+      this.persistError = { message: error.message, at: new Date().toISOString() };
       console.error('profileStore: failed to persist profiles:', error.message);
     }
   }

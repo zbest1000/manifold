@@ -7,6 +7,17 @@ const brokers = [{ id: 'b1', name: 'Local' }];
 const DEFS = [{ key: 'temp', property: 'temperature', unit: 'degC' }, { key: 'rpm' }];
 
 describe('CSV rows', () => {
+  it('neutralises spreadsheet formulas from MQTT topics on export and restores them on import', () => {
+    const s = newState({ srcType: 'mqtt', ref: { brokerId: 'b1' }, picked: [], brokers });
+    const r = applyCsv(s, 'address,name\n=HYPERLINK("http://x"),=cmd\nplant/-5,ok\n');
+    expect(r.errors).toEqual([]);
+    const csv = rowsToCsv(r.rows, 'mqtt');
+    expect(csv).toContain(`"'=HYPERLINK(""http://x"")"`);
+    expect(csv).not.toMatch(/(^|[\n,])=/);
+    const back = applyCsv(newState({ srcType: 'mqtt', ref: { brokerId: 'b1' }, picked: [], brokers }), csv);
+    expect(back.rows.map((x) => x.address)).toEqual(['=HYPERLINK("http://x")', 'plant/-5']);
+  });
+
   it('parses quotes, doubled quotes, CRLF, semicolons and tabs', () => {
     expect(parseCsv('a,"b, c","say ""hi"""\r\n1,2,3\n')).toEqual([['a', 'b, c', 'say "hi"'], ['1', '2', '3']]);
     expect(parseCsv('a;b\nc;d')).toEqual([['a', 'b'], ['c', 'd']]);

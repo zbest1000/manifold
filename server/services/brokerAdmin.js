@@ -1,11 +1,18 @@
 'use strict';
 
 const { guardedFetch } = require('./egressGuard');
+const { stripUrlCredentials } = require('./secrets');
 
 // Admin APIs get a hard per-request deadline so a wedged broker admin
 // endpoint can't hang the Flows view indefinitely, and go through the egress
 // guard so a user-supplied admin URL can't be aimed at internal/metadata hosts.
-const defaultFetch = (url, opts) => guardedFetch(url, opts, 10_000);
+// fetch quotes a URL that carries credentials ("... includes credentials: http://k:pw@host") in its
+// error; the admin API URL is shown to viewers, so its password must not come back that way.
+const defaultFetch = (url, opts) =>
+  guardedFetch(url, opts, 10_000).catch((error) => {
+    if (error && typeof error.message === 'string') error.message = stripUrlCredentials(error.message);
+    throw error;
+  });
 
 /**
  * Broker admin integration — the only honest source for "who subscribes to what".

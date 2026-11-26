@@ -45,6 +45,20 @@ describe('parseTags', () => {
   });
 });
 
+describe('formula injection', () => {
+  it('device tag CSV/TSV exports neutralise formulas from device-supplied names and import restores them', () => {
+    const tags = [{ key: '=1+cmd', address: '@SUM(A1)', type: 'number' }, { key: 'neg', address: '-5', type: 'number' }];
+    for (const d of [',', '\t']) {
+      const text = serializeTags(tags, d);
+      expect(text).not.toMatch(/(^|[\n,\t])[=@]/);
+      expect(text).toContain(`${d}-5${d}`);
+      const back = parseTags(text, d).tags;
+      expect(back[0].key).toBe('=1+cmd');
+      expect(back[0].address).toBe('@SUM(A1)');
+    }
+  });
+});
+
 describe('helpers', () => {
   it('flags missing and duplicate keys and missing addresses', () => {
     const e = localTagErrors([{ key: 'a', address: '1' }, { key: 'a', address: '2' }, { key: '', address: '3' }, { key: 'b' }]);

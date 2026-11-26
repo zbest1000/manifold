@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { Agent } = require('undici');
 const { fetchWithTimeout } = require('./httpTimeout');
+const { stripUrlCredentials } = require('./secrets');
 
 // All historian HTTP calls get a hard deadline: a wedged historian (TCP accepts,
 // never responds) must degrade to an error, not hang the store-and-forward
@@ -67,6 +68,8 @@ async function httpFetch(conn, url, opts, fetchImpl) {
         { cause: err }
       );
     }
+    // fetch quotes a URL that carries credentials in its message; never pass the password on.
+    if (err && typeof err.message === 'string') err.message = stripUrlCredentials(err.message);
     throw err;
   }
 }
@@ -945,6 +948,7 @@ function supportedTypes() {
 /** Redact secrets for API responses. */
 function publicConfig(conn) {
   const { token, apiKey, apiSecret, password, ...rest } = conn;
+  if (typeof rest.url === 'string') rest.url = stripUrlCredentials(rest.url);
   return { ...rest, hasSecret: Boolean(token || apiKey || apiSecret || password) };
 }
 

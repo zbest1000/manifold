@@ -5,9 +5,17 @@ const { COLLECTIONS } = require('../services/profileStore');
 
 // GET /api/system/status
 router.get('/status', (req, res) => {
-  const { mqttManager, opcuaManager, discovery, cesmii, i3x } = req.app.locals.services;
+  const { mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, alerts } = req.app.locals.services;
+  const journal = alerts?.journal;
+  const storage = {
+    // Saved configuration that could not be written (data directory unwritable or full): the
+    // running state is not on disk and is lost on restart until this clears.
+    profiles: profiles?.persistError ? { ok: false, error: profiles.persistError.message, since: profiles.persistError.at } : { ok: true },
+    alertJournal: journal ? { ok: !journal.stats.writeErrors, writeErrors: journal.stats.writeErrors, lastError: journal.stats.lastError || null } : null
+  };
   res.json({
-    status: 'ok',
+    status: storage.profiles.ok && (storage.alertJournal?.ok ?? true) ? 'ok' : 'degraded',
+    storage,
     timestamp: new Date().toISOString(),
     mqtt: {
       connections: mqttManager.getConnections().length,

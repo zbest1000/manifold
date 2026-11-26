@@ -61,7 +61,8 @@ function exportFilename(mode, from, to) {
 
 /** Comment lines describing the export. */
 function headerComments({ sourceLabel, from, to, mode, quality, live }) {
-  const lines = ['# Manifold Trends export', `# Source: ${sourceLabel}`, `# Range: ${iso(from)} to ${iso(to)} (times are UTC)`];
+  // A name with a line break would start a new CSV line of its choosing (e.g. "=HYPERLINK(...)").
+  const lines = ['# Manifold Trends export', `# Source: ${String(sourceLabel).replace(/[\r\n]+/g, ' ')}`, `# Range: ${iso(from)} to ${iso(to)} (times are UTC)`];
   if (mode === 'raw') {
     lines.push(`# Values: raw samples${live ? ' (the broker\'s recent message buffer, up to 500 messages per topic)' : ''}. One row per sample time; an empty value cell means that series had no sample at that time.`);
   } else {

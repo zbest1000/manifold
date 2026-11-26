@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { redactSecrets } = require('../services/secrets');
+const { redactSecrets, stripUrlCredentials } = require('../services/secrets');
 const { expectedRev, handleRevisionError } = require('../services/revision');
 const { usersOfBroker } = require('../services/references');
 const { validateCanaryConfig } = require('../services/brokerCanary');
@@ -276,8 +276,12 @@ router.get('/brokers/:brokerId/admin', (req, res) => {
 router.post('/brokers/:brokerId/admin', (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
   try {
-    const result = mqttManager.setBrokerAdmin(req.params.brokerId, req.body || {});
-    profiles?.setBrokerAdmin(req.params.brokerId, req.body || {});
+    const body = { ...(req.body || {}) };
+    // GET masks a URL password (user:***@host); saving that masked URL back keeps the stored one.
+    const stored = mqttManager.admin?.get(req.params.brokerId);
+    if (stored?.url && body.url === stripUrlCredentials(stored.url)) body.url = stored.url;
+    const result = mqttManager.setBrokerAdmin(req.params.brokerId, body);
+    profiles?.setBrokerAdmin(req.params.brokerId, body);
     res.json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
