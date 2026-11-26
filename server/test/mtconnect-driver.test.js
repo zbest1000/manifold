@@ -485,3 +485,37 @@ test('DeviceRuntime integration: online, live values, agent restart is invisible
   await until(() => states.at(-1) === 'online');
   await rt.stop();
 });
+
+test('a hostile agent cannot grow the driver\'s state without bound: unknown ids and endless distinct fault codes', async () => {
+  const http = require('http');
+  let seqNo = 1;
+  const header = (first, next, last) => `<Header instanceId="7" bufferSize="100000" firstSequence="${first}" nextSequence="${next}" lastSequence="${last}"/>`;
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/xml');
+    if (req.url === '/probe') {
+      return res.end(`<MTConnectDevices>${header(1, 1, 1)}<Devices><Device id="d" name="d"><DataItems><DataItem id="sys" category="CONDITION" type="SYSTEM"/></DataItems></Device></Devices></MTConnectDevices>`);
+    }
+    const parts = [];
+    for (let i = 0; i < 500; i++, seqNo++) {
+      parts.push(`<Fault dataItemId="sys" sequence="${seqNo}" nativeCode="F${seqNo}">boom</Fault>`);
+      parts.push(`<Fault dataItemId="junk${seqNo}" sequence="${seqNo}" nativeCode="X">x</Fault>`);
+    }
+    res.end(`<MTConnectStreams>${header(1, seqNo, seqNo - 1)}<Streams><DeviceStream name="d"><ComponentStream component="Device"><Condition>${parts.join('')}</Condition></ComponentStream></DeviceStream></Streams></MTConnectStreams>`);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const drv = createDriver({ id: 'h', name: 'hostile', protocol, host: '127.0.0.1', port: server.address().port, limits: { requestDeadlineMs: 2000, connectTimeoutMs: 2000 }, tags: [T('s', 'sys', 'string', { field: 'nativeCode' })] });
+  drivers.push(drv);
+  try {
+    await drv.connect();
+    for (let i = 0; i < 10; i++) await poll(drv);
+    const p = await drv.probe({ address: 'sys' });
+    assert.ok(p.decodings['active conditions'] <= 256, `${p.decodings['active conditions']} active conditions kept`);
+    assert.ok(drv.streamState().observed <= 1, `${drv.streamState().observed} data items tracked for a probe with one`);
+    const r = await poll(drv);
+    assert.equal(r.s.q, 192);
+    assert.match(r.s.v, /^F\d+$/);
+  } finally {
+    await drv.close();
+    server.close();
+  }
+});

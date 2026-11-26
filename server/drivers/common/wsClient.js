@@ -14,7 +14,8 @@
  *  - Fragmented messages are reassembled; control frames may interleave; ping is answered
  *    with pong; close is echoed and the TCP connection is ended.
  *  - Hard caps: one frame (`maxFrameBytes`), one reassembled message (`maxMessageBytes`), the
- *    handshake answer (16 KiB). Exceeding a cap closes with 1009; protocol errors with 1002;
+ *    handshake answer (16 KiB), fragments per message (4096), pongs queued for a peer that
+ *    does not read them (1 MiB, closes with 1008). Exceeding a cap closes with 1009; protocol errors with 1002;
  *    invalid UTF-8 in a text message with 1007.
  *  - Keepalive: when nothing has arrived for `pingIntervalMs` a ping is sent; if still nothing
  *    arrives within `pongTimeoutMs` the socket is destroyed (a half-open TCP connection would
@@ -33,6 +34,8 @@ const { EventEmitter } = require('events');
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_HANDSHAKE_BYTES = 16 * 1024;
+const MAX_FRAGMENTS = 4096; // per message
+const MAX_UNREAD_PONG_BYTES = 1024 * 1024; // pongs queued for a peer that does not read them
 const DEFAULTS = {
   connectTimeoutMs: 5000,
   maxFrameBytes: 16 * 1024 * 1024,
@@ -352,7 +355,10 @@ class WsClient extends EventEmitter {
     if (this.state !== 'open' && this.state !== 'closing') return;
     this.stats.framesIn++;
     if (opcode === OP.PING) {
-      if (this.state === 'open') this._write(OP.PONG, payload);
+      if (this.state !== 'open') return;
+      // A peer that keeps pinging without reading the pongs would otherwise grow the write queue without bound.
+      if (this.socket.writableLength > MAX_UNREAD_PONG_BYTES) throw new WsError('protocol', 'the server sends pings but does not read the answers', 1008);
+      this._write(OP.PONG, payload);
       return;
     }
     if (opcode === OP.PONG) return;
@@ -366,6 +372,8 @@ class WsClient extends EventEmitter {
     const f = this._frag;
     f.length += payload.length;
     if (f.length > this.opt.maxMessageBytes) throw new WsError('too-large', `message exceeds the ${this.opt.maxMessageBytes}-byte cap`, 1009);
+    // Every fragment costs memory even when it is empty: cap their number too.
+    if (f.chunks.length >= MAX_FRAGMENTS) throw new WsError('too-large', `message split into more than ${MAX_FRAGMENTS} fragments`, 1009);
     f.chunks.push(payload);
     if (!fin) return;
     this._frag = null;

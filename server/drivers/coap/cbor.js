@@ -30,6 +30,7 @@ class CborError extends Error {
 
 const MAX_DEPTH = 32;
 const MAX_ITEMS = 100000;
+const MAX_BIGNUM_BYTES = 64;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 function half(h) {
@@ -197,6 +198,8 @@ class Reader {
   tagged(tag, v) {
     if (tag === 2 || tag === 3) {
       if (typeof v !== 'string') throw new CborError('bignum content is not a byte string');
+      // Decimal conversion of a huge bignum is quadratic: a 1 MiB one blocks the driver for seconds.
+      if (v.length > MAX_BIGNUM_BYTES * 2) throw new CborError(`bignum longer than ${MAX_BIGNUM_BYTES} bytes`);
       const big = v === '' ? 0n : BigInt(`0x${v}`);
       return bigToValue(tag === 2 ? big : -1n - big);
     }

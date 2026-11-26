@@ -113,6 +113,13 @@ test('createDriver rejects bad device config with per-field details', () => {
   bad({ host: '' }, /host/);
 });
 
+test('a huge tlsCa is refused quickly (device validation runs in the server process on every save)', () => {
+  const tlsCa = '-----BEGIN A-----'.repeat(60000); // ~1 MB, no END: quadratic for the PEM scanner
+  const t0 = Date.now();
+  assert.throws(() => createDriver({ host: '127.0.0.1', port: 443, scheme: 'https', tags: [], tlsCa }), /tlsCa/);
+  assert.ok(Date.now() - t0 < 500, `validation took ${Date.now() - t0} ms`);
+});
+
 test('TLS settings left over from https are ignored on plain http (the form hides them), never applied', async () => {
   const { drv } = await setup({ device: { tlsInsecure: true, tlsFingerprint256: 'AA'.repeat(32), tags: [T('t', '/meter#$.power.total')] } });
   await drv.connect();

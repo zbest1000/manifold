@@ -190,6 +190,17 @@ test('cbor: malformed and hostile input is an error, not a hang or a crash', () 
   assert.throws(() => cbor.decode(Buffer.alloc(100000, 0x81)), cbor.CborError);
   // item bomb: more items than allowed
   assert.throws(() => cbor.decode(Buffer.concat([Buffer.from([0x9a, 0x00, 0x20, 0x00, 0x00]), Buffer.alloc(0x200000, 0x01)]), { maxItems: 1000 }), cbor.CborError);
+  // bignum bomb: one 1 MiB bignum would cost seconds of decimal conversion (quadratic) in the driver
+  const n = 1 << 20;
+  const big = Buffer.alloc(n + 6, 0xff);
+  big[0] = 0xc2;
+  big[1] = 0x5a;
+  big.writeUInt32BE(n, 2);
+  const t0 = Date.now();
+  assert.throws(() => cbor.decode(big), cbor.CborError);
+  assert.ok(Date.now() - t0 < 100, `took ${Date.now() - t0} ms`);
+  // ordinary bignums still decode
+  assert.equal(cbor.decode(H('c249010000000000000000')), '18446744073709551616');
 });
 
 // ---- SenML ---------------------------------------------------------------------------------

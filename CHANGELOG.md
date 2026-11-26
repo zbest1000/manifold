@@ -730,6 +730,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Hostile devices and bridge servers can no longer exhaust a driver's memory or stall it** (found by review, each
+  proven with a failing test first): the WebSocket client caps fragments per message and replies queued for a peer that
+  does not read; S7 caps empty transport fragments per PDU; MTConnect keeps only data items the agent declared and at
+  most 256 active conditions each; EtherNet/IP symbol paging must advance and is capped; CoAP refuses CBOR bignums wider
+  than 64 bytes; BACnet values nested deeper than 32 levels are refused; a device's CA certificate field is capped at
+  64 KiB (an oversized value could freeze the server on save).
+- SNMP request ids, the SNMPv3 privacy salt and BACnet invoke ids now start from a cryptographic random source.
+
 - Viewer sessions can use mapping preview, name suggestions and CESMII history (read-only POSTs); the allowlist is
   `VIEWER_READ_ONLY_POSTS` in `server/services/authConfig.js`. The UI shows read-only sessions as disabled controls.
 - Egress guard: alert webhooks (with redirect re-validation and connect-time

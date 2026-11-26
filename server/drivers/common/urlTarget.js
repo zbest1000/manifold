@@ -32,6 +32,7 @@ function hasControl(text) {
 }
 
 const present = (v) => v !== undefined && v !== null && v !== '';
+const MAX_PEM_CHARS = 64 * 1024; // a CA chain of a dozen certificates fits easily
 
 /** A request path must stay on the device: origin-form only, no scheme, no fragment, no control characters. */
 function checkRequestPath(p) {
@@ -58,6 +59,8 @@ function normalizeFingerprint(fp) {
 function normalizePem(text) {
   const s = String(text || '').trim();
   if (!s) return undefined;
+  // The scan below is quadratic in the number of unmatched BEGIN lines: bound the input first.
+  if (s.length > MAX_PEM_CHARS) return null;
   const out = [];
   const re = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/g;
   let m;
@@ -79,8 +82,9 @@ function tlsSettings(device, secure) {
   if (!secure) return { errors, tls: out };
   out.insecure = device.tlsInsecure === true;
   if (present(device.tlsCa)) {
-    const pem = normalizePem(device.tlsCa);
-    if (!pem) errors.push('tlsCa must contain a PEM certificate (-----BEGIN CERTIFICATE-----)');
+    const pem = String(device.tlsCa).length > MAX_PEM_CHARS ? null : normalizePem(device.tlsCa);
+    if (String(device.tlsCa).length > MAX_PEM_CHARS) errors.push(`tlsCa is longer than ${MAX_PEM_CHARS} characters`);
+    else if (!pem) errors.push('tlsCa must contain a PEM certificate (-----BEGIN CERTIFICATE-----)');
     else out.ca = pem;
   }
   if (present(device.tlsFingerprint256)) {

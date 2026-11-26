@@ -209,3 +209,52 @@ test('every client frame on the wire is masked with a fresh key', async () => {
   assert.ok(keys.size >= 19);
   await c.close();
 });
+
+test('a flood of empty continuation frames is capped (each costs memory although it carries no payload)', async () => {
+  const s = await server({
+    onConnection: (peer) => {
+      peer.raw(frame(0x1, 'a', { fin: false }));
+      const empty = Buffer.alloc(2 * 4096); // CONT, fin=0, length 0, repeated
+      const pump = () => {
+        for (let i = 0; i < 40 && !peer.closed; i++) peer.raw(empty);
+        if (!peer.closed) setImmediate(pump);
+      };
+      pump();
+    }
+  });
+  const c = client(s.port);
+  const closed = once(c, 'close');
+  await c.connect();
+  const [info] = await Promise.race([closed, new Promise((r) => setTimeout(() => r([{ code: 'none', frags: c._frag && c._frag.chunks.length }]), 3000))]);
+  if (info.code === 'none') c.destroy();
+  assert.equal(info.code, 1009, `client still open with ${info.frags} buffered fragments`);
+});
+
+test('a peer that sends pings but never reads the pongs cannot grow the write buffer without bound', async () => {
+  let peerRef = null;
+  const s = await server({
+    onConnection: (peer) => {
+      peerRef = peer;
+      peer.socket.pause(); // never read what the client sends
+      const burst = Buffer.concat(Array(512).fill(frame(0x9, 'x'.repeat(125))));
+      const pump = () => {
+        for (let i = 0; i < 4 && !peer.closed; i++) peer.raw(burst);
+        if (!peer.closed) setImmediate(pump);
+      };
+      pump();
+    }
+  });
+  const c = client(s.port);
+  const closed = once(c, 'close');
+  await c.connect();
+  let maxPending = 0;
+  const watch = setInterval(() => {
+    if (c.socket) maxPending = Math.max(maxPending, c.socket.writableLength);
+  }, 5);
+  const [info] = await Promise.race([closed, new Promise((r) => setTimeout(() => r([{ code: 'none' }]), 4000))]);
+  clearInterval(watch);
+  if (info.code === 'none') c.destroy();
+  if (peerRef) peerRef.drop();
+  assert.notEqual(info.code, 'none', `client kept answering; ${maxPending} bytes queued for the socket`);
+  assert.ok(maxPending < 4 * 1024 * 1024, `write queue reached ${maxPending} bytes`);
+});

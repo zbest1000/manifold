@@ -253,6 +253,8 @@ function decodeApplicationContent(tag, buf, off) {
   }
 }
 
+const MAX_NESTING = 32;
+
 /**
  * Decode a sequence of tagged values from `start` until `end` (exclusive) or a closing tag
  * `stopAtClosing` at nesting depth 0. Context-tagged primitives (inside constructed values such as
@@ -260,7 +262,9 @@ function decodeApplicationContent(tag, buf, off) {
  * sections as { context, items }.
  * @returns {{items:Array, next:number}} next = offset of the closing tag (or end)
  */
-function decodeValues(buf, start, end, stopAtClosing = null) {
+function decodeValues(buf, start, end, stopAtClosing = null, depth = 0) {
+  // Real BACnet values nest a handful of levels; a peer must not be able to make us recurse to the stack limit.
+  if (depth > MAX_NESTING) throw new BacnetDecodeError(`value nested deeper than ${MAX_NESTING} levels`);
   const items = [];
   let p = start;
   while (p < end) {
@@ -270,7 +274,7 @@ function decodeValues(buf, start, end, stopAtClosing = null) {
       throw new BacnetDecodeError(`unexpected closing tag ${t.tagNumber}`);
     }
     if (t.opening) {
-      const inner = decodeValues(buf, p + t.headerLength, end, t.tagNumber);
+      const inner = decodeValues(buf, p + t.headerLength, end, t.tagNumber, depth + 1);
       if (inner.next >= end) throw new BacnetDecodeError(`opening tag ${t.tagNumber} is never closed`);
       items.push({ context: t.tagNumber, items: inner.items });
       p = inner.next + readTag(buf, inner.next).headerLength;
@@ -286,7 +290,8 @@ function decodeValues(buf, start, end, stopAtClosing = null) {
 }
 
 /** Skip over one complete element (primitive, or constructed with its closing tag). @returns next offset */
-function skipElement(buf, off) {
+function skipElement(buf, off, depth = 0) {
+  if (depth > MAX_NESTING) throw new BacnetDecodeError(`value nested deeper than ${MAX_NESTING} levels`);
   const t = readTag(buf, off);
   if (t.closing) throw new BacnetDecodeError(`unexpected closing tag ${t.tagNumber}`);
   if (!t.opening) return off + t.headerLength + t.length;
@@ -294,7 +299,7 @@ function skipElement(buf, off) {
   for (;;) {
     const n = readTag(buf, p);
     if (n.closing && n.tagNumber === t.tagNumber) return p + n.headerLength;
-    p = skipElement(buf, p);
+    p = skipElement(buf, p, depth + 1);
   }
 }
 

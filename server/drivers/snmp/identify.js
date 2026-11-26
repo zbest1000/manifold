@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * Discovery probe (opt-in): ONE SNMPv2c GetRequest with community "public" for
  * sysDescr.0, sysObjectID.0 and sysName.0, one datagram per address, no
@@ -22,7 +24,7 @@ async function identifySnmp(host, port = 161, { timeoutMs = 2000, signal, create
   } catch {
     return null;
   }
-  const requestId = 1 + Math.floor(Math.random() * 0x7ffffff0);
+  const requestId = crypto.randomInt(1, 0x7ffffff0);
   const community = Buffer.from('public');
   const ask = [oids.SYS_DESCR, oids.SYS_OBJECT_ID, oids.SYS_NAME];
   return new Promise((resolve) => {

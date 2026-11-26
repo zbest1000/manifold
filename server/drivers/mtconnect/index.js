@@ -28,6 +28,7 @@ const FIELDS = ['state', 'nativeCode', 'text', 'severity', 'qualifier', 'type'];
 const DEFAULT_OPTIONS = { device: '', sampleCount: 1000, maxResponseBytes: 8 * DEFAULT_MAX_BYTES, keepAlive: true };
 const DEFAULT_LIMITS = { requestDeadlineMs: 5000, connectTimeoutMs: 8000, interRequestDelayMs: 0 };
 const MAX_PAGES = 20;
+const MAX_ACTIVE_CONDITIONS = 256; // per condition data item
 const TIMEOUTS_BEFORE_OFFLINE = 3;
 const ACCEPT = 'application/xml, text/xml;q=0.9, */*;q=0.1';
 const SEVERITY = { normal: 0, warning: 1, fault: 2 };
@@ -253,6 +254,8 @@ function createDriver(device, deps = {}) {
     for (const o of ordered) {
       let e = latest.get(o.id);
       if (!e) {
+        // Only data items the agent declared in /probe are kept: an agent cannot grow this map with made-up ids.
+        if (model.items.size && !model.items.has(o.id)) continue;
         e = { kind: o.kind, active: new Map(), sequence: null };
         latest.set(o.id, e);
       }
@@ -273,7 +276,11 @@ function createDriver(device, deps = {}) {
             else e.active.clear();
             e.normalText = o.value;
           } else {
-            e.active.set(o.nativeCode || '', { level: o.level, nativeCode: o.nativeCode, nativeSeverity: o.nativeSeverity, qualifier: o.qualifier, text: o.value, conditionType: o.conditionType, sequence: o.sequence });
+            const code = o.nativeCode || '';
+            // Bounded: an agent raising endless distinct codes without clearing them evicts the oldest.
+            e.active.delete(code);
+            if (e.active.size >= MAX_ACTIVE_CONDITIONS) e.active.delete(e.active.keys().next().value);
+            e.active.set(code, { level: o.level, nativeCode: o.nativeCode, nativeSeverity: o.nativeSeverity, qualifier: o.qualifier, text: o.value, conditionType: o.conditionType, sequence: o.sequence });
           }
         }
       } else {
@@ -476,7 +483,7 @@ function createDriver(device, deps = {}) {
 
     /** Stream state for tests and diagnostics. */
     streamState() {
-      return { instanceId, nextSequence: cursor === null ? null : cursor.toString(), ...stats, items: model.items.size };
+      return { instanceId, nextSequence: cursor === null ? null : cursor.toString(), ...stats, items: model.items.size, observed: latest.size };
     },
 
     async close() {

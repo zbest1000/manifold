@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * One SNMP session to one agent over one UDP socket: request-id matching,
  * retries within a deadline, and for v3 the USM engine state (engine-ID
@@ -26,7 +28,7 @@ const MAX_RESYNCS = 2;
 const UDP_MAX = 65507;
 
 function randomId() {
-  return 1 + Math.floor(Math.random() * 0x7ffffff0);
+  return crypto.randomInt(1, 0x7ffffff0);
 }
 
 class SnmpSession {
@@ -53,7 +55,7 @@ class SnmpSession {
     this.pending = new Map(); // v1/v2c: requestId -> entry; v3: msgId -> entry
     this.nextRequestId = randomId();
     this.nextMsgId = randomId();
-    this.salt = BigInt(Math.floor(Math.random() * 0xffffffff)) * 4294967296n + BigInt(Math.floor(Math.random() * 0xffffffff));
+    this.salt = crypto.randomBytes(8).readBigUInt64BE();
     this.engine = null; // { id, boots, time, latest, receivedAt, maxSize }
     this.keys = null; // { engineHex, auth, priv }
     this._ku = null; // { auth, priv } password -> key (engine independent, computed once)

@@ -354,3 +354,12 @@ test('error classification', () => {
   assert.match(errors.resultText({ kind: 'error', errorClass: 1, errorCode: 31 }), /object \/ unknown-object/);
   assert.equal(errors.codeOf({ kind: 'reject', reason: 9 }), 'reject/unrecognized-service');
 });
+
+test('a value nested deeper than 32 levels is refused instead of recursing to the stack limit', () => {
+  const enc = require('../drivers/bacnet/encoding');
+  const depth = 200;
+  const body = Buffer.concat([Buffer.alloc(depth, 0x0e), Buffer.alloc(depth, 0x0f)]); // opening tag 0 x200, closing tag 0 x200
+  assert.throws(() => enc.decodeValues(body, 0, body.length), /nested deeper than 32/);
+  const ok = Buffer.concat([Buffer.alloc(8, 0x0e), Buffer.alloc(8, 0x0f)]);
+  assert.doesNotThrow(() => enc.decodeValues(ok, 0, ok.length));
+});

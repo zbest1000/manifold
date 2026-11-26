@@ -29,6 +29,7 @@ const { parseTemplate } = require('./decode');
 
 const ATTR = { NAME: 1, TYPE: 2, DIMS: 8, EXTERNAL_ACCESS: 10 };
 const EXTERNAL_ACCESS = { 0: 'Read/Write', 1: 'Reserved', 2: 'Read Only', 3: 'None' };
+const MAX_SYMBOLS = 200000; // per scope; Logix controllers hold far fewer
 
 class SymbolError extends Error {
   constructor(message, status) {
@@ -98,10 +99,14 @@ async function fetchSymbols(request, program, { externalAccess }) {
       throw new SymbolError(`symbol list for ${program || 'controller'} failed with status 0x${reply.status.toString(16)}`, reply.status);
     }
     const batch = parseInstanceAttributeList(reply.data, externalAccess);
+    if (all.length + batch.length > MAX_SYMBOLS) throw new SymbolError(`symbol list for ${program || 'controller'} has more than ${MAX_SYMBOLS} entries`);
     all.push(...batch);
     if (reply.status === 0) return all;
     if (batch.length === 0) throw new SymbolError('partial symbol list reply with no symbols');
-    start = batch[batch.length - 1].instance + 1;
+    const next = batch[batch.length - 1].instance + 1;
+    // The continuation must move forward, or a faulty controller keeps us asking for the same page.
+    if (next <= start) throw new SymbolError(`symbol list did not advance (continued at instance ${next - 1} after asking from ${start})`);
+    start = next;
   }
   throw new SymbolError('symbol list did not terminate');
 }

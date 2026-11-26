@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * BACnet/IP client for ONE device: one UDP socket (ephemeral local port), confirmed requests
  * matched by invoke id, APDU timeout + retries, Who-Is/I-Am.
@@ -68,7 +70,7 @@ class BacnetClient {
     this._pending = new Map(); // invokeId -> entry
     this._retired = new Map(); // invokeId -> until (ms)
     this._queue = [];
-    this._nextId = Math.floor(Math.random() * 256);
+    this._nextId = crypto.randomInt(256);
     this._iAmWaiters = new Set();
     this.stats = { sent: 0, received: 0, retries: 0, timeouts: 0, foreign: 0, malformed: 0, late: 0, routedElsewhere: null, wrongService: 0 };
   }

@@ -430,6 +430,30 @@ test('parseInstanceAttributeList golden (with external access)', () => {
   assert.throws(() => parseInstanceAttributeList(rec.subarray(0, 10), true), /truncated/);
 });
 
+test('fetchSymbols: a controller whose "more" replies do not advance is stopped at once, and the list is bounded', async () => {
+  const { fetchSymbols, SymbolError } = require('../drivers/eip/symbols');
+  const rec = (instance) => Buffer.concat([Buffer.from([instance & 0xff, (instance >> 8) & 0xff, (instance >> 16) & 0xff, instance >>> 24]), hex('0000 c400'), Buffer.alloc(12)]);
+  // 1. always the same instance with status 0x06 (more): would loop and accumulate
+  let calls = 0;
+  const stuck = async () => {
+    calls++;
+    return { status: 0x06, data: Buffer.concat(Array(200).fill(rec(1))) };
+  };
+  await assert.rejects(fetchSymbols(stuck, null, { externalAccess: false }), SymbolError);
+  assert.ok(calls <= 2, `${calls} requests to a controller that never advances`);
+  // 2. advancing by one each time, forever: the total is capped
+  let next = 0;
+  calls = 0;
+  const endless = async () => {
+    calls++;
+    const batch = [];
+    for (let i = 0; i < 200; i++) batch.push(rec(next++));
+    return { status: 0x06, data: Buffer.concat(batch) };
+  };
+  await assert.rejects(fetchSymbols(endless, null, { externalAccess: false }), SymbolError);
+  assert.ok(calls * 200 <= 200000 + 200, `${calls * 200} symbols accumulated`);
+});
+
 // ── planner ─────────────────────────────────────────────────────────────────
 
 function mulberry32(seed) {
