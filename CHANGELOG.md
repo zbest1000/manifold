@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OPC UA library updated to 2.187** (was held at 2.182). Newer servers answer an untrusted client certificate
+  with the generic `BadSecurityChecksFailed`; that error now says the server most likely does not trust
+  Manifold's client certificate and what to do about it.
 - **Overview Connections and Pipelines Routes fit at 1440 px.** The Connections table cut off its State column
   and the Routes table hid its row actions behind a horizontal scroll; both now fit, truncating long names.
 - **Fixes carried over from the older pull requests #62 and #45**, re-applied on the current code:

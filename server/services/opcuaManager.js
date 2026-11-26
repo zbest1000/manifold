@@ -182,9 +182,13 @@ function explainError(error, { secure = false, endpointUrl = '', config = {} } =
       "the server's certificate is not trusted by Manifold — trust it under Certificates and trust, then connect again " +
       '(or tick "Trust server certificate on first connect")';
   } else if (/BadSecurityChecksFailed/i.test(flat)) {
+    // Sent by the server. Since OPC UA 1.04 servers answer every certificate problem on the secure
+    // channel with this one generic code so that they do not reveal which check failed; a failure of
+    // *our* check of the server's certificate is raised locally and handled by the branch above.
     text =
-      'the secure channel failed its security checks — usually one side does not trust the other: trust the ' +
-      "server's certificate in Manifold and Manifold's client certificate (under Certificates and trust) on the server";
+      "the server rejected the secure channel — it most likely does not trust Manifold's client certificate: " +
+      'give its administrator the certificate shown under Certificates and trust and have it trusted on the server, then connect again. ' +
+      'If it is already trusted there, check that the clocks agree and the certificate has not expired (servers do not say which check failed)';
   } else if (secure && /socket has been disconnected|disconnected by third party|ECONNRESET|BadCertificate/i.test(flat)) {
     text =
       "the server closed the connection while the secure channel was being opened — it most likely does not trust Manifold's client certificate: " +

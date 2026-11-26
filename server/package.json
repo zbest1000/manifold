@@ -16,7 +16,7 @@
     "express-rate-limit": "^8.7.5",
     "helmet": "^7.2.0",
     "mqtt": "^5.16.1",
-    "node-opcua-client": "2.182.0",
+    "node-opcua-client": "^2.187.34",
     "pg": "^8.22.0",
     "protobufjs": "^8.7.1",
     "socket.io": "^4.8.3",
@@ -27,7 +27,7 @@
     "aedes": "^1.1.1",
     "eslint": "^10.15.0",
     "globals": "^17.14.0",
-    "node-opcua": "2.182.0",
+    "node-opcua": "^2.187.34",
     "nodemon": "^3.1.14",
     "socket.io-client": "^4.8.3"
   },
