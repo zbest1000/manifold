@@ -5,7 +5,7 @@
 > is 0" from "the device is gone".
 
 A **mapping** takes tags from a source (a device, a device profile, an OPC UA
-connection, a Sparkplug endpoint or MQTT topics) and publishes them to the broker. **"Mapping" is
+connection, a Sparkplug endpoint, MQTT topics or an IoT device that a bridge publishes over MQTT) and publishes them to the broker. **"Mapping" is
 the word the interface uses; the REST API, the stored configuration and the
 JSON on this page call the same object a *binding*** (`/api/tags/bindings`).
 This guide says "mapping" for what you do in the UI and keeps `binding` where it
@@ -101,8 +101,8 @@ version) and **Cancel** (back to editing, nothing lost).
 - *Value*: **Publish as** (*Device type* or `number`, `integer`, `boolean`, `string`), **Scale**,
   **Offset**, **Decimals**, **Report by exception** (*Mapping default*, *Every change*,
   *Absolute*, *Percent*), **States** (raw value to label, with a choice of how states are
-  published), **Limits** (low low, low, high, high high; published as metadata, Manifold
-  raises no alarms).
+  published), **Limits** (low low, low, high, high high; published as metadata for alarm
+  tools; Manifold's own [alert rules](Alerts) do not read them).
 - *Tag context*: key/value pairs for this tag only.
 - A line states the value pipeline for the tag, for example `published = raw x 0.1, 1 dp`.
 
@@ -424,6 +424,30 @@ or every topic under a filter, picking up topics that appear later (at most 2000
   keep working. The Tags page offers a reviewable migration (`GET /api/tags/bindings/migrations`,
   `POST /api/tags/bindings/migrate { routeId, mapping, route: "disable" | "delete" }`).
 
+## IoT devices as a source
+
+Devices found by [IoT devices over MQTT](IoT-Devices-over-MQTT) (Zigbee2MQTT, Z-Wave JS UI, Home
+Assistant discovery, Tasmota, Shelly, ChirpStack, The Things Stack; **experimental — not verified on
+real hardware**) are a mapping source of their own, `source.type: "iot"`. **Map to UNS** on the IoT
+over MQTT tab, or choosing the device as the Tags page's source, opens the editor with the tags the
+bridge described: name, unit, type, range, allowed values and description are pre-filled.
+
+```json
+{ "type": "iot", "brokerId": "facility-broker", "deviceId": "z2m:0x00158d0004a1c201", "tags": "all" }
+```
+
+- `deviceId` is the convention's stable id (`z2m:<IEEE address>`, `zwave:<node>`, `ha:<device id>`,
+  `tasmota:<MAC>`, `shelly:<device id>`, `chirpstack:` / `ttn:` and the DevEUI), so a rename in the
+  bridge keeps the mapping working. `tags` is a list of tag keys or `"all"` (with `select` rules,
+  as for devices).
+- The device's availability is the source state: an offline device (availability topic, LWT, dead
+  Z-Wave node, bridge offline) or a disconnected broker publishes one Bad value per tag and
+  `_status: { online: false }`.
+- **Loop safety.** A target on the same broker that overlaps the topics detection reads (for example
+  under `zigbee2mqtt/`) is refused at save time, with the overlapping filters named.
+- Detection must be on for the device's convention; until the device has been seen the mapping's
+  health says so (*IoT device ... has not been seen on broker ... yet*).
+
 ## Retain, and what is cleaned up
 
 The editor leaves **Retain values** off, on purpose: a retained value
@@ -618,7 +642,8 @@ entry wins over `source.overrides`.
 | `deadband` | number (absolute) or `{ type, value }` | this tag's report-by-exception band; `0` turns the binding's band off for it |
 | `context` | `{ key: string \| number \| boolean }` | merged over the device tag's context, mapping wins key by key |
 
-**Limits are carried as context, not evaluated.** Manifold has no alarm engine:
+**Limits are carried as context, not evaluated.** The mapping does not alarm, and
+Manifold's [alert rules](Alerts) do not read limits (a rule has its own threshold):
 a value beyond `hi` publishes like any other. Consumers that alarm read the
 limits from `_meta` (or the Sparkplug BIRTH).
 

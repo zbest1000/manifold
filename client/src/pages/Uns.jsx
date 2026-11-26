@@ -7,7 +7,7 @@ import UnsTopology from '@/graph/UnsTopology';
 import { DEFAULT_LEVELS, nodeLevel } from '@/graph/unsLevels';
 import { buildUnsTheme } from '@/graph/unsTheme';
 import { useCanvasTokens } from '@/graph/canvasTokens';
-import { buildUnsTree } from '@/graph/unsTree';
+import { buildUnsTree, liveSelection } from '@/graph/unsTree';
 import { buildMountRoots } from '@/graph/unsMounts';
 import { compareNames, loadPaging, pagingForPath, savePaging } from '@/graph/unsPaging';
 import useIngestRate from '@/graph/useIngestRate';
@@ -181,6 +181,8 @@ export default function Uns() {
     for (const r of roots) walk(r, null);
     return { nodes, links, byId };
   }, [roots, levels]);
+  // The details panel reads the selected node from the current tree (counts and rates stay live).
+  const shown = liveSelection(selected, flat.byId);
 
   const saveLevels = (next) => {
     setLevels(next);
@@ -424,7 +426,7 @@ export default function Uns() {
         {panel === 'sources' && (
           <MountManager mounts={mounts} brokers={connected} opcua={opcua} i3xStatus={i3xStatus} onChanged={() => setMountTick((v) => v + 1)} onClose={() => setPanel(null)} />
         )}
-        {!panel && selected && <NodeDetails key={selected.id} node={selected} levels={levels} iconTick={iconTick} onChangeIcon={() => setPickerOpen(true)} onClose={() => select(null)} />}
+        {!panel && shown && <NodeDetails key={shown.id} node={shown} levels={levels} iconTick={iconTick} onChangeIcon={() => setPickerOpen(true)} onClose={() => select(null)} />}
       </div>
 
       {pickerOpen && selected && (

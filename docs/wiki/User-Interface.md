@@ -5,18 +5,19 @@
 
 ## Layout
 
-The sidebar groups every page. **Overview** is on its own; then **Observe** (Topics, UNS, Flows, Trends),
+The sidebar groups every page. **Overview** is on its own; then **Observe** (Topics, UNS, Flows, Trends, Alerts),
 **Build** (Pipelines, Tags), **Connect** (MQTT Brokers, Devices, OPC UA, CESMII SMIP, i3X, Discovery) and
 **System** (Health, Settings). At the bottom:
 
 - a **Live** / **Offline** indicator (the Socket.IO connection) with the number of connected brokers;
 - **Logs** with a count: a drawer of recent events (errors, warnings, info and verbose) from the live
-  connection, with level filters and **Clear**. The count includes verbose entries;
+  connection, with level filters and **Clear**. The count is what the level chips count (verbose lines excluded);
+- the **Alerts** item carries a red count while a critical alarm is firing unacknowledged;
 - the **theme switch**;
 - the collapse button (`[`).
 
 Every page has a header with the page title, a one-line subtitle that states the current state
-("7 of 8 online · 1 with problems"), and its actions, the primary one last. Most pages with
+("14 of 15 online · 1 with problems"), and its actions, the primary one last. Most pages with
 configuration are either a **table** (Brokers, Devices, Pipelines tabs, Mappings), a **drawer** for
 looking at a row without leaving the list, a **dialog** for short forms, or a **full-page form** for long
 ones (add or edit a device). The canvas pages (Topics, UNS, Flows) put one toolbar row under the header
@@ -94,6 +95,27 @@ with a screen reader as part of the test suite, and axe cannot judge everything 
 content). The canvases themselves (topology, graphs) are visual: they have a text summary and the same data is available in
 the Tree views and tables, but drawing a graph is not accessible in the way a table is. Report gaps as issues.
 
+## Pages and tabs
+
+| Route | Page | Tabs or views |
+|---|---|---|
+| `/` | Overview | Needs attention, Sources, Data flow, Connections, Latest values |
+| `/topics` | Topics | Graph, 3D, Tree |
+| `/uns` | Unified Namespace | Topology, Tree; side panels Lint, Events, Levels, Sources |
+| `/flows` | Flows | Producers, Consumers |
+| `/trends` | Trends | sources Live, Historian, Recording; Export CSV |
+| `/alerts` | Alerts | Active, History, Rules |
+| `/pipelines` | Pipelines | Routes, Models, Historians, Recorder, Contracts, Codecs |
+| `/tags` | Tags | Map tags, Mappings |
+| `/brokers` | MQTT Brokers | the broker table and a details drawer (subscription, canary, security) |
+| `/devices` | Devices | Devices, Profiles, IoT over MQTT |
+| `/opcua`, `/cesmii`, `/i3x` | OPC UA, CESMII SMIP, i3X | |
+| `/discovery` | Discovery | scan form and results |
+| `/system` | Health | |
+| `/settings` | Settings | General, Configuration, Audit trail |
+
+![The UNS map with the search box open: typing "press" lists the matching nodes with their paths, and the arrow keys move through them](images/uns-search.png)
+
 ## Deep links
 
 | Link | Opens |
@@ -102,8 +124,9 @@ the Tree views and tables, but drawing a graph is not accessible in the way a ta
 | `/topics?broker=<id>&topic=<topic>` | the Topics view framed on that topic once the layout has settled |
 | `/tags?source=device:<deviceId>` | the Tags workspace on that device |
 | `/tags?view=mappings` | the Mappings tab |
-| `/devices?tab=profiles` | the Profiles tab |
-| `/pipelines?tab=<routes\|models\|historians\|recorder\|contracts>` | a Pipelines tab |
+| `/devices?tab=<profiles\|iot>` | the Profiles or the IoT over MQTT tab (`&iot=<sourceId>` opens an IoT device) |
+| `/devices?device=<id>` | the Devices tab with that device's drawer open |
+| `/pipelines?tab=<routes\|models\|historians\|recorder\|contracts\|codecs>` | a Pipelines tab |
 | `/alerts?tab=<active\|history\|rules>` | an Alerts tab |
 | `/alerts?alarm=<ruleId>\|<topic>` | the Active tab with that alarm highlighted (the Overview's Needs attention links use it) |
 | `/settings?tab=<general\|configuration\|audit>` | a Settings tab (`?tab=alerts`, the old place of the alert rules, opens `/alerts?tab=rules`) |

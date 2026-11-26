@@ -145,7 +145,7 @@ What the guard covers, and how strongly:
 |---|---|
 | Network scanner (Discovery) | each candidate address is checked |
 | i3X, CESMII, broker admin API, **alert webhooks** | full: checked before the request, the connect-time address is pinned (closes DNS rebinding), redirects are followed manually (at most 5) and every hop is re-checked, and credentials are dropped on a cross-origin redirect. A webhook to `localhost` or a private address is **refused** (private ones work with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) |
-| **Device drivers** (Modbus, S7, EtherNet/IP) | checked when a device is saved, tested or started. A hostname is resolved and validated in the server process; the validated address is passed to the driver host, which connects to **that address** (the hostname stays for display), so there is no re-resolution window. The name is re-resolved whenever a driver host restarts and every 30 s for running devices; if it now resolves to a blocked address the device goes offline with that reason instead of connecting. **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
+| **Device drivers** (every protocol, TCP, UDP, HTTP and WebSocket) | checked when a device is saved, tested or started. A hostname is resolved and validated in the server process; the validated address is passed to the driver host, which connects to **that address** (the hostname stays for display), so there is no re-resolution window. The name is re-resolved whenever a driver host restarts and every 30 s for running devices; if it now resolves to a blocked address the device goes offline with that reason instead of connecting. **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
 
 **Not covered:** MQTT broker hosts, OPC UA endpoints, and historian / database
 URLs are **not** checked. (The public test-broker presets in the connect form only fill the
@@ -203,7 +203,8 @@ With auth enabled `/metrics` returns 401 without a token; set
 | `manifold_broker_canary_state` (`state` ok/slow/failing/not-permitted/pending/unknown, 1 for the current one), `manifold_broker_canary_success_ratio`, `manifold_broker_canary_latency_ms` (`quantile` 0.5/0.95), `manifold_broker_canary_last_success_age_seconds`, `manifold_broker_canary_probes_total` | the opt-in [broker canary](Broker-Setup#broker-canary-opt-in-round-trip-probe); only brokers that turned it on appear |
 | `manifold_broker_posture_findings` (`severity` high/medium/low/info) | security findings per broker, see [Security posture](Broker-Setup#security-posture) |
 | `manifold_pipeline_messages_total` | per-route pipeline counters, `result` = `matched`, `delivered`, `error`, `loop_blocked` |
-| `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; spill size |
+| `manifold_pipeline_pending_points` (`route`) | points a route handed to a historian target that are still waiting (queued or spilled) |
+| `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_pending_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; points waiting in memory and on disk; spill size |
 | `manifold_recorder_points_total` | points per recording |
 | `manifold_contract_checks_total`, `manifold_contract_violations_total` | schema contracts |
 | `manifold_alert_events` | events in the in-memory alert ring |
@@ -304,7 +305,14 @@ Two optional read-outs per MQTT broker, both described in [Broker setup](Broker-
   [Devices and Drivers](Devices-and-Drivers#finding-devices-on-the-network-discovery)).
   It is intrusive on an OT network: scan small ranges in a window. It follows
   the egress guard (private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`;
-  loopback is always refused).
+  loopback needs `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`). The UDP kinds (BACnet/IP, CoAP,
+  SNMP) are each opt-in on their own; the SNMP probe sends the community `public`.
+- **Device secrets** (HTTP passwords and tokens, SNMP communities and v3 passwords, the
+  bridge servers' bearer token) are stored in `profiles.json` and answered as `null` by
+  every API call; leave the field blank on edit to keep the stored value.
+- **Experimental drivers.** Every driver except Modbus TCP is experimental — not verified on
+  real hardware; run it against a real device with the checklist in
+  [Verifying on real hardware](Verifying-on-Real-Hardware) before relying on it.
 - Device setup is admin-only and audited like any other change. A viewer can
   read devices and live values; `POST /api/devices/validate-tags` is the only
   device POST a viewer may call.
@@ -316,8 +324,9 @@ Two optional read-outs per MQTT broker, both described in [Broker setup](Broker-
   Devices page and `GET /api/devices` (state, cycle times, overruns, quarantined
   tags with their reasons, last error and its time).
 - **Retained topics**: a mapping clears what it published when it is deleted,
-  disabled or renamed, but not for edits made while Manifold was down
-  ([details](Mapping-to-the-UNS#retain-and-what-is-cleaned-up)).
+  disabled or renamed; the owned topics are recorded in `binding-retained.json`, so an edit
+  made while Manifold was down is cleaned up once the broker is connected (at most 20,000
+  recorded topics per broker; [details](Mapping-to-the-UNS#retain-and-what-is-cleaned-up)).
 
 ## Upgrade notes: behaviour changes an operator must know
 
@@ -359,6 +368,11 @@ Collected from the changelog; each is verified against the code.
 | MQTT 5 property entries | 200,000 | `MANIFOLD_MAX_MSG_PROPS` | New topics' properties are refused and counted (`droppedProps`) |
 | Sparkplug un-coalesced queue | 5,000 messages / 8 MiB per 100 ms flush | `MANIFOLD_SPARKPLUG_QUEUE_MAX`, `MANIFOLD_SPARKPLUG_QUEUE_BYTES` | A topic falls back to latest-wins for that window; `sparkplugCoalesced` counts the affected messages |
 | Historian HTTP calls | 15 s | `MANIFOLD_HISTORIAN_TIMEOUT_MS` | The write fails and spills |
+| Codec payload size | 256 KiB | `MANIFOLD_CODEC_MAX_BYTES` | The payload is not decoded and stays as it arrived (counted as failed); decoding is also bounded to 32 levels and 100,000 items |
+| Codec auto-detection | on | `MANIFOLD_CODEC_AUTODETECT=0` turns it off | CBOR and MessagePack without a binding are then left as they arrived |
+| IoT devices / tags per broker | 2,000 / 50,000 | `MANIFOLD_IOT_MAX_DEVICES`, `MANIFOLD_IOT_MAX_TAGS` | New devices or tags are not added and the drop is counted |
+| Alert history on disk | 8 MiB (two segments) | `MANIFOLD_ALERT_HISTORY_MAX_BYTES` | The oldest events are dropped |
+| Trends CSV export | 1,000,000 rows | `MANIFOLD_EXPORT_MAX_ROWS` | The file stops with a `# Truncated` line |
 
 See the full list of settings in the
 [README](https://github.com/zbest1000/manifold#environment-variables).

@@ -4,10 +4,11 @@
 
 - 🏁 [Getting Started](Getting-Started)
 - 🎨 [User interface](User-Interface)
-- 🔌 [Broker Setup](Broker-Setup)
+- 📶 [Broker Setup](Broker-Setup)
 - 🗄️ [Historians](Historians)
 - 🔀 [Pipelines and Models](Pipelines-and-Models)
 - 🔧 [Devices and Drivers](Devices-and-Drivers)
+- 🔌 [Matter and Z-Wave bridge servers](Bridge-Servers)
 - 📡 [IoT devices over MQTT](IoT-Devices-over-MQTT)
 - 🏭 [OPC UA](OPC-UA)
 - 🗺️ [Mapping to the UNS](Mapping-to-the-UNS)

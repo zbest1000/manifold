@@ -46,6 +46,8 @@ active alarms at once, with an *Ended* event in the history.
 
 ## Acknowledging
 
+![The Active tab of the demo plant: a critical hydraulic-pressure alarm, two robot temperature alarms on a wildcard rule (one acknowledged by operator with a note), and a silent-meter alarm](images/alerts.png)
+
 An acknowledgement says "someone has seen this and is on it". It records **who** (the token's name
 when the server has authentication, or `operator` on an open server, which cannot tell people apart),
 **when**, and an optional **note** (up to 500 characters).
@@ -61,6 +63,8 @@ when the server has authentication, or `operator` on an open server, which canno
 - Viewer (read-only) sessions see acknowledgements but cannot make them.
 
 ## History
+
+![The History tab: firings, resolutions and an acknowledgement, newest first, with filters for text, rule, state, severity and time range, and Export CSV](images/alerts-history.png)
 
 Every event is appended to `alerts.jsonl` in the data directory (`MANIFOLD_DATA_DIR`). The file is
 size-capped in two segments, like file recordings: when the current file reaches half of

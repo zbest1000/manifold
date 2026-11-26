@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Manifold — Industrial data explorer & DataOps toolkit</title>
-  <meta name="description" content="Open-source industrial data explorer: MQTT, Sparkplug B, OPC UA, CESMII SMIP and i3X, with a live Unified Namespace, DataOps pipelines, historians, and an MCP server for AI agents." />
+  <meta name="description" content="Open-source industrial data explorer: MQTT, Sparkplug B, OPC UA, CESMII SMIP, i3X and read-only device drivers, with a live Unified Namespace, DataOps pipelines, historians, alerts, and an MCP server for AI agents." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230ea5e9'/%3E%3Cg fill='none' stroke='white' stroke-width='6' stroke-linecap='round'%3E%3Ccircle cx='50' cy='28' r='9' fill='white' stroke='none'/%3E%3Ccircle cx='26' cy='68' r='8' fill='white' stroke='none'/%3E%3Ccircle cx='74' cy='68' r='8' fill='white' stroke='none'/%3E%3Cpath d='M50 37 L28 60 M50 37 L72 60'/%3E%3C/g%3E%3C/svg%3E" />
   <meta property="og:title" content="Manifold — Industrial data explorer & DataOps toolkit" />
   <meta property="og:description" content="MQTT · Sparkplug B · OPC UA · CESMII · i3X — explored, unified into a live UNS, and shaped by a DataOps layer. Open source, MIT." />
@@ -218,8 +218,9 @@
             <ul>
               <li>MQTT 3.1.1 &amp; 5 over tcp/tls/ws/wss, with <code>$share</code> subscriptions</li>
               <li>OPC UA address space with live values &amp; secure connections</li>
-              <li>JSON, text, binary &amp; Sparkplug B payloads decoded</li>
-              <li>Network discovery by CIDR scan with handshake verification</li>
+              <li>JSON, text, binary &amp; Sparkplug B payloads decoded; CBOR, MessagePack, SenML, Protobuf and Avro through payload codecs</li>
+              <li>Network discovery by CIDR scan with handshake verification, including opt-in BACnet/IP, CoAP and SNMP over UDP</li>
+              <li>Per-broker security posture, an opt-in round-trip canary, and public test-broker presets</li>
             </ul>
           </div>
           <div class="card">
@@ -231,7 +232,7 @@
               <li>Namespace lint score with structural findings</li>
               <li>Per-topic staleness calibrated to each topic's cadence</li>
               <li>~130 curated industrial icons + custom SVGs</li>
-              <li>Canvases follow the theme; deep links such as <code>/uns?broker=&amp;path=</code></li>
+              <li>Canvases follow the theme; Expand all / Collapse all and a search whose results you pick with the keyboard; deep links such as <code>/uns?broker=&amp;path=</code></li>
             </ul>
           </div>
           <div class="card">
@@ -241,8 +242,8 @@
             <ul>
               <li>Pipelines: filter → transform chain → broker or historian</li>
               <li>Historians: InfluxDB, TimescaleDB, Timebase — store-and-forward</li>
-              <li>Trends from a historian <em>or</em> a local recording — no DB needed</li>
-              <li>Contracts, alerts (sustain + hysteresis), recorder &amp; replay</li>
+              <li>Trends from a historian <em>or</em> a local recording — no DB needed — with CSV export</li>
+              <li>Contracts, recorder &amp; replay, and alerts (sustain + hysteresis) with severities, acknowledgement and a history that survives restarts</li>
             </ul>
           </div>
           <div class="card">
@@ -251,7 +252,8 @@
             <p>Browse device tags and publish them into the UNS.</p>
             <ul>
               <li>Unified tag browser: devices, OPC UA, Sparkplug registry, MQTT trie</li>
-              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP. S7 and EtherNet/IP are experimental, and <b>no driver has been run against real hardware yet</b> (simulators only)</li>
+              <li>Read-only drivers: Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP, and Matter and Z-Wave through their bridge servers. Every driver but Modbus TCP is experimental, and <b>no driver has been run against real hardware yet</b> (simulators only)</li>
+              <li>IoT devices read from their MQTT bridges: Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly, ChirpStack, The Things Stack (experimental; Manifold never publishes to them)</li>
               <li>Devices as a table with a detail drawer, profiles with parameters, all-or-nothing bulk creation, opt-in device discovery</li>
               <li>A single-sheet <b>mapping editor</b>: publish under an ISA-95 asset path as values, TVQ with units, one object per asset, or a Sparkplug B device, with a live server preview</li>
               <li>Choose tags by list or by rule, set per-tag name, unit, scale, states and limits, and add asset context</li>
@@ -275,7 +277,7 @@
             <h3>MCP for AI agents</h3>
             <p>The same backend, exposed to any MCP client.</p>
             <ul>
-              <li>78 tools: MQTT, UNS, DataOps, OPC UA, CESMII, i3X</li>
+              <li>83 tools: MQTT, UNS, DataOps, alerts, IoT devices, OPC UA, CESMII, i3X</li>
               <li>Discover brokers, browse topics, read live payloads</li>
               <li>Drive pipelines and mappings (bindings) programmatically</li>
               <li>Honors the same auth token as the API</li>

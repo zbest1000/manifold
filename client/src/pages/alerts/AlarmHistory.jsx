@@ -33,7 +33,7 @@ const when = (ts) => {
 function EventDetail({ e }) {
   return (
     <>
-      <span className="block max-w-[28rem] truncate text-xs text-muted" title={e.detail}>
+      <span className="line-clamp-2 block min-w-[12rem] break-words text-xs text-muted" title={e.detail}>
         {e.detail}
       </span>
     </>
@@ -215,10 +215,10 @@ export default function AlarmHistory({ rules }) {
                       <Td>
                         <StatusText tone={sv.tone}>{sv.label}</StatusText>
                       </Td>
-                      <Td header className="text-fg">
+                      <Td header className="min-w-[10rem] text-fg">
                         {e.ruleName || ruleName(e.ruleId) || e.ruleId}
                       </Td>
-                      <Td className="mono max-w-[16rem] truncate text-xs text-muted" title={e.topic || ''}>
+                      <Td className="mono max-w-[14rem] truncate text-xs text-muted" title={e.topic || ''}>
                         {e.topic || '—'}
                       </Td>
                       <Td align="right" className="mono tabular-nums text-xs">

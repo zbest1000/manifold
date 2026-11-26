@@ -60,7 +60,7 @@ container restarts. See [Operations](Operations) for tokens and hardening.
 
 **Overview** shows what is connected and what is wrong. A new install is empty: **Needs
 attention** is quiet, **Sources** reads `0 / 0` for everything, and the sidebar groups the rest of the
-app: **Observe** (Topics, UNS, Flows, Trends), **Build** (Pipelines, Tags), **Connect** (MQTT Brokers,
+app: **Observe** (Topics, UNS, Flows, Trends, Alerts), **Build** (Pipelines, Tags), **Connect** (MQTT Brokers,
 Devices, OPC UA, CESMII SMIP, i3X, Discovery) and **System** (Health, Settings). The sidebar footer has the
 theme switch (system, light, dark; see [User interface](User-Interface)) and the `[` key collapses the sidebar.
 
@@ -70,6 +70,9 @@ theme switch (system, light, dark; see [User interface](User-Interface)) and the
 2. Fill in **Name** (for example *Plant broker*), **Protocol** (`mqtt (TCP)`, `mqtts`, `ws` or `wss`),
    **MQTT version** (3.1.1 or 5), **Host** and **Port**, and **Username** and **Password** if the broker needs them.
    **Connection settings** (retries, timeouts, keep-alive, intake) is collapsed; the defaults are sensible.
+   The **Public test brokers** presets fill the form for a shared public broker, for trying Manifold out only (see
+   [Broker Setup](Broker-Setup#public-test-brokers)). The **Canary** box is off by default; turning it on makes
+   Manifold publish a small probe message.
 3. Press **Connect**.
 
 ![The connect-a-broker dialog](images/broker-form.png)
@@ -89,8 +92,8 @@ zero registration, because they are derived from observed traffic.
 Devices are PLCs, meters and gateways that Manifold polls directly and read-only.
 
 1. Open **Devices** and press **Add device**.
-2. **Connection**: a **Name**, the **Protocol** (Modbus TCP, Siemens S7 or EtherNet/IP; S7 and EtherNet/IP carry an *Experimental*
-   badge), **Host** and **Port**, and the protocol's own fields (Modbus **Unit ID**; S7 **Rack** and **Slot**, or one of the
+2. **Connection**: a **Name**, the **Protocol** (Modbus TCP, Siemens S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect,
+   CoAP, Matter Server or Z-Wave JS Server; every one but Modbus TCP carries an *Experimental* badge: not verified on real hardware), **Host** and **Port**, and the protocol's own fields (Modbus **Unit ID**; S7 **Rack** and **Slot**, or one of the
    **Presets**). Open **On the &lt;protocol&gt; side** for what to enable on the PLC first (S7 needs PUT/GET, for instance).
 3. Press **Test connection**. It opens one connection with these settings, saves nothing, and answers
    *Connected in N ms* with the device's identity, or *Could not connect* with the reason.
@@ -128,7 +131,10 @@ The Topics page has the equivalent `/topics?broker=<broker id>&topic=<topic>`. Y
 
 ## Where to next
 
-- Poll a PLC directly (Modbus TCP, S7, EtherNet/IP) → [Devices and Drivers](Devices-and-Drivers)
+- Read a PLC, controller, meter or sensor directly (Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect,
+  CoAP) → [Devices and Drivers](Devices-and-Drivers); Matter and Z-Wave → [Bridge servers](Bridge-Servers)
+- See the Zigbee, Z-Wave, Wi-Fi and LoRaWAN devices a bridge publishes on your broker → [IoT devices over MQTT](IoT-Devices-over-MQTT)
+- Alarm on values and silent topics, acknowledge, keep a history → [Alerts](Alerts)
   (it can also find them on the network and create many from a profile)
 - Publish tags with units, context and quality → [Mapping to the UNS](Mapping-to-the-UNS)
 - Light and dark themes, shortcuts, deep links, phones → [User interface](User-Interface)

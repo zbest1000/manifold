@@ -2,6 +2,12 @@
 // server/services/tagBindings.js (slug / targetTopic / statusTopic) EXACTLY so
 // the wizard preview shows what the server will publish.
 
+/** A button label used inside a sentence: "Add to UNS" -> "add to UNS" (only the first letter changes, acronyms stay). */
+export function labelInSentence(label) {
+  const s = String(label || '');
+  return s ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
 /** Same as the server: trim, then collapse whitespace and MQTT-reserved / + # into "_". */
 export function slug(name) {
   return String(name).trim().replace(/[\s/+#]+/g, '_');

@@ -173,7 +173,7 @@ export default function TagInspector({ state, row, index, total, onRow, onMove, 
                 </label>
               ))}
             </div>
-            <p className="helper mt-1">Published as metadata for alarm tools. Manifold raises no alarms itself.</p>
+            <p className="helper mt-1">Published as metadata for alarm tools. Manifold's own alert rules do not read them.</p>
             <ErrorText>{err('limits')}</ErrorText>
           </div>
         </fieldset>

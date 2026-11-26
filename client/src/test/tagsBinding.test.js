@@ -4,7 +4,7 @@ import { visibleRows, validateAssetPath, validateAssetTemplate, normalizeAssetPa
 import { instanceRows, allowedPlaceholders, substituteTemplate, cleanOverrides } from '@/pages/tags/profileModel';
 import { blockingCollisions, sizeSummary, generalWarnings, fmtBytes, unitTypeLabel } from '@/pages/tags/previewModel';
 import { stateFromBinding, buildMapping } from '@/pages/tags/mappingModel';
-import { layoutLabel, rbeLabel, instanceCount, detailFacts, historianReason } from '@/pages/tags/bindingView';
+import { layoutLabel, rbeLabel, instanceCount, detailFacts, historianReason, sourceLabel } from '@/pages/tags/bindingView';
 
 const brokers = [{ id: 'b1', name: 'Local' }];
 
@@ -231,5 +231,18 @@ describe('asset picker tree', () => {
     ]);
     expect(visibleRows(kids, new Set()).map((r) => r.path)).toEqual(['acme', 'zed']);
     expect(visibleRows(kids, new Set(['acme'])).map((r) => [r.path, r.level])).toEqual([['acme', 1], ['acme/dallas', 2], ['zed', 1]]);
+  });
+});
+
+describe('sourceLabel', () => {
+  it('finds an IoT device source by <brokerId>|<deviceId>, so a running IoT mapping is not "not connected"', () => {
+    const b = { source: { type: 'iot', brokerId: 'fac', deviceId: 'z2m:0x1', tags: 'all' } };
+    const sources = [{ type: 'iot', id: 'fac|z2m:0x1', label: 'cold-room/temperature-1 · Zigbee2MQTT via Facilities broker' }];
+    expect(sourceLabel(b, sources)).toEqual({ type: 'iot', label: 'cold-room/temperature-1 · Zigbee2MQTT via Facilities broker', connected: true });
+    expect(sourceLabel(b, [])).toEqual({ type: 'iot', label: 'z2m:0x1', connected: false });
+  });
+  it('keeps the other source kinds as before', () => {
+    expect(sourceLabel({ source: { type: 'device', deviceId: 'd1' } }, [{ type: 'device', id: 'd1', label: 'Boiler' }]).label).toBe('Boiler');
+    expect(sourceLabel({ source: { type: 'mqtt', brokerId: 'b', tags: 'all', filter: 'x/#' } }, [{ type: 'mqtt', id: 'b', label: 'Plant' }]).label).toBe('Plant x/#');
   });
 });

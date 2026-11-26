@@ -1,6 +1,6 @@
 # 🏭 Manifold
 
-**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, plus read-only Modbus TCP · S7 · EtherNet/IP device drivers, explored, unified, and shaped into a Unified Namespace.
+**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, plus read-only device drivers (Modbus TCP · S7 · EtherNet/IP · BACnet/IP · SNMP · HTTP/JSON · MTConnect · CoAP · Matter and Z-Wave through their bridge servers) and IoT devices read from their MQTT bridges, explored, unified, and shaped into a Unified Namespace. Every driver except Modbus TCP, and every IoT convention, is **experimental — not verified on real hardware**.
 
 [![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
 
@@ -16,12 +16,15 @@
 |---|---|---|
 | 🏁 | **[Getting Started](Getting-Started)** | Install, run (source or Docker image), connect a broker, add a device, map its tags, and see them in the UNS |
 | 🎨 | **[User interface](User-Interface)** | Layout, light and dark themes, keyboard shortcuts, what accessibility testing covers, deep links, phones |
-| 🔌 | **[Broker Setup](Broker-Setup)** | Intake QoS, transports and MQTT 5, shared subscriptions, the EMQX ACL recipe, admin APIs for consumer lineage |
+| 📶 | **[Broker Setup](Broker-Setup)** | Intake QoS, transports and MQTT 5, shared subscriptions, the EMQX ACL recipe, admin APIs for consumer lineage, the security posture, the opt-in canary, public test-broker presets |
 | 🗄️ | **[Historians](Historians)** | InfluxDB, TimescaleDB, Timebase — store-and-forward in, Trends charts back out |
-| 🔀 | **[Pipelines and Models](Pipelines-and-Models)** | Route, reshape, and contextualize the live stream |
-| 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | Poll Modbus TCP, S7 and EtherNet/IP PLCs: addressing, byte order, PLC-side prerequisites, profiles and bulk creation, finding devices, polling health, the read-only guarantee |
+| 🔀 | **[Pipelines and Models](Pipelines-and-Models)** | Route, reshape, and contextualize the live stream; decode CBOR, MessagePack, SenML, Protobuf and Avro payloads (Codecs) |
+| 🔧 | **[Devices and Drivers](Devices-and-Drivers)** | One table of every driver, what is common to all of them, then Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect and CoAP one by one; profiles and bulk creation, finding devices, polling health, the read-only guarantee |
+| 🔌 | **[Matter and Z-Wave bridge servers](Bridge-Servers)** | Reading Matter and Z-Wave networks through the Matter Server and Z-Wave JS Server |
+| 📡 | **[IoT devices over MQTT](IoT-Devices-over-MQTT)** | Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly, ChirpStack and The Things Stack devices from their MQTT traffic |
+| 🏭 | **[OPC UA](OPC-UA)** | Connecting, security and trust, browsing and monitoring |
 | 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | The mapping editor section by section, selecting tags by pick or by rule, per-tag settings, context, exact payloads from worked examples, quality, `_status` and `_meta`, deadband and heartbeat, profile mappings, preview, the direct historian target |
-| ✅ | **[Verifying on real hardware](Verifying-on-Real-Hardware)** | The ordered checklist for an engineer with a real Modbus, S7 or EtherNet/IP device or a Timebase historian |
+| ✅ | **[Verifying on real hardware](Verifying-on-Real-Hardware)** | One ordered checklist per driver, for the IoT conventions and for a Timebase historian |
 | 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse tags, publish them into the UNS, run a Sparkplug primary host |
 | 🔔 | **[Alerts](Alerts)** | Alert rules and severities, active alarms and acknowledging them, the durable history and CSV export, what a restart does |
 | 🛡️ | **[Operations](Operations)** | Fail-closed auth, roles and the viewer experience, session switching, the egress guard and its limits, audit, profile durability, the Health page and every metric, config as code, alerts, upgrade notes |
@@ -34,7 +37,8 @@
 ```mermaid
 flowchart LR
     SRC[Brokers, OPC UA,<br/>CESMII, i3X] --> M[Manifold server]
-    PLC[Modbus TCP, S7,<br/>EtherNet/IP devices] -- read-only --> M
+    PLC[PLCs, controllers, meters,<br/>sensors, Matter / Z-Wave servers] -- read-only --> M
+    IOT[IoT bridges over MQTT] -- read-only --> M
     M --> UI[Web UI<br/>graphs, UNS, Flows]
     M --> MCP[MCP server<br/>AI agents]
     M --> H[(Historians)]

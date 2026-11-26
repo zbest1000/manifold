@@ -1,41 +1,42 @@
 # 🔧 Devices and Drivers
 
-> **Goal:** poll Modbus TCP, Siemens S7, EtherNet/IP, HTTP/JSON, MTConnect, BACnet/IP, CoAP and SNMP devices and Matter / Z-Wave networks (through their bridge servers) directly, see
-> whether they are healthy, and turn their tags into values you can map into
-> the UNS. **Manifold only reads from devices.**
+> **Goal:** read PLCs, controllers, meters, building automation, network gear and sensors directly,
+> see whether they are healthy, and turn their tags into values you can map into the UNS.
+> **Manifold only reads from devices.**
 
 Manifold already speaks OPC UA. If the device has an OPC UA server you can
 license and use, prefer it: it carries types, names and authentication. The
-drivers here are for the many devices that only speak the older protocols.
+drivers here are for the many devices that only speak other protocols.
 
-| Driver | Status | Default port | Browse tags | Notes |
-|---|---|---|---|---|
-| **Modbus TCP** | supported | 502 | no | Registers and coils; byte/word order and addressing are explicit |
-| **Siemens S7** (S7comm) | **experimental** | 102 | no | Classic S7-300/400/1200/1500 access. Needs PUT/GET and non-optimized DBs |
-| **EtherNet/IP** (Logix) | **experimental** | 44818 | yes (**Import from controller**, and REST) | CompactLogix / ControlLogix tags by name |
-| **HTTP / JSON** | **experimental** | 80 / 443 | yes (**Import from device**) | GET-polls a device's REST endpoints and picks values with a small JSONPath |
-| **MTConnect** | **experimental** | 5000 | yes (**Import from agent**) | Machine-tool agent over HTTP: `/probe`, `/current`, then `/sample` without gaps |
-| **BACnet/IP** | **experimental** | 47808 (UDP) | yes (**Import from device**: object list, with names and units) | Building automation objects; ReadProperty / ReadPropertyMultiple only |
-| **CoAP** (UDP) | **experimental** | 5683 (UDP) | yes (**Import from device**: `/.well-known/core`, and the values inside JSON, CBOR and SenML resources) | Constrained sensors; GET only; polling or Observe; **no DTLS (`coaps://`)** |
-| **Matter** via Matter Server | **experimental** | 5580 (`/ws`) | yes (**Import from server**) | Reads through the open-source Matter Server; subscription, not polling. [Details](#smart-home-bridges-matter-and-z-wave) |
-| **Z-Wave** via Z-Wave JS Server | **experimental** | 3000 | yes (**Import from server**) | Reads the server's cached state; never wakes battery devices. [Details](#smart-home-bridges-matter-and-z-wave) |
-| **SNMP** v1 / v2c / v3 | **experimental** | 161 (UDP) | yes (**Import from agent**: bounded walk of a subtree) | Switches, UPS cards, gateways, PDUs; Get / GetNext / GetBulk only |
+## Drivers at a glance
 
-**Experimental** means the S7, EtherNet/IP, HTTP/JSON, MTConnect, BACnet/IP, CoAP, SNMP, Matter Server and Z-Wave JS drivers were checked only against
-in-process simulators written by the same author as the drivers. The
-simulators show that driver and simulator agree with each other, not that they
-match real firmware. Each driver has a "verify on real hardware" list; see
-[What is not yet verified](#what-is-not-yet-verified) and the ordered procedure
-in [Verifying on real hardware](Verifying-on-Real-Hardware). **Modbus TCP is
-"supported" in the sense that it is the simplest protocol and the best tested
-against its simulator; it has not been run against real devices either.**
-The Devices page marks every experimental driver with an **Experimental** badge and
-shows the same notice before the first connect.
+| Driver | `protocol` | Status | Transport, default port | Browse | The only requests it can build |
+|---|---|---|---|---|---|
+| [Modbus TCP](#modbus-tcp) | `modbus-tcp` | supported (simulator-tested) | TCP 502 | no | function codes 1 to 4 |
+| [Siemens S7](#siemens-s7) (S7comm) | `s7` | experimental | TCP 102 | no | setup, Read Var, SZL read |
+| [EtherNet/IP](#ethernetip-logix) (Logix) | `ethernet-ip` | experimental | TCP 44818 | **Import from controller** | CIP read and connection services |
+| [BACnet/IP](#bacnetip) | `bacnet-ip` | experimental | UDP 47808 | **Import from device** (object list, names, units) | unicast Who-Is, ReadProperty, ReadPropertyMultiple |
+| [SNMP](#snmp) v1 / v2c / v3 | `snmp` | experimental | UDP 161 | **Import from agent** (bounded subtree walk) | Get, GetNext, GetBulk |
+| [HTTP / JSON](#http--json) | `http-json` | experimental | TCP 80 / 443 | **Import from device** | `GET` without a body |
+| [MTConnect](#mtconnect) | `mtconnect` | experimental | TCP 5000 | **Import from agent** | `GET /probe`, `/current`, `/sample` |
+| [CoAP](#coap) | `coap` | experimental | UDP 5683 (no DTLS) | **Import from device** (`/.well-known/core`) | `GET` (and the empty CoAP ping / ACK messages) |
+| [Matter](Bridge-Servers) via Matter Server | `matter-server` | experimental | WebSocket 5580, path `/ws` | **Import from server** | six allow-listed read commands |
+| [Z-Wave](Bridge-Servers) via Z-Wave JS Server | `zwave-js` | experimental | WebSocket 3000 | **Import from server** | five allow-listed read commands, answered from the server's cache |
 
-Zigbee, Z-Wave, Tasmota, Shelly, Home Assistant and LoRaWAN devices that a bridge or gateway
-already publishes over MQTT are not polled by a driver: Manifold reads them from the broker
-(**Devices → IoT over MQTT**). It reads from the bridge and does not pair or control them; see
-[IoT devices over MQTT](IoT-Devices-over-MQTT).
+**What "experimental" means.** Every driver except Modbus TCP carries the same notice in these
+docs and an **Experimental** badge in the UI: **Experimental — not verified on real hardware.** It was checked only against an in-process
+simulator in `server/test/support/`, written together with the driver. The simulators show that
+driver and simulator agree, not that either matches real firmware. Each driver's `NOTES.md` lists
+the deviations it handles, what is not supported and what to confirm on a real device; the ordered
+procedure is [Verifying on real hardware](Verifying-on-Real-Hardware). Modbus TCP is called
+"supported" only because it is the simplest protocol and the best tested against its simulator;
+**it has not been run against real devices either.**
+
+Matter and Z-Wave are read through their bridge servers; they have their own page,
+[Matter and Z-Wave bridge servers](Bridge-Servers). Zigbee, Z-Wave, Tasmota, Shelly, Home
+Assistant and LoRaWAN devices that a bridge or gateway already publishes over MQTT are not polled
+by a driver at all: Manifold reads them from the broker (**Devices → IoT over MQTT**, see
+[IoT devices over MQTT](IoT-Devices-over-MQTT)).
 
 ## Concepts
 
@@ -63,19 +64,19 @@ when you map the tag; see [Mapping to the UNS](Mapping-to-the-UNS).
 
 ## The Devices page
 
-![The Devices table: seven of eight devices online, one connecting, with poll-cycle meters and the experimental badges](images/devices.png)
+![The Devices table of the demo plant: Modbus, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP, Matter and Z-Wave devices, one PLC connecting, with poll-cycle meters and the experimental badges](images/devices.png)
 
-**Devices** (`/devices`) has two tabs, **Devices** and **Profiles**. The header offers a refresh
+**Devices** (`/devices`) has three tabs: **Devices**, **Profiles** and **IoT over MQTT** (see [IoT devices over MQTT](IoT-Devices-over-MQTT)). The header offers a refresh
 button, **From profile** (create a device from a profile, see below) and the primary **Add device**.
 Under the tabs, a banner appears when a driver host is **restarting** or **parked**.
 
 **The table.** One row per device: **Device** (name, `host:port`, and the unit, rack/slot or route
-path), **State**, **Protocol** (with an *Experimental* badge for S7 and EtherNet/IP and a "from
+path), **State**, **Protocol** (with an *Experimental* badge for every experimental driver and a "from
 &lt;profile&gt;" line for profile instances), **Tags**, **Poll cycle** (a meter of the average cycle
 time against the interval, for example `1 ms / 1.0 s`), **Quarantined**, **Last error** (with how
 long ago), a **Polling enabled** switch and row actions (edit, map to the UNS, delete). Filter by
 name, host or state, by protocol, and with the chips **All**, **Online**, **Problems**, **Disabled**.
-The subtitle states the position ("7 of 8 online · 1 with problems").
+The subtitle states the position ("14 of 15 online · 1 with problems").
 
 **The detail drawer.** Click a device name to open a drawer with the state and the time it
 began, and three tabs:
@@ -103,7 +104,7 @@ The drawer's footer has the **Polling enabled** switch, **Delete**, **Map to UNS
 
 | Section | What is in it |
 |---|---|
-| **Connection** | **Name**, **Protocol** (fixed once created), the *Experimental* note ("Verified only against a simulator...") for S7 and EtherNet/IP, a disclosure **On the &lt;protocol&gt; side** with what to enable on the PLC before the first connect (open by default while creating), **Host**, **Port**, the protocol's own fields (Modbus **Unit ID**; S7 **Presets** *S7-300 / S7-400* (rack 0, slot 2) and *S7-1200 / S7-1500* (rack 0, slot 1), **Rack**, **Slot**, and advanced **Local TSAP** and **Remote TSAP**; EtherNet/IP **Slot** and route path), **Enabled**, and **Test connection** ("Opens one connection with these settings. Nothing is saved."), which answers with *Connected in N ms* and the identity or with *Could not connect* and the reason |
+| **Connection** | **Name**, **Protocol** (fixed once created), the *Experimental* note ("Verified only against a simulator...") for every experimental driver, a disclosure **On the &lt;protocol&gt; side** with what to enable on the PLC before the first connect (open by default while creating), **Host**, **Port**, the protocol's own fields (Modbus **Unit ID**; S7 **Presets** *S7-300 / S7-400* (rack 0, slot 2) and *S7-1200 / S7-1500* (rack 0, slot 1), **Rack**, **Slot**, and advanced **Local TSAP** and **Remote TSAP**; EtherNet/IP **Slot** and route path), **Enabled**, and **Test connection** ("Opens one connection with these settings. Nothing is saved."), which answers with *Connected in N ms* and the identity or with *Could not connect* and the reason |
 | **Protocol options** | Defaults for every tag, such as Modbus **Byte order**, **Word order**, **Address base**, **Max registers per read**, **Max gap to bridge**; a tag can override them in its own row |
 | **Polling** | **Poll groups** (id and interval, at least 100 ms) and the **Limits** (request deadline, connect timeout, delay between requests) |
 | **Device profile** | Shown when the device is a profile instance: the parameter values (see below) |
@@ -131,10 +132,10 @@ flowchart LR
     DM --> SUP[driver supervisor]
     SUP -- IPC --> H1[Modbus host process]
     SUP -- IPC --> H2[S7 host process]
-    SUP -- IPC --> H3[EtherNet/IP host process]
-    H1 --> P1[(PLCs)]
-    H2 --> P2[(PLCs)]
-    H3 --> P3[(PLCs)]
+    SUP -- IPC --> H3[... one host process per protocol]
+    H1 --> P1[(devices)]
+    H2 --> P2[(devices)]
+    H3 --> P3[(devices)]
 ```
 
 Drivers run in **separate child processes**, one per protocol. A driver that
@@ -144,9 +145,108 @@ if it stops answering heartbeats, and **parks** it after more than five
 crashes in a minute (the Devices page shows a "Driver parked" badge and a
 banner). Every tag the process owned shows as Bad while it is down.
 
-## Prerequisites on the device side
+## Common to every driver
+
+**Connection fields.** Every device has a **Name**, a **Protocol** (fixed once created), **Host**
+and **Port**, **Enabled**, poll groups and **Limits** (request deadline, connect timeout, delay
+between requests). A device saved without limits runs with its **driver's default limits**, not a
+generic 2 s deadline: CoAP needs about 10 s for its retransmissions, BACnet/IP its APDU timeout
+times its retries. **Test connection** opens one connection with the form's settings and saves
+nothing.
+
+**URL-based drivers** (HTTP/JSON, MTConnect, Matter Server, Z-Wave JS) share one set of fields:
+**Scheme** (`http`/`https` or `ws`/`wss`), **Host**, **Port**, **Path**, **Bearer token** and the
+three TLS settings. Pasting a whole URL (`https://meter.local:8443/api/v1`,
+`ws://ha.local:5580/ws`) into **Host** fills scheme, host, port and path. **TLS is verified**: for
+a private CA paste the CA certificate; for a self-signed device pin its SHA-256 fingerprint; **Do
+not verify the TLS certificate** is an explicit per-device opt-out.
+
+**Secrets.** One rule for every driver: a secret is a descriptor field of type `password` (the
+HTTP passwords, tokens and custom header value, the SNMP community and v3 passwords, the bridge
+servers' bearer token). It is stored with the device on the server and passed to the driver
+process, but **every API answer carries a stored secret as `null`** (list, save, bulk,
+instantiate and the `409` conflict body); the form shows *stored, leave blank to keep*. An edit
+that leaves a secret out, blank or `null` keeps the stored value (same protocol only), and a
+secret the settings no longer use (a token after switching to basic authentication, a community
+after switching to SNMPv3) is dropped. Config export and the audit log redact them.
+
+**Quality.** A tag's quality is always one of Good (192), Uncertain (64) or Bad (0), with a reason
+such as `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode` or
+`unavailable`; each driver section lists its own reasons. Bad is never silently replaced by the
+last good value. Drivers that know the device's own time (HTTP/JSON with `timestampSelector`,
+MTConnect, CoAP SenML) report it as the sample's source time.
+
+### Egress: which addresses a device may use
+
+Device hosts pass the egress guard when you save, test or start a device (the
+Discovery scan checks every candidate address too, with the same flags; see above).
+Private networks are refused unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` (the
+normal setting on a plant network). **Loopback is refused** unless
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, which exists for local simulators and
+should stay off in production. Cloud-metadata and link-local ranges are always
+refused. See [Operations](Operations#network-safety-egress-guard).
+
+The UDP drivers (BACnet/IP, SNMP, CoAP) send only to the pinned address, unicast; nothing is broadcast or multicast. The SNMP driver's socket (`server/drivers/runtime/udpTransport.js`) also re-checks the egress policy in the driver process and drops answers from other addresses unless the device allows them.
+
+### The read-only guarantee, and its limits
+
+Every driver builds all of its outgoing frames through one function with an
+allowlist, and the tests try every refused service and assert that no bytes
+reach the socket:
+
+- **Modbus:** function codes 1, 2, 3 and 4 only.
+- **S7:** setup communication, Read Var and SZL reads only. Write Var, PLC
+  start/stop, block transfer and clock set are refused.
+- **EtherNet/IP:** session management, Forward Open/Close, Read Tag, Read Tag
+  Fragmented, Multiple Service Packet (every inner service checked), and
+  attribute/template reads. The client also re-parses each buffer before
+  `socket.write`.
+- **HTTP/JSON and MTConnect:** one shared HTTP client whose only request is
+  `GET` with no body (a test asserts this against the client source and the
+  simulators log every method they see). MTConnect sends only `/probe`,
+  `/current` and `/sample`.
+- **BACnet/IP:** BVLC Original-Unicast only, no network-layer messages, and
+  the APDUs ReadProperty, ReadPropertyMultiple (unsegmented) and Who-Is.
+  WriteProperty, COV subscriptions, device control, BBMD registration and every
+  other service are refused before a datagram is built.
+- **CoAP:** the encoder can only build GET (there is no method parameter), and
+  every datagram is checked again before the UDP socket: only an empty message
+  or a GET leaves. PUT, POST, DELETE, FETCH, PATCH and iPATCH do not exist in
+  the code, and the tests assert the simulator never sees one.
+- **SNMP:** GetRequest, GetNextRequest and GetBulkRequest only, every value
+  NULL. There is no SetRequest encoder at all; the message layer refuses to
+  wrap any other PDU, and the tests check every datagram the driver sent.
+- **Matter Server:** `start_listening`, `get_nodes`, `get_node`, `server_info`,
+  `diagnostics` and `read_attribute` only. Commissioning, `device_command`,
+  `write_attribute`, `remove_node`, `interview_node` and the rest cannot be encoded.
+- **Z-Wave JS Server:** `set_api_schema`, `start_listening`,
+  `node.get_defined_value_ids`, `node.get_value_metadata` and `node.get_value`
+  only, all answered from the server's cache. `node.set_value`, `node.poll_value`,
+  refresh, inclusion/exclusion, healing, firmware and `driver.*` setters cannot be
+  encoded. The test simulators of both servers refuse and record any other
+  command, and every test asserts that none arrived.
+
+What this does and does not mean:
+
+- It is a guarantee about **Manifold's code**, enforced where bytes are built,
+  not by a configuration switch or the UI. No route, binding or transform can
+  write to a device.
+- It is **not** a guarantee about the **network**. Modbus TCP, S7comm, plain
+  EtherNet/IP, BACnet/IP, SNMP v1/v2c, plain CoAP and the two bridge servers do not
+  authenticate the client. If your site requires that nothing can write, use
+  a firewall rule or a data diode as well.
+- It does not protect the device from being **read too hard**. Polling is
+  bounded (one connection, one request at a time, overruns skipped) but a very
+  small PLC can still be loaded by an aggressive interval. Start slow.
+
+## The drivers
+
+Each section has the same shape: status, what to set up on the device, the device settings, tag
+addresses and types, quality and errors, and what is not yet verified.
 
 ### Modbus TCP
+
+> **Supported (simulator-tested), not verified on real hardware.** Transport: TCP 502. Browse: no (Modbus has no names). Driver notes: [`server/drivers/modbus/`](https://github.com/zbest1000/manifold/blob/main/server/drivers/modbus).
 
 Nothing to enable. Modbus has no authentication, so anyone who can reach the
 port can also write registers. Manifold sends only read function codes
@@ -214,7 +314,15 @@ read may span; it defaults to **0** because many devices answer a read over an
 unmapped register with an error. Ranges known to be unmapped can be listed in
 the device's `options.unmapped` (REST only) and are never crossed.
 
+**Not yet verified.** **Modbus TCP** is tested against a fault-injecting simulator (late replies,
+  wrong transaction ids, dropped sockets, truncated frames, exceptions).
+  Interoperability with specific devices has not been surveyed: **no driver, Modbus
+  included, has been run against a real PLC**; the simulators were written together with
+  the drivers, so they show agreement, not correctness against firmware.
+
 ### Siemens S7
+
+> **Experimental — not verified on real hardware.** Transport: TCP 102. Browse: no (classic S7comm has no tag list). Driver notes: [`server/drivers/s7/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/s7/NOTES.md).
 
 Classic S7comm cannot read "optimized" data blocks or use symbolic names. To
 read a CPU, the PLC program has to allow it:
@@ -253,7 +361,16 @@ bytes apart, default 8), and reads are split to fit the PDU the CPU negotiates.
 Reads of a large value (bigger than one PDU) are several jobs, so the PLC can
 change it between them.
 
+**Not yet verified.** **S7**: [`server/drivers/s7/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/s7/NOTES.md)
+  lists 14 items to confirm with a packet capture on a real CPU before the
+  driver leaves experimental: PDU accounting, items per request, return codes
+  for a missing DB or optimized access, how a CPU with PUT/GET off refuses,
+  rack/slot to TSAP, SZL layouts used for identity, string encoding and
+  date formats.
+
 ### EtherNet/IP (Logix)
+
+> **Experimental — not verified on real hardware.** Transport: TCP 44818. Browse: **Import from controller**. Driver notes: [`server/drivers/eip/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/eip/NOTES.md).
 
 Tags are read by name. For each tag the controller's **External Access** must
 be *Read Only* or *Read/Write*; a tag set to *None* cannot be read and shows
@@ -279,79 +396,18 @@ controller's own template. EtherNet/IP tags have no `scale` or `offset`.
 
 `GET /api/devices/<id>/browse` lists the controller's tags and data types
 (controller scope, program scope, UDT members, External Access); the Devices
-page's **Import from controller** is a tree over it. EtherNet/IP, HTTP/JSON,
-MTConnect, BACnet/IP, CoAP, SNMP, Matter Server and Z-Wave JS can be browsed (the button names what is read:
-controller, device, agent or server): classic S7comm has no tag list and Modbus has no names.
+page's **Import from controller** is a tree over it.
 
-### HTTP / JSON
-
-For devices with a local REST API: energy meters, smart plugs, gateways,
-sensors. Manifold sends **GET requests only, never a body**, and picks values
-out of the JSON. Because the device is entered as a URL, the form has **Scheme**
-(`http` or `https`; https usually means port 443), the **Host** and **Port**,
-and an optional **Path** (a prefix such as `/api/v1`). The same field names are
-used by every URL-based driver (HTTP/JSON, MTConnect, Matter Server, Z-Wave JS):
-**Scheme**, **Path**, **Bearer token** and the three TLS settings below. Pasting a
-whole URL (`https://meter.local:8443/api/v1`) into **Host** fills scheme, host,
-port and path.
-
-A tag address is `path#selector`, for example `/api/status#$.power.total` or
-`/meters#$.items[?(@.id=="main")].kwh`. The selector is a small JSONPath:
-`$.a.b`, `$['key']`, `$.list[0]` (negative counts from the end) and an equality
-filter `[?(@.id=="x")]` that takes the first match. Wildcards, `..`, slices and
-script expressions are not supported and are refused when you save. The tag
-types are `number`, `bool` and `string`; scale and offset belong to the mapping.
-All tags on one path share **one request per poll cycle**, and an `ETag` is
-sent back as `If-None-Match` when the device provides one. Optional tag fields
-(set through the API or CSV): `timestampSelector` (the device's own time),
-`qualitySelector` with `qualityEquals` (the tag is Bad unless that field has
-that value) and `okStatus` (accepted HTTP status codes, default 2xx).
-
-A tag is **Bad with a reason** when the status is not accepted (`http-404`),
-the request times out, the body is not JSON, the selector matches nothing, the
-response is larger than **Max response size**, or the value does not fit the
-type. The device stays Online for these; it goes Offline when the connection is
-refused or reset, TLS fails, or three requests in a row time out.
-
-Authentication is none, basic, bearer token or one custom header. The secrets
-are stored with the device and never sent back to the browser (the API answers a
-stored secret as `null`; the form shows *stored, leave blank to keep*), as for
-every driver, redacted in exports and the audit
-log, and sent only to the device's own host. **TLS is verified.** For a device
-with a private CA paste the CA certificate; for a self-signed device pin its
-SHA-256 fingerprint; **Do not verify the TLS certificate** is an explicit opt-out
-that accepts any certificate. Redirects are followed only within the same host,
-port and scheme: a redirect to another host is refused. **Import from device**
-fetches a path and lists every value in it as a ready-made address with a
-sample. Details and limits: [`server/drivers/httpjson/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/httpjson/NOTES.md).
-
-> ⚠️ A device that changes state on a GET request would be affected by polling.
-> Check the device's documentation before adding a path.
-
-### MTConnect
-
-Reads an MTConnect agent (machine tools) over HTTP GET: `/probe` for the device
-model, `/current` for the first snapshot, then `/sample?from=<nextSequence>` on
-every poll so that no observation is missed. If the agent restarts (its
-`instanceId` changes) or the sequence has left its buffer (`OUT_OF_RANGE`),
-Manifold takes a fresh `/current` and carries on. Streaming (`interval=`) is
-**not** used: this driver polls.
-
-A tag address is the agent's **data item id** (`Xact`), or `device/id` when the
-agent serves several devices. SAMPLE items read as numbers, EVENT items as
-text, and `UNAVAILABLE` is Bad. CONDITION items read as `normal`, `warning` or
-`fault` (a `number` tag reads 0, 1 and 2; the optional tag field `field` selects
-the native code, text, severity or qualifier instead). The observation's own
-timestamp is the value's source time. **Import from agent** shows the devices,
-components and data items from `/probe` and fills each tag's unit. Time series
-and data set items are not supported and read Bad. Details and limits:
-[`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
+**Not yet verified.** **EtherNet/IP**: [`server/drivers/eip/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/eip/NOTES.md)
+  lists 18 items, including the Large Forward Open parameters, Forward Close,
+  attribute 10 (External Access), BOOL-array handling (the one most likely to
+  be wrong), template sizes, Multiple Service Packet limits, behaviour after a
+  controller download, and route paths through a bridge. The Rockwell and ODVA
+  documents were not available when the driver was written.
 
 ### BACnet/IP
 
-> **Experimental — not verified on real hardware.** Checked only against the
-> in-process simulator; see
-> [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md).
+> **Experimental — not verified on real hardware.** Transport: UDP 47808. Browse: **Import from device** (object list, object names and units). Driver notes: [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md).
 
 BACnet has no authentication: anything that can reach UDP port 47808 can
 command the device. Manifold sends only **Who-Is** (unicast, to this device;
@@ -410,64 +466,14 @@ would not fit is split, and a single value that never fits (a long array) is
 quarantined with the advice to read it by index. A device without
 ReadPropertyMultiple is read one property at a time.
 
-### CoAP (UDP)
-
-For constrained IoT devices and sensors that serve **plain CoAP** (RFC 7252) on UDP, default port 5683. Manifold sends
-only `GET` (plus one empty ping message when the device is added, and the acknowledgements CoAP itself needs); it never
-writes a resource.
-
-> ⚠️ **CoAP over DTLS (`coaps://`, port 5684) is not supported.** Node.js has no built-in DTLS and Manifold adds no
-> dependency for it, so a host written as `coaps://...`, a tag address with that scheme, and port 5684 are refused with
-> that explanation. Plain CoAP has no authentication or encryption: keep it on a trusted segment, and use a firewall rule
-> where nothing may ever write to the device.
-
-**Tag address:** `[observe:]/path[?query][#selector]`.
-
-| Address | Reads |
-|---|---|
-| `/sensors/temp` | the whole response (text/plain: a number, `true`/`false` or text) |
-| `/sensors/temp?unit=c` | the same with a query (one Uri-Query option per `&`-separated part) |
-| `/readings#temperature.value` | a member of a JSON or CBOR document: dotted keys, `[0]` array index, `["odd.key"]` for a key with dots or spaces |
-| `/senml#urn:dev:ow:10e2/temp` | one SenML record, selected by its resolved name (base name plus name) |
-| `observe:/sensors/temp` | subscribes (RFC 7641) instead of polling |
-
-The part after `#` never goes on the wire; it picks a value out of the response. The type is optional (`number`, `bool`,
-`string`): without it, numbers, booleans and text are recognised from the response. A tag can also have `scale` and
-`offset` (numbers).
-
-- **Content formats:** text/plain, application/json, application/cbor, application/senml+json and senml+cbor (base
-  name, time, unit and value are resolved; each record is selectable and its **unit** is offered as the tag's unit
-  when you import it), application/link-format, and octet-stream (shown as hex). A device-side choice between formats
-  can be steered with **Preferred content format** (the Accept option).
-- **Polling and Observe.** Polled tags are read with one GET per resource per cycle (tags on the same resource share
-  it). An `observe:` tag registers once and then takes its value from the device's notifications (notifications that
-  arrive out of order are dropped). If the device sends nothing for its Max-Age, Manifold registers again; a value past
-  its Max-Age is shown as *Uncertain* (stale). A device that ignores Observe is polled instead. On stop, observations
-  are cancelled (a GET with Observe set to 1, still a read).
-- **Large responses** are fetched block-wise (RFC 7959), up to **Max response size** (256 KiB by default); the
-  device may choose a smaller block size than the one proposed.
-- **Errors.** A 4.xx or 5.xx answer makes that tag *Bad* with the code name (for example *4.04 Not Found*) while the
-  device stays Online; after *5.03 Service Unavailable* the device is not asked again before its Max-Age. A device that
-  sends no answer at all, after the CoAP retransmissions (**ACK timeout**, **Retransmissions**), goes Offline.
-  **Request deadline** caps every request; for devices on lossy low-power links use 10 s or more (new CoAP devices
-  start at 10 s).
-- **Connect check.** *Test connection* and *Online* mean the device answered a **CoAP ping** (an empty confirmable
-  message). A device that ignores pings needs **Check on connect: none**.
-- **Browse.** **Import from device** lists the resources in the device's `/.well-known/core` (resource type,
-  interface, content formats and whether it is observable are kept as hints); a JSON, CBOR or SenML resource expands
-  into the values inside it, each with the address to use.
-- **Addresses.** CoAP uses UDP. The device address is pinned and checked by the same egress guard as every other
-  device (loopback only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, private ranges with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`).
-  Only unicast is used: no multicast discovery.
-
-What is handled and what is not supported is listed in
-[`server/drivers/coap/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/coap/NOTES.md).
+**Not yet verified.** **BACnet/IP**: [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md)
+  lists 10 items, among them which devices answer a unicast Who-Is by unicast,
+  the wildcard device read, RPM sizing on small-APDU devices, routing through a
+  real MS/TP router and devices that only reply to port 47808.
 
 ### SNMP
 
-> **Experimental — not verified on real hardware.** Checked against the
-> in-process agent in `server/test/support/snmpSimulator.js` and the RFC test
-> vectors only; see [`server/drivers/snmp/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/snmp/NOTES.md).
+> **Experimental — not verified on real hardware.** Transport: UDP 161. Browse: **Import from agent** (a bounded GetBulk walk of a subtree). Driver notes: [`server/drivers/snmp/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/snmp/NOTES.md). Also checked against the RFC test vectors.
 
 On the device, enable the SNMP agent with a **read-only** community (v1/v2c)
 or a v3 user with a read-only view, and allow Manifold's address in the
@@ -538,101 +544,149 @@ boots/time) or a replaced agent (new engine ID) is re-synchronised without
 going offline. A wrong v1/v2c community gets **no answer at all** from a real
 agent, so the connection test lists what to check.
 
-## Smart-home bridges (Matter and Z-Wave)
+**Not yet verified.** **SNMP**: [`server/drivers/snmp/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/snmp/NOTES.md)
+  lists the agent deviations handled and what to check on net-snmp, a managed
+  switch and a UPS card: tooBig handling, v1 noSuchName, every v3 auth/priv
+  combination, engine reboot resync, counter rates against the device's own
+  counters, multi-homed agents.
 
-Two drivers read smart-home and IoT device networks through the standard
-open-source bridge servers, over WebSocket. Manifold does **not** talk to the
-devices or the radio itself:
+### HTTP / JSON
 
-| Driver | Talks to | URL (default) |
-|---|---|---|
-| `matter-server` | The open-source **Matter Server** (python-matter-server, and its matter.js-based successor, which keeps the same API) | `ws://<host>:5580/ws` |
-| `zwave-js` | **Z-Wave JS Server** (`@zwave-js/server`) | `ws://<host>:3000` |
+> **Experimental — not verified on real hardware.** Transport: TCP 80 / 443 (HTTP or HTTPS). Browse: **Import from device**. Driver notes: [`server/drivers/httpjson/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/httpjson/NOTES.md).
 
-Stated plainly:
+For devices with a local REST API: energy meters, smart plugs, gateways,
+sensors. Manifold sends **GET requests only, never a body**, and picks values
+out of the JSON. The device is entered as a URL (see
+[Common to every driver](#common-to-every-driver)): **Scheme** (`http` or `https`; https usually
+means port 443), **Host**, **Port** and an optional **Path** prefix such as `/api/v1`.
 
-- **Manifold only reads through the bridge.** It does not commission, pair,
-  include, exclude, interview, heal, update firmware, or remove anything, and
-  it does not control or write to any device. Commission and include devices
-  with Home Assistant or the server's own tools; Manifold then sees them.
-- **Battery devices are never woken.** Everything the Z-Wave driver asks for is
-  answered from Z-Wave JS Server's own value cache; nothing it sends goes out
-  on the Z-Wave radio (no `poll_value`, no refresh, no ping). A sleeping device's
-  value updates when the device reports on its own. The Matter driver reads the
-  server's attribute cache too; only the **Probe** button sends a live Matter
-  read (`read_attribute`) to the node.
-- **Not verified against real hardware.** Both drivers were tested only against
-  in-process simulators of the two servers' WebSocket APIs, written from their
-  public documentation. They are marked **Experimental**.
+A tag address is `path#selector`, for example `/api/status#$.power.total` or
+`/meters#$.items[?(@.id=="main")].kwh`. The selector is a small JSONPath:
+`$.a.b`, `$['key']`, `$.list[0]` (negative counts from the end) and an equality
+filter `[?(@.id=="x")]` that takes the first match. Wildcards, `..`, slices and
+script expressions are not supported and are refused when you save. The tag
+types are `number`, `bool` and `string`; scale and offset belong to the mapping.
+All tags on one path share **one request per poll cycle**, and an `ETag` is
+sent back as `If-None-Match` when the device provides one. Optional tag fields
+(set through the API or CSV): `timestampSelector` (the device's own time),
+`qualitySelector` with `qualityEquals` (the tag is Bad unless that field has
+that value) and `okStatus` (accepted HTTP status codes, default 2xx).
 
-### Pointing Manifold at a bridge
+A tag is **Bad with a reason** when the status is not accepted (`http-404`),
+the request times out, the body is not JSON, the selector matches nothing, the
+response is larger than **Max response size**, or the value does not fit the
+type. The device stays Online for these; it goes Offline when the connection is
+refused or reset, TLS fails, or three requests in a row time out.
 
-Enter the URL as **Host**, **Port**, **Scheme** (`ws` or `wss`) and **Path**:
-`ws://ha.local:5580/ws` is host `ha.local`, port `5580`, scheme `ws`, path `/ws`
-(paste the whole URL into **Host** and the form splits it). There is no network
-discovery for bridges. **Test connection** reports the
-server version, the API schema it agreed on and the node count.
+Authentication is none, basic, bearer token or one custom header. The secrets
+are stored with the device and never sent back to the browser (the API answers a
+stored secret as `null`; the form shows *stored, leave blank to keep*), as for
+every driver, redacted in exports and the audit
+log, and sent only to the device's own host. **TLS is verified.** For a device
+with a private CA paste the CA certificate; for a self-signed device pin its
+SHA-256 fingerprint; **Do not verify the TLS certificate** is an explicit opt-out
+that accepts any certificate. Redirects are followed only within the same host,
+port and scheme: a redirect to another host is refused. **Import from device**
+fetches a path and lists every value in it as a ready-made address with a
+sample. Details and limits: [`server/drivers/httpjson/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/httpjson/NOTES.md).
 
-- **Home Assistant, Matter Server add-on**: Home Assistant itself reaches the
-  add-on internally; for Manifold the WebSocket port has to be published on the
-  host. Open the add-on's **Configuration → Network**, give the 5580/tcp entry a
-  host port (it is usually empty, which means not published) and restart the
-  add-on. Then use `ws://<home-assistant-host>:<that port>/ws`.
-- **Home Assistant, Z-Wave JS add-on**: the same for its 3000/tcp entry under
-  **Configuration → Network**. Then `ws://<home-assistant-host>:<that port>`.
-  These menu names were taken from the add-on documentation, not checked on a
-  live installation.
-  With **Z-Wave JS UI**, enable **Settings → Home Assistant → WS Server** and use
-  its port (3000 by default).
-- Neither server authenticates clients: whoever reaches the port can control
-  every device. Keep it on a trusted network. If you put an authenticating
-  reverse proxy in front (wss), enter its token in **Bearer token**; it is sent as
-  `Authorization: Bearer`, stored with the device and never shown again or
-  exported. TLS certificates are verified; for a private CA paste it in **CA
-  certificate**, or pin a self-signed proxy's **certificate fingerprint**;
-  **Do not verify the TLS certificate** is an explicit per-device opt-out (the
-  same TLS settings as the HTTP drivers).
-- The host passes the same egress guard and address pinning as every device:
-  a private address needs `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
+> ⚠️ A device that changes state on a GET request would be affected by polling.
+> Check the device's documentation before adding a path.
 
-### Tags
+**Not yet verified.** **HTTP/JSON** and **MTConnect**: checked only against in-process simulators
+  (`server/test/support/httpJsonSimulator.js`, `mtconnectSimulator.js`) and
+  documents written from the public MTConnect schema and examples. Their
+  `NOTES.md` files list what to confirm on real devices and agents: keep-alive
+  and compression behaviour of small embedded servers, digest authentication
+  (not implemented), the status an agent uses for `OUT_OF_RANGE`, and very
+  large probe documents. Discovery does not scan for them: a URL is entered by
+  hand, and **Test connection** checks it.
 
-| Driver | Address | Examples |
-|---|---|---|
-| Matter | `node/endpoint/cluster/attribute` (ids, hex, or names for the built-in clusters) | `5/1/1026/0`, `5/1/TemperatureMeasurement/MeasuredValue`, `5/1/0x0402/0x0000` |
-| Z-Wave | value id `node/commandClass/endpoint/property[/propertyKey]` | `5/49/0/Air temperature`, `5/Binary Switch/1/currentValue`, `3/50/0/value/65537` |
+### MTConnect
 
-The type is optional. Matter values are converted with a built-in table of the
-common clusters (on/off, level, colour, temperature in 0.01 °C, humidity,
-pressure, illuminance, occupancy, contact, power source and battery, electrical
-power and energy, thermostat, door lock, window covering, air quality and the
-concentration clusters, descriptor, basic information); other clusters are read
-by number and show the raw value. Z-Wave values use the server's metadata
-(label, unit, type, min/max, states). **Import from server** browses nodes →
-endpoints → clusters → attributes (Matter) or nodes → command classes → values
-(Z-Wave) and fills in unit and description; write-only Z-Wave values are not offered.
+> **Experimental — not verified on real hardware.** Transport: TCP 5000 (HTTP). Browse: **Import from agent**. Driver notes: [`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
 
-### Quality
+Reads an MTConnect agent (machine tools) over HTTP GET: `/probe` for the device
+model, `/current` for the first snapshot, then `/sample?from=<nextSequence>` on
+every poll so that no observation is missed. If the agent restarts (its
+`instanceId` changes) or the sequence has left its buffer (`OUT_OF_RANGE`),
+Manifold takes a fresh `/current` and carries on. Streaming (`interval=`) is
+**not** used: this driver polls.
 
-| Situation | Value | Quality |
-|---|---|---|
-| Matter node `available: false` | — | Bad, "node unavailable" |
-| Matter attribute is `null` | — | Bad, "no value" |
-| Z-Wave node asleep | last reported value | Good, reason "sleeping" |
-| Z-Wave node dead | — | Bad, "node dead" |
-| Node or value not known to the server | — | Bad, with the reason |
-| Connection to the bridge lost | — | Bad, "disconnected"; reconnect with backoff |
+A tag address is the agent's **data item id** (`Xact`), or `device/id` when the
+agent serves several devices. SAMPLE items read as numbers, EVENT items as
+text, and `UNAVAILABLE` is Bad. CONDITION items read as `normal`, `warning` or
+`fault` (a `number` tag reads 0, 1 and 2; the optional tag field `field` selects
+the native code, text, severity or qualifier instead). The observation's own
+timestamp is the value's source time. **Import from agent** shows the devices,
+components and data items from `/probe` and fills each tag's unit. Time series
+and data set items are not supported and read Bad. Details and limits:
+[`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
 
-Values arrive by **subscription**: the server streams every change and
-Manifold passes it on at once. The poll group interval still applies: at that
-interval each tag gets a fresh sample from Manifold's copy of the server state
-(no network traffic), so staleness and mappings behave as for polled devices.
-A full resync (Matter: `get_nodes`; Z-Wave: `node.get_value` from the server's
-cache, schema 14 or newer) runs every 5 minutes by default.
+**Not yet verified.** See HTTP / JSON above: the same simulator-only testing applies, against `server/test/support/mtconnectSimulator.js` and documents written from the public MTConnect schema and examples (the status an agent uses for `OUT_OF_RANGE`, very large probe documents).
 
-The driver notes list every API detail handled and what is not supported:
-[`server/drivers/matterserver/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/matterserver/NOTES.md),
-[`server/drivers/zwavejs/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/zwavejs/NOTES.md).
+### CoAP
+
+> **Experimental — not verified on real hardware.** Transport: UDP 5683; **CoAP over DTLS (`coaps://`, 5684) is not supported**. Browse: **Import from device** (`/.well-known/core`, and the values inside JSON, CBOR and SenML resources). Driver notes: [`server/drivers/coap/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/coap/NOTES.md).
+
+For constrained IoT devices and sensors that serve **plain CoAP** (RFC 7252) on UDP, default port 5683. Manifold sends
+only `GET` (plus one empty ping message when the device is added, and the acknowledgements CoAP itself needs); it never
+writes a resource.
+
+> ⚠️ **CoAP over DTLS (`coaps://`, port 5684) is not supported.** Node.js has no built-in DTLS and Manifold adds no
+> dependency for it, so a host written as `coaps://...`, a tag address with that scheme, and port 5684 are refused with
+> that explanation. Plain CoAP has no authentication or encryption: keep it on a trusted segment, and use a firewall rule
+> where nothing may ever write to the device.
+
+**Tag address:** `[observe:]/path[?query][#selector]`.
+
+| Address | Reads |
+|---|---|
+| `/sensors/temp` | the whole response (text/plain: a number, `true`/`false` or text) |
+| `/sensors/temp?unit=c` | the same with a query (one Uri-Query option per `&`-separated part) |
+| `/readings#temperature.value` | a member of a JSON or CBOR document: dotted keys, `[0]` array index, `["odd.key"]` for a key with dots or spaces |
+| `/senml#urn:dev:ow:10e2/temp` | one SenML record, selected by its resolved name (base name plus name) |
+| `observe:/sensors/temp` | subscribes (RFC 7641) instead of polling |
+
+The part after `#` never goes on the wire; it picks a value out of the response. The type is optional (`number`, `bool`,
+`string`): without it, numbers, booleans and text are recognised from the response. A tag can also have `scale` and
+`offset` (numbers).
+
+- **Content formats:** text/plain, application/json, application/cbor, application/senml+json and senml+cbor (base
+  name, time, unit and value are resolved; each record is selectable and its **unit** is offered as the tag's unit
+  when you import it), application/link-format, and octet-stream (shown as hex). A device-side choice between formats
+  can be steered with **Preferred content format** (the Accept option).
+- **Polling and Observe.** Polled tags are read with one GET per resource per cycle (tags on the same resource share
+  it). An `observe:` tag registers once and then takes its value from the device's notifications (notifications that
+  arrive out of order are dropped). If the device sends nothing for its Max-Age, Manifold registers again; a value past
+  its Max-Age is shown as *Uncertain* (stale). A device that ignores Observe is polled instead. On stop, observations
+  are cancelled (a GET with Observe set to 1, still a read).
+- **Large responses** are fetched block-wise (RFC 7959), up to **Max response size** (256 KiB by default); the
+  device may choose a smaller block size than the one proposed.
+- **Errors.** A 4.xx or 5.xx answer makes that tag *Bad* with the code name (for example *4.04 Not Found*) while the
+  device stays Online; after *5.03 Service Unavailable* the device is not asked again before its Max-Age. A device that
+  sends no answer at all, after the CoAP retransmissions (**ACK timeout**, **Retransmissions**), goes Offline.
+  **Request deadline** caps every request; for devices on lossy low-power links use 10 s or more (new CoAP devices
+  start at 10 s).
+- **Connect check.** *Test connection* and *Online* mean the device answered a **CoAP ping** (an empty confirmable
+  message). A device that ignores pings needs **Check on connect: none**.
+- **Browse.** **Import from device** lists the resources in the device's `/.well-known/core` (resource type,
+  interface, content formats and whether it is observable are kept as hints); a JSON, CBOR or SenML resource expands
+  into the values inside it, each with the address to use.
+- **Addresses.** CoAP uses UDP. The device address is pinned and checked by the same egress guard as every other
+  device (loopback only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, private ranges with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`).
+  Only unicast is used: no multicast discovery.
+
+**Not yet verified.** **CoAP**: [`server/drivers/coap/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/coap/NOTES.md)
+  lists what is handled and what is not. Tested only against the in-process simulator: retransmission timing on real
+  low-power links, devices that mishandle the Block2 option or Observe, the ping at connect, and SenML as real
+  gateways emit it are all unverified. DTLS is not implemented.
+
+### Matter and Z-Wave
+
+Read through the open-source Matter Server and Z-Wave JS Server over WebSocket. Settings, tag
+addresses, quality and what is not verified are on their own page:
+[Matter and Z-Wave bridge servers](Bridge-Servers).
 
 ## Device profiles and instances
 
@@ -699,7 +753,7 @@ Map the whole set to the UNS with one profile binding; see
 
 ## Finding devices on the network (Discovery)
 
-![The Discovery page after a scan: the PLCs, the OPC UA server (Verified, with its application name and security) and the broker identified, those Manifold already has marked Already added, and one new Modbus meter to add](images/discovery.png)
+![The Discovery page after a scan of the demo plant: PLCs, BACnet/IP controllers, a CoAP sensor gateway, the OPC UA server and the broker identified, those Manifold already has marked Already added, and a new Modbus meter and BACnet VAV controller to add](images/discovery.png)
 
 The **Discovery** page runs a CIDR scan that finds **MQTT brokers**, **OPC UA servers** and **i3X servers** and,
 opt-in, **Modbus TCP**, **Siemens S7**, **EtherNet/IP**, **BACnet/IP**, **CoAP** and **SNMP** devices, and lets you add what it found.
@@ -708,11 +762,11 @@ opt-in, **Modbus TCP**, **Siemens S7**, **EtherNet/IP**, **BACnet/IP**, **CoAP**
 
 1. **Range.** An IPv4 CIDR (`192.168.1.0/24`), a single address, or a hostname (resolved to one IPv4 address). **This
    subnet** fills in the server's own /24; blank scans it. IPv6 is not supported.
-2. **What to look for.** MQTT, OPC UA and i3X are ticked; Modbus TCP, S7 and EtherNet/IP are **off** until you tick
-   them. The first time you tick one, a banner explains what device probing does to an OT network and the scan stays
+2. **What to look for.** MQTT, OPC UA and i3X are ticked; Modbus TCP, S7, EtherNet/IP, BACnet/IP (UDP), CoAP (UDP) and
+   SNMP agents (UDP) are **off** until you tick them. The first time you tick one, a banner explains what device probing does to an OT network and the scan stays
    disabled until you tick *I understand, and I am allowed to probe this network* (remembered in that browser).
 3. **Advanced options.** Ports per protocol (blank = default: MQTT 1883 and 8883, OPC UA 4840 and 50000, i3X 80, 443 and 8080,
-   Modbus 502, S7 102, EtherNet/IP 44818, CoAP 5683 over UDP), MQTT over WebSocket ports (none by default), and the pacing below.
+   Modbus 502, S7 102, EtherNet/IP 44818, and over UDP BACnet/IP 47808, CoAP 5683 and SNMP 161), MQTT over WebSocket ports (none by default), and the pacing below.
 4. Before you start, the page shows what the server's own planner says: hosts, ports, probes, and how long it can take
    (*usually* about N s; *at most* about M if nothing answers, plus up to a few seconds for each open port that never
    replies). A range the server refuses, or one that is too large, is explained there with the exact setting to change.
@@ -751,7 +805,10 @@ the Modbus driver's read-only allowlist, which still refuses every function code
 writes and the tests assert the count stays 0 and that no socket remains open after a scan or a cancel.
 
 A UDP probe has no connect to wait for: a silent address costs one identify timeout (the estimate counts it), and the
-same egress policy applies to the destination. Ticking *CoAP (UDP)* is separate from the other device kinds.
+same egress policy applies to the destination. Each UDP kind (BACnet/IP, CoAP, SNMP) is opt-in on its own: only its
+own tick box (or its port list / `include...` flag in the API) adds it, never `includeDevices`. Two UDP kinds may share a
+port number; each is probed with its own protocol. A configured device marks a result as already added only on the
+same transport.
 
 ### Pacing
 
@@ -850,10 +907,7 @@ its breaker opens: its tags are Bad (reason `unit-down`) and it is probed only
 every 30 s, so one dead slave does not slow the healthy ones. A timeout is
 different: it destroys the socket and reconnects the whole device.
 
-A tag's quality is always one of Good (192), Uncertain (64) or Bad (0), with a
-reason such as `disconnected`, `quarantined`, `unit-down`, `device-exception`,
-`decode` or `unavailable`. Bad is never silently replaced by the last good
-value.
+Tag quality and its reasons: see [Common to every driver](#common-to-every-driver).
 
 ### Metrics
 
@@ -864,124 +918,27 @@ for the names): `manifold_device_up`, `manifold_device_cycle_ms` and
 and `manifold_driver_host_up` / `manifold_driver_host_restarts_total` for the
 driver processes, so a parked driver or a rising overrun count can alert.
 
-## The read-only guarantee, and its limits
-
-Every driver builds all of its outgoing frames through one function with an
-allowlist, and the tests try every refused service and assert that no bytes
-reach the socket:
-
-- **Modbus:** function codes 1, 2, 3 and 4 only.
-- **S7:** setup communication, Read Var and SZL reads only. Write Var, PLC
-  start/stop, block transfer and clock set are refused.
-- **EtherNet/IP:** session management, Forward Open/Close, Read Tag, Read Tag
-  Fragmented, Multiple Service Packet (every inner service checked), and
-  attribute/template reads. The client also re-parses each buffer before
-  `socket.write`.
-- **HTTP/JSON and MTConnect:** one shared HTTP client whose only request is
-  `GET` with no body (a test asserts this against the client source and the
-  simulators log every method they see). MTConnect sends only `/probe`,
-  `/current` and `/sample`.
-- **BACnet/IP:** BVLC Original-Unicast only, no network-layer messages, and
-  the APDUs ReadProperty, ReadPropertyMultiple (unsegmented) and Who-Is.
-  WriteProperty, COV subscriptions, device control, BBMD registration and every
-  other service are refused before a datagram is built.
-- **CoAP:** the encoder can only build GET (there is no method parameter), and
-  every datagram is checked again before the UDP socket: only an empty message
-  or a GET leaves. PUT, POST, DELETE, FETCH, PATCH and iPATCH do not exist in
-  the code, and the tests assert the simulator never sees one.
-- **SNMP:** GetRequest, GetNextRequest and GetBulkRequest only, every value
-  NULL. There is no SetRequest encoder at all; the message layer refuses to
-  wrap any other PDU, and the tests check every datagram the driver sent.
-- **Matter Server:** `start_listening`, `get_nodes`, `get_node`, `server_info`,
-  `diagnostics` and `read_attribute` only. Commissioning, `device_command`,
-  `write_attribute`, `remove_node`, `interview_node` and the rest cannot be encoded.
-- **Z-Wave JS Server:** `set_api_schema`, `start_listening`,
-  `node.get_defined_value_ids`, `node.get_value_metadata` and `node.get_value`
-  only, all answered from the server's cache. `node.set_value`, `node.poll_value`,
-  refresh, inclusion/exclusion, healing, firmware and `driver.*` setters cannot be
-  encoded. The test simulators of both servers refuse and record any other
-  command, and every test asserts that none arrived.
-
-What this does and does not mean:
-
-- It is a guarantee about **Manifold's code**, enforced where bytes are built,
-  not by a configuration switch or the UI. No route, binding or transform can
-  write to a device.
-- It is **not** a guarantee about the **network**. None of the three protocols
-  authenticates the client. If your site requires that nothing can write, use
-  a firewall rule or a data diode as well.
-- It does not protect the device from being **read too hard**. Polling is
-  bounded (one connection, one request at a time, overruns skipped) but a very
-  small PLC can still be loaded by an aggressive interval. Start slow.
-
-## Egress: which addresses a device may use
-
-Device hosts pass the egress guard when you save, test or start a device (the
-Discovery scan checks every candidate address too, with the same flags; see above).
-Private networks are refused unless `MANIFOLD_ALLOW_PRIVATE_TARGETS=1` (the
-normal setting on a plant network). **Loopback is refused** unless
-`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, which exists for local simulators and
-should stay off in production. Cloud-metadata and link-local ranges are always
-refused. See [Operations](Operations#network-safety-egress-guard).
-
 ## What is not yet verified
 
-- **Modbus TCP** is tested against a fault-injecting simulator (late replies,
-  wrong transaction ids, dropped sockets, truncated frames, exceptions).
-  Interoperability with specific devices has not been surveyed: **no driver, Modbus
-  included, has been run against a real PLC**; the simulators were written together with
-  the drivers, so they show agreement, not correctness against firmware.
-- **S7**: [`server/drivers/s7/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/s7/NOTES.md)
-  lists 14 items to confirm with a packet capture on a real CPU before the
-  driver leaves experimental: PDU accounting, items per request, return codes
-  for a missing DB or optimized access, how a CPU with PUT/GET off refuses,
-  rack/slot to TSAP, SZL layouts used for identity, string encoding and
-  date formats.
-- **EtherNet/IP**: [`server/drivers/eip/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/eip/NOTES.md)
-  lists 18 items, including the Large Forward Open parameters, Forward Close,
-  attribute 10 (External Access), BOOL-array handling (the one most likely to
-  be wrong), template sizes, Multiple Service Packet limits, behaviour after a
-  controller download, and route paths through a bridge. The Rockwell and ODVA
-  documents were not available when the driver was written.
-- **HTTP/JSON** and **MTConnect**: checked only against in-process simulators
-  (`server/test/support/httpJsonSimulator.js`, `mtconnectSimulator.js`) and
-  documents written from the public MTConnect schema and examples. Their
-  `NOTES.md` files list what to confirm on real devices and agents: keep-alive
-  and compression behaviour of small embedded servers, digest authentication
-  (not implemented), the status an agent uses for `OUT_OF_RANGE`, and very
-  large probe documents. Discovery does not scan for them: a URL is entered by
-  hand, and **Test connection** checks it.
-- **BACnet/IP**: [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md)
-  lists 10 items, among them which devices answer a unicast Who-Is by unicast,
-  the wildcard device read, RPM sizing on small-APDU devices, routing through a
-  real MS/TP router and devices that only reply to port 47808.
-- **CoAP**: [`server/drivers/coap/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/coap/NOTES.md)
-  lists what is handled and what is not. Tested only against the in-process simulator: retransmission timing on real
-  low-power links, devices that mishandle the Block2 option or Observe, the ping at connect, and SenML as real
-  gateways emit it are all unverified. DTLS is not implemented.
-- **SNMP**: [`server/drivers/snmp/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/snmp/NOTES.md)
-  lists the agent deviations handled and what to check on net-snmp, a managed
-  switch and a UPS card: tooBig handling, v1 noSuchName, every v3 auth/priv
-  combination, engine reboot resync, counter rates against the device's own
-  counters, multi-homed agents.
-- **Matter and Z-Wave bridges** have only been run against simulators of the
-  two servers' WebSocket APIs: schema differences between server releases,
-  the shape of real node dumps (especially bridges and multi-endpoint
-  devices), and the matter.js server's compatibility are to be confirmed against
-  real servers.
+No driver has been run against real hardware; each driver section above ends with what is still
+to be confirmed, and [Verifying on real hardware](Verifying-on-Real-Hardware) has one ordered
+checklist per driver.
+
 - **Discovery probes** (Modbus FC 43/14 then FC 3 at address 0 unit 1, S7 COTP CR
   with rack 0 slot 1 and the SZL identity read, ListIdentity, the OPC UA Hello)
   have also only been run against the simulators; how real devices, gateways and
   intrusion-detection systems react to them is part of the checklist.
-- The design intent is that S7 and EtherNet/IP leave "experimental" only after
+- The design intent is that a driver leaves "experimental" only after
   verification against real hardware. The consolidated, ordered procedure is
   [Verifying on real hardware](Verifying-on-Real-Hardware); the design is in
   [`docs/design/southbound-drivers.md`](https://github.com/zbest1000/manifold/blob/main/docs/design/southbound-drivers.md).
 
 ## Try it without hardware
 
-The Docker demo stack includes simulated devices for all three protocols;
-see [DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md#simulated-devices).
+The Docker demo stack includes simulated Modbus, S7 and EtherNet/IP devices; see
+[DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md#simulated-devices). The other
+drivers' simulators live in `server/test/support/`; `client/scripts/capture-docs.js --serve`
+(see the README) starts all of them as a demo plant.
 
 Next: [Mapping to the UNS](Mapping-to-the-UNS), and
 [Troubleshooting](Troubleshooting#devices).

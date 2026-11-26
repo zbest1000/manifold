@@ -2,9 +2,9 @@
 
 Manifold is a **control plane**, not a passive viewer: its API can publish to
 brokers (including Sparkplug commands that actuate equipment), disconnect
-connections, and run network scans. Its device drivers (Modbus TCP, S7,
-EtherNet/IP) only ever **read** from devices, but see the note on device
-networks below. Treat every deployment accordingly.
+connections, and run network scans. Its device drivers and its IoT-over-MQTT
+detection only ever **read** from devices, but see the note on device networks
+below. Treat every deployment accordingly.
 
 ## Reporting a vulnerability
 
@@ -72,20 +72,65 @@ instance beyond your own machine:
     handshake (MQTT CONNECT, OPC UA Hello then GetEndpoints over security None without a session, i3X `GET /info`, Modbus FC 43/14 then FC 3, S7 COTP and the
     read-only SZL identity read, EtherNet/IP ListIdentity), built with the drivers' allowlisted
     encoders (Modbus FC 43 is a fixed 11-byte frame outside the driver's allowlist, which still refuses
-    everything but FC 1 to 4). Nothing is ever written; the simulators count writes and the tests
-    assert zero.
+    everything but FC 1 to 4). The UDP kinds are each opt-in on their own and send one unicast
+    exchange per address and port: BACnet/IP a unicast Who-Is and a ReadProperty of the device object,
+    CoAP one `GET /.well-known/core`, SNMP one v2c GetRequest with the community `public` (a
+    community string goes on the wire, which is why it has its own tick box). Nothing is broadcast
+    and nothing is ever written; the simulators count writes and the tests assert zero.
   - *How hard.* At most 32 sockets at once and 2 per address by default, bounded timeouts, a limit of
     1,024 hosts per scan (`MANIFOLD_DISCOVERY_MAX_HOSTS`), and Cancel destroys every socket at once.
     Starting a scan needs an admin token (a viewer token is refused). Even so, fragile PLCs and gateways can
     react badly and intrusion-detection systems will notice: scan only networks you are allowed to scan.
-- **Treat device networks as writable by everyone on them.** Modbus TCP, S7comm
-  and plain EtherNet/IP do not authenticate clients, and enabling PUT/GET on an
-  S7 CPU (required for Manifold to read it) makes its data blocks readable and
-  writable by any peer. Manifold's drivers never send a write (each frame
-  encoder allows read services only), but that is a property of Manifold, not of
-  the PLC. Where a hard guarantee is needed, use a firewall rule or data diode in
-  front of the PLC. The S7 and EtherNet/IP drivers are **experimental**:
-  verified only against simulators.
+- **Treat device networks as writable by everyone on them.** Modbus TCP, S7comm,
+  plain EtherNet/IP, BACnet/IP, SNMP v1/v2c, plain CoAP and the Matter and Z-Wave
+  JS servers do not authenticate clients (or, for SNMP v1/v2c, send the community
+  in clear), and enabling PUT/GET on an S7 CPU (required for Manifold to read it)
+  makes its data blocks readable and writable by any peer. Manifold's drivers never
+  send a write, but that is a property of Manifold, not of the device. Where a hard
+  guarantee is needed, use a firewall rule or data diode in front of the device.
+  Every driver except Modbus TCP is **experimental — not verified on real
+  hardware**: checked only against simulators.
+- **Read-only guarantees, per driver.** Each driver builds every outgoing request
+  through one encoder with an allowlist, and the tests assert that nothing else
+  reaches a socket:
+
+  | Driver | The only requests it can build |
+  |---|---|
+  | Modbus TCP | function codes 1 to 4 |
+  | Siemens S7 | setup communication, Read Var, SZL read |
+  | EtherNet/IP | session management, Forward Open/Close, Read Tag (Fragmented), Multiple Service Packet (each inner service checked), attribute and template reads |
+  | BACnet/IP | unicast Who-Is, ReadProperty, ReadPropertyMultiple (no WriteProperty, no COV subscription, nothing broadcast) |
+  | SNMP | GetRequest, GetNextRequest, GetBulkRequest; no SetRequest encoder exists |
+  | HTTP/JSON, MTConnect | `GET` without a body (MTConnect: `/probe`, `/current`, `/sample`); redirects only to the same host, port and scheme |
+  | CoAP | `GET` and the empty ping / acknowledgement messages; no DTLS |
+  | Matter Server | `start_listening`, `get_nodes`, `get_node`, `server_info`, `diagnostics`, `read_attribute` |
+  | Z-Wave JS Server | `set_api_schema`, `start_listening`, `node.get_defined_value_ids`, `node.get_value_metadata`, `node.get_value` (answered from the server's cache) |
+
+- **Device secrets are never sent back.** HTTP passwords, bearer tokens and custom
+  header values, SNMP communities and v3 passwords and the bridge servers' bearer
+  token are stored with the device in `profiles.json` and passed to the driver
+  process. Every API answer carries a stored secret as `null` (lists, saves, bulk,
+  profile instances and the `409` conflict body); an edit that leaves it blank keeps
+  it, and a secret the settings no longer use is dropped. Config export and the
+  audit log redact them.
+- **IoT devices over MQTT are read, never commanded.** Detection (off by default,
+  per broker and convention) only subscribes; the IoT code never calls publish, so
+  nothing is sent to Zigbee2MQTT, Z-Wave JS UI, Home Assistant, Tasmota, Shelly or
+  LoRaWAN command, set or downlink topics. A mapping is refused when it would publish
+  into topics that detection reads on the same broker. Home Assistant value templates
+  are evaluated by a small evaluator that runs no code. Payloads are bounded (size,
+  JSON depth, devices and tags per broker) and malformed ones are counted and skipped.
+- **The broker canary publishes only when you turn it on.** It is off by default and
+  the connect form says that it publishes. When enabled it sends a small, never-retained
+  message to its canary topic (default `manifold/canary/<id>`) on the configured interval
+  and receives it through its own subscription; canary traffic is kept out of topics,
+  the UNS, recordings, pipelines, mappings and alerts. The **security posture** is
+  computed from what Manifold already knows about the connection; nothing is probed.
+- **Public test-broker presets are public.** The connect form's presets (EMQX,
+  HiveMQ, Mosquitto test brokers) point at shared brokers where anyone can read and
+  publish; they subscribe to `testtopic/#` only. Do not use them with plant data.
+  Their host names and ports were written from memory, not checked against the
+  operators' current documentation.
 - **The console keeps the access token in the browser.** The unlock screen stores it in
   `localStorage` (`tc.authToken`) of that browser profile, so use a trusted device and
   **Settings → General → Session → Sign out / use a different token** to remove it. Any

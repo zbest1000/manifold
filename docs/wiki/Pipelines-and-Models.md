@@ -129,6 +129,8 @@ Devices often publish CBOR, MessagePack, SenML or Protobuf instead of JSON. With
 base64 blob and nothing downstream can use them. A **codec** decodes the payload when it arrives, before anything else
 sees it, so topics, the UNS, Trends, mappings, routes, recordings and alerts all get the values.
 
+![The Codecs tab: CBOR, MessagePack, SenML and Protobuf bindings with their decoded and failed counters, and a CBOR payload decoded in the test box](images/codecs.png)
+
 **Codec bindings** (Pipelines → **Codecs** → **Add a codec binding**) map a **Topic filter**, on one **Broker** or any, to a
 **Codec**:
 

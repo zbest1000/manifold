@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   slug, targetTopic, statusTopic, validateTemplate, looksLikeRawAddress, nameWarnings,
   resolvePreview, findCollisions, examplePayload, buildBoundIndex, boundFor, parseSourceParam,
-  groupSources, sparkplugScopeError, commonPrefix
+  groupSources, sparkplugScopeError, commonPrefix, labelInSentence
 } from '@/pages/tags/helpers';
 import { flattenVisible, treeKeyAction } from '@/pages/tags/treeNav';
 
@@ -208,5 +208,12 @@ describe('tree keyboard navigation', () => {
     expect(f.map((i) => i.key)).toEqual(['F1', 'F2', 'T2']);
     expect(f.every((i) => !i.isFolder || i.expanded)).toBe(true);
     expect(flattenVisible(byParent, new Set(), 'zzz')).toEqual([]);
+  });
+});
+
+describe('labelInSentence', () => {
+  it('lowercases only the first letter, so acronyms survive ("add to UNS", not "add to uns")', () => {
+    expect(labelInSentence('Add to UNS')).toBe('add to UNS');
+    expect(labelInSentence('')).toBe('');
   });
 });

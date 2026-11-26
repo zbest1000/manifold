@@ -5,9 +5,10 @@
 > device drivers assume, and to report back in a form that lets the code be
 > fixed or the "experimental" label be lifted.
 
-**State of play.** Nothing here has been verified on real hardware. The Modbus
-TCP, S7 and EtherNet/IP drivers were checked only against in-process simulators
-written by the people who wrote the drivers, so the tests show driver and
+**State of play.** Nothing here has been verified on real hardware. Every
+driver (Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP,
+Matter Server, Z-Wave JS Server) and every IoT-over-MQTT convention was checked
+only against in-process simulators written by the people who wrote the drivers, so the tests show driver and
 simulator agree, not that either matches real firmware. The Timebase REST
 reference could not be read when the historian writer was built. This page
 turns the checklists in
@@ -16,7 +17,9 @@ turns the checklists in
 [`server/drivers/eip/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/eip/NOTES.md)
 (18 items) and the Modbus assumptions into one sequence. The Modbus items (M1 to
 M9) and the Timebase items (T1 to T6) are **derived from what the code and
-docs assume**; there is no separate NOTES file for them.
+docs assume**; there is no separate NOTES file for them. The newer drivers' lists
+(B, N, H, MT, CO, MS, ZW and I items below) come from each driver's `NOTES.md`; where a
+NOTES file has no explicit checklist, the items are what it lists as unverified.
 
 ## Before you start
 
@@ -47,9 +50,9 @@ docs assume**; there is no separate NOTES file for them.
 Each item below says what to do, what **confirms** and what **refutes** the
 assumption, and what to **report**. "Item N" refers to the NOTES file's numbering.
 
-## Common to all three: connection behaviour
+## Common to every driver: connection behaviour
 
-Do these once per protocol, with a device that has a few tags polling.
+Do these once per protocol, with a device that has a few tags polling. For the UDP drivers (BACnet/IP, SNMP, CoAP) C1 means one socket to one address; for the bridge drivers (Matter, Z-Wave) one WebSocket.
 
 | # | Check | Confirms | Refutes / report |
 |---|---|---|---|
@@ -257,10 +260,113 @@ and the controller is reached.
 controller. *Confirms:* `TCP_NODELAY` removes the delayed-ACK floor reported for
 other clients. *Report:* cycle time and tag count.
 
+## BACnet/IP (B1 to B10)
+
+From [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md). Capture UDP 47808 while you run them.
+
+| # | Check | Report |
+|---|---|---|
+| B1 | Unicast Who-Is from a port other than 47808 | which devices answer by unicast, which only by broadcast (then the wildcard read must find them) |
+| B2 | ReadProperty of the device object at instance 4194303 | whether the device supports the wildcard instance |
+| B3 | ReadPropertyMultiple sizing on devices with max APDU 50, 128, 206 and 480 | how each reports an oversize reply, and whether the split requests fit |
+| B4 | A whole-request Error versus per-property errors in RPM | what the real stack sends for one unknown object in a request |
+| B5 | Reads routed through a real B/IP-to-MS/TP router | timing, the APDU timeout needed, Reject-Message reasons |
+| B6 | Replies from another source port; devices that reply only to 47808 | whether answers are accepted or lost |
+| B7 | **Import from device** on a device with thousands of objects | time taken, RPM batching limits |
+| B8 | Object names in character sets other than UTF-8 | that names import correctly |
+| B9 | Status-flags, reliability and out-of-service per vendor | that the tag quality matches what the device shows |
+| B10 | The discovery probe (unicast Who-Is plus wildcard read) | how devices and intrusion-detection systems react |
+
+## SNMP (N1 to N7)
+
+From [`server/drivers/snmp/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/snmp/NOTES.md).
+
+| # | Check | Report |
+|---|---|---|
+| N1 | net-snmp `snmpd`: v1, v2c and v3 with every authentication and privacy combination; compare with `snmpget -On`; a small `maxMessageSize` | values that differ, the tooBig behaviour |
+| N2 | A managed switch: ifTable / ifXTable **Rate /s** against the switch's own counters; **Import from agent** of `1.3.6.1.2.1.2` | rate differences, walk time |
+| N3 | A UPS network card with UPS-MIB: v1 agents, noSuchName, slow agents | retries and timeouts needed |
+| N4 | Engine reboot of a real v3 agent; an agent with a regenerated engine ID | that the driver re-synchronises without going offline |
+| N5 | An agent behind NAT or multi-homed, answering from another address | that **Accept answers from another address** is needed and works |
+| N6 | Opaque float values from net-snmp extend scripts | that they decode as floats |
+| N7 | The discovery probe (one v2c `public` Get on 161) | how firewalls and intrusion-detection systems treat it |
+
+## HTTP/JSON (H1 to H6)
+
+From [`server/drivers/httpjson/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/httpjson/NOTES.md).
+
+| # | Check | Report |
+|---|---|---|
+| H1 | 1 s polling over one keep-alive connection | devices that close after each answer or reject `Connection: keep-alive` |
+| H2 | The `Accept` and `Accept-Encoding: identity` headers | devices that refuse them |
+| H3 | **That a GET on every polled path has no side effect on the device** | any path that changes state when read |
+| H4 | Digest authentication (not implemented) | devices that require it |
+| H5 | ETags on devices that send them but never answer 304 | that values keep updating |
+| H6 | TLS with a self-signed certificate, the CA and the fingerprint options, hostname versus IP in the certificate | what works |
+
+## MTConnect (MT1 to MT7)
+
+From [`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
+
+| # | Check | Report |
+|---|---|---|
+| MT1 | A real cppagent and at least one commercial agent on a machine tool: `/probe` with Compositions, Configuration and the Agent device | parse and browse problems |
+| MT2 | Behaviour at `from == nextSequence` | agents that answer OUT_OF_RANGE (the driver then resyncs every poll) |
+| MT3 | The HTTP status used for OUT_OF_RANGE and INVALID_REQUEST, `Content-Type` variants | the values seen |
+| MT4 | Agent restart: `instanceId` change in `/sample`, `/probe` unchanged versus changed | that the driver resynchronises |
+| MT5 | UNAVAILABLE for conditions after a controller disconnect | the quality shown |
+| MT6 | Very large `/current` documents (thousands of data items) | size cap and request deadline |
+| MT7 | Time zones and clock skew between agent and Manifold | the source timestamps (used as sent) |
+
+## CoAP (CO1 to CO5)
+
+[`server/drivers/coap/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/coap/NOTES.md) lists what is handled and not supported; these are the
+behaviours it names as unverified.
+
+| # | Check | Report |
+|---|---|---|
+| CO1 | Retransmission timing on real low-power links (**ACK timeout**, **Retransmissions**, **Request deadline**) | settings that work |
+| CO2 | Block-wise transfers (Block2) on devices with small buffers | devices that mishandle the option |
+| CO3 | Observe: registration, notification order, re-registration after Max-Age | devices that ignore or break Observe |
+| CO4 | The CoAP ping at connect | devices that ignore it (then **Check on connect: none**) |
+| CO5 | SenML (JSON and CBOR) as real gateways emit it | names, units and times that resolve differently |
+
+## Matter Server and Z-Wave JS Server (MS1 to MS4, ZW1 to ZW4)
+
+[`server/drivers/matterserver/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/matterserver/NOTES.md) and
+[`server/drivers/zwavejs/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/zwavejs/NOTES.md) list every API detail handled; the
+drivers were run only against simulators of the two WebSocket APIs. Use a test installation.
+
+| # | Check | Report |
+|---|---|---|
+| MS1 | python-matter-server and the matter.js server: handshake, schema version agreed, `get_nodes` | incompatibilities between server releases |
+| MS2 | Real node dumps: bridges and multi-endpoint devices | attributes that browse or convert wrongly |
+| MS3 | Units and scaling of the common clusters against the device's own app | values that differ |
+| MS4 | That nothing but the six read commands reaches the server (server log) | any other command |
+| ZW1 | Z-Wave JS Server versions and schema negotiation (`set_api_schema`) | the schema range that works |
+| ZW2 | Real node dumps with multi-channel devices and Configuration values | values that are missing or mislabelled |
+| ZW3 | **That battery devices are never woken**: no radio traffic from Manifold (controller statistics) | any wake-up or poll |
+| ZW4 | Dead and asleep nodes: quality shown | Bad for dead, Good with `sleeping` for asleep |
+
+## IoT over MQTT conventions (I1 to I5)
+
+[`server/services/iot/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/services/iot/NOTES.md) states the versions targeted (Zigbee2MQTT 1.3x and 2.x,
+Z-Wave JS UI 8.x to 10.x, Home Assistant discovery 2024.11+ and the older form, Tasmota 12.x to 14.x,
+Shelly Gen1 and Gen2+, ChirpStack v4, The Things Stack v3); none was re-checked against a running
+instance.
+
+| # | Check | Report |
+|---|---|---|
+| I1 | Turn detection on for a broker with a real bridge | devices missing, tags wrongly typed or unnamed |
+| I2 | Rename a device in the bridge | that the device keeps its identity and its mapping |
+| I3 | Take a device offline (availability, LWT, dead node, bridge stopped) | that its tags go Bad and the mapping publishes `_status` offline |
+| I4 | Home Assistant devices with real value templates | templates shown as *template not supported* |
+| I5 | **A subscriber on the bridges' command, set and downlink topics** while Manifold runs | any message from Manifold (there must be none) |
+
 ## Discovery probes on a real network (optional)
 
-Only on a network you may scan, with a small range, in a window. Tick the three
-protocols and scan a range with known devices. *Confirms:* each device is
+Only on a network you may scan, with a small range, in a window. Tick the device
+protocols (and, each on its own, BACnet/IP, CoAP and SNMP) and scan a range with known devices. *Confirms:* each device is
 reported by the right protocol (Modbus: any register or exception reply; S7: a
 COTP CC or DR; EtherNet/IP: ListIdentity with vendor, product name and
 revision); closed ports and non-devices are not reported; nothing is written to
@@ -298,7 +404,7 @@ Item: E6 (BOOL arrays)        Result: REFUTED
 Device: 1769-L33ER, firmware 32.011, via 1769-AENTR
 Observed: BoolArr[37] returned BOOL (0xC1) when the element index was 37, not
           a DWORD at index 1; capture bool-array.pcapng frames 41-44
-Manifold: <commit or version>, driver S7/EIP/Modbus, interval 1000 ms
+Manifold: <commit or version>, driver S7/EIP/Modbus/BACnet/..., interval 1000 ms
 ```
 
 A driver leaves "experimental" only when its checklist is fully run and every

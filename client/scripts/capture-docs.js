@@ -12,14 +12,20 @@
  * What it does, all on 127.0.0.1 and in this process (nothing leaves the machine):
  *
  *   1. starts a demo plant made of the simulators the test suite uses (server/test/support):
- *      an MQTT broker (aedes) fed with an ISA-95 namespace and Sparkplug B edge nodes, Modbus TCP,
- *      Siemens S7 and EtherNet/IP simulators with plausible changing values, a small OPC UA server
- *      (node-opcua) with a bottling line address space, and two historian stand-ins (HTTP servers
- *      that accept the Timebase and InfluxDB write calls);
+ *      a plant MQTT broker (aedes) fed with an ISA-95 namespace, Sparkplug B edge nodes and a few
+ *      CBOR, MessagePack, SenML and Protobuf payloads; a facilities broker on which Zigbee2MQTT,
+ *      Home Assistant discovery, Tasmota, Shelly, Z-Wave JS UI and ChirpStack traffic arrives (the
+ *      message shapes of iotMqttSimulator.js, with the demo plant's names); Modbus TCP, Siemens S7,
+ *      EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect and CoAP simulators and Matter Server and
+ *      Z-Wave JS Server stand-ins with plausible values; a small OPC UA server (node-opcua) with a
+ *      bottling line address space; and two historian stand-ins (HTTP servers that accept the
+ *      Timebase and InfluxDB write calls);
  *   2. starts the REAL backend (server/index.js) on a free port with a throwaway MANIFOLD_DATA_DIR,
  *      MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 and MANIFOLD_ALLOW_PRIVATE_TARGETS=1, serving client/dist;
- *   3. seeds it through its REST API: devices, a device profile, an OPC UA connection, mappings,
- *      pipeline routes, historians, alert rules and a recording with two hours of samples;
+ *   3. seeds it through its REST API: devices, a device profile, an OPC UA connection, IoT detection,
+ *      payload codecs, mappings, pipeline routes, historians, alert rules (some firing, one
+ *      acknowledged, one that fired and cleared) and a recording with two hours of samples. The
+ *      plant broker's opt-in canary is switched on;
  *   4. drives Chromium (Playwright) through each page and writes the PNGs (device scale factor 2,
  *      1440 x 900 CSS pixels; phone images 390 x 844), dark theme unless the name ends in -light.
  *
@@ -516,14 +522,311 @@ async function startHistorianStandIn() {
   return { url: `http://127.0.0.1:${port}`, received: () => received, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
+/** Run `fill(t)` now and every second; returns the timer's stop function. */
+function everySecond(fill) {
+  const started = Date.now();
+  const tick = () => fill((Date.now() - started) / 1000);
+  tick();
+  const timer = setInterval(tick, 1000);
+  return () => clearInterval(timer);
+}
+
+/** A BACnet/IP controller (UDP): an air handling unit with analog and binary objects. */
+async function startBacnetController({ deviceInstance, deviceName, modelName, objects, fill }) {
+  const { startBacnetSimulator, P } = requireServer('./test/support/bacnetSimulator.js');
+  const flags = { t: 'bits', v: [false, false, false, false] };
+  const obj = (name, value, units, description) => ({
+    [P.objectName]: { t: 'str', v: name },
+    [P.presentValue]: value,
+    [P.statusFlags]: flags,
+    [P.outOfService]: { t: 'bool', v: false },
+    ...(units !== undefined ? { [P.units]: { t: 'enum', v: units } } : {}),
+    ...(description ? { [P.description]: { t: 'str', v: description } } : {})
+  });
+  const sim = await startBacnetSimulator({
+    deviceInstance,
+    deviceName,
+    modelName,
+    vendorId: 999,
+    deviceProps: { [P.vendorName]: { t: 'str', v: 'Building controls' } },
+    objects: Object.fromEntries(Object.entries(objects).map(([k, args]) => [k, obj(...args)]))
+  });
+  const stop = fill ? everySecond((t) => fill(sim, P, t)) : () => {};
+  return { port: sim.port, close: async () => { stop(); await sim.stop(); } };
+}
+
+/** An SNMP v2c agent (UDP): a managed switch with interface counters that grow. */
+async function startSnmpSwitch() {
+  const { startSnmpSimulator } = requireServer('./test/support/snmpSimulator.js');
+  const started = Date.now();
+  const secs = () => (Date.now() - started) / 1000;
+  const mib = {
+    '1.3.6.1.2.1.1.1.0': { type: 'OctetString', value: 'Managed industrial Ethernet switch, 8 ports, firmware 3.4.1' },
+    '1.3.6.1.2.1.1.2.0': { type: 'OID', value: '1.3.6.1.4.1.99999.2.8' },
+    '1.3.6.1.2.1.1.3.0': { type: 'TimeTicks', value: (sim) => sim.upTime() },
+    '1.3.6.1.2.1.1.5.0': { type: 'OctetString', value: 'press-shop-sw1' },
+    '1.3.6.1.2.1.1.6.0': { type: 'OctetString', value: 'Riverside press shop, cabinet E3' },
+    '1.3.6.1.2.1.2.1.0': { type: 'Integer32', value: 2 },
+    '1.3.6.1.2.1.2.2.1.2.1': { type: 'OctetString', value: 'port1 uplink' },
+    '1.3.6.1.2.1.2.2.1.2.2': { type: 'OctetString', value: 'port2 press-1' },
+    '1.3.6.1.2.1.2.2.1.8.1': { type: 'Integer32', value: 1 },
+    '1.3.6.1.2.1.2.2.1.8.2': { type: 'Integer32', value: 1 },
+    '1.3.6.1.2.1.2.2.1.10.1': { type: 'Counter32', value: () => Math.floor(1_200_000 + secs() * 182_000) % 2 ** 32 },
+    '1.3.6.1.2.1.2.2.1.16.1': { type: 'Counter32', value: () => Math.floor(900_000 + secs() * 64_000) % 2 ** 32 },
+    '1.3.6.1.2.1.2.2.1.14.1': { type: 'Counter32', value: 3 },
+    '1.3.6.1.2.1.31.1.1.1.6.1': { type: 'Counter64', value: () => 81_234_567_890n + BigInt(Math.floor(secs() * 182_000)) }
+  };
+  const sim = await startSnmpSimulator({ mib, communities: ['public', 'plant-ro'] });
+  return { port: sim.port, close: () => sim.close() };
+}
+
+/** A power meter with a small REST API (HTTP/JSON, GET only). */
+async function startHttpMeter() {
+  const { startHttpJsonSimulator } = requireServer('./test/support/httpJsonSimulator.js');
+  const sim = await startHttpJsonSimulator({});
+  let kwh = 1_284_310;
+  const stop = everySecond((t) => {
+    const kw = round(wave(t, 412, 18, 37), 1);
+    kwh += kw / 3600;
+    sim.setJson('/api/v1/measurements', {
+      device: { id: 'pm-incomer-2', firmware: '2.8.0' },
+      timestamp: new Date().toISOString(),
+      power: { total: kw, l1: round(kw / 3 + 1.2, 1), l2: round(kw / 3 - 0.8, 1), l3: round(kw / 3 - 0.4, 1) },
+      energy: { import: round(kwh, 1) },
+      voltage: { l1: round(wave(t, 231, 1.2, 19), 1), l2: round(wave(t, 230, 1.2, 23), 1), l3: round(wave(t, 232, 1.2, 29), 1) },
+      frequency: round(wave(t, 50, 0.02, 11), 3),
+      status: 'ok'
+    });
+  });
+  return { port: sim.port, close: async () => { stop(); await sim.close(); } };
+}
+
+/** An MTConnect agent for a CNC mill (the simulator's own device model). */
+async function startMillAgent() {
+  const { startMtconnectSimulator } = requireServer('./test/support/mtconnectSimulator.js');
+  const agent = await startMtconnectSimulator({});
+  return { port: agent.port, close: () => agent.close() };
+}
+
+/** CoAP sensors in a cold store: JSON and SenML resources, one of them observable. */
+async function startColdStoreSensors() {
+  const { CoapSimulator } = requireServer('./test/support/coapSimulator.js');
+  const sim = await new CoapSimulator({ resources: {} }).start();
+  for (const p of Object.keys(sim.resources)) sim.setResource(p, null); // only the cold store's own resources
+  let seq = 0;
+  const stop = everySecond((t) => {
+    sim.setResource('/sensors/freezer-1', { cf: 50, body: JSON.stringify({ temperature: round(wave(t, -21.4, 0.4, 60), 2), door: 'closed', battery: 87 }) });
+    sim.setResource('/sensors/chiller-2', { cf: 110, body: JSON.stringify([{ bn: 'urn:dev:chiller-2:', n: 'temp', u: 'Cel', v: round(wave(t, 3.6, 0.3, 45), 2) }, { n: 'hum', u: '%RH', v: round(wave(t, 82, 2, 70), 1) }]) });
+    sim.setResource('/sensors/dock-door', { cf: 0, body: String(Math.floor(t / 20) % 3 === 0), observable: true, maxAge: 60 });
+    if (Math.floor(t) % 5 === 0) sim.notify('/sensors/dock-door', { body: String(Math.floor(t / 20) % 3 === 0), seq: ++seq });
+  });
+  return { port: sim.port, close: async () => { stop(); await sim.stop(); } };
+}
+
+/** Matter Server and Z-Wave JS Server stand-ins (WebSocket), with the simulators' own node sets. */
+async function startBridgeServers() {
+  const { startMatterServerSimulator } = requireServer('./test/support/matterServerSimulator.js');
+  const { startZwaveJsServerSimulator } = requireServer('./test/support/zwaveJsServerSimulator.js');
+  const matter = await startMatterServerSimulator({});
+  const zwave = await startZwaveJsServerSimulator({});
+  const stop = everySecond((t) => {
+    matter.setAttribute(1, '1/1026/0', Math.round(wave(t, 2134, 25, 80)));
+    matter.setAttribute(3, '1/144/8', Math.round(wave(t, 287_650, 9_000, 30)));
+  });
+  return {
+    matter: { port: matter.port, close: () => matter.close() },
+    zwave: { port: zwave.port, close: () => zwave.close() },
+    stop
+  };
+}
+
+/**
+ * Bridges and gateways publishing on the facilities broker in the formats "IoT over MQTT" reads: Zigbee2MQTT,
+ * Home Assistant discovery, Tasmota, Shelly Gen2, Z-Wave JS UI and ChirpStack. The message shapes follow
+ * server/test/support/iotMqttSimulator.js (the projects' documented examples); the names here are the
+ * demo plant's. Manifold only reads these topics.
+ */
+function startIotTraffic(broker) {
+  const pub = (topic, body, retain = true) => broker.publish(topic, body, retain);
+  const z2m = 'zigbee2mqtt';
+  const zigbee = [
+    { ieee: '0x00158d0004a1c201', name: 'cold-room/temperature-1', model: 'ZB-TH2', vendor: 'Generic', description: 'Temperature and humidity sensor', power: 'Battery',
+      exposes: [['temperature', '°C'], ['humidity', '%'], ['battery', '%', 'diagnostic'], ['linkquality', 'lqi', 'diagnostic']] },
+    { ieee: '0x00158d0004a1c202', name: 'warehouse/dock-door-1', model: 'ZB-DW1', vendor: 'Generic', description: 'Door and window contact', power: 'Battery',
+      exposes: [['contact', null, null, 'binary'], ['battery', '%', 'diagnostic'], ['linkquality', 'lqi', 'diagnostic']] },
+    { ieee: '0x588e81fffe2d4a10', name: 'office/plug-printer', model: 'ZB-PLUG16', vendor: 'Generic', description: 'Smart plug with metering', power: 'Mains (single phase)',
+      exposes: [['state', null, null, 'binary'], ['power', 'W'], ['energy', 'kWh'], ['linkquality', 'lqi', 'diagnostic']] }
+  ];
+  const devices = [
+    { ieee_address: '0x00124b0011223344', type: 'Coordinator', network_address: 0, supported: true, friendly_name: 'Coordinator', definition: null, interview_completed: true },
+    ...zigbee.map((d) => ({
+      ieee_address: d.ieee,
+      type: d.power === 'Battery' ? 'EndDevice' : 'Router',
+      friendly_name: d.name,
+      power_source: d.power,
+      supported: true,
+      interview_completed: true,
+      definition: {
+        model: d.model,
+        vendor: d.vendor,
+        description: d.description,
+        exposes: d.exposes.map(([prop, unit, category, type = 'numeric']) =>
+          type === 'binary'
+            ? { type: 'binary', name: prop, property: prop, access: 1, value_on: prop === 'contact' ? false : 'ON', value_off: prop === 'contact' ? true : 'OFF', label: prop[0].toUpperCase() + prop.slice(1) }
+            : { type: 'numeric', name: prop, property: prop, access: 1, ...(unit ? { unit } : {}), ...(category ? { category } : {}), label: prop[0].toUpperCase() + prop.slice(1) }
+        )
+      }
+    }))
+  ];
+  const ha = 'homeassistant';
+  const haDevice = { ids: ['comp-room-mon-01'], name: 'Compressor room monitor', mf: 'Plant electrical', mdl: 'ESP32 sensor node', sw: '2026.3.0' };
+  const haConfigs = [
+    ['sensor', 'temperature', { name: 'Room temperature', stat_t: 'comp-room-mon/sensor/climate', val_tpl: '{{ value_json.temperature }}', unit_of_meas: '°C', dev_cla: 'temperature', stat_cla: 'measurement' }],
+    ['sensor', 'humidity', { name: 'Room humidity', stat_t: 'comp-room-mon/sensor/climate', val_tpl: '{{ value_json.humidity }}', unit_of_meas: '%', dev_cla: 'humidity', stat_cla: 'measurement' }],
+    ['sensor', 'noise', { name: 'Noise level', stat_t: 'comp-room-mon/sensor/noise/state', unit_of_meas: 'dB', stat_cla: 'measurement' }],
+    ['binary_sensor', 'water_leak', { name: 'Water leak', stat_t: 'comp-room-mon/binary_sensor/leak/state', pl_on: '1', pl_off: '0', dev_cla: 'moisture' }]
+  ];
+  const initial = async () => {
+    await pub(`${z2m}/bridge/state`, { state: 'online' });
+    await pub(`${z2m}/bridge/info`, { version: '2.1.3', coordinator: { type: 'zStack3x0', ieee_address: '0x00124b0011223344' }, config: { mqtt: { base_topic: z2m } }, permit_join: false });
+    await pub(`${z2m}/bridge/devices`, devices);
+    for (const d of zigbee) await pub(`${z2m}/${d.name}/availability`, { state: 'online' });
+    for (const [component, object, cfg] of haConfigs) {
+      await pub(`${ha}/${component}/comp_room_mon/${object}/config`, { ...cfg, uniq_id: `comp_room_mon_${object}`, avty_t: 'comp-room-mon/status', dev: haDevice });
+    }
+    await pub('comp-room-mon/status', 'online');
+    await pub('comp-room-mon/binary_sensor/leak/state', '0');
+    await pub('tasmota/discovery/A4CF12D0E1F2/config', {
+      ip: '10.20.4.31', dn: 'Workshop extractor fan', fn: ['Workshop extractor fan', null], hn: 'tasmota-D0E1F2-0242', mac: 'A4CF12D0E1F2', md: 'Pow R2 plug', ty: 0, if: 0,
+      ofln: 'Offline', onln: 'Online', state: ['OFF', 'ON', 'TOGGLE', 'HOLD'], sw: '13.4.0', t: 'extractor_fan', ft: '%prefix%/%topic%/', tp: ['cmnd', 'stat', 'tele'], rl: [1, 0], ver: 1
+    });
+    await pub('tele/extractor_fan/LWT', 'Online');
+    await pub('shellyplus1pm-a8032ab1c2d3/online', 'true');
+    await pub('shellyplus1pm-a8032ab1c2d3/status/sys', { mac: 'A8032AB1C2D3', restart_required: false, uptime: 86_400, ram_free: 118_000 });
+    await pub('zwave/_CLIENTS/ZWAVE_GATEWAY-gatehouse/status', { value: true, time: Date.now() });
+    await pub('zwave/12/status', { time: Date.now(), value: true, status: 'Alive', nodeId: 12 });
+    await pub('zwave/12/nodeinfo', { id: 12, name: 'Gatehouse multisensor', loc: 'Gatehouse', manufacturer: 'Sensor maker', productLabel: 'MS-6', productDescription: 'Multisensor', firmwareVersion: '1.13' });
+  };
+  let n = 0;
+  const tick = async () => {
+    n += 1;
+    const t = n;
+    const now = new Date().toISOString();
+    await pub(`${z2m}/cold-room/temperature-1`, { temperature: round(wave(t, 3.8, 0.3, 90), 1), humidity: round(wave(t, 81, 2, 120), 1), battery: 94, linkquality: 132, last_seen: now });
+    await pub(`${z2m}/warehouse/dock-door-1`, { contact: Math.floor(t / 30) % 4 !== 0, battery: 88, linkquality: 101, last_seen: now });
+    await pub(`${z2m}/office/plug-printer`, { state: 'ON', power: round(wave(t, 38, 6, 20), 1), energy: round(212.4 + t / 3600, 3), linkquality: 156, last_seen: now });
+    await pub('comp-room-mon/sensor/climate', { temperature: round(wave(t, 27.5, 0.8, 70), 1), humidity: round(wave(t, 41, 2, 90), 1) });
+    await pub('comp-room-mon/sensor/noise/state', String(round(wave(t, 84, 2, 15), 1)));
+    await pub('tele/extractor_fan/SENSOR', { Time: '2026-11-25T10:00:00', ENERGY: { Total: round(842.31 + t / 1000, 3), Power: Math.round(wave(t, 410, 12, 25)), Voltage: 231, Current: round(wave(t, 1.86, 0.05, 25), 3) }, TempUnit: 'C' }, false);
+    await pub('tele/extractor_fan/STATE', { Time: '2026-11-25T10:00:00', UptimeSec: 3600 + t, POWER: 'ON', Wifi: { RSSI: 74, Signal: -63 } }, false);
+    await pub('shellyplus1pm-a8032ab1c2d3/status/switch:0', { id: 0, source: 'init', output: true, apower: round(wave(t, 1980, 40, 33), 1), voltage: round(wave(t, 230.4, 0.8, 19), 1), current: round(wave(t, 8.6, 0.2, 33), 2), aenergy: { total: round(5_412.8 + t / 100, 2) }, temperature: { tC: round(wave(t, 44, 1, 120), 1) } });
+    await pub('zwave/12/49/0/Air_temperature', { id: '12-49-0-Air temperature', nodeId: 12, commandClass: 49, commandClassName: 'Multilevel Sensor', endpoint: 0, property: 'Air temperature', type: 'number', readable: true, writeable: false, label: 'Air temperature', unit: '°C', value: round(wave(t, 12.4, 0.5, 100), 1), lastUpdate: Date.now() });
+    await pub('zwave/12/49/0/Humidity', { id: '12-49-0-Humidity', nodeId: 12, commandClass: 49, commandClassName: 'Multilevel Sensor', endpoint: 0, property: 'Humidity', type: 'number', readable: true, writeable: false, label: 'Humidity', unit: '%', value: Math.round(wave(t, 63, 3, 140)), lastUpdate: Date.now() });
+    if (t % 10 === 1) {
+      await pub('application/3f2a1c00-0000-4000-8000-00000000c01d/device/0004a30b001c0530/event/up', {
+        time: now,
+        deviceInfo: { tenantName: 'Riverside', applicationId: '3f2a1c00-0000-4000-8000-00000000c01d', applicationName: 'cold-chain', deviceProfileName: 'Freezer probe', deviceName: 'freezer-3', devEui: '0004a30b001c0530', tags: {} },
+        devAddr: '01020304', fCnt: 1200 + t, fPort: 5, data: 'AQDiAiwDAA==',
+        object: { temperature: round(wave(t, -19.2, 0.3, 300), 1), humidity: 61, battery: { voltage: 3.61 } },
+        rxInfo: [{ gatewayId: '0016c001ff10a235', rssi: -97, snr: 4.2 }],
+        txInfo: { frequency: 868_100_000 }
+      }, false);
+    }
+  };
+  let timer = null;
+  return {
+    async start() {
+      await initial();
+      await tick();
+      timer = setInterval(() => tick().catch(() => {}), 1000);
+    },
+    stop: () => clearInterval(timer)
+  };
+}
+
+/** A second, plain MQTT broker (aedes) for the facilities' bridges and gateways. */
+async function startFacilityBroker() {
+  const aedesModule = requireServer('aedes');
+  const Aedes = aedesModule.Aedes || aedesModule;
+  const brokerOpts = { id: 'facilities', heartbeatInterval: 30_000 };
+  const broker = Aedes.createBroker ? await Aedes.createBroker(brokerOpts) : new Aedes(brokerOpts);
+  const server = net.createServer(broker.handle);
+  const port = await listen(server);
+  const publish = (topic, body, retain = true) => {
+    const payload = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+    return new Promise((resolve) => broker.publish({ cmd: 'publish', qos: 0, dup: false, retain, topic, payload }, resolve));
+  };
+  return {
+    port,
+    publish,
+    async close() {
+      await new Promise((resolve) => broker.close(resolve));
+      await new Promise((resolve) => server.close(resolve));
+    }
+  };
+}
+
+/** MessagePack for the codec demo: maps, strings and doubles only. */
+function msgpack(value) {
+  if (typeof value === 'number') {
+    const b = Buffer.alloc(9);
+    b[0] = 0xcb;
+    b.writeDoubleBE(value, 1);
+    return b;
+  }
+  if (typeof value === 'string') {
+    const s = Buffer.from(value);
+    return Buffer.concat([Buffer.from([0xa0 | s.length]), s]);
+  }
+  const entries = Object.entries(value);
+  return Buffer.concat([Buffer.from([0x80 | entries.length]), ...entries.flatMap(([k, v]) => [msgpack(k), msgpack(v)])]);
+}
+
+const VIBRATION_PROTO = `syntax = "proto3";
+package plant.condition;
+
+message VibrationReading {
+  string sensor = 1;
+  double rms_velocity = 2;   // mm/s
+  double peak_acceleration = 3; // g
+  double temperature = 4;    // degC
+  uint64 timestamp_ms = 5;
+}
+`;
+
+/** Non-JSON payloads on the plant broker for the Codecs tab: CBOR, MessagePack, SenML and Protobuf. */
+function startCodecTraffic(broker) {
+  const { cbor } = requireServer('./test/support/coapSimulator.js');
+  const protobuf = requireServer('protobufjs');
+  const Reading = protobuf.parse(VIBRATION_PROTO).root.lookupType('plant.condition.VibrationReading');
+  return everySecond((t) => {
+    for (const [i, pump] of ['pump-1', 'pump-2'].entries()) {
+      broker.publish(`acme/lakeside/utilities/${pump}/condition`, cbor({ temperature: round(wave(t, 48 + i * 3, 1, 50, i), 2), vibration: round(wave(t, 2.1 + i * 0.4, 0.2, 13, i), 3), running: true }));
+    }
+    broker.publish('acme/lakeside/energy/sub-meter-4/packed', msgpack({ power: round(wave(t, 18.2, 1.1, 21), 2), energy: round(51_284 + t / 200, 2), unit: 'kW' }));
+    broker.publish('acme/lakeside/building/senml/hall-c', Buffer.from(JSON.stringify([{ bn: 'urn:dev:hall-c:', bt: Date.now() / 1000, n: 'temperature', u: 'Cel', v: round(wave(t, 19.6, 0.3, 80), 2) }, { n: 'co2', u: 'ppm', v: Math.round(wave(t, 640, 40, 120)) }])));
+    for (const m of ['press-4', 'press-5']) {
+      const msg = Reading.create({ sensor: m, rms_velocity: round(wave(t, 3.4, 0.3, 17), 3), peak_acceleration: round(wave(t, 1.2, 0.1, 23), 3), temperature: round(wave(t, 51, 1, 60), 2), timestamp_ms: Date.now() });
+      broker.publish(`acme/riverside/press-shop/line-2/${m}/vibration`, Buffer.from(Reading.encode(msg).finish()));
+    }
+  });
+}
+
 // ---- backend -------------------------------------------------------------------------------
 
-async function startBackend({ brokerPort }) {
+async function startBackend({ brokerPort, facilityPort }) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifold-docs-'));
   fs.writeFileSync(
     path.join(dataDir, 'profiles.json'),
     JSON.stringify({
-      mqtt: { 'plant-broker': { config: { id: 'plant-broker', name: 'Plant broker', host: '127.0.0.1', port: brokerPort, protocol: 'mqtt', autoSubscribe: true, reconnect: true, reconnectPeriod: 2000 } } },
+      mqtt: {
+        'plant-broker': {
+          config: { id: 'plant-broker', name: 'Plant broker', host: '127.0.0.1', port: brokerPort, protocol: 'mqtt', autoSubscribe: true, reconnect: true, reconnectPeriod: 2000, canary: { enabled: true, intervalSec: 5 } }
+        },
+        'facility-broker': {
+          config: { id: 'facility-broker', name: 'Facilities broker', host: '127.0.0.1', port: facilityPort, protocol: 'mqtt', autoSubscribe: true, reconnect: true, reconnectPeriod: 2000 }
+        }
+      },
       opcua: {},
       cesmii: null,
       i3x: null
@@ -678,8 +981,121 @@ async function seed(api, plant) {
     ]
   });
 
+  // Building, network, energy and IoT devices (the experimental drivers) ---------------------
+  const fast = [{ id: 'default', intervalMs: 2000 }];
+  ids.ahu2 = await device({
+    name: 'AHU 2 controller (BACnet)',
+    protocol: 'bacnet-ip',
+    host: '127.0.0.1',
+    port: plant.ahu2.port,
+    deviceInstance: 2101,
+    pollGroups: fast,
+    tags: [
+      { key: 'supply_air_temp', address: 'analog-input:1', unit: '°C', description: 'Supply air temperature', pollGroup: 'default' },
+      { key: 'return_air_temp', address: 'analog-input:2', unit: '°C', description: 'Return air temperature', pollGroup: 'default' },
+      { key: 'filter_dp', address: 'analog-input:3', unit: 'Pa', description: 'Filter differential pressure', pollGroup: 'default' },
+      { key: 'cooling_valve', address: 'analog-output:1', unit: '%', description: 'Cooling valve position', pollGroup: 'default' },
+      { key: 'supply_fan', address: 'binary-input:1', description: 'Supply fan status', pollGroup: 'default' },
+      { key: 'setpoint', address: 'analog-value:1', unit: '°C', description: 'Supply air setpoint', pollGroup: 'default' }
+    ]
+  });
+  ids.switch = await device({
+    name: 'Core switch, press shop (SNMP)',
+    protocol: 'snmp',
+    host: '127.0.0.1',
+    port: plant.switch.port,
+    version: '2c',
+    community: 'plant-ro',
+    pollGroups: [{ id: 'default', intervalMs: 5000 }],
+    tags: [
+      { key: 'sys_name', address: 'sysName.0', description: 'Switch name', pollGroup: 'default' },
+      { key: 'uptime', address: 'sysUpTime.0', description: 'Agent uptime', pollGroup: 'default' },
+      { key: 'uplink_status', address: 'ifOperStatus.1', description: 'Uplink port status', pollGroup: 'default' },
+      { key: 'uplink_in_rate', address: 'ifInOctets.1', rate: true, unit: 'B/s', description: 'Uplink receive rate', pollGroup: 'default' },
+      { key: 'uplink_out_rate', address: 'ifOutOctets.1', rate: true, unit: 'B/s', description: 'Uplink transmit rate', pollGroup: 'default' },
+      { key: 'uplink_errors', address: 'ifInErrors.1', description: 'Uplink receive errors', pollGroup: 'default' }
+    ]
+  });
+  ids.meter = await device({
+    name: 'Incomer 2 power meter (HTTP)',
+    protocol: 'http-json',
+    host: '127.0.0.1',
+    port: plant.meterHttp.port,
+    scheme: 'http',
+    path: '/api/v1',
+    pollGroups: fast,
+    tags: [
+      { key: 'power', address: '/measurements#$.power.total', type: 'number', unit: 'kW', description: 'Total active power', timestampSelector: '$.timestamp', pollGroup: 'default' },
+      { key: 'energy', address: '/measurements#$.energy.import', type: 'number', unit: 'kWh', description: 'Imported energy', pollGroup: 'default' },
+      { key: 'voltage_l1', address: '/measurements#$.voltage.l1', type: 'number', unit: 'V', description: 'Voltage L1', pollGroup: 'default' },
+      { key: 'frequency', address: '/measurements#$.frequency', type: 'number', unit: 'Hz', description: 'Grid frequency', pollGroup: 'default' },
+      { key: 'status', address: '/measurements#$.status', type: 'string', description: 'Meter status', pollGroup: 'default' }
+    ]
+  });
+  ids.mill = await device({
+    name: 'CNC mill 1 (MTConnect)',
+    protocol: 'mtconnect',
+    host: '127.0.0.1',
+    port: plant.mill.port,
+    pollGroups: fast,
+    tags: [
+      { key: 'x_position', address: 'Xact', type: 'number', unit: 'mm', description: 'X axis actual position', pollGroup: 'default' },
+      { key: 'spindle_speed', address: 'Sspeed', type: 'number', unit: 'rpm', description: 'Spindle speed', pollGroup: 'default' },
+      { key: 'execution', address: 'exec', type: 'string', description: 'Execution state', pollGroup: 'default' }
+    ]
+  });
+  ids.coldStore = await device({
+    name: 'Cold store sensors (CoAP)',
+    protocol: 'coap',
+    host: '127.0.0.1',
+    port: plant.coldStore.port,
+    pollGroups: fast,
+    tags: [
+      { key: 'freezer_1_temp', address: '/sensors/freezer-1#temperature', unit: '°C', description: 'Freezer 1 temperature', pollGroup: 'default' },
+      { key: 'chiller_2_temp', address: '/sensors/chiller-2#urn:dev:chiller-2:temp', description: 'Chiller 2 temperature', pollGroup: 'default' },
+      { key: 'dock_door_open', address: 'observe:/sensors/dock-door', description: 'Dock door open', pollGroup: 'default' }
+    ]
+  });
+  ids.matter = await device({
+    name: 'Office Matter bridge',
+    protocol: 'matter-server',
+    host: '127.0.0.1',
+    port: plant.matter.port,
+    path: '/ws',
+    pollGroups: [{ id: 'default', intervalMs: 10_000 }],
+    tags: [
+      { key: 'meeting_room_temp', address: '1/1/TemperatureMeasurement/MeasuredValue', description: 'Meeting room temperature', pollGroup: 'default' },
+      { key: 'meeting_room_humidity', address: '1/1/1029/0', description: 'Meeting room humidity', pollGroup: 'default' },
+      { key: 'kitchen_power', address: '3/1/144/8', description: 'Kitchen appliances power', pollGroup: 'default' }
+    ]
+  });
+  ids.zwave = await device({
+    name: 'Gatehouse Z-Wave controller',
+    protocol: 'zwave-js',
+    host: '127.0.0.1',
+    port: plant.zwave.port,
+    pollGroups: [{ id: 'default', intervalMs: 10_000 }],
+    tags: [
+      { key: 'gate_temp', address: '2/49/0/Air temperature', description: 'Gatehouse air temperature', pollGroup: 'default' },
+      { key: 'gate_humidity', address: '2/49/0/Humidity', description: 'Gatehouse humidity', pollGroup: 'default' },
+      { key: 'barrier_heater', address: '3/37/0/currentValue', description: 'Barrier heater on', pollGroup: 'default' }
+    ]
+  });
+
+  // IoT over MQTT: read what the bridges publish on the plant broker ---------------------------
+  await api.put('/api/iot/brokers/facility-broker', {
+    conventions: Object.fromEntries(['zigbee2mqtt', 'zwavejs', 'homeassistant', 'tasmota', 'shelly', 'chirpstack'].map((c) => [c, { enabled: true }]))
+  });
+
+  // Payload codecs ----------------------------------------------------------------------------
+  const codec = (body) => api.post('/api/codecs', { brokerId: 'plant-broker', ...body });
+  await codec({ name: 'Pump condition sensors', filter: 'acme/lakeside/utilities/+/condition', codec: 'cbor' });
+  await codec({ name: 'Sub-meter 4 gateway', filter: 'acme/lakeside/energy/sub-meter-4/packed', codec: 'msgpack' });
+  await codec({ name: 'Hall C room sensors', filter: 'acme/lakeside/building/senml/#', codec: 'senml-json' });
+  await codec({ name: 'Press vibration sensors', filter: 'acme/riverside/press-shop/+/+/vibration', codec: 'protobuf', schemaText: VIBRATION_PROTO, messageType: 'plant.condition.VibrationReading' });
+
   // OPC UA ----------------------------------------------------------------------------------
-  const ua = await api.post('/api/opcua/connections', { name: 'Bottling line 1 gateway', endpointUrl: plant.opcua.endpointUrl });
+  const ua =await api.post('/api/opcua/connections', { name: 'Bottling line 1 gateway', endpointUrl: plant.opcua.endpointUrl });
   ids.opcua = ua.connectionId;
   const uaTree = await resolveUaNodes(api, ids.opcua);
 
@@ -756,6 +1172,12 @@ async function seed(api, plant) {
     target: target('acme/riverside/building/ahu-1', { context: { site: 'Riverside', area: 'Building services', equipment: 'AHU 1' } })
   });
 
+  ids.coldRoomMap = await binding({
+    name: 'Cold room 1 to UNS',
+    source: { type: 'iot', brokerId: 'facility-broker', deviceId: 'z2m:0x00158d0004a1c201', tags: 'all' },
+    target: target('acme/riverside/cold-store/cold-room-1', { context: { site: 'Riverside', area: 'Cold store', equipment: 'Cold room 1' } })
+  });
+
   // Pipeline routes ---------------------------------------------------------------------------
   ids.routeLegacy = (await api.post('/api/pipelines', {
     name: 'Legacy meters into the UNS',
@@ -777,8 +1199,23 @@ async function seed(api, plant) {
   })).id;
 
   // Alert rules -----------------------------------------------------------------------------
-  await api.post('/api/alerts/rules', { name: 'Steam pressure high', type: 'value-threshold', brokerId: 'plant-broker', topic: 'acme/riverside/utilities/boiler-1/steam_pressure', field: 'v', op: '>', value: 12, sustainMs: 10_000 });
-  await api.post('/api/alerts/rules', { name: 'Main incomer silent', type: 'topic-silent', brokerId: 'plant-broker', topic: 'acme/riverside/energy/main-incomer/power', thresholdMs: 60_000 });
+  const rule = async (body) => (await api.post('/api/alerts/rules', { brokerId: 'plant-broker', ...body })).id;
+  await rule({ name: 'Steam pressure high', type: 'value-threshold', severity: 'critical', topic: 'acme/riverside/utilities/boiler-1/steam_pressure', field: 'v', op: '>', value: 12, sustainMs: 10_000 });
+  await rule({ name: 'Main incomer silent', type: 'topic-silent', topic: 'acme/riverside/energy/main-incomer/power', thresholdMs: 60_000 });
+  // Rules that fire in the demo: a hydraulic pressure above its limit, a robot running warm, a silent meter.
+  ids.rulePress = await rule({ name: 'Press 3 hydraulic pressure high', type: 'value-threshold', severity: 'critical', topic: 'acme/riverside/press-shop/line-1/press-3/hydraulic_pressure', field: 'value', op: '>', value: 180, sustainMs: 0 });
+  ids.ruleRobot = await rule({ name: 'Robot temperature high', type: 'value-threshold', severity: 'warning', topic: 'acme/lakeside/assembly/+/robot-3/temperature', field: 'value', op: '>', value: 39 });
+  ids.ruleMeter = await rule({ name: 'Meter EM-105 silent', type: 'topic-silent', severity: 'info', topic: 'legacy/meters/em-105/kw', thresholdMs: 15_000 });
+  // One that fired and cleared, twice, for the history.
+  ids.ruleTurbidity = await rule({ name: 'Clarifier turbidity high', type: 'value-threshold', severity: 'warning', topic: 'acme/riverside/wastewater/clarifier/turbidity', field: 'value', op: '>', value: 5 });
+  const turbidity = (v) => plant.broker.publish('acme/riverside/wastewater/clarifier/turbidity', { value: v, unit: 'NTU' });
+  const ruleState = async (id) => ((await api.get('/api/alerts/rules')).rules.find((r) => r.id === id) || {}).state?.state;
+  for (const [high, low] of [[6.8, 3.1], [7.4, 2.9]]) {
+    await turbidity(high);
+    await until(async () => (await ruleState(ids.ruleTurbidity)) === 'firing', { what: 'the turbidity alarm', timeout: 20_000 });
+    await turbidity(low);
+    await until(async () => (await ruleState(ids.ruleTurbidity)) !== 'firing', { what: 'the turbidity alarm to clear', timeout: 20_000 });
+  }
 
   // Recording for Trends ------------------------------------------------------------------------
   const filter = `spBv1.0/${TREND.group}/DDATA/${TREND.node}/${TREND.device}`;
@@ -882,6 +1319,23 @@ function shots(ids) {
       }
     },
     {
+      name: 'iot-devices',
+      path: '/devices?tab=iot',
+      wait: async (page) => {
+        await page.locator('#iot-broker').selectOption('facility-broker');
+        const table = page.getByRole('table', { name: 'IoT devices' });
+        for (const name of ['cold-room/temperature-1', 'Compressor room monitor', 'Workshop extractor fan', 'freezer-3']) await table.getByText(name).first().waitFor({ timeout: 20_000 });
+        // The detection settings fill the first screen when every convention is on: show the device list.
+        await page.locator('section[aria-label="IoT devices"]').evaluate((el) => {
+          // Scroll the page's own scroller (scrollIntoView would also shift the overflow-hidden shell).
+          let p = el.parentElement;
+          while (p && !(p.scrollHeight > p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
+          if (p) p.scrollTop += el.getBoundingClientRect().top - p.getBoundingClientRect().top - 16;
+        });
+        await sleep(2500);
+      }
+    },
+    {
       name: 'device-profiles',
       path: '/devices?tab=profiles',
       wait: async (page) => {
@@ -909,6 +1363,50 @@ function shots(ids) {
         await form.getByLabel('Name', { exact: true }).fill('Lakeside plant broker');
         await form.getByLabel('Host', { exact: true }).fill('mqtt.lakeside.example');
         await sleep(600);
+      }
+    },
+    {
+      name: 'broker-details',
+      path: '/brokers',
+      wait: async (page) => {
+        await page.getByRole('button', { name: 'Details for Plant broker', exact: true }).first().click();
+        const detail = page.getByTestId('broker-detail');
+        await detail.getByTestId('canary-state').and(page.locator('[data-state="ok"]')).waitFor({ timeout: 30_000 });
+        await detail.getByTestId('posture-section').waitFor();
+        await page.mouse.move(5, 5);
+        await sleep(1500);
+      }
+    },
+    {
+      name: 'alerts',
+      path: '/alerts',
+      wait: async (page) => {
+        await page.getByTestId('alarm-row').filter({ hasText: 'Acknowledged' }).first().waitFor({ timeout: 20_000 });
+        await page.getByTestId('alarm-row').filter({ hasText: 'Meter EM-105 silent' }).first().waitFor({ timeout: 20_000 });
+        await sleep(1500);
+      }
+    },
+    {
+      name: 'alerts-history',
+      path: '/alerts?tab=history',
+      wait: async (page) => {
+        await page.getByTestId('history-row').filter({ hasText: 'Clarifier turbidity high' }).first().waitFor({ timeout: 20_000 });
+        await sleep(1500);
+      }
+    },
+    {
+      name: 'codecs',
+      path: '/pipelines?tab=codecs',
+      wait: async (page) => {
+        await page.getByText('Press vibration sensors').first().waitFor();
+        // A payload copied from a pump sensor, decoded in the test box.
+        const { cbor } = requireServer('./test/support/coapSimulator.js');
+        const hex = cbor({ temperature: 48.25, vibration: 2.125, running: true }).toString('hex').replace(/(..)(?!$)/g, '$1 ');
+        await page.locator('[aria-label="Test a payload"] textarea').fill(hex);
+        await page.getByRole('button', { name: 'Decode', exact: true }).click();
+        await page.getByText('vibration').last().waitFor();
+        await page.mouse.move(5, 5);
+        await sleep(1500);
       }
     },
     {
@@ -987,6 +1485,18 @@ function shots(ids) {
     { name: 'topics-3d', path: '/topics?broker=plant-broker', wait: async (page) => topicsView(page, '3D') },
     { name: 'uns-topology', path: '/uns?broker=plant-broker&path=acme/riverside/utilities/boiler-1', wait: async (page) => unsTopology(page) },
     { name: 'uns-topology-light', path: '/uns?broker=plant-broker&path=acme/riverside/utilities/boiler-1', theme: 'light', wait: async (page) => unsTopology(page) },
+    {
+      name: 'uns-search',
+      path: '/uns?broker=plant-broker&path=acme/riverside/utilities/boiler-1',
+      wait: async (page) => {
+        await unsTopology(page);
+        const search = page.getByTestId('uns-search').getByRole('combobox');
+        await search.fill('press');
+        await page.getByRole('listbox', { name: /results$/ }).getByRole('option').first().waitFor();
+        await search.press('ArrowDown');
+        await sleep(800);
+      }
+    },
     {
       name: 'phone-devices',
       path: '/devices',
@@ -1068,6 +1578,9 @@ async function topicsView(page, view) {
 async function unsTopology(page) {
   // The deep link expands to boiler-1 and selects it; wait for its details, then for the layout.
   await page.getByText('Topics in branch').first().waitFor();
+  // Only the plant broker's namespace (the facilities broker carries the IoT bridges' own topics).
+  await page.getByRole('combobox', { name: 'Namespace', exact: true }).selectOption('plant-broker');
+  await page.getByText('Topics in branch').first().waitFor();
   await sleep(2500);
   await page.getByRole('button', { name: /^Fit to view/ }).first().click();
   await page.mouse.move(5, 5); // no tooltip in the picture
@@ -1079,7 +1592,7 @@ async function runDiscovery(page, ctx) {
   const box = (name) => page.getByRole('textbox', { name: new RegExp(`^${name.replace(/[()]/g, '\\$&')}( |$)`) });
   await page.getByLabel('Range: CIDR, IP address or hostname').fill('127.0.0.1/32');
   await page.getByRole('checkbox', { name: /^i3X servers/ }).uncheck().catch(() => {});
-  for (const name of [/^Modbus TCP/, /^Siemens S7/, /^EtherNet\/IP/]) await page.getByRole('checkbox', { name }).check();
+  for (const name of [/^Modbus TCP/, /^Siemens S7/, /^EtherNet\/IP/, /^BACnet\/IP/, /^CoAP/, /^SNMP agents/]) await page.getByRole('checkbox', { name }).check();
   await page.getByRole('checkbox', { name: /^I understand/ }).click();
   const toggle = page.getByRole('button', { name: 'Advanced options' });
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
@@ -1089,6 +1602,9 @@ async function runDiscovery(page, ctx) {
   await box('Modbus TCP ports').fill(`${plant.boiler.port}, ${plant.cw1.port}, ${plant.cw2.port}, ${plant.spareMeter.port}`);
   await box('Siemens S7 ports').fill(`${plant.compressor.port}, ${plant.wastewater.port}`);
   await box('EtherNet/IP ports').fill(`${plant.filler2.port}, ${plant.palletizer.port}`);
+  await box('BACnet/IP (UDP) ports').fill(`${plant.ahu2.port}, ${plant.vav.port}`);
+  await box('CoAP (UDP) ports').fill(String(plant.coldStore.port));
+  await page.getByRole('textbox', { name: /^SNMP agents .* ports/ }).fill(String(plant.switch.port));
   await toggle.click();
   await page.getByRole('button', { name: 'Start scan' }).click();
   await page.getByText(/Last scan of 127\.0\.0\.1\/32/).first().waitFor({ timeout: 60_000 });
@@ -1140,9 +1656,59 @@ async function startEverything(cleanups) {
   plant.historian = await startHistorianStandIn();
   plant.influx = await startHistorianStandIn();
   cleanups.push(() => plant.historian.close(), () => plant.influx.close());
+  plant.ahu2 = await startBacnetController({
+    deviceInstance: 2101,
+    deviceName: 'AHU-2',
+    modelName: 'AHU controller 2400',
+    objects: {
+      'analog-input:1': ['SA-TEMP', { t: 'real', v: 16.4 }, 62, 'Supply air temperature'],
+      'analog-input:2': ['RA-TEMP', { t: 'real', v: 22.1 }, 62, 'Return air temperature'],
+      'analog-input:3': ['FLT-DP', { t: 'real', v: 142 }, 53, 'Filter differential pressure'],
+      'analog-output:1': ['CLG-VLV', { t: 'real', v: 38 }, 98, 'Cooling valve'],
+      'binary-input:1': ['SF-STS', { t: 'enum', v: 1 }, undefined, 'Supply fan status'],
+      'analog-value:1': ['SA-SP', { t: 'real', v: 16.5 }, 62, 'Supply air setpoint']
+    },
+    fill: (sim, P, t) => {
+      sim.setValue('analog-input:1', P.presentValue, { t: 'real', v: round(wave(t, 16.4, 0.3, 50), 2) });
+      sim.setValue('analog-input:2', P.presentValue, { t: 'real', v: round(wave(t, 22.1, 0.2, 90), 2) });
+      sim.setValue('analog-output:1', P.presentValue, { t: 'real', v: round(wave(t, 38, 4, 40), 1) });
+    }
+  });
+  // A VAV box controller on the network that Manifold does not have yet: Discovery finds it.
+  plant.vav = await startBacnetController({
+    deviceInstance: 3112,
+    deviceName: 'VAV-12',
+    modelName: 'VAV controller 110',
+    objects: { 'analog-input:1': ['ZN-TEMP', { t: 'real', v: 21.2 }, 62, 'Zone temperature'] }
+  });
+  plant.switch = await startSnmpSwitch();
+  plant.meterHttp = await startHttpMeter();
+  plant.mill = await startMillAgent();
+  plant.coldStore = await startColdStoreSensors();
+  const bridges = await startBridgeServers();
+  plant.matter = bridges.matter;
+  plant.zwave = bridges.zwave;
+  cleanups.push(
+    () => plant.ahu2.close(),
+    () => plant.vav.close(),
+    () => plant.switch.close(),
+    () => plant.meterHttp.close(),
+    () => plant.mill.close(),
+    () => plant.coldStore.close(),
+    async () => bridges.stop(),
+    () => plant.matter.close(),
+    () => plant.zwave.close()
+  );
+  // The building and IoT bridges publish on their own facilities broker, as they usually do.
+  plant.facility = await startFacilityBroker();
+  cleanups.push(() => plant.facility.close());
+  const iot = startIotTraffic(plant.facility);
+  await iot.start();
+  const stopCodecs = startCodecTraffic(plant.broker);
+  cleanups.push(async () => iot.stop(), async () => stopCodecs());
 
   log('starting the backend');
-  const backend = await startBackend({ brokerPort: plant.broker.port });
+  const backend = await startBackend({ brokerPort: plant.broker.port, facilityPort: plant.facility.port });
   cleanups.push(() => backend.stop());
   const api = makeApi(backend.url);
   await until(async () => ((await api.get('/api/mqtt/brokers/plant-broker/topics?limit=100000')).topics || []).length >= plant.broker.topicCount, { what: 'the broker topics', timeout: 40_000 });
@@ -1152,9 +1718,14 @@ async function startEverything(cleanups) {
   log('waiting for devices, mappings and counters to settle');
   await until(async () => {
     const { devices } = await api.get('/api/devices');
-    return devices.filter((d) => d.status?.state === 'online').length >= 7 || null;
-  }, { what: 'seven devices online', timeout: 60_000 }).catch((e) => log('warning:', e.message));
+    const offline = devices.filter((d) => d.id !== ids.cooling && d.status?.state !== 'online');
+    return offline.length === 0 || (log(`waiting for ${offline.map((d) => d.name).join(', ')}`), null);
+  }, { what: 'every device but the cooling tower online', timeout: 90_000, every: 3000 }).catch((e) => log('warning:', e.message));
   await sleep(12_000);
+  // The operator has seen the Line 1 robot alarm and noted why.
+  await until(async () => (await api.get('/api/alerts/active')).alarms.some((a) => a.ruleId === ids.ruleRobot && a.state === 'firing'), { what: 'the robot alarm' });
+  await until(async () => (await api.get('/api/alerts/active')).alarms.some((a) => a.ruleId === ids.ruleMeter && a.state === 'firing'), { what: 'the silent meter alarm' });
+  await api.post('/api/alerts/ack', { ruleId: ids.ruleRobot, topic: 'acme/lakeside/assembly/line-1/robot-3/temperature', note: 'Known: cooling fan replaced on Friday, watching it' });
 
   return { plant, backend, api, ids };
 }

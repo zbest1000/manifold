@@ -11,7 +11,7 @@ configure or control any device, and it never publishes to their command topics 
 `cmnd/...`, `.../command`, `.../rpc`, Z-Wave `.../set`, LoRaWAN downlinks). There is no switch to
 turn that on.
 
-> **Not verified against real hardware.** This was built and tested against an in-process
+> **Experimental — not verified on real hardware.** This was built and tested against an in-process
 > simulator that reproduces each project's documented MQTT messages
 > (`server/test/support/iotMqttSimulator.js`), not against real bridges, gateways or devices.
 > Expect differences in the field; the formats handled and the known gaps are listed in
@@ -48,6 +48,8 @@ What the broker already holds (retained device lists and configs, last values) i
 devices appear within a second or two.
 
 ## The device list and the device detail
+
+![The IoT over MQTT tab of the demo plant: Zigbee2MQTT sensors and a plug, a Home Assistant discovery device, a ChirpStack freezer probe, a Z-Wave JS UI multisensor, a Shelly relay and a Tasmota plug, all via the facilities broker](images/iot-devices.png)
 
 Each device shows its name, **convention** and **via broker**, its state (*Online*, *Offline* or
 *Unknown* when the convention reports no availability), model and manufacturer, tag count and

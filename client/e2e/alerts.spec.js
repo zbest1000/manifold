@@ -29,6 +29,8 @@ async function axeClean(page) {
 test('a rule fires from MQTT, is acknowledged with a note, clears, and is in the history', async ({ page, consoleErrors }) => {
   const name = unique('Tank hot ');
   const topic = `e2e/alarm/${unique('t')}/temp`;
+  // A note as long as operators write them: the history table must wrap it, not scroll sideways.
+  const note = 'Checking the cooling loop: the chiller on line 2 tripped and maintenance is on the way, the value should fall within the hour';
   const pub = await publisher();
   let ruleId = null;
   try {
@@ -78,15 +80,15 @@ test('a rule fires from MQTT, is acknowledged with a note, clears, and is in the
     await row.getByRole('button', { name: new RegExp(`^Acknowledge ${name}`) }).click();
     const dialog = page.getByRole('dialog', { name: 'Acknowledge alarm' });
     await expect(dialog.getByLabel(/^Note/)).toBeFocused();
-    await dialog.getByLabel(/^Note/).fill('Checking the cooling loop');
+    await dialog.getByLabel(/^Note/).fill(note);
     await dialog.getByRole('button', { name: 'Acknowledge' }).click();
     await expect(page.getByText('Alarm acknowledged')).toBeVisible();
     await expect(row).toContainText('Acknowledged');
     await expect(row).toContainText('by operator');
-    await expect(row).toContainText('Checking the cooling loop');
+    await expect(row).toContainText(note);
     await expect(row.getByRole('button', { name: /^Acknowledge/ })).toHaveCount(0);
     const active = (await api.get('/api/alerts/active')).json.alarms.find((a) => a.ruleId === ruleId);
-    expect(active.ack).toMatchObject({ by: 'operator', note: 'Checking the cooling loop' });
+    expect(active.ack).toMatchObject({ by: 'operator', note });
 
     // ---- it clears below the clear value
     await pub.publish(topic, '20');
@@ -99,8 +101,15 @@ test('a rule fires from MQTT, is acknowledged with a note, clears, and is in the
     await expect(hist).toHaveCount(3);
     await expect(hist.nth(0)).toContainText('Resolved');
     await expect(hist.nth(1)).toContainText('Acknowledged');
-    await expect(hist.nth(1)).toContainText('Checking the cooling loop');
+    await expect(hist.nth(1)).toContainText(note);
     await expect(hist.nth(2)).toContainText('Firing');
+    // At 1440 px the history table fits: the long acknowledgement detail wraps instead of pushing the
+    // Detail column out of view behind a horizontal scroll (and squeezing the Rule column).
+    if ((page.viewportSize()?.width || 0) >= 1024) {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      const region = page.getByRole('region', { name: 'Alert history, newest first' });
+      await expect.poll(() => region.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    }
     await page.getByRole('combobox', { name: 'State' }).selectOption('acknowledged');
     await expect(hist).toHaveCount(1);
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Export CSV' }).click()]);
@@ -110,7 +119,7 @@ test('a rule fires from MQTT, is acknowledged with a note, clears, and is in the
     expect(csv[0]).toBe('time,seq,state,severity,rule,ruleId,type,broker,topic,value,acknowledgedBy,note,detail');
     expect(csv).toHaveLength(2);
     expect(csv[1]).toContain(`,acknowledged,critical,${name},`);
-    expect(csv[1]).toContain(',operator,Checking the cooling loop,');
+    expect(csv[1]).toContain(`,operator,"${note}",`);
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
     await axeClean(page);
     if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/alerts-history.png` });

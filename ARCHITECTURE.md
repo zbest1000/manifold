@@ -19,11 +19,11 @@ flowchart LR
         O[OPC UA servers]
         C[CESMII SMIP]
         I[i3X servers]
-        PLC[PLCs and devices<br/>Modbus TCP, S7, EtherNet/IP]
+        PLC[PLCs and devices<br/>Modbus TCP, S7, EtherNet/IP,<br/>BACnet/IP, SNMP, HTTP/JSON, MTConnect,<br/>CoAP, Matter / Z-Wave servers]
     end
 
     subgraph hosts [driver host processes - one per protocol]
-        DH[modbus / s7 / eip<br/>runtime + driver]
+        DH[one host per protocol<br/>runtime + driver]
     end
 
     subgraph server [server/ - Node.js]
@@ -40,7 +40,9 @@ flowchart LR
         SP[sparkplugPublisher]
         OB[historianOutbox]
         H[historians<br/>influx / timescale / timebase]
-        AL[alertEngine]
+        AL[alertEngine<br/>alarms, ack, history]
+        IOT[iotManager<br/>IoT over MQTT]
+        CD[codecs]
         AU[auditLog]
         MX[metricsExporter]
     end
@@ -57,7 +59,9 @@ flowchart LR
     PLC <-- read-only --> DH
     DH -- IPC: samples, state --> SUP --> DM
     M --> T
-    M -- message tap --> P & R & SC & TB & AL
+    M -- message tap --> P & R & SC & TB & AL & IOT
+    CD -. decodes payloads in .-> M
+    IOT -- samples + state --> TB
     OM -- OpcuaSource: samples + state --> TB
     DM -- samples + state --> TB
     P --> OB
@@ -84,9 +88,12 @@ server only ever sees its IPC messages (see
 
 ```
 server/   Express + Socket.IO backend; protocol managers and engines
-  drivers/    southbound device drivers (modbus, s7, eip), the shared runtime
-              (runtime/deviceRuntime.js) and the child-process entry (host.js)
-  services/   managers, engines, tagSources/ (tag-source adapters)
+  drivers/    southbound device drivers (modbus, s7, eip, bacnet, snmp, httpjson, mtconnect,
+              coap, matterserver, zwavejs), code they share (common/), the runtime
+              (runtime/: deviceRuntime.js, udpTransport.js, the WebSocket client) and the
+              child-process entry (host.js)
+  services/   managers, engines, tagSources/ (tag-source adapters), iot/ (IoT over MQTT
+              conventions), codecs/ (payload codecs)
   tools/      runnable simulators for the demo stack (simulators.js)
   test/       node:test suites; test/support/ holds the device simulators
 client/   React 18 + Vite + Tailwind; design system (src/components/ui), pages,
@@ -361,6 +368,19 @@ flowchart LR
   [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md) §11.
 
 ## Alerting
+
+Rules have a **severity** (`info`, `warning`, `critical`). A firing rule (per concrete topic
+for wildcard value rules) is an **active alarm** (`GET /api/alerts/active`); an operator can
+**acknowledge** one or several (`POST /api/alerts/ack`, who and when recorded, an optional
+note). An acknowledgement holds until the alarm clears and never suppresses a later firing.
+Every firing, resolution, acknowledgement and end is appended to a durable **history**
+(`services/alertHistory.js`: `<data dir>/alerts.jsonl`, two size-capped segments,
+`MANIFOLD_ALERT_HISTORY_MAX_BYTES`, written in the background, a torn last line skipped),
+queried with cursor paging and filters or exported as CSV (`GET /api/alerts/history`).
+Alarms active when the server stopped are closed as *Ended by restart* on the next start
+and fire again from live data if the condition still holds; deleting or disabling a rule
+ends its active alarms at once. Acknowledgements and restart bookkeeping are not sent to
+webhooks.
 
 Four rule types share one engine (`server/services/alertEngine.js`), with two
 evaluation paths:
@@ -684,18 +704,43 @@ so a new subscriber replays the current status immediately.
 Manifold can act as a primary host itself: `POST /api/tags/sparkplug/state`
 starts a dedicated session that publishes retained STATE for a chosen host ID
 with a matching last-will, so edge nodes waiting on a primary host see one. A session
-records a signature of its broker's connection settings; asking for it to start again
-after the broker profile was edited reconnects with the new settings (no stop needed).
-Nothing re-checks the signature on its own, so an edit alone does not move a running
-host session.
+records a signature of its broker's connection settings. Running host and edge-node
+sessions follow edits and removals of their broker profile on their own: on a changed
+signature they publish a clean offline message (retained offline STATE, or DDEATH and
+NDEATH) on the old connection and reconnect with the new settings
+(`test/sparkplug-profile-follow.test.js`).
+
+## IoT devices over MQTT
+
+`services/iot/iotManager.js` reads the MQTT traffic of Zigbee2MQTT, Z-Wave JS UI, Home
+Assistant MQTT discovery, Tasmota, Shelly, ChirpStack and The Things Stack (one module per
+convention in `services/iot/conventions/`) from the MQTT manager's message tap and turns it
+into devices with named, typed tags (`services/iot/registry.js`). It is handed the MQTT
+manager for the tap, connection state, subscriptions and the topic store only, and never
+calls publish: nothing is sent to a bridge, gateway or device. Detection is opt-in per
+broker and convention (profile-store collection `iotDetection`); enabling a convention adds
+the subscriptions it needs and replays what the broker already delivered. Home Assistant
+value templates go through a small evaluator (`services/iot/template.js`) that executes no
+code. Bounds (`services/iot/limits.js`): devices and tags per broker
+(`MANIFOLD_IOT_MAX_DEVICES`, `MANIFOLD_IOT_MAX_TAGS`), payload size and JSON depth. The
+manager is also the binding engine's tag source `iot` (`sourceId` = `<brokerId>|<deviceId>`,
+address = tag key), with `source-state` per device from availability or the broker
+connection. Routes: `/api/iot/*`; MCP: `iot_devices`.
 
 ## Southbound device drivers
 
-Read-only polling of Modbus TCP, Siemens S7 (S7comm) and EtherNet/IP (Logix)
-devices, with tags landing in the same binding engine as OPC UA. The design is
-in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
-(status: implemented, S7 and EtherNet/IP experimental, nothing verified on real
-hardware); this section describes what exists.
+Read-only drivers for Modbus TCP, Siemens S7 (S7comm), EtherNet/IP (Logix), BACnet/IP,
+SNMP, HTTP/JSON, MTConnect and CoAP devices, and for Matter and Z-Wave networks through
+the Matter Server and Z-Wave JS Server, with tags landing in the same binding engine as
+OPC UA. The design is in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
+(status: implemented; every driver except Modbus TCP is experimental, and nothing was
+verified on real hardware); this section describes what exists. Transports: TCP
+(Modbus, S7, EtherNet/IP), UDP (BACnet/IP, SNMP, CoAP), HTTP GET (HTTP/JSON, MTConnect,
+through one shared client) and WebSocket (the two bridge servers, through a hand-written
+RFC 6455 client in the runtime). The bridge drivers are **subscription drivers**
+(`capabilities.subscribe`): they push samples between poll cycles and report a lost
+connection, while connection state, backoff and Bad-on-disconnect stay with the runtime.
+A device saved without limits runs with its driver's `describe().limits`.
 
 ```mermaid
 flowchart LR
@@ -757,8 +802,9 @@ browse?, close }`. `plan` is a pure function packing tags into requests within
 the device's limits (Modbus blocks with a default max gap of 0; S7 reads within
 the negotiated PDU, at most 20 items; CIP Multiple Service Packets);
 `execute` never throws for device or transport problems and returns per-item
-status; drivers hold exactly one connection. All three are our own
-implementations on `node:net`, with no new dependency; the EtherNet/IP
+status; drivers hold exactly one connection. All of them are our own
+implementations on Node's `net`, `dgram`, `http(s)` and `crypto` (SNMPv3 USM), with no
+new runtime dependency; the EtherNet/IP
 decision record (`drivers/eip/NOTES.md`) explains why the candidate libraries
 were rejected.
 
@@ -789,7 +835,9 @@ row fails, nothing is created and each row reports its own error. `POST
 
 **Discovery.** `services/deviceIdentify.js` holds the read-only identification
 probes the CIDR scan uses when device ports are requested (`includeDevices` or
-`modbusPorts` / `s7Ports` / `eipPorts`): one TCP connection, one request, one
+`modbusPorts` / `s7Ports` / `eipPorts`; the UDP kinds BACnet/IP, CoAP and SNMP only with
+their own `bacnetPorts` / `coapPorts` / `snmpPorts` or `include...` flag, one unicast
+exchange per host, port and kind, see `UDP_PROBES` in `services/discovery.js`). For the TCP kinds: one TCP connection, one request, one
 bounded reply (4 KB, 3 s), closed. The requests are built with the drivers' own
 frame encoders: Modbus `encodeRequest` with function 3 for one register at
 address 0, unit 1 (the encoder throws for anything but functions 1 to 4); S7
@@ -1189,7 +1237,10 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `GET` | `/api/system/discovery/results` | Candidates found by the last scan |
 | `GET` | `/api/system/config/export` | Config as code (secrets stripped; devices and profiles included) |
 | `POST` | `/api/system/config/import` | Import a config, validated whole before it is applied (merge by id) |
-| `GET` | `/api/mqtt/brokers` | List broker connections |
+| `GET` | `/api/mqtt/brokers` | List broker connections (with `posture` summary, `canaryState` and `intake`) |
+| `GET` | `/api/mqtt/presets` | Public test-broker presets for the connect form |
+| `GET` | `/api/mqtt/brokers/:brokerId/posture` | Security posture findings (read-only assessment, nothing probed) |
+| `GET` | `/api/mqtt/brokers/:brokerId/canary` | Round-trip canary status (`off` unless enabled on the broker) |
 | `POST` | `/api/mqtt/brokers` | Connect (and persist) a broker |
 | `GET` | `/api/mqtt/brokers/:brokerId` | One broker |
 | `PUT` | `/api/mqtt/brokers/:brokerId` | Edit in place (reconnects) |
@@ -1254,7 +1305,12 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `DELETE` | `/api/codecs/:id` | Delete a codec binding |
 | `POST` | `/api/codecs/test` | Decode one pasted payload; nothing stored or counted (*viewer*) |
 | `GET` | `/api/trends/export.csv` | Trends CSV export of up to 10 tags over a range, raw or bucketed, streamed |
-| `GET` | `/api/tags/sources` | What can be browsed right now (devices, OPC UA, Sparkplug, MQTT) |
+| `GET` | `/api/tags/sources` | What can be browsed right now (devices, OPC UA, Sparkplug, MQTT, IoT devices) |
+| `GET` | `/api/iot/conventions` | The IoT-over-MQTT conventions and their options |
+| `GET` | `/api/iot/brokers` | Detection status of every broker |
+| `GET` / `PUT` | `/api/iot/brokers/:brokerId` | One broker's detection settings, suggestions and counts / save them (`{ conventions: { <id>: { enabled, ...options } } }`) |
+| `GET` | `/api/iot/devices` | IoT devices (`?brokerId=&convention=&q=`) |
+| `GET` | `/api/iot/devices/:brokerId/:deviceId` | One IoT device with its tags and live values |
 | `GET` | `/api/tags/browse` | One level of children under a node (`type`, `id`, `node`) |
 | `GET` | `/api/tags/bindings` | Mappings (stored as bindings) with run-time status |
 | `POST` | `/api/tags/bindings` | Create or edit a mapping; returns it plus non-blocking `warnings` |
@@ -1367,9 +1423,12 @@ A device is stored and returned as:
 
 ```js
 {
-  id, name, enabled, protocol: 'modbus-tcp' | 's7' | 'ethernet-ip',
+  id, name, enabled,
+  protocol: 'modbus-tcp' | 's7' | 'ethernet-ip' | 'bacnet-ip' | 'snmp' | 'http-json' | 'mtconnect'
+          | 'coap' | 'matter-server' | 'zwave-js',
   host, port,                       // egress-checked on save
-  unitId | rack, slot | slot, routePath,   // protocol-specific top-level fields
+  unitId | rack, slot | slot, routePath | deviceInstance | version, community | scheme, path, authToken, ...
+                                    // protocol-specific top-level fields; secrets come back as null
   options: { byteOrder, wordOrder, addressBase, maxRegisters, maxGap, ... },  // Modbus also unmapped: [{table, from, to}] (Advanced section)
   limits:  { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 },
   pollGroups: [{ id, intervalMs }],           // intervalMs >= 100
@@ -1395,7 +1454,7 @@ uses returns 409.
 
 ## MCP tools
 
-78 tools, covering reads and mutations across the whole backend (there are no
+83 tools, covering reads and mutations across the whole backend (there are no
 device-specific tools yet; devices and profiles are managed through the REST API
 and the UI; `binding_save` accepts `device`, `device-profile`, `opcua` and `sparkplug`
 sources, with the selection rules, overrides, fields and context options passed
@@ -1415,7 +1474,8 @@ authenticated REST API (and therefore the same audit log) as the UI.
 | Models | `models_list` · `model_save` · `model_delete` |
 | Tags & bindings | `tags_sources` · `tags_browse` · `bindings_list` · `binding_save` · `binding_delete` |
 | Recorder & replay | `recorder_list` · `recorder_save` · `recorder_delete` · `recorder_data` · `replay_start` · `replay_stop` |
-| Alerts & audit | `alert_rule_save` · `alert_rule_delete` · `alert_events` · `audit_recent` |
+| Alerts & audit | `alert_rule_save` · `alert_rule_delete` · `alert_events` · `alerts_active` · `alert_history` · `audit_recent` |
+| IoT over MQTT | `iot_devices` |
 | OPC UA | `opcua_list_connections` · `opcua_connect` · `opcua_disconnect` · `opcua_browse` · `opcua_read` · `opcua_monitor` |
 | CESMII SMIP | `cesmii_status` · `cesmii_configure` · `cesmii_list_equipment` · `cesmii_list_attributes` · `cesmii_history` · `cesmii_query` |
 | i3X | `i3x_status` · `i3x_connect` · `i3x_probe` · `i3x_namespaces` · `i3x_object_types` · `i3x_graph` · `i3x_related` · `i3x_value` · `i3x_history` |
@@ -1427,7 +1487,7 @@ authenticated REST API (and therefore the same audit log) as the UI.
 each file as a child and streams results over an IPC pipe whose framing corrupts intermittently
 on CI runners ("Unable to deserialize cloned data"; observed on Node 20 and 22, including at
 concurrency 1). Direct execution produces the same TAP output and exit semantics with no IPC.
-There are 40 test files:
+There are 85 test files; the main areas:
 
 | Area | Files |
 | --- | --- |
@@ -1435,19 +1495,23 @@ There are 40 test files:
 | Transport and brokers | `integration` (in-process aedes: manager round trip, a pipeline end to end, Sparkplug NBIRTH, DBIRTH, DDATA, DDEATH and NDEATH with sequence assertions), `brokerAdmin` (fake EMQX REST), `sparkplug` |
 | DataOps | `dataops` (every transform, both loop guards, filters, spill and drain, drop policies, historian wire formats), `historian-outbox`, `historian-delete`, `route-validation`, `alerts`, `unit` (discovery CIDR maths and helpers) |
 | Mapping | `bindings-v2` (quality-aware change detection, Bad on loss, `_status`, typed Sparkplug metrics, heartbeat), `mapping-phase4` (asset paths, objects, `_meta`, profiles), `mapping-context` (selection, overrides, fields, context; compared byte for byte with `fixtures/mapping-legacy.json`), `mapping-routes`, `bindings-opcua-int` |
-| Devices | `modbus-core`, `s7-core`, `eip-core` (framing, addressing, decode golden vectors, planner, read-only allowlist), `modbus-driver`, `s7-driver`, `eip-driver` (against the simulators with fault injection; each asserts no write service was ever sent), `driver-runtime`, `driver-supervisor` (crash, hang, crash-loop parking, real `host.js`), `devices-int` (HTTP API with a real child host) |
+| Devices | `modbus-core`, `s7-core`, `eip-core`, `bacnet-core`, `snmp-core` (framing, addressing, decode golden vectors, planner, read-only allowlist), `modbus-driver`, `s7-driver`, `eip-driver`, `bacnet-driver`, `snmp-driver`, `httpjson-driver`, `mtconnect-driver`, `coap-driver`, `matterserver-driver`, `zwavejs-driver` (against the simulators with fault injection; each asserts no write-capable request was ever sent), `driver-runtime`, `driver-supervisor`, `driver-robustness`, `device-pinning`, `device-default-limits`, `ws-client`, and the HTTP-level `devices-int`, `devices-http-int`, `devices-ws-bridges-int`, `snmp-int`, `coap-int` |
+| IoT, codecs, alerts, brokers, trends | `iot-conventions`, `iot-int` (simulator traffic; nothing is published to command topics), `codecs`, `codecs-http`, `alerts-lifecycle`, `alert-state-counters`, `canary`, `posture`, `trends-export` |
+| Discovery | `discovery-scan`, `discovery-routes`, `discovery-udp`, `bacnet-discovery`, `coap-discovery`, `discovery-opcua-real` |
 | OPC UA | `opcuasec` (PKI, trust API), `opcua-reconnect` |
 | Security and platform | `auth`, `authConfig`, `rbac` (viewer allowlist), `socket` (handshake and viewer refusal), `egress`, `platform` (audit, rate limits), `configExport`, `profileStore`, `profileDurability` (crash, corrupt file, backups), `http` |
 | Real services | `services-int` (EMQX, InfluxDB, TimescaleDB, Timebase; needs `INTEGRATION=1` and the containers, run by the CI `integration` job) |
 
-The simulators (`server/test/support/modbusSimulator.js`, `s7Simulator.js`, `eipSimulator.js`)
-implement write services on purpose and count them, so tests can prove none is ever sent. They
+The simulators (`server/test/support/`: Modbus, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON,
+MTConnect, CoAP, the Matter Server and Z-Wave JS Server WebSocket APIs, and the IoT-over-MQTT
+traffic generator) implement write services (or record any command they would refuse) on purpose
+and count them, so tests can prove none is ever sent. They
 show that driver and simulator agree, not that either matches real firmware.
 `node server/tools/simulators.js` runs the same three simulators with values that change over
 time (the `docker-compose.yml` stack uses it); `docker/simulator/sim.js` publishes a plant
 namespace and Sparkplug B traffic for the demo broker.
 
-**Client unit tests** (`cd client && npm test`, Vitest, 21 files in `client/src/test/`) cover the
+**Client unit tests** (`cd client && npm test`, Vitest, 43 files in `client/src/test/`) cover the
 pure logic: topic matching, graph builders and coverage, UNS tree and helpers, payload diff,
 `canvasKit` and `canvasTheme`, chart maths, device status, tag and profile models (including the
 bulk CSV parser), the mapping model and preview model, and the Pipelines and Settings models.
@@ -1455,7 +1519,7 @@ bulk CSV parser), the mapping model and preview model, and the Pipelines and Set
 **UI end to end** (`cd client && npm run build && npm run e2e`, Playwright). Global setup starts
 an in-process MQTT broker with ticking topics, a Modbus simulator and the **real backend** on a
 random port with a throwaway `MANIFOLD_DATA_DIR` and `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, serving
-the built client. Tests that need their own devices start the S7, EtherNet/IP or Modbus
+the built client. Tests that need their own devices start the device
 simulators in-process (`e2e/support.js`), a Timebase stub, or a second backend with auth on. One
 worker, serial, deterministic. Three projects (`playwright.config.js`):
 

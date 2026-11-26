@@ -13,6 +13,17 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 const { buildUnsTree, levelName, DEFAULT_LEVELS } = await import('@/graph/UnsTopology');
+const { liveSelection } = await import('@/graph/unsTree');
+
+describe('liveSelection', () => {
+  it('reads the selected node from the rebuilt tree, not the object kept at selection time', () => {
+    const kept = { id: 'bk1:acme/boiler-1', topicCount: 3 };
+    const fresh = { id: 'bk1:acme/boiler-1', topicCount: 7 };
+    expect(liveSelection(kept, new Map([[fresh.id, fresh]]))).toBe(fresh);
+    expect(liveSelection(kept, new Map())).toBe(kept);
+    expect(liveSelection(null, new Map([[fresh.id, fresh]]))).toBe(null);
+  });
+});
 
 const broker = { id: 'bk1', name: 'plant broker', host: 'h', port: 1883 };
 

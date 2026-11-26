@@ -113,11 +113,14 @@ still press **Connect**.
 - The `$SYS` subscription is quiet: public brokers often refuse it, and that is not an error.
 - Presets go through the normal add path, so adding the same one twice is refused like any duplicate. The
   host names are public, so they pass the [egress guard](Operations#network-safety-egress-guard).
-- The ports come from the operators' documented defaults. Only the entries that are well established are
-  listed (EMQX 1883 and 8883, HiveMQ 1883, Mosquitto 1883). Their other TLS and WebSocket ports are not
-  listed because they could not be confirmed here; connect to them with the normal form.
+- **The host names and ports were written from memory**, not checked against the operators' current
+  documentation (`broker.emqx.io` 1883 and 8883, `broker.hivemq.com` 1883, `test.mosquitto.org` 1883;
+  `server/services/brokerPresets.js`). Only these well-known entries are listed; the operators' other TLS
+  and WebSocket ports are not. If a preset does not connect, check the operator's page and use the normal form.
 
 ## Broker canary (opt-in round-trip probe)
+
+![The broker details drawer of the demo plant broker: subscription granted, the canary OK with its latency and success rate, and the security findings with what to change](images/broker-details.png)
 
 A connected session does not prove that the broker delivers. The canary does:
 

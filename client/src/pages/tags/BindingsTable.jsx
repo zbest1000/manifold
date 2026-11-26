@@ -6,22 +6,12 @@ import { nextSort, sortRows } from '@/lib/sortRows';
 import BindingDetail from './BindingDetail';
 import { READ_ONLY_REASON } from '@/store/selectors';
 import { MiniSwitch } from './editor/parts';
-import { layoutLabel, instanceCount } from './bindingView';
+import { layoutLabel, instanceCount, sourceLabel } from './bindingView';
+
+export { sourceLabel };
 import { HEALTH_LABEL, HEALTH_TONE, HEALTH_RANK, healthFallback } from './bindingHealthView';
 
 const SOURCE_TYPE = { device: 'Device', 'device-profile': 'Profile', opcua: 'OPC UA', sparkplug: 'Sparkplug', mqtt: 'MQTT' };
-
-export function sourceLabel(b, sources, profiles = []) {
-  const s = b.source || {};
-  if (s.type === 'device-profile') {
-    const p = profiles.find((x) => x.id === s.profileId);
-    return { type: 'profile', label: p ? p.name : s.profileId || '?', connected: Boolean(p) };
-  }
-  const id = s.type === 'opcua' ? s.connectionId : s.type === 'sparkplug' || s.type === 'mqtt' ? s.brokerId : s.deviceId ?? s.connectionId;
-  const found = sources.find((x) => x.type === s.type && x.id === id);
-  const scope = s.type === 'sparkplug' ? ` ${s.group}/${s.edge}${s.device ? `/${s.device}` : ''}` : s.type === 'mqtt' && s.tags === 'all' ? ` ${s.filter}` : '';
-  return { type: s.type, label: `${found?.label || id || '?'}${scope}`, connected: Boolean(found) };
-}
 
 export function targetLabel(b) {
   const t = b.target || {};

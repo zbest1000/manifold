@@ -7,7 +7,7 @@ import HostStatePanel from './HostStatePanel';
 import TagPath from './TagPath';
 import { shortLabels } from './tagPath';
 import { HEALTH_TONE, HEALTH_LABEL } from './bindingHealthView';
-import { sourceKey } from './helpers';
+import { sourceKey, labelInSentence } from './helpers';
 import { defaultFilter } from './mqttModel';
 
 /**
@@ -121,7 +121,7 @@ export default function MapWorkspace({ page, selection, setSelection, onToggle, 
             flush
           >
             {selection.size === 0 ? (
-              <p className="px-4 py-3 text-sm text-muted">Tick tags in the tree, or use Select all on a folder, then {addLabel.toLowerCase()}.</p>
+              <p className="px-4 py-3 text-sm text-muted">Tick tags in the tree, or use Select all on a folder, then {labelInSentence(addLabel)}.</p>
             ) : (
               <ul className="max-h-60 divide-y divide-line overflow-y-auto" aria-labelledby="selection-heading">
                 {list.map((t) => (
