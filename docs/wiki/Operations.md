@@ -148,7 +148,9 @@ What the guard covers, and how strongly:
 | **Device drivers** (Modbus, S7, EtherNet/IP) | checked when a device is saved, tested or started. A hostname is resolved and validated in the server process; the validated address is passed to the driver host, which connects to **that address** (the hostname stays for display), so there is no re-resolution window. The name is re-resolved whenever a driver host restarts and every 30 s for running devices; if it now resolves to a blocked address the device goes offline with that reason instead of connecting. **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
 
 **Not covered:** MQTT broker hosts, OPC UA endpoints, and historian / database
-URLs are **not** checked. They are connections an admin configures by hand, and
+URLs are **not** checked. (The public test-broker presets in the connect form only fill the
+form: they are public host names, so they would pass the guard, and a preset added twice is refused by
+the usual duplicate-broker rule.) They are connections an admin configures by hand, and
 an admin can point them anywhere the server can reach. Treat admin tokens
 accordingly, and use network policy for these.
 
@@ -198,6 +200,8 @@ With auth enabled `/metrics` returns 401 without a token; set
 | `manifold_process_cpu_seconds_total` (`mode` user/system) | process CPU time; `rate()` gives utilisation, 1.0 = one core |
 | `manifold_host_load_average` (`period` 1m/5m/15m), `manifold_host_cpus`, `manifold_host_memory_bytes` (`kind` total/free) | the host or container the server runs on |
 | `manifold_broker_messages_received_total`, `manifold_broker_topics` | per-broker ingest |
+| `manifold_broker_canary_state` (`state` ok/slow/failing/not-permitted/pending/unknown, 1 for the current one), `manifold_broker_canary_success_ratio`, `manifold_broker_canary_latency_ms` (`quantile` 0.5/0.95), `manifold_broker_canary_last_success_age_seconds`, `manifold_broker_canary_probes_total` | the opt-in [broker canary](Broker-Setup#broker-canary-opt-in-round-trip-probe); only brokers that turned it on appear |
+| `manifold_broker_posture_findings` (`severity` high/medium/low/info) | security findings per broker, see [Security posture](Broker-Setup#security-posture) |
 | `manifold_pipeline_messages_total` | per-route pipeline counters, `result` = `matched`, `delivered`, `error`, `loop_blocked` |
 | `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; spill size |
 | `manifold_recorder_points_total` | points per recording |
@@ -274,6 +278,18 @@ Rules fire on transitions (firing → resolved) and can POST each event to a
 webhook (5 s timeout). Webhook delivery failures are counted and the last
 error is shown with the rules — a dead webhook is visible, not silent. Recent
 events show in **Settings → Alert rules**. Each rule shows the engine's own state: *Idle*, *Breached* (the condition holds but `sustainMs` has not elapsed; a countdown shows the time left), *Firing*, *Disabled* or *Broken* (it references a broker that no longer exists), plus the current value, when the state began, the last transition and webhook health. `GET /api/alerts/rules` returns it as `state` on every rule (never the webhook URL for a viewer), `GET /api/alerts/events?ruleId=` returns one rule's recent events, and changes stream as `alert-state` on the socket.
+
+## Broker health in operation
+
+Two optional read-outs per MQTT broker, both described in [Broker setup](Broker-Setup):
+
+- **Canary.** Alert on `manifold_broker_canary_state{state="failing"} == 1` (probes are not coming back
+  although the session is connected) and watch `manifold_broker_canary_latency_ms{quantile="0.95"}`.
+  `not-permitted` means an ACL refusal, not an outage. The canary **publishes** to the broker, so it is
+  off until someone turns it on per broker. Its traffic is kept out of the topic tree, the UNS,
+  recordings, pipelines, mappings and the broker message counters.
+- **Security posture.** `manifold_broker_posture_findings{severity="high"} > 0` is worth a ticket. The
+  assessment reads settings and the live session only; it adds no traffic.
 
 ## Concurrent edits, duplicates and references
 

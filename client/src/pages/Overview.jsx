@@ -11,6 +11,7 @@ import { deviceBadge } from '@/lib/deviceStatus';
 import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import { engineAttention, recordPending } from '@/lib/attention';
+import { canaryAttention } from '@/lib/brokerHealth';
 
 /**
  * Overview: the dashboard pattern (docs/design/ui-design-system.md#dashboard).
@@ -215,6 +216,7 @@ export default function Overview() {
   for (const b of brokers) {
     if (b.status !== 'connected') issues.push({ key: `b-${b.id}`, tone: brokerTone(b) === 'neutral' ? 'warn' : brokerTone(b), what: b.name, detail: `MQTT broker ${b.status}${b.lastError ? `: ${b.lastError}` : ''}`, to: '/brokers' });
   }
+  issues.push(...canaryAttention(brokers));
   for (const c of opcua) {
     if (c.status !== 'connected') issues.push({ key: `o-${c.id}`, tone: toneOf(c.status) === 'warn' ? 'warn' : 'bad', what: c.name, detail: `OPC UA server ${c.status}`, to: '/opcua' });
   }

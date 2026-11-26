@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Broker canary (opt-in).** A per-broker round-trip probe: Manifold publishes a small, never-retained message
+  to a canary topic (default `manifold/canary/<id>`, QoS configurable), receives it through its own subscription
+  and measures publish-to-deliver latency. Success rate, p50/p95 and time since the last success over a rolling
+  window; states ok, slow, failing and not permitted (the broker refused the canary subscribe or publish, and the
+  details say which). **Off by default and the form says it publishes.** Shown in the broker list and a new broker
+  details drawer, in `/metrics` (`manifold_broker_canary_*`), in Overview "Needs attention" when failing or not
+  permitted, and by the MCP tool `mqtt_broker_canary`. Canary traffic is taken out before the topic store, so it
+  never reaches the topic tree, UNS, recordings, pipelines, mappings, alerts or message counters. It follows broker
+  edits and is removed with the broker.
+- **Security posture per broker.** A read-only assessment from what Manifold already knows (nothing is probed):
+  TLS and certificate verification, certificate days left, anonymous or authenticated, password over plaintext, a
+  root wildcard subscription, MQTT version, client-id collisions and reconnect storms, `$SYS` readable. Findings
+  are listed worst first with severity, an explanation and what to change; no score. A compact summary in the
+  broker list, details in the broker drawer, `GET /api/mqtt/brokers/:id/posture`, `manifold_broker_posture_findings`
+  in `/metrics`, and the MCP tool `mqtt_broker_posture`.
+- **Public test-broker presets** in "Connect a broker" (EMQX public with and without TLS, HiveMQ public, Mosquitto
+  test) with a plain warning that they are public. They subscribe to `testtopic/#`, not `#`. When a broker's ACL
+  refuses a root wildcard, the intake now falls back `#` to `+/#` to `+/+/#` and reports what was granted (log,
+  toast, the Subscription column and the details). `mqtt_list_brokers` carries `posture`, `canaryState` and
+  `intake`; new MCP tool `mqtt_broker_presets`.
+
+### Changed
+
+- The `$SYS/#` subscription no longer reports a refusal as an error (public and managed brokers commonly refuse it).
+
 ### Fixed
 
 - **OPC UA library updated to 2.187** (was held at 2.182). Newer servers answer an untrusted client certificate

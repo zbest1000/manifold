@@ -3,6 +3,8 @@ const router = express.Router();
 const { redactSecrets } = require('../services/secrets');
 const { expectedRev, handleRevisionError } = require('../services/revision');
 const { usersOfBroker } = require('../services/references');
+const { validateCanaryConfig } = require('../services/brokerCanary');
+const { presetList } = require('../services/brokerPresets');
 
 const BROKER_PROTOCOLS = ['mqtt', 'mqtts', 'ws', 'wss'];
 
@@ -28,7 +30,7 @@ function validateBrokerConfig(body) {
   if (body.subscribeFilter !== undefined && (typeof body.subscribeFilter !== 'string' || body.subscribeFilter.length === 0)) {
     return 'subscribeFilter must be a non-empty topic filter';
   }
-  return null;
+  return validateCanaryConfig(body.canary);
 }
 
 // MQTT 5 publish properties: { userProperties?: {k: v strings}, contentType?,
@@ -59,7 +61,20 @@ function validatePublishProperties(properties) {
 // GET /api/mqtt/brokers — list connections
 router.get('/brokers', (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
-  res.json({ brokers: mqttManager.getConnections().map((b) => ({ ...b, rev: profiles?.getBroker?.(b.id)?.rev || 0 })) });
+  res.json({
+    brokers: mqttManager.getConnections().map((b) => ({
+      ...b,
+      rev: profiles?.getBroker?.(b.id)?.rev || 0,
+      // Compact security summary and canary state for the list; the detail endpoints carry the rest.
+      posture: mqttManager.getPosture(b.id)?.summary || null,
+      canaryState: mqttManager.canary.summary(b.id)
+    }))
+  });
+});
+
+// GET /api/mqtt/presets: well-known public test brokers the connect form can fill in.
+router.get('/presets', (req, res) => {
+  res.json({ presets: presetList() });
 });
 
 // What a broker looks like to a client: the stored config with credentials masked, plus its
@@ -168,6 +183,23 @@ router.delete('/brokers/:brokerId', (req, res) => {
   } catch (error) {
     res.status(404).json({ error: error.message });
   }
+});
+
+// GET /api/mqtt/brokers/:brokerId/posture: read-only security assessment from what Manifold already
+// knows about the connection (nothing is probed): findings worst first, plus the facts they rest on.
+router.get('/brokers/:brokerId/posture', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const posture = mqttManager.getPosture(req.params.brokerId);
+  if (!posture) return res.status(404).json({ error: 'Broker not found' });
+  res.json({ brokerId: req.params.brokerId, ...posture });
+});
+
+// GET /api/mqtt/brokers/:brokerId/canary: round-trip probe status (state "off" when the canary is not enabled).
+router.get('/brokers/:brokerId/canary', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const status = mqttManager.getCanary(req.params.brokerId);
+  if (!status) return res.status(404).json({ error: 'Broker not found' });
+  res.json({ brokerId: req.params.brokerId, ...status });
 });
 
 // GET /api/mqtt/brokers/:brokerId/topics?limit=100000

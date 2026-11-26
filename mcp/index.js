@@ -148,11 +148,50 @@ server.tool(
 // ---------------------------------------------------------------------------
 server.tool(
   'mqtt_list_brokers',
-  'List all MQTT broker connections with their status and metrics.',
+  'List all MQTT broker connections with their status and metrics. Each broker also carries `posture` (counts of security findings by severity and the worst one; details via mqtt_broker_posture), `canaryState` (state of the opt-in round-trip canary, null when it is off; details via mqtt_broker_canary) and `intake` (the subscription filter requested and the one the broker actually granted).',
   {},
   async () => {
     try {
       return ok(await api('/api/mqtt/brokers'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_posture',
+  'Read-only security assessment of one broker connection, built from what Manifold already knows (nothing is probed): TLS and certificate verification, certificate days left, anonymous or authenticated, password over plaintext, wildcard root subscription, MQTT version, client-id collisions / reconnect storms, $SYS readable. Findings are listed worst first with severity (high, medium, low, info), an explanation and what to change.',
+  { brokerId: z.string() },
+  async ({ brokerId }) => {
+    try {
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/posture`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_canary',
+  'Status of the opt-in broker canary for one broker: state (off, unknown, pending, ok, slow, failing, not-permitted with `refused` = publish or subscribe), success rate, p50/p95 publish-to-deliver latency and time since the last success over a rolling window. The canary publishes a small non-retained message to its own topic (default manifold/canary/<id>) and is off unless enabled in the broker settings; this tool only reads it.',
+  { brokerId: z.string() },
+  async ({ brokerId }) => {
+    try {
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/canary`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_presets',
+  'Well-known public MQTT test brokers (host, port, TLS). Anything published to them is visible to everyone: never use them with plant data. Pass a preset to mqtt_connect to add one.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/mqtt/presets'));
     } catch (error) {
       return fail(error);
     }

@@ -186,7 +186,7 @@ Point any MCP client at `mcp/index.js` with the backend running:
 }
 ```
 
-75 tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, CESMII, and i3X; `binding_save` accepts device, device-profile, OPC UA and Sparkplug sources, but there are no device or profile management tools yet. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
+78 tools cover MQTT, UNS, DataOps (including saves/deletes for every engine), OPC UA, CESMII, and i3X; `binding_save` accepts device, device-profile, OPC UA and Sparkplug sources, but there are no device or profile management tools yet. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
 
 ## Testing
 

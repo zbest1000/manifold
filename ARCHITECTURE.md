@@ -1379,7 +1379,7 @@ uses returns 409.
 
 ## MCP tools
 
-75 tools, covering reads and mutations across the whole backend (there are no
+78 tools, covering reads and mutations across the whole backend (there are no
 device-specific tools yet; devices and profiles are managed through the REST API
 and the UI; `binding_save` accepts `device`, `device-profile`, `opcua` and `sparkplug`
 sources, with the selection rules, overrides, fields and context options passed
@@ -1390,7 +1390,7 @@ authenticated REST API (and therefore the same audit log) as the UI.
 | Group | Tools |
 | --- | --- |
 | System & config | `system_status` · `discover_scan` · `discover_results` · `discovery_stop` · `config_export` · `config_import` |
-| MQTT | `mqtt_list_brokers` · `mqtt_connect` · `mqtt_disconnect` · `mqtt_list_topics` · `mqtt_get_messages` · `mqtt_sparkplug_topology` · `mqtt_sys_stats` · `mqtt_resolve_subscriptions` · `mqtt_topic_tree` · `mqtt_admin_pubsub` · `mqtt_subscribe` · `mqtt_publish` |
+| MQTT | `mqtt_list_brokers` · `mqtt_connect` · `mqtt_disconnect` · `mqtt_list_topics` · `mqtt_get_messages` · `mqtt_sparkplug_topology` · `mqtt_sys_stats` · `mqtt_broker_posture` · `mqtt_broker_canary` · `mqtt_broker_presets` · `mqtt_resolve_subscriptions` · `mqtt_topic_tree` · `mqtt_admin_pubsub` · `mqtt_subscribe` · `mqtt_publish` |
 | UNS | `uns_tree` · `uns_lint` · `uns_events` · `mount_save` · `mount_delete` |
 | Pipelines | `pipelines_list` · `pipeline_preview` · `pipeline_save` · `pipeline_delete` |
 | Historians | `historians_list` · `historian_save` · `historian_delete` · `historian_test` |

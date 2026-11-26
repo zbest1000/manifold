@@ -1,5 +1,7 @@
 // "Needs attention" on the Overview (pure, unit tested in src/test/attention.test.js).
 //
+// Broker canary items come from brokerHealth.canaryAttention.
+//
 // Each item: { key, tone: 'bad' | 'warn', what, detail, to } where `to` is the place to fix it.
 // Nothing is returned when all is well.
 

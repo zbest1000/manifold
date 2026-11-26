@@ -250,6 +250,9 @@ export const api = {
   i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // In-place edits (disconnect → upsert same id → reconnect on the server)
+  brokerPosture: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/posture`),
+  brokerCanary: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/canary`),
+  brokerPresets: () => request('/api/mqtt/presets'),
   getBroker: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}`),
   updateBroker: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),
