@@ -6,7 +6,9 @@ export const SCAN_PROTOCOLS = [
   { id: 'modbus-tcp', kind: 'modbus', label: 'Modbus TCP', field: 'modbusPorts', port: 502 },
   { id: 's7', kind: 's7', label: 'Siemens S7', field: 's7Ports', port: 102 },
   { id: 'ethernet-ip', kind: 'ethernet-ip', label: 'EtherNet/IP', field: 'eipPorts', port: 44818 },
-  { id: 'bacnet-ip', kind: 'bacnet', label: 'BACnet/IP', field: 'bacnetPorts', port: 47808 }
+  { id: 'bacnet-ip', kind: 'bacnet', label: 'BACnet/IP', field: 'bacnetPorts', port: 47808 },
+  { id: 'coap', kind: 'coap', label: 'CoAP (UDP)', field: 'coapPorts', port: 5683 },
+  { id: 'snmp', kind: 'snmp', label: 'SNMP (UDP)', field: 'snmpPorts', port: 161 }
 ];
 
 /** Parse "502, 1502" -> { ports: [502, 1502], bad: [] }; invalid entries are returned in `bad`. */
@@ -90,6 +92,18 @@ export function identityText(r) {
     ].filter(Boolean);
     return bits.join(' · ');
   }
+  if (r?.protocol === 'coap') {
+    const bits = [];
+    if (id.resourceCount !== undefined) bits.push(`${id.resourceCount}${id.partial ? '+' : ''} resource${id.resourceCount === 1 && !id.partial ? '' : 's'}`);
+    if (id.observableCount) bits.push(`${id.observableCount} observable`);
+    if (id.resources?.length) bits.push(id.resources.slice(0, 3).join(', '));
+    if (id.note) bits.push(id.note.replace(/\.$/, ''));
+    return `CoAP server${bits.length ? ` · ${bits.join(' · ')}` : ''}`;
+  }
+  if (r?.protocol === 'snmp') {
+    const bits = [id.sysName, id.sysDescr && id.sysDescr.split(/[\r\n]/)[0], id.sysObjectID && `object ${id.sysObjectID}`].filter(Boolean);
+    return `${bits.join(' · ') || 'SNMP agent'} (v2c, community public)`;
+  }
   if (r?.kind === 'mqtt') {
     if (!r.verified) return 'Port open, but it did not answer an MQTT CONNECT';
     return id.anonymousAccess ? 'Anonymous access allowed' : 'Authentication required';
@@ -112,6 +126,7 @@ export function draftFromResult(r) {
   if (s.protocol === 's7' && id.rack !== undefined) Object.assign(draft, { rack: id.rack, slot: id.slot });
   if (s.protocol === 'modbus-tcp' && id.unitId !== undefined) draft.unitId = id.unitId;
   if (s.protocol === 'bacnet-ip' && Number.isInteger(s.deviceInstance ?? id.deviceInstance)) draft.deviceInstance = s.deviceInstance ?? id.deviceInstance;
+  if (s.protocol === 'snmp') draft.version = '2c';
   return draft;
 }
 
@@ -146,7 +161,9 @@ export const SCAN_KINDS = [
   { id: 'modbus', field: 'modbusPorts', label: 'Modbus TCP', ports: [502], device: true },
   { id: 's7', field: 's7Ports', label: 'Siemens S7', ports: [102], device: true },
   { id: 'ethernet-ip', field: 'eipPorts', label: 'EtherNet/IP', ports: [44818], device: true },
-  { id: 'bacnet', field: 'bacnetPorts', label: 'BACnet/IP (UDP)', ports: [47808], device: true }
+  { id: 'bacnet', field: 'bacnetPorts', label: 'BACnet/IP (UDP)', ports: [47808], device: true },
+  { id: 'coap', field: 'coapPorts', label: 'CoAP (UDP)', ports: [5683], device: true },
+  { id: 'snmp', field: 'snmpPorts', label: 'SNMP agents (UDP, community "public")', ports: [161], device: true }
 ];
 export const DEVICE_KIND_IDS = SCAN_KINDS.filter((k) => k.device).map((k) => k.id);
 

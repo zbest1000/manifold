@@ -58,6 +58,21 @@ describe('validation summaries', () => {
   it('s7', () => {
     expect(summarizeNormalized('s7', { address: 'DB10.DBD0', area: 'DB', areaCode: 0x84, db: 10, byteOffset: 0, type: 'REAL', length: 4 })).toBe('DB10.DBD0 · DB10 byte 0 · REAL, 4 bytes');
   });
+  it('coap tags read as a GET with an optional selector, observe and type', () => {
+    expect(summarizeNormalized('coap', { key: 'a', address: '/s/t', uri: '/s/t', observe: false })).toBe('GET /s/t');
+    expect(summarizeNormalized('coap', { key: 'a', address: 'observe:/s?x=1#v.a', uri: '/s?x=1', selector: 'v.a', observe: true, type: 'number' })).toBe('GET /s?x=1 · value at v.a · observe · number');
+  });
+  it('browse nodes that carry a unit bring it into the tag row', () => {
+    const coap = { id: 'coap', tagTypes: ['number', 'bool', 'string'], tagTypeOptional: true, deviceFields: [], optionFields: [] };
+    let n = 0;
+    const rows = nodesToTags([{ id: 'val:/s#t', name: 't', kind: 'tag', address: '/s#t', meta: { dataType: 'number', unit: 'Cel' } }, { id: 'val:/s#u', name: 'u', kind: 'tag', address: '/s#u', meta: {} }], { descriptor: coap, existing: [], pollGroup: 'default', makeId: () => `id${n++}` });
+    expect(rows[0].unit).toBe('Cel');
+    expect('unit' in rows[1]).toBe(false);
+  });
+  it('a driver that declares limits sets the new device defaults', () => {
+    const coap = { id: 'coap', defaultPort: 5683, deviceFields: [], optionFields: [], limits: { requestDeadlineMs: 10000, connectTimeoutMs: 8000 } };
+    expect(blankDevice(coap).limits).toEqual({ requestDeadlineMs: 10000, connectTimeoutMs: 8000, interRequestDelayMs: 0 });
+  });
   it('ethernet-ip with and without a type', () => {
     expect(summarizeNormalized('ethernet-ip', { key: 'a', address: 'Motor.Speed' })).toContain('read from the controller');
     expect(summarizeNormalized('ethernet-ip', { key: 'a', address: 'X', type: 'DINT' })).toBe('X · DINT');

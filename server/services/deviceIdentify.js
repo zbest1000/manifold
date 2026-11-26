@@ -11,6 +11,10 @@ const bacnetFrame = require('../drivers/bacnet/frame');
 const { BacnetClient } = require('../drivers/bacnet/client');
 const { WILDCARD_INSTANCE } = require('../drivers/bacnet/encoding');
 const { SEGMENTATION } = require('../drivers/bacnet/enums');
+const { CoapUdpSocket } = require('../drivers/coap/coapUdp');
+const { CoapClient } = require('../drivers/coap/client');
+const coapLinks = require('../drivers/coap/linkformat');
+const coapMsg = require('../drivers/coap/message');
 
 /**
  * Read-only identification probes for the Discovery CIDR scan. A probe opens one
@@ -40,6 +44,11 @@ const { SEGMENTATION } = require('../drivers/bacnet/enums');
  *    identifies the device; its device object is then read (object-name, vendor-name, model-name,
  *    vendor-identifier, firmware-revision) with ReadPropertyMultiple, or ReadProperty when RPM is
  *    rejected. Frames come from the BACnet driver's read-only encoder; nothing is broadcast.
+ *  - CoAP (UDP, opt-in): ONE unicast confirmable GET /.well-known/core to the address, with a single
+ *    retransmission. Any well-formed CoAP response proves a CoAP server (even 4.04: not every device
+ *    publishes a listing); a 2.05 link-format body adds the resource count and the first few paths.
+ *    No multicast, no broadcast, nothing but that GET. The UDP socket goes through the same egress
+ *    policy as every device target.
  *  - OPC UA: the UA-TCP Hello message (connection level, before any secure channel or
  *    session); an Acknowledge or Error reply identifies an OPC UA server.
  *
@@ -354,6 +363,47 @@ async function identifyEip(host, port = 44818, { timeoutMs = IDENTIFY_TIMEOUT_MS
   return r || null;
 }
 
+// ---- CoAP ------------------------------------------------------------------------------
+
+/** CoAP: one GET /.well-known/core. Resolves null when nothing answers like CoAP. */
+async function identifyCoap(host, port = 5683, { timeoutMs = IDENTIFY_TIMEOUT_MS, signal } = {}) {
+  if (signal && signal.aborted) return null;
+  const socket = new CoapUdpSocket({ address: host, port });
+  let client = null;
+  let onAbort = null;
+  try {
+    await socket.open();
+    const ack = Math.max(150, Math.floor(timeoutMs / 4));
+    client = new CoapClient({ socket, ackTimeoutMs: ack, ackRandomFactor: 1, maxRetransmit: 1, blockSize: 256, maxResponseBytes: 65536, closeGraceMs: 0 });
+    const aborted = new Promise((resolve) => {
+      onAbort = () => resolve(null);
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+    // One exchange: a single GET, no Block2 follow-up. A long listing is read from its first datagram only.
+    const r = await Promise.race([client.exchange({ path: ['.well-known', 'core'], query: [], accept: 40 }, Date.now() + timeoutMs), aborted]);
+    if (!r || !r.ok || !r.msg) return null;
+    const m = r.msg;
+    const identity = { code: coapMsg.codeLabel(m.code) };
+    if (coapMsg.codeClass(m.code) === 2 && [40, undefined].includes(coapMsg.optionUint(m, coapMsg.OPT.CONTENT_FORMAT))) {
+      const { links } = coapLinks.parse(m.payload.toString('utf8'));
+      const resources = links.filter((l) => l.path !== '/.well-known/core');
+      identity.resourceCount = resources.length;
+      identity.observableCount = resources.filter((l) => l.obs).length;
+      identity.resources = resources.slice(0, 8).map((l) => l.path);
+      if (coapMsg.option(m, coapMsg.OPT.BLOCK2)) identity.partial = true; // the listing continues in further blocks that a scan does not fetch
+    } else {
+      identity.note = 'Answered, but without a resource listing.';
+    }
+    return { protocol: 'coap', verified: true, method: 'well-known-core', identity };
+  } catch {
+    return null; // refused by the egress policy, unreachable, or not an address
+  } finally {
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    if (client) await client.close().catch(() => {});
+    else await socket.close().catch(() => {});
+  }
+}
+
 // ---- OPC UA ----------------------------------------------------------------------------
 
 function encodeOpcuaHello(endpointUrl) {
@@ -484,6 +534,7 @@ module.exports = {
   identifyBacnet,
   identifyS7,
   identifyEip,
+  identifyCoap,
   identifyOpcua,
   parseListIdentity,
   encodeReadDeviceId,

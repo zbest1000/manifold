@@ -28,6 +28,7 @@ function describe() {
   return {
     protocol,
     label: 'EtherNet/IP (Logix)',
+    browseNoun: 'controller',
     experimental: true,
     readOnly: true,
     capabilities: { browse: true, subscribe: false, maxInFlight: 1 },

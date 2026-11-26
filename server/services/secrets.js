@@ -8,10 +8,11 @@
  * Matches (case-insensitive, by key name): pass/passphrase/password, token,
  * secret, key (apiKey, privateKey, ...), credential(s), cert/certificate,
  * authorization, anything containing "webhook" (webhookUrl: its URL path is the
- * secret for Slack/Teams-style hooks), plus the exact names `ca` and `pfx`
- * (TLS material). Add new credential-bearing field names HERE.
+ * secret for Slack/Teams-style hooks), "community" (SNMP v1/v2c community
+ * strings), plus the exact names `ca` and `pfx` (TLS material). Add new
+ * credential-bearing field names HERE.
  */
-const SECRET_KEY_RE = /pass|token|secret|key|credential|cert|authorization|webhook|^ca$|^pfx$/i;
+const SECRET_KEY_RE = /pass|token|secret|key|credential|cert|authorization|webhook|community|^ca$|^pfx$/i;
 
 const isSecretKey = (k) => SECRET_KEY_RE.test(String(k));
 

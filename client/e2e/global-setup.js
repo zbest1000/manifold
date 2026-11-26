@@ -98,9 +98,13 @@ export default async function globalSetup() {
     })
   );
   const port = Number(process.env.E2E_PORT) || (await freePort());
+  // MANIFOLD_RATE_MAX: the general API limit (600 requests a minute per address) is a per-client backstop.
+  // Here every test's browser, page polling and REST helper share ONE address and run back to back, so the
+  // whole suite counts as one client; with the device and codec specs the minute before Discovery went over
+  // 600 and a scan was refused with 429. The limit itself is not what these tests check.
   const backend = spawn(process.execPath, ['index.js'], {
     cwd: serverDir,
-    env: { ...process.env, PORT: String(port), MANIFOLD_DATA_DIR: dataDir, MANIFOLD_ALLOW_LOOPBACK_DEVICES: '1', MANIFOLD_AUTH_TOKEN: '' },
+    env: { ...process.env, PORT: String(port), MANIFOLD_DATA_DIR: dataDir, MANIFOLD_ALLOW_LOOPBACK_DEVICES: '1', MANIFOLD_AUTH_TOKEN: '', MANIFOLD_RATE_MAX: '6000' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let log = '';

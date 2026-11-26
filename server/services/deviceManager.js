@@ -38,7 +38,12 @@ const DRIVER_MODULES = {
   'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js'),
   'http-json': path.join(__dirname, '..', 'drivers', 'httpjson', 'index.js'),
   mtconnect: path.join(__dirname, '..', 'drivers', 'mtconnect', 'index.js'),
-  'bacnet-ip': path.join(__dirname, '..', 'drivers', 'bacnet', 'index.js')
+  'bacnet-ip': path.join(__dirname, '..', 'drivers', 'bacnet', 'index.js'),
+  coap: path.join(__dirname, '..', 'drivers', 'coap', 'index.js'),
+  snmp: path.join(__dirname, '..', 'drivers', 'snmp', 'index.js'),
+  // WebSocket bridge drivers (subscription; see drivers/common/wsClient.js)
+  'matter-server': path.join(__dirname, '..', 'drivers', 'matterserver', 'index.js'),
+  'zwave-js': path.join(__dirname, '..', 'drivers', 'zwavejs', 'index.js')
 };
 
 const MAX_TAGS_PER_DEVICE = 20000;
@@ -55,6 +60,17 @@ const REBIND_CHECK_MS = 30_000;
 
 // Fields the store or the main process own; they never come from a client and never reach a driver.
 const BOOKKEEPING_KEYS = ['rev', 'updatedAt', 'pinned'];
+/**
+ * `limits` with every unset field (absent, null or '') taken from the driver's descriptor
+ * (`describe().limits`). Fields the device sets are kept as they are; the driver validates them.
+ */
+function withDefaultLimits(desc, limits) {
+  const own = limits && typeof limits === 'object' && !Array.isArray(limits) ? limits : {};
+  const out = { ...(desc && desc.limits && typeof desc.limits === 'object' ? desc.limits : {}) };
+  for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && v !== '') out[k] = v;
+  return out;
+}
+
 function runtimeDevice(device) {
   const { rev: _r, updatedAt: _u, pinned: _p, ...rest } = device;
   return rest;
@@ -119,17 +135,20 @@ function checkPollGroups(input) {
   return pollGroups;
 }
 
-// Device fields a driver declares secret (`describe().secretFields`: passwords, tokens). They are
-// stored with the device, never returned by the API (a placeholder says one is set), kept when an
-// edit leaves them blank or sends the placeholder back, and dropped when the driver says they are
-// not in use (`activeSecretFields`, e.g. a token left over after switching to basic authentication).
-const SECRET_PLACEHOLDER = '********';
+// Device secrets (HTTP passwords and tokens, SNMP community and v3 passwords, ...), ONE rule for
+// every driver: a secret is a descriptor field of type `password` (plus any name a driver lists in
+// `describe().secretFields`). It is stored with the device and passed to the driver process, but
+// every answer of this manager carries a stored secret as `null` (no secret stored: the field is
+// absent), so list/save/bulk/instantiate and the 409 conflict body never contain one. An edit that
+// leaves a secret absent, null or blank keeps the stored value (same protocol only), and a secret
+// the driver says is not in use (`activeSecretFields`, e.g. a token left over after switching to
+// basic authentication, or a community after switching to SNMPv3) is dropped.
 const hasValue = (v) => v !== undefined && v !== null && v !== '';
 
 function maskSecrets(device, fields) {
   if (!fields.length) return device;
   const out = { ...device };
-  for (const f of fields) if (hasValue(out[f])) out[f] = SECRET_PLACEHOLDER;
+  for (const f of fields) if (hasValue(out[f])) out[f] = null;
   return out;
 }
 
@@ -268,7 +287,8 @@ class DeviceManager extends EventEmitter {
    * that is unreachable must not shadow a working IPv4 one. A literal IP carries no pin.
    */
   _pinned(device, addresses) {
-    const base = runtimeDevice(device);
+    // A device stored before its driver declared limits still runs with the driver's defaults.
+    const base = runtimeDevice({ ...device, limits: withDefaultLimits(this.drivers[device.protocol]?.mod?.describe?.(), device.limits) });
     if (!Array.isArray(addresses) || !addresses.length || net.isIP(String(device.host))) {
       this._pins.delete(device.id);
       return base;
@@ -333,17 +353,21 @@ class DeviceManager extends EventEmitter {
   _secretFields(protocol) {
     const mod = this.drivers[protocol]?.mod;
     const d = mod && mod.describe ? mod.describe() : {};
-    return Array.isArray(d.secretFields) ? d.secretFields : [];
+    const out = new Set(Array.isArray(d.secretFields) ? d.secretFields : []);
+    // Top-level device fields only: that is where credentials live (options hold protocol tuning).
+    for (const f of d.deviceFields || []) if (f && f.type === 'password') out.add(f.name ?? f.key);
+    return [...out];
   }
 
-  /** An edit that leaves a secret blank (or sends the placeholder back) keeps the stored one. */
+  /** An edit that leaves a secret absent, null or blank keeps the stored one; never across a protocol change. */
   _keepStoredSecrets(input, id) {
     const d = input || {};
     const stored = id ? this.profiles.getIn('devices', id) : null;
-    const fields = this._secretFields(d.protocol || stored?.protocol);
-    if (!stored || !fields.length) return d;
+    if (!stored || (d.protocol !== undefined && d.protocol !== stored.protocol)) return d;
+    const fields = this._secretFields(stored.protocol);
+    if (!fields.length) return d;
     const out = { ...d };
-    for (const f of fields) if ((!hasValue(out[f]) || out[f] === SECRET_PLACEHOLDER) && hasValue(stored[f])) out[f] = stored[f];
+    for (const f of fields) if (!hasValue(out[f]) && hasValue(stored[f])) out[f] = stored[f];
     return out;
   }
 
@@ -431,6 +455,9 @@ class DeviceManager extends EventEmitter {
     if (d.name !== undefined && d.name !== null && hasUnsafeNameChar(String(d.name))) {
       throw new DeviceValidationError('name must not contain control or text-direction override characters');
     }
+    // A driver may explain a refused host form better than the generic rule (CoAP: coaps:// is not supported).
+    const hostProblem = typeof d.host === 'string' && typeof driver.mod.checkHost === 'function' ? driver.mod.checkHost(d.host) : null;
+    if (hostProblem) throw new DeviceValidationError(hostProblem);
     if (typeof d.host !== 'string' || !d.host.trim() || /[\s/]/.test(d.host)) {
       throw new DeviceValidationError('host is required (hostname or IP address, no scheme)');
     }
@@ -460,7 +487,9 @@ class DeviceManager extends EventEmitter {
       host: d.host.trim(),
       port,
       options,
-      limits: d.limits && typeof d.limits === 'object' ? d.limits : {},
+      // Unset limits take the driver's declared defaults (a CoAP retransmission or a BACnet APDU
+      // timeout x retries needs longer than the runtime's generic request deadline).
+      limits: withDefaultLimits(desc, d.limits),
       pollGroups,
       tags
     };
@@ -708,7 +737,7 @@ class DeviceManager extends EventEmitter {
       throw error;
     }
     await this.apply();
-    return stored;
+    return stored.map((d) => this._maskDevice(d));
   }
 
   async remove(id) {

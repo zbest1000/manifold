@@ -54,8 +54,8 @@ Protocol id `http-json`. Code: `index.js` (device, tags, execution), `selector.j
   device), which would silently turn a pin into "accept anything".
 - **Authentication**: none, basic, bearer, or one custom header. Stored with the device under
   `authPassword`, `authToken`, `authHeaderSecret`; those names match the shared credential pattern, so the
-  audit log and config export redact them. The device API returns `********` in their place and an edit
-  that leaves them blank or sends the placeholder back keeps the stored value. A secret the chosen
+  audit log and config export redact them. The device API returns `null` in their place (one rule for every driver) and an edit
+  that leaves them out, blank or `null` keeps the stored value. A secret the chosen
   authentication does not use is dropped on save. Credentials are sent only to the device's own host.
 - **Keep-alive**: one socket (`maxSockets: 1`), reused between polls; `options.keepAlive: false` sends
   `Connection: close`.

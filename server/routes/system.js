@@ -67,7 +67,7 @@ router.post('/discovery/plan', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {
     const p = await discovery.plan(req.body || {});
-    res.json({ range: p.range, resolvedFrom: p.resolvedFrom, hosts: p.hosts.length, totalProbes: p.totalProbes, ports: p.ports, settings: p.settings, estimate: p.estimate, skipped: p.skipped, notes: p.notes });
+    res.json({ range: p.range, resolvedFrom: p.resolvedFrom, hosts: p.hosts.length, totalProbes: p.totalProbes, ports: p.ports, tcpPorts: p.tcpPorts, udpPorts: p.udpPorts, settings: p.settings, estimate: p.estimate, skipped: p.skipped, notes: p.notes });
   } catch (error) {
     // ?soft=1: the page asks for a plan on every edit, and a refused range is an expected answer there, not a
     // failed request (it would otherwise show up as a console error in the browser). 200 with `refused`.
@@ -82,7 +82,9 @@ router.post('/discovery/plan', async (req, res) => {
 });
 
 // POST /api/system/discovery/start { range, includeDevices, mqttPorts, opcuaPorts, i3xPorts, modbusPorts,
-//   s7Ports, eipPorts, bacnetPorts, mqttWsPorts, concurrency, perHost, timeoutMs, identifyTimeoutMs }
+//   s7Ports, eipPorts, mqttWsPorts, bacnetPorts / includeBacnet, coapPorts / includeCoap,
+//   snmpPorts / includeSnmp (UDP kinds, each opt-in on its own),
+//   concurrency, perHost, timeoutMs, identifyTimeoutMs }
 router.post('/discovery/start', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {

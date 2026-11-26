@@ -32,6 +32,7 @@ function describe() {
   return {
     protocol,
     label: 'Modbus TCP',
+    browseNoun: 'device', // no tag list to browse; the noun keeps shared copy right
     readOnly: true,
     defaultPort: 502,
     defaultUnitId: 255,

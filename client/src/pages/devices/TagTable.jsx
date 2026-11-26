@@ -30,6 +30,8 @@ const EXTRA_HEAD = {
   bit: ['Bit', 'min-w-[4rem]'],
   byteOrder: ['Byte order', 'min-w-[7.5rem]'],
   wordOrder: ['Word order', 'min-w-[7.5rem]'],
+  encoding: ['Text encoding', 'min-w-[7rem]'],
+  rate: ['Rate /s', 'min-w-[4rem]'],
   description: ['Description', 'min-w-[10rem]']
 };
 const TH = 'h-8 whitespace-nowrap px-1.5 text-left align-middle text-xs font-medium text-muted';

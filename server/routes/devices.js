@@ -3,11 +3,14 @@ const router = express.Router();
 const { DeviceValidationError, DeviceConflictError } = require('../services/deviceManager');
 const { expectedRev, handleRevisionError } = require('../services/revision');
 
-// Southbound devices (Modbus TCP, S7, EtherNet/IP): CRUD, device profiles
+// Southbound devices (every registered driver): CRUD, device profiles
 // and instances, connection test, tag validation, commissioning probe and
 // latest values. Drivers are read-only; no route here can write to a device.
 // GET /api/devices returns each device's EFFECTIVE tags (profile tags marked
 // origin:'profile' + ad-hoc tags) plus profileId/params/ownTags.
+// Device secrets (password-type descriptor fields) are handled by DeviceManager
+// for every route here: a stored secret is answered as null, an edit that
+// leaves it absent/null/blank keeps it (see the comment above maskSecrets).
 
 function fail(res, error) {
   if (error instanceof DeviceValidationError) {

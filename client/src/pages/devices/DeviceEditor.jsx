@@ -16,7 +16,7 @@ import ConnectionTest from './ConnectionTest';
 import ProfileInstanceSection from './ProfileInstanceSection';
 import { useTagValidation, useDeviceValues } from './hooks';
 import { localTagErrors, ORDER_CODES } from '@/lib/deviceTags';
-import { blankDevice, toPayload, applyPreset, presetActive, browseBlockedReason, DEFAULT_LIMITS } from './model';
+import { blankDevice, toPayload, applyPreset, presetActive, browseBlockedReason, DEFAULT_LIMITS, splitUrlHost } from './model';
 import { mergeGroups } from './profileModel';
 import { previewInstance } from '@/lib/deviceProfiles';
 
@@ -248,7 +248,26 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
 
                 <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
                   <FormField label="Host" error={fieldErrs.host} className="lg:col-span-2">
-                    {(a) => <Input {...a} className="mono" value={draft.host} onChange={(e) => setField('host', e.target.value)} placeholder="192.168.1.20" />}
+                    {(a) => (
+                      <Input
+                        {...a}
+                        className="mono"
+                        value={draft.host}
+                        onChange={(e) => setField('host', e.target.value)}
+                        // A URL-based driver accepts a whole URL here: pasting or leaving the field splits it into scheme, host, port and path.
+                        onPaste={(e) => {
+                          const parts = splitUrlHost(e.clipboardData?.getData('text'), descriptor);
+                          if (!parts) return;
+                          e.preventDefault();
+                          setDraft((d) => ({ ...d, ...parts }));
+                        }}
+                        onBlur={() => {
+                          const parts = splitUrlHost(draft.host, descriptor);
+                          if (parts) setDraft((d) => ({ ...d, ...parts }));
+                        }}
+                        placeholder={descriptor.deviceFields?.some((f) => f.name === 'scheme') ? 'meter.local, or paste a URL' : '192.168.1.20'}
+                      />
+                    )}
                   </FormField>
                   <FormField label="Port" error={fieldErrs.port}>
                     {(a) => <Input {...a} className="mono" type="number" min={1} max={65535} value={draft.port} onChange={(e) => setField('port', e.target.value === '' ? '' : Number(e.target.value))} />}

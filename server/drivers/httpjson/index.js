@@ -12,6 +12,7 @@
  */
 
 const { activeSecretFields, HttpClient, HttpError, normalizeConnection, checkRequestPath, DEFAULT_MAX_BYTES } = require('../common/httpClient');
+const { urlFields } = require('../common/urlTarget');
 const { parseSelector, evaluate, flatten, SelectorError } = require('./selector');
 const { assertAllowedDeviceTarget } = require('../../services/egressGuard');
 
@@ -27,6 +28,9 @@ const PROBE_LEAVES = 100;
 const isInt = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
 
 /** @returns {object} static driver description for the UI and registry */
+// The URL parts (scheme, path, TLS) with the names every URL driver shares; see common/urlTarget.js.
+const URL_FIELDS = urlFields({ schemes: ['http', 'https'], secure: 'https', schemeHelp: 'https usually means port 443.', path: { optional: true, placeholder: '/api/v1', help: 'Prefix added to every tag path. Leave empty when the API is at the root.' } });
+
 function describe() {
   return {
     protocol,
@@ -42,17 +46,15 @@ function describe() {
     capabilities: { browse: true, subscribe: false, maxInFlight: 1 },
     secretFields: ['authPassword', 'authToken', 'authHeaderSecret'],
     deviceFields: [
-      { name: 'scheme', label: 'Scheme', type: 'select', default: 'http', options: ['http', 'https'], help: 'https usually means port 443.' },
-      { name: 'basePath', label: 'Base path', type: 'string', optional: true, placeholder: '/api/v1', help: 'Prefix added to every tag path. Leave empty when the API is at the root.' },
+      URL_FIELDS.scheme,
+      URL_FIELDS.path,
       { name: 'authType', label: 'Authentication', type: 'select', default: 'none', options: ['none', 'basic', 'bearer', 'header'], help: 'Credentials are stored with the device, hidden in the API and in exports, and sent only to this host.' },
-      { name: 'authUsername', showWhen: { name: 'authType', in: ['basic'] }, label: 'User name', type: 'string', optional: true, help: 'Basic authentication.' },
-      { name: 'authPassword', showWhen: { name: 'authType', in: ['basic'] }, label: 'Password', type: 'password', optional: true, help: 'Basic authentication. Leave blank when editing to keep the stored value.' },
-      { name: 'authToken', showWhen: { name: 'authType', in: ['bearer'] }, label: 'Bearer token', type: 'password', optional: true, help: 'Sent as "Authorization: Bearer". Leave blank when editing to keep the stored value.' },
-      { name: 'authHeaderName', showWhen: { name: 'authType', in: ['header'] }, label: 'Header name', type: 'string', optional: true, placeholder: 'X-Api-Key', help: 'Custom header authentication.' },
-      { name: 'authHeaderSecret', showWhen: { name: 'authType', in: ['header'] }, label: 'Header value', type: 'password', optional: true, help: 'Custom header authentication. Leave blank when editing to keep the stored value.' },
-      { name: 'tlsInsecure', showWhen: { name: 'scheme', in: ['https'] }, label: 'Do not verify the TLS certificate', type: 'boolean', default: false, help: 'Accepts any certificate, so the connection can be intercepted. Prefer a CA or fingerprint below.' },
-      { name: 'tlsCa', showWhen: { name: 'scheme', in: ['https'] }, label: 'CA certificate (PEM)', type: 'string', optional: true, help: 'Trust this CA in addition to the system roots, for a device with a private CA.' },
-      { name: 'tlsFingerprint256', showWhen: { name: 'scheme', in: ['https'] }, label: 'Pinned certificate fingerprint (SHA-256)', type: 'string', optional: true, help: 'Accept only the certificate with this fingerprint (for a self-signed device). Replaces chain validation.' }
+      { name: 'authUsername', showWhen: { authType: ['basic'] }, label: 'User name', type: 'string', optional: true, help: 'Basic authentication.' },
+      { name: 'authPassword', showWhen: { authType: ['basic'] }, label: 'Password', type: 'password', optional: true, help: 'Basic authentication. Leave blank when editing to keep the stored value.' },
+      { name: 'authToken', showWhen: { authType: ['bearer'] }, label: 'Bearer token', type: 'password', optional: true, help: 'Sent as "Authorization: Bearer". Leave blank when editing to keep the stored value.' },
+      { name: 'authHeaderName', showWhen: { authType: ['header'] }, label: 'Header name', type: 'string', optional: true, placeholder: 'X-Api-Key', help: 'Custom header authentication.' },
+      { name: 'authHeaderSecret', showWhen: { authType: ['header'] }, label: 'Header value', type: 'password', optional: true, help: 'Custom header authentication. Leave blank when editing to keep the stored value.' },
+      ...URL_FIELDS.tls
     ],
     optionFields: [
       { name: 'maxResponseBytes', label: 'Max response size (bytes)', type: 'number', default: DEFAULT_MAX_BYTES, help: 'A longer response is aborted and its tags go Bad.' },

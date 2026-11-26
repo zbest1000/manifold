@@ -21,7 +21,7 @@ function Overview({ device, st, view, host, issues, profile, protocolLabel, desc
   const params = Object.entries(profile ? resolveParams(profile, device.params).values : device.params || {});
   const limits = device.limits || {};
   const connection = [
-    ['Endpoint', <span key="e" className="mono text-xs">{device.scheme ? `${device.scheme}://${device.host}:${device.port}${device.basePath || ''}` : `${device.host}:${device.port}`}</span>],
+    ['Endpoint', <span key="e" className="mono text-xs">{device.scheme ? `${device.scheme}://${device.host}:${device.port}${device.path || ''}` : `${device.host}:${device.port}`}</span>],
     ['Protocol', protocolLabel],
     device.unitId !== undefined && ['Unit id', <span key="u" className="tabular-nums">{device.unitId}</span>],
     device.rack !== undefined && device.slot !== undefined && ['Rack / slot', <span key="r" className="tabular-nums">{device.rack} / {device.slot}</span>],

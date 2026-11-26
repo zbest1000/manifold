@@ -20,6 +20,7 @@ const https = require('https');
 const tls = require('tls');
 const net = require('net');
 const { connectAddress } = require('../runtime/pinnedAddress');
+const { hasControl, checkRequestPath, normalizePrefixPath, normalizePem, tlsSettings, bearerHeaders, fingerprintProblem } = require('./urlTarget');
 
 const MAX_REDIRECTS = 3;
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -35,53 +36,13 @@ class HttpError extends Error {
 }
 
 const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-function hasControl(text) {
-  for (const ch of String(text)) {
-    const c = ch.codePointAt(0);
-    if (c < 0x20 || c === 0x7f) return true;
-  }
-  return false;
-}
-
-/** A request target must stay on the device: origin-form only, no scheme, no fragment, no control characters. */
-function checkRequestPath(p) {
-  if (typeof p !== 'string' || !p.startsWith('/')) return 'path must start with "/"';
-  if (p.startsWith('//')) return 'path must not start with "//"';
-  if (/[\s\\#]/.test(p) || hasControl(p)) return 'path must not contain spaces, backslashes, "#" or control characters';
-  if (/^\/[^?]*:\/\//.test(p) || /(^|\/)\.\.(\/|\?|$)/.test(p)) return 'path must not contain "://" or ".." segments';
-  return null;
-}
-
-function normalizeBasePath(base) {
-  const b = String(base ?? '').trim();
-  if (!b || b === '/') return '';
-  const withSlash = b.startsWith('/') ? b : `/${b}`;
-  return withSlash.replace(/\/+$/, '');
-}
-
-function normalizeFingerprint(fp) {
-  return String(fp || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
-}
-
-/** A PEM pasted into a single-line field loses its newlines: re-wrap the base64 bodies. */
-function normalizePem(text) {
-  const s = String(text || '').trim();
-  if (!s) return undefined;
-  const out = [];
-  const re = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/g;
-  let m;
-  while ((m = re.exec(s))) {
-    const body = m[2].replace(/\s+/g, '');
-    if (!/^[A-Za-z0-9+/=]+$/.test(body)) return null;
-    out.push(`-----BEGIN ${m[1]}-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`);
-  }
-  return out.length ? out.join('') : null;
-}
+const normalizeBasePath = normalizePrefixPath;
 
 /**
- * Validate the connection fields shared by URL-based devices. Returns { errors, value }.
- * `device` carries scheme, basePath, auth*, tls* (flat names; the secret ones match the
- * credential-name pattern the config export and audit log redact by).
+ * Validate the connection fields shared by URL-based devices (see ./urlTarget.js for the one field
+ * model: scheme, path, authToken, tlsInsecure, tlsCa, tlsFingerprint256). Returns { errors, value }.
+ * HTTP adds authType with basic (authUsername/authPassword) and one custom header
+ * (authHeaderName/authHeaderSecret); the secret ones are `password` fields.
  */
 function normalizeConnection(device) {
   const errors = [];
@@ -97,8 +58,8 @@ function normalizeConnection(device) {
     auth.password = typeof device.authPassword === 'string' ? device.authPassword : '';
     if (hasControl(auth.password)) errors.push('authPassword must not contain control characters');
   } else if (authType === 'bearer') {
-    if (typeof device.authToken !== 'string' || !device.authToken) errors.push('authToken is required for bearer authentication');
-    else if (hasControl(device.authToken)) errors.push('authToken must not contain control characters');
+    const b = bearerHeaders(device.authToken, { required: true });
+    errors.push(...b.errors);
     auth.token = device.authToken;
   } else if (authType === 'header') {
     if (typeof device.authHeaderName !== 'string' || !HEADER_NAME_RE.test(device.authHeaderName)) errors.push('authHeaderName must be a valid HTTP header name');
@@ -108,27 +69,17 @@ function normalizeConnection(device) {
     auth.headerName = device.authHeaderName;
     auth.headerValue = device.authHeaderSecret;
   }
-  const basePath = normalizeBasePath(device.basePath);
+  // `path` is a prefix in front of every request path (empty = the API is at the root).
+  const basePath = normalizePrefixPath(device.path);
   if (basePath) {
     const why = checkRequestPath(basePath);
-    if (why) errors.push(`basePath: ${why}`);
-  }
-  const tls = { insecure: Boolean(device.tlsInsecure), ca: undefined, fingerprint: undefined };
-  if (device.tlsCa !== undefined && device.tlsCa !== '' && device.tlsCa !== null) {
-    const pem = normalizePem(device.tlsCa);
-    if (!pem) errors.push('tlsCa must contain a PEM certificate (-----BEGIN CERTIFICATE-----)');
-    else tls.ca = pem;
-  }
-  if (device.tlsFingerprint256 !== undefined && device.tlsFingerprint256 !== '' && device.tlsFingerprint256 !== null) {
-    const fp = normalizeFingerprint(device.tlsFingerprint256);
-    if (fp.length !== 64) errors.push('tlsFingerprint256 must be a SHA-256 fingerprint (64 hexadecimal digits, colons optional)');
-    else tls.fingerprint = fp;
+    if (why) errors.push(`path: ${why}`);
   }
   // TLS settings are meaningless on plain http: ignored, not an error (the form hides them for http).
-  if (scheme === 'http') Object.assign(tls, { insecure: false, ca: undefined, fingerprint: undefined });
-  return { errors, value: { scheme, auth, basePath, tls } };
+  const t = tlsSettings(device, scheme === 'https');
+  errors.push(...t.errors);
+  return { errors, value: { scheme, auth, basePath, tls: t.tls } };
 }
-
 /** The secret fields the chosen authentication actually uses; the rest are not kept. */
 function activeSecretFields(device) {
   const t = device && device.authType;
@@ -210,10 +161,8 @@ class HttpClient {
       };
       const sock = tls.connect(options);
       sock.once('secureConnect', () => {
-        const cert = sock.getPeerCertificate();
-        const got = normalizeFingerprint(cert && cert.fingerprint256);
-        if (got !== want) {
-          const err = new Error(`server certificate fingerprint ${got || 'unknown'} does not match the pinned fingerprint`);
+        const err = fingerprintProblem(sock, want);
+        if (err) {
           sock.destroy();
           finish(err);
         } else finish(null, sock);

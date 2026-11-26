@@ -15,10 +15,14 @@ export const TAG_COLUMNS = [
   'length',
   'bit',
   'byteOrder',
-  'wordOrder'
+  'wordOrder',
+  'encoding',
+  'rate'
 ];
 
 const NUMERIC = new Set(['length', 'bit', 'scale', 'offset']);
+// Yes/no columns (SNMP counter rate): "true", "yes", "1" and "x" mean true.
+const BOOLEAN = new Set(['rate']);
 const ALIASES = {
   tag: 'key',
   name: 'key',
@@ -110,6 +114,7 @@ function headerMap(cells) {
 function coerce(col, raw) {
   const v = raw.trim();
   if (v === '') return undefined;
+  if (BOOLEAN.has(col)) return /^(true|yes|y|1|x)$/i.test(v);
   if (NUMERIC.has(col)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : v; // keep junk visible so validation flags it
@@ -147,6 +152,10 @@ export function cleanTag(tag) {
   for (const c of TAG_COLUMNS) {
     const v = tag[c];
     if (v === undefined || v === null || v === '') continue;
+    if (BOOLEAN.has(c)) {
+      if (v === true || v === 'true') out[c] = true;
+      continue;
+    }
     out[c] = NUMERIC.has(c) && typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : v;
   }
   return out;

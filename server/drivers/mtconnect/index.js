@@ -17,6 +17,7 @@
  */
 
 const { activeSecretFields, HttpClient, HttpError, normalizeConnection, checkRequestPath, DEFAULT_MAX_BYTES } = require('../common/httpClient');
+const { urlFields } = require('../common/urlTarget');
 const { parseDocument, parseProbe, parseObservations, XmlError } = require('./document');
 const { assertAllowedDeviceTarget } = require('../../services/egressGuard');
 
@@ -41,6 +42,9 @@ class AgentError extends Error {
   }
 }
 
+// The URL parts (scheme, path, TLS) with the names every URL driver shares; see common/urlTarget.js.
+const URL_FIELDS = urlFields({ schemes: ['http', 'https'], secure: 'https', schemeHelp: 'Agents usually listen on plain http, port 5000.', path: { optional: true, placeholder: '/mtc', help: 'Prefix in front of /probe, /current and /sample, for an agent behind a reverse proxy.' } });
+
 function describe() {
   return {
     protocol,
@@ -56,17 +60,15 @@ function describe() {
     capabilities: { browse: true, subscribe: false, maxInFlight: 1 },
     secretFields: ['authPassword', 'authToken', 'authHeaderSecret'],
     deviceFields: [
-      { name: 'scheme', label: 'Scheme', type: 'select', default: 'http', options: ['http', 'https'], help: 'Agents usually listen on plain http, port 5000.' },
-      { name: 'basePath', label: 'Base path', type: 'string', optional: true, placeholder: '/mtc', help: 'Prefix in front of /probe, /current and /sample, for an agent behind a reverse proxy.' },
+      URL_FIELDS.scheme,
+      URL_FIELDS.path,
       { name: 'authType', label: 'Authentication', type: 'select', default: 'none', options: ['none', 'basic', 'bearer', 'header'], help: 'Most agents have none; use it for an agent behind an authenticating proxy.' },
-      { name: 'authUsername', showWhen: { name: 'authType', in: ['basic'] }, label: 'User name', type: 'string', optional: true, help: 'Basic authentication.' },
-      { name: 'authPassword', showWhen: { name: 'authType', in: ['basic'] }, label: 'Password', type: 'password', optional: true, help: 'Basic authentication. Leave blank when editing to keep the stored value.' },
-      { name: 'authToken', showWhen: { name: 'authType', in: ['bearer'] }, label: 'Bearer token', type: 'password', optional: true, help: 'Leave blank when editing to keep the stored value.' },
-      { name: 'authHeaderName', showWhen: { name: 'authType', in: ['header'] }, label: 'Header name', type: 'string', optional: true, placeholder: 'X-Api-Key', help: 'Custom header authentication.' },
-      { name: 'authHeaderSecret', showWhen: { name: 'authType', in: ['header'] }, label: 'Header value', type: 'password', optional: true, help: 'Leave blank when editing to keep the stored value.' },
-      { name: 'tlsInsecure', showWhen: { name: 'scheme', in: ['https'] }, label: 'Do not verify the TLS certificate', type: 'boolean', default: false, help: 'Accepts any certificate. Prefer a CA or fingerprint below.' },
-      { name: 'tlsCa', showWhen: { name: 'scheme', in: ['https'] }, label: 'CA certificate (PEM)', type: 'string', optional: true, help: 'Trust this CA in addition to the system roots.' },
-      { name: 'tlsFingerprint256', showWhen: { name: 'scheme', in: ['https'] }, label: 'Pinned certificate fingerprint (SHA-256)', type: 'string', optional: true, help: 'Accept only the certificate with this fingerprint. Replaces chain validation.' }
+      { name: 'authUsername', showWhen: { authType: ['basic'] }, label: 'User name', type: 'string', optional: true, help: 'Basic authentication.' },
+      { name: 'authPassword', showWhen: { authType: ['basic'] }, label: 'Password', type: 'password', optional: true, help: 'Basic authentication. Leave blank when editing to keep the stored value.' },
+      { name: 'authToken', showWhen: { authType: ['bearer'] }, label: 'Bearer token', type: 'password', optional: true, help: 'Leave blank when editing to keep the stored value.' },
+      { name: 'authHeaderName', showWhen: { authType: ['header'] }, label: 'Header name', type: 'string', optional: true, placeholder: 'X-Api-Key', help: 'Custom header authentication.' },
+      { name: 'authHeaderSecret', showWhen: { authType: ['header'] }, label: 'Header value', type: 'password', optional: true, help: 'Leave blank when editing to keep the stored value.' },
+      ...URL_FIELDS.tls
     ],
     optionFields: [
       { name: 'device', label: 'Device (name or uuid)', type: 'string', optional: true, placeholder: 'all devices', help: 'Read one device (/<device>/current) instead of every device the agent serves.' },

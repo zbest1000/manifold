@@ -65,7 +65,7 @@ test('HTTP/JSON device with bearer authentication: live values, secret never sho
     await page.getByLabel('Authentication', { exact: true }).selectOption('bearer');
     await page.getByLabel('Bearer token').fill('e2e-secret-token');
     await expect(page.getByLabel('Bearer token')).toHaveAttribute('type', 'password');
-    await page.getByLabel('Base path').fill('/api');
+    await page.getByLabel('Path (optional)', { exact: true }).fill('/api');
 
     await page.getByRole('button', { name: 'Add tag' }).click();
     await page.getByLabel('Key, row 1').fill('power');
@@ -89,7 +89,7 @@ test('HTTP/JSON device with bearer authentication: live values, secret never sho
 
     // The API never returns the token; the stored device still has it.
     const stored = await deviceByName(name);
-    expect(stored.authToken).toBe('********');
+    expect(stored.authToken).toBeNull();
     expect(JSON.stringify(stored)).not.toContain('e2e-secret-token');
 
     // Everything the server sent to the simulator was a GET.
@@ -109,7 +109,7 @@ test('HTTP/JSON device: a bad HTTP status shows as Bad with its reason', async (
   try {
     await openAddDevice(page);
     await fillConnection(page, { name, port: device.port, protocol: 'http-json' });
-    await page.getByLabel('Base path').fill('/api');
+    await page.getByLabel('Path (optional)', { exact: true }).fill('/api');
 
     await page.getByRole('button', { name: 'Add tag' }).click();
     await page.getByLabel('Key, row 1').fill('good');

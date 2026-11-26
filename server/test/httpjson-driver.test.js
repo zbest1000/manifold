@@ -105,7 +105,7 @@ test('createDriver rejects bad device config with per-field details', () => {
   bad({ authType: 'bearer', authToken: 'a\r\nX-Evil: 1' }, /control characters/);
   bad({ scheme: 'https', tlsFingerprint256: 'abc' }, /fingerprint/);
   bad({ scheme: 'https', tlsCa: 'not a pem' }, /PEM/);
-  bad({ basePath: '/a b' }, /basePath/);
+  bad({ path: '/a b' }, /path:/);
   bad({ options: { maxResponseBytes: 10 } }, /maxResponseBytes/);
   bad({ options: { testPath: 'x' } }, /testPath/);
   bad({ tags: [T('a', '/x#$.a'), T('a', '/x#$.b')] }, /duplicate/);
@@ -386,7 +386,7 @@ test('requests carry no Accept-Encoding other than identity and a plain user age
 });
 
 test('base path is prefixed; keep-alive reuses one connection, and can be turned off', async () => {
-  const { sim, drv } = await setup({ docs: { '/api/v1/meter': METER }, device: { basePath: 'api/v1/', tags: [T('t', '/meter#$.power.total')] } });
+  const { sim, drv } = await setup({ docs: { '/api/v1/meter': METER }, device: { path: 'api/v1/', tags: [T('t', '/meter#$.power.total')] } });
   await drv.connect();
   sim.clearRequests();
   for (let i = 0; i < 5; i++) assert.equal((await readAll(drv)).t.v, 12.5);

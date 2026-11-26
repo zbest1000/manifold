@@ -46,9 +46,9 @@ test('BACnet/IP device: live values with quality, then import a point from the o
     await expect(liveCell(drawer, 'fan')).toHaveText(/true/i);
 
     // Import from the device's object list: types are folders, objects carry their object-name.
-    await drawer.getByRole('button', { name: 'Import from controller' }).click();
+    await drawer.getByRole('button', { name: 'Import from device' }).click();
     const browse = page.getByRole('dialog', { name: /Import tags from/ });
-    const tree = browse.getByRole('tree', { name: 'Controller tags' });
+    const tree = browse.getByRole('tree', { name: 'Device tags' });
     const folder = tree.getByRole('treeitem', { name: /analog-input \(2\)/ });
     await expect(folder).toBeVisible();
     await folder.focus();

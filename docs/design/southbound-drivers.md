@@ -417,6 +417,17 @@ Design points
 - Whole-UDT reads are preferred over member-by-member reads when several
   members of one instance are mapped.
 
+### 5.3a CoAP (UDP, experimental)
+
+Own client on `node:dgram`, read-only by construction (the codec can only build GET and empty messages; the
+socket re-checks every datagram). The runtime is TCP-shaped, so the UDP additions stay inside the driver:
+one socket per device, connected to the pinned address, destination passed through the device egress policy,
+unicast only. A timeout (no datagram at all after the RFC retransmissions) is a fatal result so the runtime
+shows the device offline and reconnects; 4.xx/5.xx and decode problems are per-tag Bad quality. Observe needs
+no push path in the runtime: observed tags are served from the notification cache by `execute()`, and the
+client re-registers on Max-Age expiry or after a Reset. DTLS is out of scope (no built-in DTLS in Node).
+Details and limits: `server/drivers/coap/NOTES.md`.
+
 ### 5.4 Order of delivery
 
 Modbus TCP → S7 → EtherNet/IP. Modbus proves the runtime with the simplest

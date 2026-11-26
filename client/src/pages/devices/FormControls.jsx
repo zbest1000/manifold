@@ -47,8 +47,13 @@ export function FormSection({ title, hint, children, className }) {
 const optValue = (o) => (typeof o === 'object' ? o.value : o);
 const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 
-/** Renders one protocol-descriptor field (number | select | text | password | boolean). */
+/**
+ * Renders one protocol-descriptor field (number | select | text | password | boolean).
+ * A password field never shows a stored value: the server sends it as null, the input
+ * stays empty, and leaving it empty keeps what is stored.
+ */
 export function DescriptorField({ field, value, onChange, error, disabled }) {
+  if (field.type === 'password') return <SecretField field={field} value={value} onChange={onChange} error={error} disabled={disabled} />;
   const v = value ?? field.default ?? '';
   const label = `${field.label || field.name}${field.optional ? ' (optional)' : ''}`;
   if (field.type === 'boolean') {
@@ -87,28 +92,57 @@ export function DescriptorField({ field, value, onChange, error, disabled }) {
   );
 }
 
+function SecretField({ field, value, onChange, error, disabled }) {
+  const stored = value === null; // the server has one; it is never sent to the browser
+  return (
+    <FormField label={field.label || field.name} help={field.help} error={error}>
+      {(a) => (
+        <Input
+          {...a}
+          type="password"
+          autoComplete="new-password"
+          spellCheck={false}
+          disabled={disabled}
+          placeholder={stored ? 'stored, leave blank to keep' : field.placeholder ?? (field.optional ? 'not set' : undefined)}
+          value={typeof value === 'string' ? value : ''}
+          onChange={(e) => onChange(e.target.value === '' && stored ? null : e.target.value)}
+        />
+      )}
+    </FormField>
+  );
+}
+
+/** A field with `showWhen: { other: [values] }` is only shown (and sent) while every listed field has one of its values. */
+export function fieldVisible(field, values) {
+  const when = field?.showWhen;
+  if (!when) return true;
+  return Object.entries(when).every(([name, allowed]) => {
+    const v = values?.[name];
+    return allowed.map(String).includes(String(v === undefined || v === null || v === '' ? '' : v));
+  });
+}
+
 // Select option values are strings in the DOM; give back the original type (0|1 vs 'big').
 function coerceSelect(field, raw) {
   const match = (field.options || []).find((o) => String(optValue(o)) === raw);
   return match === undefined ? raw : optValue(match);
 }
 
-// A field with `showWhen: { name, in: [...] }` is shown only while another field has one of those values
-// (the HTTP drivers show the user name only for basic authentication, for example).
-const shown = (f, values) => {
-  const w = f.showWhen;
-  if (!w) return true;
-  const v = values?.[w.name];
-  return (w.in || []).includes(v);
-};
-
-/** A grid of descriptor fields writing into `values`. */
-export function DescriptorFields({ fields, values, onChange, errors = {}, disabled, siblings }) {
-  if (!fields?.length) return null;
-  const lookup = { ...Object.fromEntries((siblings || fields).filter((f) => f.default !== undefined).map((f) => [f.name, f.default])), ...values };
+/**
+ * A grid of descriptor fields writing into `values`. A field with `showWhen` is shown only while its
+ * conditions hold (fieldVisible); a condition reads the current value, or the field's default while
+ * none is set. `visibleWith` / `siblings` supply the values and fields a condition refers to when they
+ * live outside this grid.
+ */
+export function DescriptorFields({ fields, values, onChange, errors = {}, disabled, siblings, visibleWith }) {
+  const set = Object.entries(visibleWith || values || {}).filter(([, v]) => v !== undefined);
+  const defaults = (siblings || fields || []).filter((f) => f.default !== undefined).map((f) => [f.name, f.default]);
+  const lookup = { ...Object.fromEntries(defaults), ...Object.fromEntries(set) };
+  const shown = (fields || []).filter((f) => fieldVisible(f, lookup));
+  if (!shown.length) return null;
   return (
     <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-      {fields.filter((f) => shown(f, lookup)).map((f) => (
+      {shown.map((f) => (
         <DescriptorField key={f.name} field={f} value={values?.[f.name]} onChange={(v) => onChange(f.name, v)} error={errors[f.name]} disabled={disabled} />
       ))}
     </div>

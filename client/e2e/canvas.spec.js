@@ -261,9 +261,12 @@ test('Topics graph: dragging a node moves the node, dragging empty canvas pans t
   await page.mouse.move(box.x + node.sx, box.y + node.sy);
   await page.mouse.down();
   for (let i = 1; i <= 8; i++) await page.mouse.move(box.x + node.sx + i * 10, box.y + node.sy);
-  const during = await page.evaluate((id) => window.__manifoldTest.graph2d.nodes().find((n) => n.id === id), node.id);
+  // The node's screen position is refreshed on the next animation frame; on a loaded machine that frame can
+  // come after the last mouse move, so wait for it (pointer still down) instead of reading a stale position.
+  await expect
+    .poll(() => page.evaluate((id) => window.__manifoldTest.graph2d.nodes().find((n) => n.id === id).sx, node.id), { message: 'node follows the drag' })
+    .toBeGreaterThan(node.sx + 40);
   await page.mouse.up();
-  expect(during.sx - node.sx, 'node follows the drag').toBeGreaterThan(40);
   const afterNodeDrag = await page.evaluate(() => ({ ...window.__manifoldTest.graph2d.transform }));
   expect(afterNodeDrag.x).toBeCloseTo(before.x, 0);
   expect(afterNodeDrag.y).toBeCloseTo(before.y, 0);

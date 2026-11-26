@@ -48,10 +48,11 @@ describe('URL-based drivers (http-json, mtconnect)', () => {
     expect(blankDevice(modbus).limits.requestDeadlineMs).toBe(2000);
   });
 
-  it('the payload keeps a masked secret as sent and drops a blank one, so the server keeps the stored value', () => {
-    const desc = { ...http, deviceFields: [{ name: 'authToken', type: 'password', optional: true }, { name: 'authPassword', type: 'password', optional: true }] };
-    const out = toPayload({ ...blankDevice(desc), name: 'm', host: 'h', port: 80, authToken: '********', authPassword: '' }, desc);
-    expect(out.authToken).toBe('********');
+  it('the payload drops a stored (null) or blank secret, so the server keeps the stored value, and sends a new one', () => {
+    const desc = { ...http, deviceFields: [{ name: 'authToken', type: 'password', optional: true }, { name: 'authPassword', type: 'password', optional: true }, { name: 'authHeaderSecret', type: 'password', optional: true }] };
+    const out = toPayload({ ...blankDevice(desc), name: 'm', host: 'h', port: 80, authToken: null, authPassword: '', authHeaderSecret: 'new' }, desc);
+    expect('authToken' in out).toBe(false);
     expect('authPassword' in out).toBe(false);
+    expect(out.authHeaderSecret).toBe('new');
   });
 });

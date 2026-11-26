@@ -41,6 +41,7 @@ function describe() {
   return {
     protocol,
     label: 'Siemens S7',
+    browseNoun: 'controller',
     defaultPort: 102,
     readOnly: true,
     experimental: true, // verified against the in-process simulator only; see NOTES.md

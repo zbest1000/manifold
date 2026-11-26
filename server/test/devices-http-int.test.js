@@ -64,7 +64,7 @@ async function setup({ lookup } = {}) {
     host: '127.0.0.1',
     port: sim.port,
     scheme: 'http',
-    basePath: '/api',
+    path: '/api',
     authType: 'bearer',
     authToken: 'S3CRET-TOKEN',
     limits: { requestDeadlineMs: 400, connectTimeoutMs: 600 },
@@ -120,18 +120,18 @@ test('http-json: live values over the supervisor, source timestamp, secret maske
   const t = await setup();
   try {
     const saved = await t.devices.save(t.http);
-    assert.strictEqual(saved.authToken, '********', 'the saved device is returned masked');
+    assert.strictEqual(saved.authToken, null, 'the saved device is returned with the secret as null');
     assert.strictEqual(t.profiles.getIn('devices', saved.id).authToken, 'S3CRET-TOKEN', 'the store keeps the real value');
     await until(() => t.devices.getValues(saved.id).power?.v === 12.5, 8000, 'first value');
     assert.strictEqual(t.devices.getValues(saved.id).state.v, 'OK');
     const s = t.samples.find((x) => x.address === 'power');
     assert.strictEqual(s.tSource, Date.parse('2025-03-04T05:06:07.250Z'));
     assert.strictEqual(t.devices.list()[0].status.state, 'online');
-    assert.strictEqual(t.devices.list()[0].authToken, '********', 'list() never returns the secret');
+    assert.strictEqual(t.devices.list()[0].authToken, null, 'list() never returns the secret');
     assert.ok(!JSON.stringify(t.devices.list()).includes('S3CRET'));
 
-    // edit with the secret left blank or sent back as the placeholder: the stored one stays
-    for (const authToken of [undefined, '', '********']) {
+    // edit with the secret left out, blank, or sent back as the null it was answered with: the stored one stays
+    for (const authToken of [undefined, '', null]) {
       const { authToken: _drop, ...rest } = t.http;
       await t.devices.save({ ...rest, ...(authToken === undefined ? {} : { authToken }), name: 'Meter renamed' }, saved.id);
       assert.strictEqual(t.profiles.getIn('devices', saved.id).authToken, 'S3CRET-TOKEN');

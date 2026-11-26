@@ -15,10 +15,25 @@ describe('scan options', () => {
     expect(buildScanOptions({ selected: { 'modbus-tcp': '502', s7: '102, 1102', 'ethernet-ip': '' } })).toEqual({ modbusPorts: [502], s7Ports: [102, 1102], eipPorts: [44818] });
   });
   it('knows the default ports', () => {
-    expect(Object.fromEntries(SCAN_PROTOCOLS.map((p) => [p.id, p.port]))).toEqual({ 'modbus-tcp': 502, s7: 102, 'ethernet-ip': 44818, 'bacnet-ip': 47808 });
+    expect(Object.fromEntries(SCAN_PROTOCOLS.map((p) => [p.id, p.port]))).toEqual({ 'modbus-tcp': 502, s7: 102, 'ethernet-ip': 44818, 'bacnet-ip': 47808, coap: 5683, snmp: 161 });
   });
   it('BACnet/IP is scanned only when ticked, on its UDP port', () => {
     expect(buildScanOptions({ selected: { 'bacnet-ip': '' } })).toEqual({ bacnetPorts: [47808] });
+  });
+  it('BACnet/IP, CoAP and SNMP ticked together send every UDP field', () => {
+    expect(buildScanOptions({ selected: { 'bacnet-ip': '', coap: '5683' } })).toEqual({ bacnetPorts: [47808], coapPorts: [5683] });
+    expect(buildScanOptions({ selected: { 'bacnet-ip': '', coap: '', snmp: '161, 1161' } })).toEqual({ bacnetPorts: [47808], coapPorts: [5683], snmpPorts: [161, 1161] });
+  });
+  it('CoAP is its own opt-in UDP field', () => {
+    expect(buildScanOptions({ selected: { coap: '' } })).toEqual({ coapPorts: [5683] });
+    expect(buildScanOptions({ selected: { coap: '5683, 5684' } })).toEqual({ coapPorts: [5683, 5684] });
+  });
+  it('describes a CoAP result in one line', () => {
+    const r = { kind: 'coap', protocol: 'coap', verified: true, identity: { resourceCount: 12, observableCount: 2, resources: ['/temp', '/hum', '/json', '/x'] }, suggestedDevice: { name: 'coap 10.0.0.9', protocol: 'coap', host: '10.0.0.9', port: 5683 } };
+    expect(identityText(r)).toBe('CoAP server · 12 resources · 2 observable · /temp, /hum, /json');
+    expect(identityText({ ...r, identity: { resourceCount: 1, partial: true } })).toBe('CoAP server · 1+ resources');
+    expect(identityText({ ...r, identity: { code: '4.04 Not Found', note: 'Answered, but without a resource listing.' } })).toBe('CoAP server · Answered, but without a resource listing');
+    expect(draftFromResult(r)).toEqual({ name: 'coap 10.0.0.9', protocol: 'coap', host: '10.0.0.9', port: 5683 });
   });
   it('parses port lists and reports junk', () => {
     expect(parsePorts('502, 1502;502 x 70000')).toEqual({ ports: [502, 1502], bad: ['x', '70000'] });

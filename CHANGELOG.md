@@ -58,13 +58,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prometheus: `manifold_alerts_active{state,severity}`, `manifold_alerts_unacknowledged{severity}`,
   `manifold_alert_transitions_total{state,severity}`, `manifold_alert_history_bytes`,
   `manifold_alert_history_write_errors_total`.
+- **Matter and Z-Wave through their bridge servers (experimental).** Two read-only subscription drivers: `matter-server`
+  reads the open-source Matter Server (python-matter-server / matter.js server, `ws://host:5580/ws`) and `zwave-js`
+  reads Z-Wave JS Server (`ws://host:3000`). Values are pushed as the server streams changes, with a periodic resync;
+  browse lists nodes, endpoints, clusters and attributes (Matter, with names, units and scaling for the common clusters)
+  or nodes, command classes and values (Z-Wave, from the value metadata). Manifold never commissions, includes,
+  controls or writes anything, and the Z-Wave driver only reads the server's cache, so battery devices are never
+  woken; only allow-listed read commands can be encoded and tests assert nothing else is sent. Unavailable/dead nodes
+  read Bad, sleeping Z-Wave nodes keep their last value. `ws://` and `wss://` (certificate verified unless
+  explicitly turned off per device), optional bearer token stored and masked like other secrets. Not verified against
+  real hardware.
+- **Device runtime: subscription drivers.** A driver with `capabilities.subscribe` can push samples between poll
+  cycles and report a lost connection; connection state, backoff and Bad-on-disconnect stay with the runtime. A
+  hand-written WebSocket client (RFC 6455, no new dependency) with frame and message caps, keepalive and no
+  compression is shared by the bridge drivers.
 
 ### Changed
 
 - The `$SYS/#` subscription no longer reports a refusal as an error (public and managed brokers commonly refuse it).
-
-### Changed
-
+- **One UDP mechanism for discovery.** BACnet/IP (`bacnetPorts`) and CoAP (`coapPorts` / `includeCoap`) probes share
+  one design: each UDP kind is opt-in on its own (`includeDevices` never adds one), unicast only, one job per
+  host, port and kind under the same concurrency and per-host limits, cancellable, and counted in the plan's worst case
+  with its own bounded wait. Plans and scan events report `udpPorts` (and `tcpPorts` in the plan); `ports` lists every
+  port number. A configured device marks a result as already added only on the same transport (UDP or TCP).
+- **A device saved without limits runs with its driver's default limits** (`describe().limits`), not the runtime's
+  generic 2 s request deadline: CoAP needs 10 s for its retransmissions, BACnet/IP its APDU timeout times retries.
+  Devices stored earlier get the same defaults when they start.
+- **One rule for device secrets, for every driver.** A secret is a descriptor field of type `password` (HTTP/JSON and
+  MTConnect passwords and tokens, the SNMP community and v3 passwords). The API answers a stored secret as `null`
+  (it used to be `********` for the HTTP drivers), in every device answer including the `409` conflict body; an edit
+  that leaves it out, blank or `null` keeps the stored value (same protocol only), and a secret the settings no longer
+  use is dropped. Conditional fields use one `showWhen: { field: [values] }` form.
+- The SNMP discovery probe (`snmpPorts` / `includeSnmp`) is the third kind of the shared UDP discovery mechanism.
+- **One URL-device model** for the HTTP (HTTP/JSON, MTConnect) and WebSocket (Matter Server, Z-Wave JS) drivers:
+  the same fields `scheme`, `path` (the HTTP drivers' `basePath` is now `path`), `authToken` for a bearer token and
+  `tlsInsecure` / `tlsCa` / `tlsFingerprint256`, and one helper for the pinned address, Host/SNI and TLS options
+  (`server/drivers/common/urlTarget.js`). The bridge drivers gain certificate fingerprint pinning.
+- Pasting a URL such as `ws://ha.local:5580/ws` or `https://meter.local:8443/api` into **Host** fills scheme, host,
+  port and path for URL-based drivers. **Test connection** shows readable labels (*Nodes*, *API schema*) instead of
+  field names.
+- The device page's import button names what it reads: **Import from controller** (EtherNet/IP), **Import from
+  device** (HTTP/JSON, BACnet/IP, CoAP), **Import from agent** (MTConnect, SNMP), **Import from server** (Matter, Z-Wave).
 - **Alarms active when the server stops are closed as "Ended by restart"** on the next start, and fire again from
   live data if the condition still holds (the engine re-derives state from live data; nothing is restored as
   firing). Deleting or disabling a rule ends its active alarms immediately instead of leaving them open.
@@ -151,10 +185,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `device:1234/object-list[0]`; every application tag decoded; quality from status-flags, reliability and
   out-of-service; requests sized to the device's max APDU without segmentation; automatic fallback to ReadProperty;
   devices behind BACnet routers (network number + MAC); devices that answer Who-Is only by broadcast or from another
-  port; classified Error/Reject/Abort messages; **Import from controller** over the object list with object names and
+  port; classified Error/Reject/Abort messages; **Import from device** over the object list with object names and
   unit text. Discovery gains an opt-in BACnet/IP probe (`bacnetPorts`). See the
   [Devices and Drivers](docs/wiki/Devices-and-Drivers.md#bacnetip) page and `server/drivers/bacnet/NOTES.md`.
 
+- **CoAP driver (experimental, read-only).** Poll or observe constrained IoT sensors over CoAP/UDP (port 5683): confirmable
+  GET with the RFC 7252 retransmission, separate responses, deduplication, Reset handling, block-wise responses (RFC 7959),
+  Observe (RFC 7641) with in-order notifications and re-registration, text, JSON, CBOR, SenML (JSON and CBOR, with units)
+  and link-format bodies, tag addresses of the form `[observe:]/path[?query][#selector]`, and browsing of
+  `/.well-known/core`. Only GET is ever sent. **DTLS (`coaps://`) is not supported** and is refused with that reason.
+  Discovery gains an opt-in CoAP probe (one unicast GET `/.well-known/core` per address). Verified only against a
+  simulator; see `server/drivers/coap/NOTES.md`.
+- **SNMP driver (experimental — not verified on real hardware).** Read-only SNMP v1, v2c and v3 (USM) over UDP 161,
+  BER and USM written in-house with Node's built-in crypto: authentication MD5, SHA-1, SHA-224/256/384/512,
+  privacy DES and AES-128, engine-ID discovery, boots/time synchronisation with the time-window check, and named
+  errors for every USM report (unknown user, wrong digest, decryption error, unsupported level). Only Get, GetNext and
+  GetBulk exist; a SetRequest cannot be encoded. Tags are numeric OIDs or well-known names (`sysUpTime.0`,
+  `ifHCInOctets.1`, `hrProcessorLoad.N`, UPS-MIB ...); every SMI type is decoded (Counter64 as a decimal string,
+  OctetString as text or hex, Opaque float/double), the v2 exceptions are Bad with the reason, and `rate: true` turns a
+  counter into a per-second rate with wrap and agent-restart handling. Requests are batched by count and estimated
+  response size, split on tooBig (the size is remembered), and v1 error-index answers drop only the failing OID.
+  **Import from agent** walks a subtree with GetBulk, bounded in rows and time. The community and v3 passwords
+  are stored server-side and never returned by the API (blank on edit keeps them; switching version drops unused ones); export and the audit log redact
+  them. Discovery gains an opt-in **SNMP agents** probe (one v2c `public` Get per address). The UDP socket lives in
+  `server/drivers/runtime/udpTransport.js`: pinned literal address only, the egress policy re-checked in the driver
+  process, answers from other addresses refused unless allowed per device. Docs:
+  [Devices and Drivers](docs/wiki/Devices-and-Drivers.md#snmp), `server/drivers/snmp/NOTES.md`.
 - **Payload codecs for MQTT.** Non-JSON payloads are decoded on ingest, so topics, Trends, mappings, routes and
   recordings see values: hand-written CBOR (RFC 8949), MessagePack (timestamp extension included) and SenML
   JSON/CBOR (RFC 8428, resolved into records), plus Protobuf and Avro against a schema you attach to a topic filter

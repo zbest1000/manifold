@@ -96,6 +96,41 @@ export async function startBacnet(opts = {}) {
   return { port: sim.port, sim, close: () => sim.stop() };
 }
 
+/** CoAP (UDP) simulator: /json (temperature 21.5), /senml (Cel / %RH records), /obs (observable text, starts at 1). */
+export async function startCoap() {
+  const { CoapSimulator } = requireServer('./test/support/coapSimulator.js');
+  const sim = await new CoapSimulator().start();
+  return {
+    port: sim.port,
+    /** Push a new value to every observer of /obs. */
+    notify: (body) => sim.notify('/obs', { body: String(body) }),
+    /** Requests that were not GET (always 0). */
+    nonGet: () => sim.stats.nonGetReceived,
+    close: () => sim.stop()
+  };
+}
+
+/** SNMP agent (UDP, loopback) from server/test/support/snmpSimulator.js with its default MIB (sysName.0 = "sim-agent", ...). */
+export async function startSnmp(options = {}) {
+  const { startSnmpSimulator } = requireServer('./test/support/snmpSimulator.js');
+  const sim = await startSnmpSimulator(options);
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** Matter Server simulator (WebSocket, path /ws) with its default five-node dump; node 1 temperature = 21.34 degC. Returns { port, sim, close() }. */
+export async function startMatterServer() {
+  const { startMatterServerSimulator } = requireServer('./test/support/matterServerSimulator.js');
+  const sim = await startMatterServerSimulator({});
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** Z-Wave JS Server simulator (WebSocket, path /) with its default network; node 3 switch on. Returns { port, sim, close() }. */
+export async function startZwaveJsServer() {
+  const { startZwaveJsServerSimulator } = requireServer('./test/support/zwaveJsServerSimulator.js');
+  const sim = await startZwaveJsServerSimulator({});
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
 // ---- REST ------------------------------------------------------------------------------
 
 async function call(method, url, body) {

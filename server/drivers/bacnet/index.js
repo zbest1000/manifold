@@ -47,6 +47,7 @@ function describe() {
   return {
     protocol,
     label: 'BACnet/IP',
+    browseNoun: 'device', // the device's object list
     experimental: true,
     readOnly: true,
     defaultPort: 47808,
