@@ -99,3 +99,36 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
   }
   return items;
 }
+
+/**
+ * What cannot be written to disk, from GET /api/system/status (`status: 'degraded'`, `storage`):
+ *   storage.profiles      { ok, error, since }          the configuration store (profiles.json)
+ *   storage.alertJournal  { ok, writeErrors, lastError } the durable alert history
+ * One item per failing store, saying what failed and that changes are not being saved. Shown in
+ * Overview's "Needs attention" and on the Health page.
+ */
+export function storageAttention(status) {
+  const s = status?.storage;
+  if (!s) return [];
+  const items = [];
+  if (s.profiles && s.profiles.ok === false) {
+    items.push({
+      key: 'storage-profiles',
+      tone: 'bad',
+      what: 'Configuration storage',
+      detail: `Changes are not being saved: the configuration could not be written to the data directory${s.profiles.error ? ` (${s.profiles.error})` : ''}. Everything changed since then is lost on restart. Free disk space or fix the directory's permissions.`,
+      to: '/system'
+    });
+  }
+  if (s.alertJournal && s.alertJournal.ok === false) {
+    const n = Number(s.alertJournal.writeErrors) || 0;
+    items.push({
+      key: 'storage-alerts',
+      tone: 'bad',
+      what: 'Alert history',
+      detail: `Alert events are not being saved: ${plural(n, 'write')} to the alert history failed${s.alertJournal.lastError ? ` (${s.alertJournal.lastError})` : ''}. Alerts still fire, but their history is lost on restart.`,
+      to: '/system'
+    });
+  }
+  return items;
+}

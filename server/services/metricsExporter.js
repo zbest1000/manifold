@@ -15,7 +15,7 @@ const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
 function esc(v) {
-  return String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
+  return String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r\n|[\r\n]/g, ' '); // \r too: either line break would split the sample line for CR-aware parsers
 }
 
 function line(name, labels, value) {

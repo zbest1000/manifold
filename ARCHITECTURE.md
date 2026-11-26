@@ -1267,7 +1267,7 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `GET` | `/api/uns/icons` | Custom UNS icons |
 | `POST` | `/api/uns/icons` | Add or replace an icon (single-path SVG, upsert by name) |
 | `DELETE` | `/api/uns/icons/:id` | Remove an icon |
-| `GET` | `/api/alerts/rules` | Alert rules, rule types, webhook health (webhook URLs hidden from viewers) |
+| `GET` | `/api/alerts/rules` | Alert rules, rule types, webhook health (webhook URLs are never returned: `hasWebhook` and `webhookOrigin` instead) |
 | `POST` | `/api/alerts/rules` | Create or edit a rule (upsert by id) |
 | `DELETE` | `/api/alerts/rules/:id` | Delete a rule |
 | `GET` | `/api/alerts/events` | Recent events from memory (`?ruleId=`) |

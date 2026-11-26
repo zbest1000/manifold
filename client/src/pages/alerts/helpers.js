@@ -23,6 +23,11 @@ export const EMPTY_RULE_FORM = {
   sustainSec: '',
   clearValue: '',
   webhookUrl: '',
+  // An existing rule's webhook is never sent to the browser (it is a credential): the form knows only
+  // whether one is set and its origin. 'keep' leaves it as stored, 'replace' sends webhookUrl, 'remove' clears it.
+  hasWebhook: false,
+  webhookOrigin: null,
+  webhookMode: 'replace',
   name: '',
   severity: 'warning'
 };
@@ -70,7 +75,10 @@ export function formFromRule(r) {
     value: r.value ?? '',
     sustainSec: r.sustainMs > 0 ? Math.round(r.sustainMs / 1000) : '',
     clearValue: r.clearValue ?? '',
-    webhookUrl: r.webhookUrl || '',
+    webhookUrl: '',
+    hasWebhook: Boolean(r.hasWebhook || r.webhookUrl),
+    webhookOrigin: r.webhookOrigin || null,
+    webhookMode: r.hasWebhook || r.webhookUrl ? 'keep' : 'replace',
     name: r.name || '',
     severity: SEVERITY[r.severity] ? r.severity : 'warning'
   };
@@ -87,9 +95,11 @@ export function ruleBody(form, defaultBrokerId) {
     topic: form.topic || null,
     prefix: form.prefix,
     thresholdMs: Number(form.thresholdSec) * 1000,
-    severity: SEVERITY[form.severity] ? form.severity : 'warning',
-    webhookUrl: form.webhookUrl || null
+    severity: SEVERITY[form.severity] ? form.severity : 'warning'
   };
+  // Webhook, like a password: omitted keeps the stored URL, '' removes it, a value replaces it.
+  if (form.webhookMode === 'remove') body.webhookUrl = '';
+  else if (form.webhookMode !== 'keep' && form.webhookUrl) body.webhookUrl = form.webhookUrl;
   if (form.id && form.rev !== undefined) body.rev = form.rev;
   if (form.type === 'value-threshold') {
     body.field = form.field || null;

@@ -6,7 +6,8 @@ name: Wiki
 
 on:
   push:
-    branches: [main, 'claude/**']
+    # main only: docs on a work branch are unreleased and must not go live.
+    branches: [main]
     paths: ['docs/wiki/**', '.github/workflows/wiki.yml']
   workflow_dispatch:
 
@@ -16,10 +17,12 @@ permissions:
 jobs:
   sync:
     name: Sync docs/wiki to the GitHub wiki
+    # A manual run from another branch publishes nothing either.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Push pages to the wiki repository
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

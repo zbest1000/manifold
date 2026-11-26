@@ -37,8 +37,12 @@ instance beyond your own machine:
   allowlist of read-only POSTs (historian queries, pipeline and mapping previews, name
   suggestions, subscription resolve, schema inference, device tag validation, i3X reads,
   CESMII history; the list is `VIEWER_READ_ONLY_POSTS` in `server/services/authConfig.js`),
-  cannot see alert webhook URLs, and cannot read the audit trail. The console disables
-  every mutating control for a viewer session and says why.
+  cannot read the audit trail. The console disables every mutating control for a viewer
+  session and says why.
+- **Alert webhook URLs are secrets.** For chat webhooks the path is the credential, so no
+  role gets the URL back: rule answers (including `409` bodies) carry `hasWebhook` and the
+  origin only, the editor shows "Set, calls <origin>" with **Replace** and **Remove**, and
+  config export and the audit log redact it.
 - **`/metrics` needs a token** whenever auth is on (a viewer token is enough for
   Prometheus). `MANIFOLD_METRICS_PUBLIC=1` opts out; `/health` stays open.
 - **Keep network targets scoped.** Outbound connections (the discovery scanner
@@ -53,9 +57,35 @@ instance beyond your own machine:
   `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, meant for local simulators only. A device hostname is resolved and validated in the server process, the driver connects to the validated address (no second resolution), and the name is re-checked on every host restart and every 30 s. It does
   **not** cover MQTT broker hosts, OPC UA endpoints or historian/database URLs.
   That is a deliberate choice: a broker or historian on `localhost` or the LAN is
-  the standard setup. The residual risk is that anyone holding an admin token can
-  make the server connect to any host it can reach through those three paths,
-  internal services included, so protect admin tokens and use network policy.
+  the standard setup. These three still **refuse link-local and cloud-metadata
+  targets**: 169.254.0.0/16 (including `169.254.169.254`), fe80::/10, the
+  single-address metadata helpers (Azure `168.63.129.16`, Alibaba `100.100.100.200`,
+  Oracle `192.0.0.192`, AWS `fd00:ec2::254`, also in IPv4-mapped/NAT64/6to4 form) and
+  well-known metadata host names (`metadata.google.internal`, `instance-data`, ...).
+  The check runs at save (403 `EGRESS_BLOCKED`) and at connect, on the resolved
+  address: MQTT connects through a lookup that refuses those addresses on every
+  (re)connect, OPC UA re-checks before every session and discovery, historians before
+  every request and database query (an HTTPS historian with a custom CA or
+  self-signed setting also connects through the guarded lookup; for the others and for
+  TimescaleDB the library resolves the name again, so a DNS answer that changes between
+  the check and the connect is a residual risk). Private, LAN and loopback addresses
+  are not restricted for these three. The residual risk is that anyone holding an
+  admin token can make the server connect to any other host it can reach through
+  those three paths, internal services included, so protect admin tokens and use
+  network policy.
+- **A stored secret never follows an address change.** Editors keep a stored password,
+  token or community when the field is left blank, because the API never shows it.
+  When the scheme, host or port changes (for a URL: its origin) and no new secret is
+  entered, the save is refused with 400 `{ code: 'secret-required', field }` and the
+  form says "The address changed, so the password must be entered again". This covers
+  MQTT brokers, the broker admin API URL (a masked `user:***@host` saved against another
+  host), historians (token, API key, database password, password in the URL), OPC UA
+  connections and devices (HTTP passwords and tokens, SNMP community and v3 passwords,
+  bridge-server tokens), including the device connection test. A name or path change
+  keeps the secret. Config import never restores a stored secret into an imported item
+  whose endpoint differs from the stored one. CESMII requires its secret on every save
+  and i3X drops its token when it is not supplied, so neither keeps a secret across a
+  change.
 - **Network discovery** <a id="network-discovery"></a>(the CIDR scan) is opt-in for PLC protocols, read-only
   and bounded, but it is still a port scanner. The rules, in one place:
   - *Which addresses.* Every address goes through the egress guard. Public: scanned. RFC1918
@@ -123,7 +153,11 @@ instance beyond your own machine:
 - **The broker canary publishes only when you turn it on.** It is off by default and
   the connect form says that it publishes. When enabled it sends a small, never-retained
   message to its canary topic (default `manifold/canary/<id>`) on the configured interval
-  and receives it through its own subscription; canary traffic is kept out of topics,
+  and receives it through its own subscription. A custom topic must start with
+  `manifold/canary/` and may not contain a level used by command, request or Sparkplug
+  topics (`set`, `get`, `cmd`, `cmnd`, `command`, `rpc`, `down`, `api`, `write`,
+  `_CLIENTS`, `NCMD`, `DCMD`, `spBv*`), so the canary can never publish to a system
+  (`$...`), Sparkplug or command topic. Canary traffic is kept out of topics,
   the UNS, recordings, pipelines, mappings and alerts. The **security posture** is
   computed from what Manifold already knows about the connection; nothing is probed.
 - **Public test-broker presets are public.** The connect form's presets (EMQX,
@@ -144,7 +178,15 @@ instance beyond your own machine:
   identifiers are kept, a secret inside a tag or a TLS `key` is not); review an
   export before committing it.
 - **Put TLS and a reverse proxy in front** of any internet-facing instance, and
-  prefer network segmentation for OT deployments (IEC 62443 zones/conduits).
+  prefer network segmentation for OT deployments (IEC 62443 zones/conduits). Behind
+  a proxy, set `MANIFOLD_TRUST_PROXY` to the number of proxy hops (`1`) or the proxy
+  addresses, so the rate limit, the auth-failure throttle and the audit log see each
+  client instead of the proxy (off by default; `true` is refused, since it would let
+  any client choose its own address with `X-Forwarded-For`).
+- **Watch for degraded storage.** When the configuration store or the alert history
+  cannot be written (disk full, permissions), `GET /api/system/status` answers
+  `degraded`, Overview lists it under **Needs attention** and the Health page shows a
+  banner: changes are then not being saved and are lost on restart.
 
 ## Supported versions
 

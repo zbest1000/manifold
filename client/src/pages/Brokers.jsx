@@ -70,6 +70,7 @@ export default function Brokers() {
   const [editingId, setEditingId] = useState(null);
   const [editingRev, setEditingRev] = useState(undefined); // the revision the form was loaded at (conflict detection)
   const [duplicate, setDuplicate] = useState(null); // 409 duplicate: { id, name } of the connection that already exists
+  const [secretError, setSecretError] = useState(null); // 400 secret-required: the address changed, the password must be typed again
   const [refused, setRefused] = useState(null); // 409 in-use: { broker, usedBy } when a delete is refused
   const [busy, setBusy] = useState(false);
   const [detailId, setDetailId] = useState(null); // the broker whose details drawer is open
@@ -119,6 +120,7 @@ export default function Brokers() {
     setEditingId(null);
     setEditingRev(undefined);
     setDuplicate(null);
+    setSecretError(null);
     setForm(BLANK);
   };
 
@@ -131,6 +133,7 @@ export default function Brokers() {
     setEditingId(null);
     setEditingRev(undefined);
     setDuplicate(null);
+    setSecretError(null);
     setShowForm(true);
   };
 
@@ -139,6 +142,7 @@ export default function Brokers() {
     if (isWs && !Number(form.port)) return toast.error('Port is required for WebSocket connections');
     setBusy(true);
     setDuplicate(null);
+    setSecretError(null);
     const config = buildConfig();
     try {
       if (editingId) {
@@ -165,6 +169,8 @@ export default function Brokers() {
     } catch (e) {
       // Same protocol, host, port, user and filter as a connection that exists: shown inline, in the form.
       if (e.status === 409 && e.code === 'duplicate') setDuplicate(e.existing || { name: 'an existing connection' });
+      // The host, port or protocol changed and the password was left blank: shown next to the password field.
+      else if (e.code === 'secret-required') setSecretError(e.message);
       else toast.error(e.message);
     } finally {
       setBusy(false);
@@ -200,6 +206,7 @@ export default function Brokers() {
     setEditingId(b.id);
     setEditingRev(b.rev ?? c.rev);
     setDuplicate(null);
+    setSecretError(null);
     setShowForm(true);
   };
 
@@ -480,11 +487,15 @@ export default function Brokers() {
               <Field label="Username (optional)">
                 <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" />
               </Field>
-              <Field label="Password (optional)">
+              <Field label="Password (optional)" error={secretError || undefined}>
                 <Input
                   type="password"
                   value={form.password}
-                  onChange={(e) => set({ password: e.target.value })}
+                  aria-invalid={secretError ? 'true' : undefined}
+                  onChange={(e) => {
+                    setSecretError(null);
+                    set({ password: e.target.value });
+                  }}
                   autoComplete="new-password"
                   placeholder={editingId ? 'unchanged' : undefined}
                 />
@@ -501,7 +512,7 @@ export default function Brokers() {
               />
               {form.canaryEnabled && (
                 <div className="grid grid-cols-1 gap-x-4 gap-y-3 border-l-2 border-line pl-4 sm:grid-cols-2" data-testid="canary-fields">
-                  <Field label="Canary topic" help="Leave empty for the default. A custom topic must start with manifold/canary/ or contain a level named canary. Give the broker's access rules a rule for it.">
+                  <Field label="Canary topic" help="Leave empty for the default. A custom topic must start with manifold/canary/ followed by a name, and cannot contain command levels such as set, get or cmnd. Give the broker's access rules a rule for it.">
                     <Input className="mono" value={form.canaryTopic} onChange={(e) => set({ canaryTopic: e.target.value })} placeholder={defaultCanaryTopic(editingId || 'id')} />
                   </Field>
                   <Select label="Canary QoS" value={form.canaryQos} onChange={(e) => set({ canaryQos: Number(e.target.value) })}>

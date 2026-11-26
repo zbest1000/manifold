@@ -53,6 +53,11 @@ async function request(path, options = {}) {
     // Field-level validation errors ({ key, error }[]) travel with the error.
     if (Array.isArray(body.details)) err.details = body.details;
     err.status = res.status;
+    // A stored secret that would follow an address change (400 secret-required): `field` names the input to show it on.
+    if (body.code === 'secret-required') {
+      err.code = body.code;
+      err.field = body.field || null;
+    }
     // 409 carries structure the pages act on: stale (another writer saved first: `current` is the saved
     // object), duplicate (`existing` names the connection that is already there), in-use (`usedBy`).
     if (res.status === 409) {

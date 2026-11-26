@@ -134,7 +134,7 @@ counts as slow (default 1000 ms).
 
 | Setting | Default | Notes |
 |---|---|---|
-| Topic | `manifold/canary/<first 8 characters of the broker id>` | A custom topic must start with `manifold/canary/` or contain a level named `canary`, so it cannot hide a real data topic. Give your broker's ACL a rule for it |
+| Topic | `manifold/canary/<first 8 characters of the broker id>` | A custom topic must start with `manifold/canary/` followed by a name, and may not contain a level used by command, request or Sparkplug topics (`set`, `get`, `cmd`, `cmnd`, `command`, `rpc`, `down`, `api`, `write`, `_CLIENTS`, `NCMD`, `DCMD`, `spBv*`), so the canary can neither hide a real data topic nor publish a command. Give your broker's ACL a rule for it |
 | QoS | 0 | A QoS above 0 whose subscription is refused is retried at QoS 0 once |
 | Interval | 30 s | The probe times out after 80% of it (at most 10 s) |
 

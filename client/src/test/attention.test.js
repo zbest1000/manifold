@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { engineAttention, isGrowing, recordPending } from '@/lib/attention';
+import { engineAttention, isGrowing, recordPending, storageAttention } from '@/lib/attention';
 
 describe('Overview: needs attention', () => {
   it('lists nothing when all is well', () => {
@@ -108,5 +108,26 @@ describe('Overview: needs attention', () => {
     expect(isGrowing([1, 2, 3, 4])).toBe(true);
     expect(isGrowing([1, 2, 2, 4])).toBe(false);
     expect(isGrowing([1, 2, 3])).toBe(false);
+  });
+});
+
+describe('storage degraded (GET /api/system/status)', () => {
+  it('lists nothing while both stores write', () => {
+    expect(storageAttention({ status: 'ok', storage: { profiles: { ok: true }, alertJournal: { ok: true, writeErrors: 0 } } })).toEqual([]);
+    expect(storageAttention(null)).toEqual([]);
+    expect(storageAttention({ status: 'ok', storage: { profiles: { ok: true }, alertJournal: null } })).toEqual([]);
+  });
+
+  it('says what failed and that changes are not being saved', () => {
+    const items = storageAttention({
+      status: 'degraded',
+      storage: { profiles: { ok: false, error: 'ENOSPC: no space left on device', since: 1 }, alertJournal: { ok: false, writeErrors: 3, lastError: 'EACCES' } }
+    });
+    expect(items.map((i) => i.key)).toEqual(['storage-profiles', 'storage-alerts']);
+    expect(items[0]).toMatchObject({ tone: 'bad', what: 'Configuration storage', to: '/system' });
+    expect(items[0].detail).toContain('Changes are not being saved');
+    expect(items[0].detail).toContain('ENOSPC');
+    expect(items[1].detail).toContain('3 writes to the alert history failed');
+    expect(items[1].detail).toContain('not being saved');
   });
 });

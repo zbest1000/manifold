@@ -8,6 +8,7 @@ const { DriverSupervisor } = require('./driverSupervisor');
 const egressGuard = require('./egressGuard');
 const { compiledView } = require('./mqttMatch');
 const profilesModel = require('./deviceProfiles');
+const { hostIdentity, secretRequiredMessage } = require('./endpointIdentity');
 
 /**
  * Device manager: the main-process side of the southbound drivers
@@ -90,6 +91,15 @@ class DeviceValidationError extends Error {
     super(message);
     this.name = 'DeviceValidationError';
     this.details = details;
+  }
+}
+
+/** A stored secret would follow an endpoint change: it must be entered again (HTTP 400 secret-required). */
+class SecretRequiredError extends DeviceValidationError {
+  constructor(field) {
+    super(secretRequiredMessage(field));
+    this.code = 'secret-required';
+    this.field = field;
   }
 }
 
@@ -361,14 +371,52 @@ class DeviceManager extends EventEmitter {
 
   /** An edit that leaves a secret absent, null or blank keeps the stored one; never across a protocol change. */
   _keepStoredSecrets(input, id) {
+    return this._withStoredSecrets(input, id).input;
+  }
+
+  /**
+   * _keepStoredSecrets plus the names of the fields it filled in from the store (`kept`) and the
+   * stored device (`stored`), so the caller can refuse the edit when the endpoint moved.
+   */
+  _withStoredSecrets(input, id) {
     const d = input || {};
     const stored = id ? this.profiles.getIn('devices', id) : null;
-    if (!stored || (d.protocol !== undefined && d.protocol !== stored.protocol)) return d;
+    if (!stored || (d.protocol !== undefined && d.protocol !== stored.protocol)) return { input: d, kept: [], stored: null };
     const fields = this._secretFields(stored.protocol);
-    if (!fields.length) return d;
+    if (!fields.length) return { input: d, kept: [], stored };
     const out = { ...d };
-    for (const f of fields) if (!hasValue(out[f]) && hasValue(stored[f])) out[f] = stored[f];
-    return out;
+    const kept = [];
+    for (const f of fields) {
+      if (!hasValue(out[f]) && hasValue(stored[f])) {
+        out[f] = stored[f];
+        kept.push(f);
+      }
+    }
+    return { input: out, kept, stored };
+  }
+
+  /** scheme://host:port the driver connects to (scheme: the URL drivers' field, else the protocol). */
+  _endpoint(device) {
+    const mod = this.drivers[device.protocol]?.mod;
+    const d = mod && mod.describe ? mod.describe() : {};
+    const schemeField = (d.deviceFields || []).find((f) => f && (f.name ?? f.key) === 'scheme');
+    const scheme = device.scheme ?? schemeField?.default ?? '';
+    return `${device.protocol}|${hostIdentity(scheme, device.host, device.port, d.defaultPort)}`;
+  }
+
+  /**
+   * Normalize an edit of a stored device. A secret left blank keeps the stored one only while the
+   * endpoint (protocol, scheme, host, port) is unchanged; when it moved, every kept secret the
+   * driver would still use must be entered again (SecretRequiredError, HTTP 400 secret-required).
+   */
+  _normalizeEdit(input, id, extra = {}) {
+    const { input: withSecrets, kept, stored } = this._withStoredSecrets(input, id);
+    const device = this.normalize({ ...withSecrets, ...extra }, id || input?.id || 'test');
+    if (stored && kept.length && this._endpoint(device) !== this._endpoint(stored)) {
+      const missing = kept.find((f) => hasValue(device[f]));
+      if (missing) throw new SecretRequiredError(missing);
+    }
+    return device;
   }
 
   _maskDevice(device) {
@@ -691,7 +739,7 @@ class DeviceManager extends EventEmitter {
 
   async save(input, id, { expectRev } = {}) {
     if (id) this.profiles.assertRev?.('devices', id, expectRev); // a stale edit is refused before anything else
-    const device = this.normalize(this._keepStoredSecrets(input, id), id);
+    const device = id ? this._normalizeEdit(input, id) : this.normalize(input, id);
     await this.guard(device.host); // refuse to store an unreachable-by-policy target
     const clash = this.profiles.listIn('devices').find((d) => d.id !== device.id && d.name === device.name);
     if (clash) throw new DeviceValidationError(`name "${device.name}" is already used by another device; pick a different name`);
@@ -747,7 +795,7 @@ class DeviceManager extends EventEmitter {
   }
 
   async test(input) {
-    const device = this.normalize({ ...this._keepStoredSecrets(input, input?.id), tags: [] }, input?.id || 'test');
+    const device = this._normalizeEdit(input, input?.id, { tags: [] });
     const addresses = await this.guard(device.host);
     const started = Date.now();
     try {
@@ -851,4 +899,4 @@ class DeviceManager extends EventEmitter {
   }
 }
 
-module.exports = { DeviceManager, DeviceValidationError, DeviceConflictError, DRIVER_MODULES, tagMetaError };
+module.exports = { DeviceManager, DeviceValidationError, SecretRequiredError, DeviceConflictError, DRIVER_MODULES, tagMetaError };

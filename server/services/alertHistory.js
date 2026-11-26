@@ -311,7 +311,9 @@ function toCsv(events) {
   for (const e of events) {
     rows.push(
       [
-        new Date(e.ts).toISOString(),
+        // A journal line without a valid ts (hand-edited, or from a crash) exports with an empty time
+        // instead of failing the whole export.
+        Number.isFinite(new Date(e.ts).getTime()) ? new Date(e.ts).toISOString() : '',
         e.seq,
         e.status,
         e.severity || 'warning',

@@ -6,8 +6,17 @@ const router = express.Router();
 const { checkpoint, handleRevisionError } = require('../services/revision');
 const { missingRefsMessage } = require('../services/references');
 
-// A rule as GET shows it: the viewer role sees only whether a webhook is set.
-const presentRule = (role, r) => (role === 'viewer' && r.webhookUrl ? { ...r, webhookUrl: null, hasWebhook: true } : r);
+// A rule as every answer shows it. The webhook URL is a secret like a password (for Slack/Teams-style
+// hooks the path IS the credential): no role ever gets it back, only whether one is set and its origin
+// (scheme://host[:port]) so an editor can tell which service it calls.
+function webhookOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+const presentRule = (_role, r) => (r ? { ...r, webhookUrl: null, hasWebhook: Boolean(r.webhookUrl), webhookOrigin: r.webhookUrl ? webhookOrigin(r.webhookUrl) : null } : r);
 
 // Alert rules are persisted in the profile store; the engine picks changes up
 // on its next evaluation pass (no restart, no re-arm dance).
@@ -16,8 +25,7 @@ const presentRule = (role, r) => (role === 'viewer' && r.webhookUrl ? { ...r, we
 router.get('/rules', (req, res) => {
   const { profiles, alerts } = req.app.locals.services;
   res.json({
-    // Webhook URLs are credentials (Slack/Teams); the read-only role sees only
-    // whether one is set.
+    // Webhook URLs are credentials (Slack/Teams): every role sees only whether one is set and its origin.
     // `state` is the engine's own view of the rule (idle | breached | firing | disabled | broken, since,
     // value, remainingMs until firing, lastTransition, webhook health) - nothing here is guessed from events.
     rules: (profiles?.alertRules() || []).map((r) => ({ ...presentRule(req.role, r), state: alerts?.getRuleState?.(r) || null })),
@@ -59,7 +67,9 @@ router.post('/rules', (req, res) => {
     topic: topic || null,
     prefix: prefix || '',
     thresholdMs: Number(thresholdMs) > 0 ? Number(thresholdMs) : 60_000,
-    webhookUrl: webhookUrl || null,
+    // Leave-blank-to-keep, like a password: absent or null keeps the stored URL (answers never carry
+    // it), an empty string removes it, any other value replaces it.
+    webhookUrl: webhookUrl === undefined || webhookUrl === null ? (id && profiles.alertRules().find((x) => x.id === id)?.webhookUrl) || null : webhookUrl || null,
     enabled: enabled !== false
   };
 
@@ -94,7 +104,7 @@ router.post('/rules', (req, res) => {
     throw error;
   }
   alerts?.reconcileRules?.(); // a rule that was just disabled closes its active alarms now, not on the next pass
-  res.status(201).json(rule);
+  res.status(201).json(presentRule(req.role, rule));
 });
 
 // DELETE /api/alerts/rules/:id

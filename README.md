@@ -125,6 +125,11 @@ With a token set (`MANIFOLD_AUTH_TOKEN`, `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TO
 - **`/metrics` needs a bearer token** (any role) when auth is on. Give Prometheus a viewer token, or set `MANIFOLD_METRICS_PUBLIC=1`. `/health` stays open.
 - **Alert webhooks now pass the egress guard**, so a webhook to `localhost`, a link-local address, or (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) a private address is refused. Redirects are re-checked on every hop.
 - Viewers can call a short list of read-only POSTs (historian queries, pipeline preview, subscription resolve, schema inference, device tag validation, mapping preview and name suggestions, i3X reads, CESMII history) and no longer see alert webhook URLs.
+- **Alert webhook URLs are secrets for every role**: rule answers carry `hasWebhook` and `webhookOrigin` only. Saving a rule without `webhookUrl` (or with `null`) keeps the stored one, `""` removes it.
+- **A stored secret no longer follows an address change.** Editing a broker, broker admin API URL, historian, OPC UA connection or device and changing its scheme, host or port with the password, token or community left blank is refused (400 `secret-required`, naming the field): type the secret again. A name or path change still keeps it. Config import never restores a stored secret into an item whose endpoint differs.
+- **Brokers, OPC UA servers and historians refuse link-local and cloud-metadata targets** (169.254.0.0/16, fe80::/10, metadata host names), at save (403) and at connect. Loopback and LAN targets work as before.
+- A **broker canary topic** must start with `manifold/canary/` (a level named `canary` elsewhere is no longer accepted) and may not contain a command level (`set`, `get`, `cmnd`, `command`, ...).
+- `GET /api/recorder/:id/series` needs `tags` (1-10), and a recording's `maxBytes` is capped at 4 GiB.
 - **Device targets** are guarded: loopback hosts need `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` and private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
 - Sparkplug messages are delivered **in order and un-coalesced** (a bounded queue; overflow is counted, not silent), and mappings **publish a Bad-quality envelope when a source goes offline** and a retained `_status` topic. The mapping editor leaves **Retain values** off by default.
 - The historian spill is now **segment files plus a cursor** under `outbox/` (a legacy `<id>.jsonl` is still read first and drained, no conversion needed), and permanently rejected points go to a dead-letter file.
@@ -157,6 +162,7 @@ Every variable the server reads. All are optional.
 | `MANIFOLD_DATA_DIR` | `server/data` | Where profiles (and their backups), history, outbox spill and dead-letters, audit log, recordings and OPC UA PKI live |
 | `MANIFOLD_NO_RESTORE` | `0` | Skip reconnecting saved profiles on startup |
 | `MANIFOLD_RATE_MAX` / `MANIFOLD_RATE_WINDOW_MS` | `600` / `60000` | General `/api` request rate limit |
+| `MANIFOLD_TRUST_PROXY` | _(off)_ | Behind a reverse proxy: the number of proxy hops in front of Manifold (`1` for one proxy) or the proxy addresses/subnets, comma-separated (`10.0.0.5,10.0.1.0/24`, or `loopback`). Then the rate limit, the auth-failure throttle and the audit log use the client address from `X-Forwarded-For`; off, every client behind the proxy shares the proxy's address (one rate-limit bucket for everyone). `true` (trust any hop, so any client could choose its own address) is refused with a startup warning |
 | `MANIFOLD_AUDIT_MAX_BYTES` | `10485760` (10 MiB) | Size at which `audit.jsonl` rotates |
 | `MANIFOLD_AUDIT_KEEP` | `5` | Rotated audit files kept (`audit.jsonl.1` ... `.N`) |
 | `MANIFOLD_MAX_PAYLOAD_BYTES` | `262144` (256 KB) | Per-topic retained payload cap; larger payloads are truncated for storage/preview |

@@ -14,6 +14,8 @@ const { expectedRev, handleRevisionError } = require('../services/revision');
 
 function fail(res, error) {
   if (error instanceof DeviceValidationError) {
+    // A stored secret that would follow an endpoint change: { code: 'secret-required', field } for the form.
+    if (error.code === 'secret-required') return res.status(400).json({ error: error.message, code: error.code, field: error.field });
     return res.status(400).json({ error: error.message, details: error.details });
   }
   if (error instanceof DeviceConflictError) return res.status(409).json({ error: error.message, instances: error.details });

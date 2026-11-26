@@ -98,6 +98,8 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
 
   const fieldErrs = {
     ...serverErrs,
+    // 400 secret-required: the address changed and a stored secret was left blank; shown on that secret's field.
+    ...(saveError?.field ? { [saveError.field]: saveError.fieldMessage } : {}),
     name: serverErrs.name || (submitted && !draft.name.trim() ? 'Give the device a name' : undefined),
     host: serverErrs.host || (submitted && !draft.host.trim() ? 'Enter the host name or IP address' : undefined)
   };
@@ -161,7 +163,10 @@ export default function DeviceEditor({ device, protocols, profiles = [], live, n
       toast.success(`Device "${saved.name}" ${editing ? 'updated' : 'created'}`);
       onSaved(saved);
     } catch (err) {
-      setSaveError({ message: err.message || 'Save failed', details: err.details });
+      if (err.code === 'secret-required' && err.field) {
+        setSaveError({ message: 'Enter the secret again to save this device', field: err.field, fieldMessage: err.message });
+        requestAnimationFrame(() => formRef.current?.querySelector('[aria-invalid="true"]')?.focus());
+      } else setSaveError({ message: err.message || 'Save failed', details: err.details });
     } finally {
       setSaving(false);
     }

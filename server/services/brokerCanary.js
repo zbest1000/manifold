@@ -13,7 +13,7 @@
  * Isolation: canary deliveries are claimed in MqttManager.handleMessage, before the topic store, so they
  * never reach the topic tree, UNS, recorder, pipelines, mappings, alerts or any other engine, and they are not
  * counted in the broker's message totals. Everything under CANARY_PREFIX is claimed (another Manifold's canary
- * on a shared broker included), plus the exact topic when a custom one is configured.
+ * on a shared broker included). A custom topic must also live under CANARY_PREFIX (see validateCanaryConfig).
  *
  * States: off, unknown (broker not connected), pending (no probe has finished), ok, slow, failing,
  * not-permitted (the broker refused the canary SUBSCRIBE, or answered the PUBLISH with "not authorized";
@@ -30,6 +30,11 @@ const FIRST_PROBE_MS = 500;
 const REASON_NOT_AUTHORIZED = 135; // MQTT 5 PUBACK / SUBACK reason code
 
 const DEFAULTS = { enabled: false, qos: 0, intervalSec: 30, slowMs: 1000 };
+
+// Levels that mark command, request or write topics in the conventions the IoT parsers know (Tasmota cmnd/,
+// Zigbee2MQTT and Z-Wave JS .../set and .../get, Shelly .../command and .../rpc, LoRaWAN .../command/down,
+// Z-Wave JS _CLIENTS/.../api/...) or Sparkplug's command verbs. A canary topic never contains one.
+const COMMAND_LEVELS = new Set(['set', 'get', 'cmd', 'cmnd', 'command', 'commands', 'rpc', 'down', 'api', 'write', '_clients', 'ncmd', 'dcmd', 'scada']);
 
 const defaultTopic = (brokerId) => `${CANARY_PREFIX}${String(brokerId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 8)}`;
 
@@ -52,10 +57,15 @@ function validateCanaryConfig(raw) {
     if (typeof t !== 'string' || t.length > 200) return 'canary.topic must be a string of at most 200 characters';
     if (/[#+\0]/.test(t)) return 'canary.topic must be a plain topic without wildcards';
     if (t.startsWith('$') || t.startsWith('/') || t.endsWith('/') || t.includes('//')) return 'canary.topic must not start with $ or / and must have no empty levels';
-    // A custom topic is excluded from intake, so it must not be a real data topic by accident.
-    if (!t.startsWith(CANARY_PREFIX) && !t.toLowerCase().split('/').includes('canary')) {
-      return `canary.topic must start with ${CANARY_PREFIX} or contain a level named "canary", so it cannot hide real data`;
+    // The canary PUBLISHES, and a custom topic is excluded from intake: it must live under the canary
+    // namespace, so it can neither hide real data nor reach a system topic ($...), a Sparkplug namespace
+    // or another convention's command topic.
+    if (!t.startsWith(CANARY_PREFIX) || t.length === CANARY_PREFIX.length) {
+      return `canary.topic must start with ${CANARY_PREFIX} followed by a name, so it cannot hide real data or reach a command topic`;
     }
+    const levels = t.slice(CANARY_PREFIX.length).split('/');
+    const bad = levels.find((l) => COMMAND_LEVELS.has(l.toLowerCase()) || /^spbv\d/i.test(l));
+    if (bad) return `canary.topic must not contain the level "${bad}": it is used by command, request or Sparkplug topics`;
   }
   return null;
 }

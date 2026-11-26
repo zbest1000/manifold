@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { redactSecrets, isSecretKey } = require('../services/secrets');
 const { COLLECTIONS } = require('../services/profileStore');
+const { hostIdentity, historianEndpoint } = require('../services/endpointIdentity');
 
 // GET /api/system/status
 router.get('/status', (req, res) => {
@@ -233,6 +234,20 @@ function restoreSecrets(imported, existing) {
   return out;
 }
 
+/**
+ * True when an imported historian or device points somewhere else than the stored one (scheme, host,
+ * port; a URL's origin). Its stored secrets must then not be restored into it.
+ */
+function endpointMoved(collection, item, existing) {
+  if (!existing || !isPlainObject(item)) return false;
+  if (collection === 'historians') return item.type !== existing.type || historianEndpoint(item) !== historianEndpoint(existing);
+  if (collection === 'devices') {
+    const id = (d) => `${d.protocol}|${hostIdentity(d.scheme ?? '', d.host, d.port)}`;
+    return id(item) !== id(existing);
+  }
+  return false;
+}
+
 // GET /api/system/config/export
 router.get('/config/export', (req, res) => {
   const { profiles } = req.app.locals.services;
@@ -255,7 +270,11 @@ router.post('/config/import', (req, res) => {
   const imported = {};
   for (const c of EXPORT_COLLECTIONS) {
     if (!Array.isArray(body[c])) continue;
-    for (const item of body[c]) profiles.upsertIn(c, item.id, restoreSecrets(item, profiles.getIn(c, item.id)));
+    for (const item of body[c]) {
+      const existing = profiles.getIn(c, item.id);
+      // A stored secret never follows an imported endpoint change: the item is imported without it.
+      profiles.upsertIn(c, item.id, restoreSecrets(item, endpointMoved(c, item, existing) ? undefined : existing));
+    }
     imported[c] = body[c].length;
   }
   if (Array.isArray(body.mounts)) {

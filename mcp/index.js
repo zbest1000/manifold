@@ -925,7 +925,7 @@ server.tool(
     value: z.number().optional().describe('value-threshold: the limit.'),
     sustainMs: z.number().optional().describe('value-threshold: ms the condition must hold before firing (default 0).'),
     clearValue: z.number().optional().describe('value-threshold: resolve only once the value is back past this level.'),
-    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires or resolves.'),
+    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires or resolves. It is a credential: answers never return it (only hasWebhook and webhookOrigin). Omit to keep the stored one; an empty string removes it.'),
     enabled: z.boolean().optional().describe('Default true.')
   },
   async (args) => {

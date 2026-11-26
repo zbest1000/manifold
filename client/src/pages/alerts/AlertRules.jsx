@@ -65,7 +65,7 @@ function RuleEvents({ ruleId }) {
  * Alert rules: watch the namespace actively (a branch going quiet, a topic dying, unexpected topics, a
  * value crossing a limit). Silence rules are evaluated on the server every 15 s, value rules on every
  * message; firings become active alarms (Active tab), are recorded in the history (History tab) and,
- * optionally, reach a webhook. The webhook URL is a credential: a viewer session only learns that one is set.
+ * optionally, reach a webhook. The webhook URL is a credential: no session gets it back, only that one is set and its origin.
  */
 export default function AlertRules({ onChange }) {
   const brokers = useStore((s) => s.brokers);
@@ -421,14 +421,52 @@ export default function AlertRules({ onChange }) {
               )}
             </fieldset>
 
-            <Field label="Webhook URL (optional)" help={readOnly ? 'Hidden for viewer sessions: the URL is a credential.' : 'Called with the alert as JSON when the rule fires or resolves.'}>
-              <Input
-                className="mono"
-                placeholder={readOnly && form.id ? 'Not shown to viewers' : 'https://hooks.example.com/…'}
-                value={form.webhookUrl}
-                onChange={(e) => set({ webhookUrl: e.target.value })}
-              />
-            </Field>
+            {form.hasWebhook && form.webhookMode !== 'replace' ? (
+              // A stored webhook is a credential: never shown, only which service it calls. Kept unless replaced or removed.
+              <div className="space-y-1.5" data-testid="webhook-stored">
+                <span className="block text-xs font-medium text-muted">Webhook URL</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm text-fg">
+                    {form.webhookMode === 'remove' ? (
+                      'Removed when you save'
+                    ) : (
+                      <>
+                        Set, calls <span className="mono">{form.webhookOrigin || 'a stored address'}</span>
+                      </>
+                    )}
+                  </span>
+                  {!readOnly && form.webhookMode === 'keep' && (
+                    <>
+                      <Button size="sm" variant="secondary" onClick={() => set({ webhookMode: 'replace', webhookUrl: '' })}>
+                        Replace
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => set({ webhookMode: 'remove' })}>
+                        Remove
+                      </Button>
+                    </>
+                  )}
+                  {!readOnly && form.webhookMode === 'remove' && (
+                    <Button size="sm" variant="secondary" onClick={() => set({ webhookMode: 'keep' })}>
+                      Keep it
+                    </Button>
+                  )}
+                </div>
+                <span className="helper block">The URL is a credential and is not shown again. Saving keeps it unless you replace or remove it.</span>
+              </div>
+            ) : (
+              <Field
+                label="Webhook URL (optional)"
+                help={form.hasWebhook ? 'Leave blank to keep the stored webhook.' : 'Called with the alert as JSON when the rule fires or resolves. Not shown again after saving.'}
+              >
+                <Input
+                  className="mono"
+                  placeholder={form.hasWebhook ? 'stored, leave blank to keep' : 'https://hooks.example.com/…'}
+                  value={form.webhookUrl}
+                  onChange={(e) => set({ webhookUrl: e.target.value })}
+                  autoComplete="off"
+                />
+              </Field>
+            )}
           </fieldset>
         </Dialog>
       )}

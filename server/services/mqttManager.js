@@ -1,4 +1,6 @@
 const mqtt = require('mqtt');
+const net = require('net');
+const egressGuard = require('./egressGuard');
 const { EventEmitter } = require('events');
 const { randomUUID: uuidv4 } = require('crypto');
 const SparkplugDecoder = require('./sparkplugDecoder');
@@ -225,6 +227,13 @@ class MqttManager extends EventEmitter {
     }
     const canaryError = validateCanaryConfig(config.canary);
     if (canaryError) throw new Error(canaryError);
+    // Brokers may be on loopback or the LAN (no egress guard), but never on a link-local or
+    // cloud-metadata address: a literal or metadata name is refused here, a name that resolves to one
+    // is refused by the connect-time lookup below (every reconnect resolves through it).
+    const literal = String(config.host).replace(/^\[|\]$/g, '');
+    if (egressGuard.isLinkLocalOrMetadata(literal) || egressGuard.isMetadataName(literal)) {
+      throw new egressGuard.EgressBlockedError(literal, egressGuard.LINK_LOCAL_REASON, 'MQTT broker');
+    }
     const clientId = config.clientId || `manifold_${Date.now()}`;
     const brokerUrl = `${protocol}://${config.host}:${port}${isWebSocket ? wsPath : ''}`;
 
@@ -238,6 +247,16 @@ class MqttManager extends EventEmitter {
     };
 
     if (mqttVersion === 5) options.protocolVersion = 5;
+
+    // Connect-time address check. mqtts: tls.connect takes `lookup`; ws/wss: the ws library hands
+    // wsOptions to http(s).request, which takes it too; plain TCP: mqtt.js does not pass it on to
+    // net.createConnection, so _mqttConnect builds that stream itself (customStream).
+    const lookup = egressGuard.linkLocalGuardLookup('MQTT broker');
+    options.lookup = lookup;
+    if (isWebSocket) options.wsOptions = { lookup };
+    if (protocol === 'mqtt') {
+      options.customStream = () => net.createConnection({ host: literal, port, lookup });
+    }
 
     if (config.username) {
       options.username = config.username;
@@ -299,6 +318,13 @@ class MqttManager extends EventEmitter {
   // Seam over mqtt.connect (mqtt v5 exports non-configurable getters, so the
   // module itself can't be stubbed) — tests intercept URL/options here.
   _mqttConnect(url, options) {
+    if (typeof options.customStream === 'function') {
+      const { customStream, ...rest } = options;
+      const u = new URL(url);
+      const client = new mqtt.MqttClient(customStream, { ...rest, protocol: 'mqtt', host: u.hostname, hostname: u.hostname, port: Number(u.port) || 1883 });
+      client.on('error', () => {}); // as mqtt.connect does: the manager's own handler reports errors
+      return client;
+    }
     return mqtt.connect(url, options);
   }
 

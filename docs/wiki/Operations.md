@@ -60,8 +60,9 @@ npm start
   `server/services/authConfig.js` (also quoted in
   [ARCHITECTURE.md](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md#security-model)).
   Everything else non-GET is refused, over HTTP and over the socket.
-- Viewers do not see alert **webhook URLs** (Slack/Teams URLs are credentials);
-  they see only that one is set.
+- Nobody sees alert **webhook URLs** back (Slack/Teams URLs are credentials): every role
+  sees only that one is set and the service it calls (its origin). Saving a rule without
+  `webhookUrl` keeps the stored one; the editor offers **Replace** and **Remove**.
 
 Auth is enforced identically on the REST API **and** the Socket.IO handshake —
 the socket can publish and actuate, so it is gated the same way. See
@@ -126,6 +127,15 @@ limiter caps overall `/api` traffic (default 600 requests/minute per IP;
 `MANIFOLD_RATE_MAX` / `MANIFOLD_RATE_WINDOW_MS`), and `helmet` sets standard
 security headers on every response.
 
+**Behind a reverse proxy** every request arrives from the proxy's address, so without
+more configuration all users share one rate-limit bucket and one auth-failure counter,
+and the audit log records the proxy. Set `MANIFOLD_TRUST_PROXY` to the number of proxy
+hops in front of Manifold (`1` for one nginx/Traefik/IIS) or to the proxy addresses or
+subnets (`10.0.0.5,10.0.1.0/24`, `loopback`); the client address is then taken from
+`X-Forwarded-For`. It is off by default. `true` is refused with a startup warning: it
+would trust any `X-Forwarded-For`, so every client could choose its own address and step
+around the limits. Do not set it when Manifold is reached directly.
+
 ### Network safety (egress guard)
 
 Features that reach out to other machines pass their targets through one egress
@@ -148,11 +158,31 @@ What the guard covers, and how strongly:
 | **Device drivers** (every protocol, TCP, UDP, HTTP and WebSocket) | checked when a device is saved, tested or started. A hostname is resolved and validated in the server process; the validated address is passed to the driver host, which connects to **that address** (the hostname stays for display), so there is no re-resolution window. The name is re-resolved whenever a driver host restarts and every 30 s for running devices; if it now resolves to a blocked address the device goes offline with that reason instead of connecting. **Loopback is allowed only with `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`** (for simulators; the server warns at startup when set). Metadata ranges stay blocked either way. A refused device shows as Stopped with the reason |
 
 **Not covered:** MQTT broker hosts, OPC UA endpoints, and historian / database
-URLs are **not** checked. (The public test-broker presets in the connect form only fill the
+URLs are **not** checked against private or loopback ranges: a broker or historian on
+`localhost` or the LAN is the normal setup. (The public test-broker presets in the connect form only fill the
 form: they are public host names, so they would pass the guard, and a preset added twice is refused by
-the usual duplicate-broker rule.) They are connections an admin configures by hand, and
-an admin can point them anywhere the server can reach. Treat admin tokens
+the usual duplicate-broker rule.) They **do** refuse **link-local and cloud-metadata**
+targets: 169.254.0.0/16 (including `169.254.169.254`), fe80::/10, the metadata helper
+addresses of Azure, Alibaba, Oracle and AWS (IPv6), and metadata host names such as
+`metadata.google.internal`. A save is answered 403; a connection whose name later resolves
+to such an address fails to connect with *link-local or cloud-metadata address* as its
+last error (MQTT on every reconnect, OPC UA before every session, historians before every
+request). Otherwise they are connections an admin configures by hand, and
+an admin can point them anywhere else the server can reach. Treat admin tokens
 accordingly, and use network policy for these.
+
+### Stored secrets and address changes
+
+Passwords, tokens and community strings are never sent back to the browser, so an editor
+keeps the stored one when its field is left blank. That only holds while the address stays
+the same: when the scheme, host or port changes (for a URL, its origin) and the secret is
+left blank, the save is refused with 400 `{ code: "secret-required", field }` and the form
+shows *The address changed, so the password must be entered again* next to the field.
+Otherwise anyone with an admin token could move a connection to a server of their own and
+receive the stored password. It applies to brokers, the broker admin API URL, historians,
+OPC UA connections, devices (and the device connection test), and to config import: an
+imported historian or device whose endpoint differs from the stored one is imported without
+the stored secret. Renaming, or changing only a path, keeps the secret.
 
 ### CORS
 
@@ -355,6 +385,20 @@ Collected from the changelog; each is verified against the code.
 - **Sparkplug host STATE sessions** reconnect with the new settings when started again after a
   broker edit; they do not notice an edit by themselves.
 - **Recordings** can be paused and resumed (the pause/resume control on the Recorder tab).
+- **Secrets and address changes**: changing a connection's host, port or scheme with its
+  password left blank is refused (400 `secret-required`); type the password again. Scripts
+  that PUT a broker, OPC UA connection or device with a new host and no password must now
+  send the password.
+- **Alert webhook URLs** are no longer returned to admins either (`hasWebhook`,
+  `webhookOrigin`); a rule saved without `webhookUrl` keeps it, `""` removes it. Scripts
+  that cleared a webhook by omitting the field must send `""`.
+- **Brokers, OPC UA endpoints and historians** on a link-local or cloud-metadata address are
+  refused (403 at save, an error at connect).
+- **Canary topics** must start with `manifold/canary/` and contain no command level.
+- **`GET /api/recorder/:id/series` needs `tags`** (1-10); a series stops after 1,000,000
+  samples (`meta.truncated`), and a recording's `maxBytes` is at most 4 GiB.
+- **`MANIFOLD_TRUST_PROXY`** is new; set it behind a reverse proxy (see
+  [rate limiting](#brute-force-protection-and-rate-limiting)).
 - Earlier changes (fail-closed auth, `/metrics` needs a token, webhooks pass the egress guard,
   device targets guarded) are listed in the README.
 
@@ -398,6 +442,14 @@ from the newest valid backup** (loudly, in the log: changes since that backup
 are lost), after the bad file is kept as `profiles.json.bak`. Pending writes
 are flushed on shutdown and on exit; a hard kill (SIGKILL, power loss) can lose
 only the edits of the current instant.
+
+**When the data directory cannot be written** (disk full, permissions, a read-only mount),
+saves still answer OK but only change the running server. `GET /api/system/status` then
+answers `"status": "degraded"` with `storage.profiles` (configuration) and
+`storage.alertJournal` (alert history) saying which store failed and why; Overview lists
+each under **Needs attention** and the Health page shows a banner *Storage degraded:
+changes are not being saved*. Free space or fix the permissions: the next save writes
+everything again. Until then, changes are lost on restart.
 
 ## Docker image
 

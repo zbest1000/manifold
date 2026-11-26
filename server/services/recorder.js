@@ -44,6 +44,8 @@ const { matchParts, compiledView } = require('./mqttMatch');
  */
 
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+// Samples one series request may hold before bucketing (about 100 MB at most).
+const SERIES_SAMPLE_CAP = 1_000_000;
 const READ_LIMIT_MAX = 5000;
 
 // Pull a numeric value out of a recorded payload for charting. Mirrors the
@@ -405,13 +407,23 @@ class Recorder {
     const wanted = new Set(tags);
     const byTag = new Map(); // tag -> { unit, numeric, points: [[tsMs, value|null, quality]] }
     let legacy = 0;
-    for await (const p of this._records(id)) {
+    // The samples are held until they are bucketed: bound them, so a series over a huge recording cannot
+    // exhaust memory. Past the cap reading stops and the answer says so.
+    const sampleCap = this.seriesSampleCap || SERIES_SAMPLE_CAP;
+    let held = 0;
+    let truncated = false;
+    reading: for await (const p of this._records(id)) {
       if (p.t < from || p.t > to) continue;
       if (wanted.size && !wanted.has(p.topic) && !(Array.isArray(p.m) && p.m.some((e) => wanted.has(`${p.topic}/${e?.n}`)))) continue;
       const samples = recordSamples(p);
       if (p.qc === undefined && samples.length) legacy++;
       for (const smp of samples) {
         if (wanted.size && !wanted.has(smp.tag)) continue;
+        if (held >= sampleCap) {
+          truncated = true;
+          break reading;
+        }
+        held++;
         let entry = byTag.get(smp.tag);
         if (!entry) byTag.set(smp.tag, (entry = { unit: undefined, numeric: false, points: [] }));
         if (smp.unit) entry.unit = smp.unit; // the latest unit wins
@@ -434,7 +446,8 @@ class Recorder {
         quality: 'stored',
         qualityNote: legacy
           ? `${legacy.toLocaleString()} samples were recorded before quality capture: they count as Good unless their payload carried a quality.`
-          : 'Quality recorded with each sample.'
+          : 'Quality recorded with each sample.',
+        ...(truncated ? { truncated: true, truncatedNote: `Only the first ${sampleCap.toLocaleString()} samples in this range were read. Narrow the time range or the tags to see the rest.` } : {})
       }
     };
   }

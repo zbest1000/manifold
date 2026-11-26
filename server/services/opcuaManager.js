@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { randomUUID: uuidv4 } = require('crypto');
+const { assertNotLinkLocal } = require('./egressGuard');
 const {
   OPCUAClient,
   MessageSecurityMode,
@@ -427,6 +428,8 @@ class OpcuaManager extends EventEmitter {
    */
   async connect(config = {}, { supervise = false, monitors = null, owners = null } = {}) {
     checkEndpointUrl(config.endpointUrl);
+    // Loopback and LAN servers are fine (no egress guard), link-local and cloud-metadata addresses never.
+    await assertNotLinkLocal(config.endpointUrl, { purpose: 'OPC UA endpoint' });
 
     const connectionId = config.id || uuidv4();
     if (this.connections.has(connectionId)) {
@@ -553,6 +556,9 @@ class OpcuaManager extends EventEmitter {
   /** One connect attempt: new client + session, then go online. Throws on failure. */
   async _establish(entry) {
     const { info, config } = entry;
+    // Every (re)connect resolves the endpoint again: a name that now points at a link-local or
+    // metadata address is refused before a session is opened.
+    await assertNotLinkLocal(config.endpointUrl, { purpose: 'OPC UA endpoint' });
     const { client, certificateManager } = await this._buildClient(entry);
     if (entry.closing) throw new Error('connection closed');
     entry.client = client;
@@ -831,6 +837,7 @@ class OpcuaManager extends EventEmitter {
    */
   async discoverEndpoints(endpointUrl, timeoutMs = DISCOVERY_TIMEOUT_MS) {
     checkEndpointUrl(endpointUrl);
+    await assertNotLinkLocal(endpointUrl, { purpose: 'OPC UA endpoint' });
     let endpoints;
     try {
       endpoints = await this._getEndpointsRaw(endpointUrl, timeoutMs);
@@ -1417,6 +1424,7 @@ class OpcuaManager extends EventEmitter {
    */
   async updateConnection(connectionId, config = {}) {
     checkEndpointUrl(config.endpointUrl);
+    await assertNotLinkLocal(config.endpointUrl, { purpose: 'OPC UA endpoint' }); // before the running session is touched
     const old = this.connections.get(connectionId);
     const oldConfig = old ? old.config : null;
     const monitors = old ? [...old.monitorSpecs] : [];

@@ -54,6 +54,13 @@ const deviceRoutes = require('./routes/devices');
 const iotRoutes = require('./routes/iot');
 
 const app = express();
+// Behind a reverse proxy, name it (MANIFOLD_TRUST_PROXY: hop count or proxy addresses) so the rate limit,
+// the auth-failure throttle and the audit log see each client instead of the proxy. Off by default.
+{
+  const { value, warning } = require('./services/trustProxy').parseTrustProxy(process.env.MANIFOLD_TRUST_PROXY);
+  app.set('trust proxy', value);
+  if (warning) console.warn(warning);
+}
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {

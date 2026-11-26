@@ -331,15 +331,18 @@ test('canary secrets never leave through any outlet', async () => {
     outlets.push([`data file ${f}`, fs.readFileSync(full, 'latin1')]);
   }
 
-  // By design an admin's alert-rule answers carry the webhook URL (the editor shows it); only the
-  // viewer role gets `hasWebhook`. Every other outlet must not.
-  const adminRuleAnswer = (name) => /^(POST \/api\/alerts\/rules|409 alert rule|admin GET \/api\/alerts\/rules)$/.test(name);
+  // The webhook URL is a secret like a password: no answer carries it, for any role (rule answers
+  // carry `hasWebhook` and the origin only).
   const leaks = [];
   for (const [name, text] of outlets) {
-    const hit = findCanaries(text).filter((k) => !(k === 'webhookPath' && adminRuleAnswer(name)));
+    const hit = findCanaries(text);
     if (hit.length) leaks.push(`${name}: ${hit.join(', ')}`);
   }
   assert.deepStrictEqual(leaks, []);
+  const shown = (await call('/api/alerts/rules')).json.rules.find((r) => r.id === rule.json.id);
+  assert.strictEqual(shown.hasWebhook, true);
+  assert.strictEqual(shown.webhookOrigin, 'https://hooks.example.invalid');
+  assert.strictEqual(shown.webhookUrl, null);
 });
 
 test('security headers: a script-restricting CSP is served, without upgrade-insecure-requests', async () => {

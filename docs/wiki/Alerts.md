@@ -37,6 +37,11 @@ Value-threshold rules watch a topic's payload, or a dot-path `field` inside a JS
 Silence rules already fire only after their threshold, so they need neither.
 
 Rules can POST each firing and resolution to a **webhook** (5 s timeout, through the egress guard).
+The webhook URL is a credential (for chat webhooks the path is the secret): once saved it is never
+shown again, to any role. The editor shows *Set, calls https://hooks.example.com* with **Replace**
+and **Remove**; saving without touching it keeps it. Over the API, a rule saved without `webhookUrl`
+(or with `null`) keeps the stored URL, `""` removes it, and answers carry `hasWebhook` and
+`webhookOrigin` instead.
 Delivery failures are counted and the last error is shown on the Rules tab. Acknowledgements and
 restart bookkeeping are not sent to webhooks.
 
@@ -109,7 +114,7 @@ active for ever that nothing could resolve.
 | `GET` | `/api/alerts/active` | active alarms (`id`, `ruleId`, `ruleName`, `severity`, `type`, `topic`, `value`, `since`, `state` firing/breached, `condition`, `remainingMs`, `acknowledged`, `ack: { by, at, note }`) and `counts` (`firing`, `breached`, `unacknowledged`, `unacknowledgedCritical`) |
 | `POST` | `/api/alerts/ack` | `{ ruleId, topic?, note?, since? }` acknowledges one alarm (value rules need the `topic`); `{ ruleId, all: true }` every firing alarm of the rule. `409 not-firing` if it is not firing, `409 stale` if `since` names an earlier occurrence. Admin only |
 | `GET` | `/api/alerts/history` | `?cursor=&limit=&ruleId=&state=&severity=&q=&from=&to=`, newest first; `state` and `severity` take comma lists, `from`/`to` epoch ms or ISO; pass the returned `nextCursor` for the next page. `&format=csv` exports every match |
-| `GET` | `/api/alerts/rules` | rules with the engine's state on each (`idle`, `breached`, `firing`, `disabled`, `broken`), severity, unacknowledged count and webhook health; viewers never see webhook URLs |
+| `GET` | `/api/alerts/rules` | rules with the engine's state on each (`idle`, `breached`, `firing`, `disabled`, `broken`), severity, unacknowledged count and webhook health; no role sees webhook URLs (`hasWebhook`, `webhookOrigin` instead) |
 | `POST` | `/api/alerts/rules` | create or edit (upsert by id, `rev` for optimistic concurrency); `severity` is `info`, `warning` or `critical` |
 | `DELETE` | `/api/alerts/rules/:id` | delete (its active alarms end) |
 | `GET` | `/api/alerts/events` | the newest events from memory (`?ruleId=` for one rule) |

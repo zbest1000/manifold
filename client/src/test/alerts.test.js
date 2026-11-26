@@ -117,3 +117,22 @@ describe('rule form severity', () => {
     expect(ruleBody({ ...EMPTY_RULE_FORM, severity: 'urgent' }, 'b').severity).toBe('warning');
   });
 });
+
+describe('rule form webhook (a credential, never shown again)', () => {
+  const stored = { id: 'r', rev: 2, type: 'new-topic', brokerId: 'b', webhookUrl: null, hasWebhook: true, webhookOrigin: 'https://hooks.example.com' };
+  it('loads a stored webhook as "set" without its URL and keeps it on save', () => {
+    const form = formFromRule(stored);
+    expect(form).toMatchObject({ webhookUrl: '', hasWebhook: true, webhookOrigin: 'https://hooks.example.com', webhookMode: 'keep' });
+    expect('webhookUrl' in ruleBody(form, 'b')).toBe(false);
+  });
+  it('replace sends the new URL, a blank replace keeps the stored one, remove sends an empty string', () => {
+    const form = formFromRule(stored);
+    expect(ruleBody({ ...form, webhookMode: 'replace', webhookUrl: 'https://new.example.com/x' }, 'b').webhookUrl).toBe('https://new.example.com/x');
+    expect('webhookUrl' in ruleBody({ ...form, webhookMode: 'replace', webhookUrl: '' }, 'b')).toBe(false);
+    expect(ruleBody({ ...form, webhookMode: 'remove' }, 'b').webhookUrl).toBe('');
+  });
+  it('a new rule sends the typed URL, or nothing', () => {
+    expect(ruleBody({ ...EMPTY_RULE_FORM, webhookUrl: 'https://h.example.com/1' }, 'b').webhookUrl).toBe('https://h.example.com/1');
+    expect('webhookUrl' in ruleBody({ ...EMPTY_RULE_FORM }, 'b')).toBe(false);
+  });
+});

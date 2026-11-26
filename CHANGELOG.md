@@ -741,6 +741,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A stored secret no longer follows an address change** (medium). Editing a broker, the broker admin API URL,
+  a historian, an OPC UA connection or a device and changing its scheme, host or port while leaving the password
+  blank kept the stored secret, so an admin token could point the connection at its own server and receive a
+  password the API never shows (the device connection test did the same with an unsaved host). Such a save is now
+  refused with 400 `{ code: 'secret-required', field }` and the form shows *The address changed, so the password
+  must be entered again* next to the field; a name or path change keeps the secret. Config import never restores a
+  stored secret into a historian or device whose endpoint differs from the stored one. A masked URL password
+  (`user:***@host`) saved back for the same origin keeps the stored one, also after a path change.
+- **Brokers, OPC UA endpoints and historians refuse link-local and cloud-metadata targets** (low). They stay outside
+  the egress guard so loopback and LAN targets work, but 169.254.0.0/16 (including `169.254.169.254`), fe80::/10,
+  the single-address metadata helpers and well-known metadata host names are now refused at save (403) and at
+  connect, on the resolved address (MQTT on every reconnect through a guarded lookup, OPC UA before every session,
+  historians before every request).
+- **Alert webhook URLs are secrets for every role** (low). Admin answers used to carry the URL (the path is the
+  credential for chat webhooks). Answers, including 409 bodies, now carry `hasWebhook` and `webhookOrigin`; a save
+  without `webhookUrl` keeps the stored one and `""` removes it. The rule editor shows *Set, calls <origin>* with
+  **Replace** and **Remove**. Config export and the audit log already redacted it.
+- **The broker canary topic must live under `manifold/canary/`** and may not contain a command, request or
+  Sparkplug level (`set`, `get`, `cmnd`, `command`, `rpc`, `down`, `api`, `_CLIENTS`, `NCMD`, `DCMD`, `spBv*`), so
+  the canary cannot publish to a system, Sparkplug or IoT command topic. (A level named `canary` anywhere used to be
+  enough.)
+- **`MANIFOLD_TRUST_PROXY`** (default off): behind a reverse proxy every request came from the proxy, so all users
+  shared one rate-limit bucket and auth-failure counter. Set it to the hop count or the proxy addresses.
+- `GET /api/recorder/:id/series` without `tags` held every sample of a recording in memory: tags (1-10) are now
+  required, a series holds at most 1,000,000 samples (`meta.truncated` says when it was cut), and a recording's
+  `maxBytes` is capped at 4 GiB. The alert history CSV export no longer answers 500 on a journal line without a
+  valid `ts`. Prometheus label values escape a carriage return as well as a line feed.
+- Degraded storage is visible: Overview's **Needs attention** and the Health page say when the configuration or
+  the alert history cannot be written and that changes are not being saved.
+- The wiki is published from `main` only (it also ran on work branches), and every third-party GitHub Action is
+  pinned to a commit SHA. Client dev dependencies: vite 8.1.7, vitest 4.1.12, browserslist 4.29.6 (npm audit
+  advisories in the dev server, the test runner and the lint toolchain).
+
 - **A long wildcard pattern could freeze the server.** Mapping select patterns were turned into regular expressions
   that backtrack catastrophically (a 25-character pattern blocked the server for over a minute, and a viewer could send
   one through the preview endpoint). They are now matched in linear time.
@@ -819,7 +852,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Retained cleanup is bounded.** At most 20,000 recorded topics per broker; what does not fit is counted and not
   cleaned automatically.
 - **MQTT, OPC UA and historian endpoints are outside the egress guard**, by
-  decision (see Security above).
+  decision (see Security above); only link-local and cloud-metadata targets are refused for them.
 - WebGL and 3D were only run on a software renderer; accessibility is checked
   automatically (axe, both themes) but not audited by hand or with a screen reader.
 - See `docs/REVIEW-2026-11.md` for the full list, including defects seen while

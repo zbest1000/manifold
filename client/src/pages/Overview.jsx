@@ -10,7 +10,7 @@ import { api } from '@/lib/api';
 import { deviceBadge } from '@/lib/deviceStatus';
 import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf, sentenceCase } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
-import { engineAttention, recordPending } from '@/lib/attention';
+import { engineAttention, recordPending, storageAttention } from '@/lib/attention';
 import { canaryAttention } from '@/lib/brokerHealth';
 
 /**
@@ -110,11 +110,11 @@ export default function Overview() {
 
   // Configuration the engine numbers refer to (names, alert state, mapping health, broken references),
   // polled slowly; each source is optional (a failure leaves its items out, the page says so in the banner).
-  const [config, setConfig] = useState({ routes: [], historians: [], alertRules: [], mappings: [], health: {}, broken: [] });
+  const [config, setConfig] = useState({ routes: [], historians: [], alertRules: [], mappings: [], health: {}, broken: [], status: null });
   useEffect(() => {
     let stop = false;
     const load = () =>
-      Promise.allSettled([api.listPipelines(), api.listHistorians(), api.listAlertRules(), api.listBindings(), api.brokenReferences()]).then(([p, h, a, b, x]) => {
+      Promise.allSettled([api.listPipelines(), api.listHistorians(), api.listAlertRules(), api.listBindings(), api.brokenReferences(), api.systemStatus()]).then(([p, h, a, b, x, st]) => {
         if (stop) return;
         const ok = (r, f, d) => (r.status === 'fulfilled' ? f(r.value) : d);
         setConfig((c) => ({
@@ -123,7 +123,8 @@ export default function Overview() {
           alertRules: ok(a, (v) => v.rules || [], c.alertRules),
           mappings: ok(b, (v) => v.bindings || [], c.mappings),
           health: ok(b, (v) => v.health || {}, c.health),
-          broken: ok(x, (v) => v.broken || [], c.broken)
+          broken: ok(x, (v) => v.broken || [], c.broken),
+          status: ok(st, (v) => v, c.status) // storage degraded: the configuration or the alert history cannot be written
         }));
       });
     load();
@@ -212,7 +213,7 @@ export default function Overview() {
   const recentAlerts = alerts?.recent ?? 0;
 
   // What needs a human, worst first.
-  const issues = [];
+  const issues = [...storageAttention(config.status)];
   for (const b of brokers) {
     if (b.status !== 'connected') issues.push({ key: `b-${b.id}`, tone: brokerTone(b) === 'neutral' ? 'warn' : brokerTone(b), what: b.name, detail: `MQTT broker ${b.status}${b.lastError ? `: ${b.lastError}` : ''}`, to: '/brokers' });
   }

@@ -61,7 +61,31 @@ test('config: defaults, validation and the default topic', () => {
   assert.match(validateCanaryConfig({ topic: 'a/#' }), /wildcards/);
   assert.match(validateCanaryConfig({ topic: '$SYS/x/canary' }), /\$/);
   assert.match(validateCanaryConfig({ topic: 'plant/line1/temperature' }), /cannot hide real data/);
-  assert.strictEqual(validateCanaryConfig({ topic: 'plant/canary/manifold' }), null);
+  // Strict prefix rule: a custom topic lives under manifold/canary/ and is never a command or system topic.
+  assert.strictEqual(validateCanaryConfig({ topic: `${CANARY_PREFIX}line1` }), null);
+  assert.strictEqual(validateCanaryConfig({ topic: `${CANARY_PREFIX}site-a/probe_2` }), null);
+  for (const t of [
+    'plant/canary/manifold', // a level named canary is no longer enough
+    'canary',
+    CANARY_PREFIX, // nothing after the prefix
+    'manifold/canary', // no trailing level
+    '$SYS/manifold/canary/x',
+    'spBv1.0/group/NCMD/node',
+    `${CANARY_PREFIX}spBv1.0/g/NCMD/n`,
+    'cmnd/tasmota/POWER',
+    'zigbee2mqtt/lamp/set',
+    'shellies/plug/relay/0/command',
+    `${CANARY_PREFIX}lamp/set`,
+    `${CANARY_PREFIX}x/get`,
+    `${CANARY_PREFIX}cmnd/POWER`,
+    `${CANARY_PREFIX}dev/command`,
+    `${CANARY_PREFIX}dev/command/down`,
+    `${CANARY_PREFIX}dev/rpc`,
+    `${CANARY_PREFIX}_CLIENTS/x/api/y`
+  ]) {
+    assert.ok(validateCanaryConfig({ topic: t }), `${t} must be refused`);
+  }
+  assert.match(validateCanaryConfig({ topic: 'plant/canary/manifold' }), /manifold\/canary\//);
   const n = normalizeCanaryConfig({}, 'abcdef123456');
   assert.deepStrictEqual(n, { enabled: false, topic: `${CANARY_PREFIX}abcdef12`, qos: 0, intervalSec: 30, slowMs: 1000 });
 });
@@ -208,7 +232,7 @@ test('an in-flight probe lost to a closed connection counts as a failure (broker
 
 test('canary traffic never reaches the topic store, the message tap, the counters or the UNS', async () => {
   const client = new FakeClient();
-  const { manager, id } = await managerWith(client, { topic: 'plant/canary/mine' });
+  const { manager, id } = await managerWith(client, { topic: `${CANARY_PREFIX}mine-custom` });
   const tapped = [];
   manager.on('message', (m) => tapped.push(m.topic));
   const feed = (topic, body = '{}') => manager.handleMessage(id, topic, Buffer.from(body), { qos: 0, retain: false });

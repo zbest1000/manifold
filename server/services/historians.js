@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { Agent } = require('undici');
 const { fetchWithTimeout } = require('./httpTimeout');
 const { stripUrlCredentials } = require('./secrets');
+const { assertNotLinkLocal, linkLocalGuardLookup } = require('./egressGuard');
 
 // All historian HTTP calls get a hard deadline: a wedged historian (TCP accepts,
 // never responds) must degrade to an error, not hang the store-and-forward
@@ -20,6 +21,7 @@ const timedFetch = (url, opts) => fetchWithTimeout(url, opts, HISTORIAN_TIMEOUT_
 // sslRootCert (same precedence as the pg path). Agents are cached so each
 // distinct TLS setting keeps one socket pool, not one per request.
 const tlsAgents = new Map();
+const historianLookup = linkLocalGuardLookup('historian');
 function tlsDispatcher(conn) {
   const insecure = Boolean(conn.sslInsecure);
   const ca = conn.sslRootCert ? String(conn.sslRootCert) : '';
@@ -27,7 +29,9 @@ function tlsDispatcher(conn) {
   const key = insecure ? 'insecure' : `ca:${ca}`;
   let agent = tlsAgents.get(key);
   if (!agent) {
-    agent = new Agent({ connect: insecure ? { rejectUnauthorized: false } : { ca } });
+    // The connect-time lookup refuses link-local and cloud-metadata addresses (httpFetch checks the
+    // resolved address before every request in either case).
+    agent = new Agent({ connect: { lookup: historianLookup, ...(insecure ? { rejectUnauthorized: false } : { ca }) } });
     tlsAgents.set(key, agent);
   }
   return agent;
@@ -49,6 +53,9 @@ const TLS_ERROR_CODES = new Set([
 // Single entry point for every historian HTTP call: injects the TLS dispatcher
 // and rewrites certificate failures into a fix-it hint.
 async function httpFetch(conn, url, opts, fetchImpl) {
+  // Historians may be on loopback or the LAN (no egress guard), never on a link-local or
+  // cloud-metadata address: checked here and again by the dispatcher's connect-time lookup.
+  await assertNotLinkLocal(url, { purpose: 'historian' });
   const dispatcher = tlsDispatcher(conn);
   try {
     return await fetchImpl(url, dispatcher ? { ...opts, dispatcher } : opts);
@@ -396,6 +403,7 @@ function pgEntryFor(conn) {
 async function timescaleWrite(conn, points) {
   if (!conn.host || !conn.database || !conn.user) throw new Error('timescaledb needs host, database, and user');
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool, schemaReady } = pgEntryFor(conn);
 
   if (!schemaReady.has(table)) {
@@ -677,6 +685,7 @@ async function influxQuerySeries(conn, { tags, start, end, maxPoints }, fetchImp
 
 async function timescaleQueryTags(conn, { search, limit }) {
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool } = pgEntryFor(conn);
   const { rows } = await pool.query(
     `SELECT DISTINCT topic FROM ${table} WHERE topic ILIKE $1 ORDER BY topic LIMIT $2`,
@@ -687,6 +696,7 @@ async function timescaleQueryTags(conn, { search, limit }) {
 
 async function timescaleQuerySeries(conn, { tags, start, end, maxPoints }) {
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool } = pgEntryFor(conn);
   // The bucket width is the ONLY interpolated value and it is built from an
   // integer we computed — user text never reaches the SQL string.
@@ -827,6 +837,7 @@ function rawTags(tags) {
 
 async function* timescaleRaw(conn, { tags, start, end }) {
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool } = pgEntryFor(conn);
   let afterTs = new Date(start - 1);
   let afterTopic = '';
