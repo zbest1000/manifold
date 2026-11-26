@@ -3,7 +3,7 @@
 /**
  * One EtherNet/IP session + one class 3 connection over node:net.
  *
- * Rules (southbound-drivers.md sections 3 and 4.3):
+ * Rules (docs/design/driver-contract.md, design rules):
  * - exactly one request in flight; a second concurrent request is refused;
  * - every request has a deadline; on expiry the socket is DESTROYED and the
  *   client is dead (never reused), so a late reply can never be matched to a

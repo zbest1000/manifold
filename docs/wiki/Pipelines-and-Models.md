@@ -31,7 +31,8 @@ read-only behaviour for viewer sessions.
 ![The Routes tab: three running routes, two into historians and one back to the broker, with In, Routed, Delivered, Pending, Rejected, Blocked and Errors counters](images/pipelines.png)
 
 **Routes.** One row per route: its name, `source filter -> N transforms -> target`, **State**
-(*Running*, *Paused*, *Failing* when it has errors, *Loop blocked* when a loop guard fired),
+(*Running*, *Paused*, *Failing* when it has errors, *Loop blocked* when a loop guard fired, *Historian
+rejecting* when its historian refuses everything, *Broken reference*),
 and the counters **In** (matched the source filter), **Routed** (handed on), **Delivered** (accepted by the target: the publish succeeded, or the historian stored it), **Pending** (queued or spilled to disk), **Rejected** (dead-lettered or unrepresentable), **Blocked** (stopped by the loop guard) and **Errors**; each column header explains itself on hover. For a route into a historian, **Routed** means *admitted to the outbox*, which is not the same as stored, so a historian that refuses everything is visible as Rejected (and in **Needs attention** on the Overview). The same numbers are on `/metrics` (`manifold_pipeline_messages_total{result=routed|delivered|rejected}`, `manifold_pipeline_pending_points`, `manifold_outbox_pending_points`) and per historian on the Historians tab. Per row: a **Pause route** /
 **Resume route** button, **Edit route** and **Delete route**. Pausing keeps the route and stops it.
 
@@ -114,12 +115,12 @@ recording, or a mapping) still writes to cannot be deleted: the **Historians** t
 ## Recorder and contracts
 
 - **Recorder tab.** **New recording**: **Name**, **Broker**, **Filter**, **Record to** (a local file, or a historian).
-  Each row shows the captured points and the last error. **Pause recording** keeps everything captured so far and
-  stops appending; **Resume recording** continues in the same recording (the API is `enabled: false` and `true` on
+  Each row shows the captured points and the last error. **Pause** keeps everything captured so far and
+  stops appending; **Resume** continues in the same recording (the API is `enabled: false` and `true` on
   `POST /api/recorder`). A recording can be **peeked** (the first points, in a drawer) and **replayed**
   (**Start replay** with **Speed**, **Topic prefix** and **Loop until stopped**); only one replay runs at a time, and
   a banner with **Stop** shows it. A recording to a file is also a **Trends** source with no external database.
-- **Contracts tab.** **New contract** locks the payload shape inferred from an observed topic (**Name**, **Broker**,
+- **Contracts tab.** **Lock a payload contract** locks the payload shape inferred from an observed topic (**Name**, **Broker**,
   **Topic**, then infer and lock); **Recent violations** lists drift. A contract's topic is tied to its inferred schema:
   changing the topic discards the inference, so a stale schema can never be locked under another topic.
 

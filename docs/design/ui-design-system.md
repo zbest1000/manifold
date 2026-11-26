@@ -1,6 +1,6 @@
 # Manifold UI design system
 
-Status: implemented and applied to every page (November 2026). Reference pages: `client/src/pages/Overview.jsx` (dashboard), `client/src/pages/Brokers.jsx` (list + form dialog), `client/src/pages/Devices.jsx` (table + detail drawer + full-page form) and `client/src/pages/Tags.jsx` with `client/src/pages/tags/editor/` (workspace + full-height editor). The Tailwind compatibility layer that remapped legacy class names was removed in November 2026 (section 11); only the semantic tokens exist.
+The rules every page of the console follows, and the tokens and primitives that implement them. Reference pages: `client/src/pages/Overview.jsx` (dashboard), `client/src/pages/Brokers.jsx` (list + form dialog), `client/src/pages/Devices.jsx` (table + detail drawer + full-page form) and `client/src/pages/Tags.jsx` with `client/src/pages/tags/editor/` (workspace + full-height editor). The client is on Tailwind 4: `index.css` imports `tailwindcss` and loads `tailwind.config.js` with `@config`, and that config replaces Tailwind's palette with the semantic tokens, so only the names below exist.
 
 Files:
 
@@ -8,11 +8,12 @@ Files:
 | --- | --- |
 | Tokens (both themes), fonts, base styles | `client/src/index.css` |
 | Tailwind theme: the semantic palette only (the default palette is replaced) | `client/tailwind.config.js` |
-| Guard against legacy class names | `client/src/test/designSystemClasses.test.js` |
+| Guard against Tailwind palette and other off-system class names | `client/src/test/designSystemClasses.test.js` |
 | Theme before first paint | `client/public/theme-init.js` (loaded from `client/index.html`) |
 | Theme at runtime (`useTheme`, `setThemePreference`) | `client/src/lib/theme.js` |
 | Primitives (import from `@/components/ui`) | `client/src/components/ui/*.jsx`, re-exported by `client/src/components/ui.jsx` |
 | Shell | `client/src/components/Layout.jsx`, `PageHeader.jsx`, `ErrorLog.jsx` |
+| Local primitives not yet promoted | section 11 |
 
 ---
 
@@ -28,22 +29,20 @@ Manifold is an instrument for controls and automation engineers. It is open next
 6. **Two real themes.** Dark is the default and light is first-class. Both come from the same semantic tokens, so a component written once works in both.
 7. **Plain copy.** Specific, short, sentence case. Write "1 of 2 connected", not "Live snapshot of your brokers". Avoid marketing voice and exclamation marks.
 
-## 2. What was removed (the generated look)
+## 2. Patterns to avoid
 
-Observed in the before screenshots of every route, dark only. Each item lists its replacement:
-
-| Anti-pattern (before) | Where it showed | Now |
-| --- | --- | --- |
-| Navy-black page (`#0a0f1c`) with sky-blue accents and blue-tinted slate greys | everywhere | Pure graphite neutrals with a teal accent used sparingly |
-| Gradient icon tiles (sky / violet / amber / emerald squares with coloured shadows) on stat cards | Overview, I3x, Cesmii | `Stat` (label, number, unit, secondary line) in a `StatGroup` strip |
-| Glowing primary buttons (`bg-sky-700 shadow-lg shadow-sky-700/20`) and gradient brand tile | every header, sidebar brand | Solid accent button, no shadow. The brand is a flat monochrome mark |
-| `rounded-2xl` translucent glass cards (`bg-surface-900/60 backdrop-blur border-white/5` plus a double shadow) nested inside each other | all panels | `Panel` / `Card`: 8px radius, 1px `border-line`, solid `bg-panel` |
-| Pills for everything: status pills with tinted fill and ring, count pills, level pills | badges, log, tables | `StatusText` (dot + word) for state. `Badge` is a small square-cornered label |
-| Uppercase letter-spaced micro-labels on every field, card title and table header | forms, System, Tags, tables | Sentence-case 12px medium labels. Uppercase survives only as `.overline`, used sparingly |
-| A decorative icon in front of every heading ("Process health", "Recent messages") | panels | Plain headings |
-| Generous padding and low density (28px card padding, 44px icon tiles, 40px nav rows) | everywhere | 16px panel padding, 32px nav rows, 32px controls |
-| Ping halo on every connected dot, pulsing everything | status | Static dots. Motion only for state changes |
-| Generic copy ("Live snapshot of your brokers, OPC UA servers and devices") | headers | Specific copy, or no subtitle |
+| Avoid | Use instead |
+| --- | --- |
+| Navy-black pages with blue accents and blue-tinted greys | Graphite neutrals with the teal accent used sparingly |
+| Gradient icon tiles on stat cards | `Stat` (label, number, unit, secondary line) in a `StatGroup` strip |
+| Glowing or gradient buttons and brand tiles | A solid accent button, no shadow; a flat monochrome brand mark |
+| Translucent glass cards with blur and double shadows, nested inside each other | `Panel` / `Card`: 6px radius, 1px `border-line`, solid `bg-panel`, never nested |
+| Pills for everything (status, counts, levels) | `StatusText` (dot + word) for state; `Badge` is a small square-cornered label |
+| Uppercase letter-spaced micro-labels | Sentence-case 12px medium labels |
+| A decorative icon in front of every heading | Plain headings |
+| Generous padding and low density | 16px panel padding, 32px nav rows, 32px controls |
+| A ping halo on every connected dot | Static dots; motion only for state changes |
+| Generic copy ("Live snapshot of your brokers") | Specific copy ("1 of 2 connected"), or no subtitle |
 
 ## 3. Colour tokens
 
@@ -89,6 +88,7 @@ Why pure neutral: blue-tinted slate on navy is the most common default of genera
 | `--warn` | `text-warn`, `bg-warn` | `#e3a33a` | `#975a00` | connecting, stale, degraded, spill |
 | `--bad` | `text-bad`, `bg-bad` | `#f06a63` | `#c4282e` | error, offline with a failure, quality bad |
 | `--info` | `text-info`, `bg-info` | `#6aa6f8` | `#1f5fc2` | informational notices |
+| `--aux` | `text-aux`, `bg-aux` | `#b39af5` | `#6b47c9` | a fifth hue for canvases and charts (not a state) |
 | `--danger` / `--danger-hover` / `--danger-fg` | `bg-danger text-danger-fg` | `#c9302c` / `#d83a35` / white | `#c4282e` / `#a81e24` / white | destructive buttons only |
 
 The four were tuned as a set: in each theme they have similar contrast against the panel (dark 6.0 to 8.2:1, light 5.4 to 6.0:1), so none shouts louder than another. Show state as a **dot** (`StatusDot`), a **dot and word** (`StatusText`), a **2px left rule** (`Banner`, selected row), or **coloured text** for a short value. Never as a large tinted pill. A tint background is allowed only at 6 to 10% behind an inline alert or a hover.
@@ -120,8 +120,8 @@ Other pairs: accent-fg on accent is 8.6:1 dark and 5.5:1 light. White on danger 
 * The preference is `system | light | dark`, stored in `localStorage['tc.theme']`, default `system`.
 * `public/theme-init.js` runs synchronously in `<head>` and sets `<html data-theme="dark|light">`, the `dark` class and `color-scheme` before first paint, so there is no flash. It is a same-origin file, not inline, so it keeps working if a strict CSP is enabled.
 * `src/lib/theme.js` (`useTheme()`) keeps the attribute current when the preference changes, when the OS theme changes under `system`, and when another tab changes it.
-* The switch is in the sidebar footer: a three-button group (system, light, dark). When the sidebar is collapsed it is one button that cycles.
-* Canvases follow the app theme. `src/graph/canvasTokens.js` reads the same custom properties once per theme change and every canvas theme object (UNS, Topics graph styles, charts) is derived from that snapshot, so a canvas background is the page surface and a "bad" node is the same red as a "bad" badge (section 14). A theme switch repaints in place, keeping the camera and selection. There is no separate light/dark toggle on the UNS map.
+* The switch is in the sidebar footer: a three-button group (system, light, dark). When the sidebar is collapsed it is one button that cycles. **Settings → Appearance** shows the same choice.
+* Canvases follow the app theme. `src/graph/canvasTokens.js` reads the same custom properties once per theme change and every canvas theme object (UNS, Topics graph styles, charts) is derived from that snapshot, so a canvas background is the page surface and a "bad" node is the same red as a "bad" badge (section 12). A theme switch repaints in place, keeping the camera and selection. There is no separate light/dark toggle on the UNS map.
 * E2E: `e2e/routes.spec.js` runs every route in dark and in light, setting the preference through `localStorage` exactly as a user would. Playwright's `colorScheme` defaults to dark for the rest of the suite.
 
 ## 5. Type
@@ -139,7 +139,7 @@ Other pairs: accent-fg on accent is 8.6:1 dark and 5.5:1 light. White on danger 
 | base | `text-base` | 14 / 22 | body default, dialog titles |
 | lg | `text-lg` | 16 / 24 | page title (`h1`) |
 | xl | `text-xl` | 20 / 28 | stat values |
-| 2xl | `text-2xl` | 24 / 32 | hero numbers (rare). `text-3xl` is capped here |
+| 2xl | `text-2xl` | 24 / 32 | hero numbers (rare); do not go larger |
 
 Weights: 400 body, 500 labels, headings and values, 600 page title only. Never bold for emphasis in running text. Case: sentence case everywhere. `.overline` (11px, uppercase, 0.04em) is the one allowed uppercase style. It is reserved for group captions in very dense lists and is currently not used.
 
@@ -153,13 +153,13 @@ Weights: 400 body, 500 labels, headings and values, 600 page title only. Never b
 
 ## 7. Components
 
-Everything is imported from `@/components/ui` (component aliases such as `variant="outline"` and `Badge status=` still work).
+Everything is imported from `@/components/ui` (`variant="outline"` is an alias of `secondary`, and `Badge status=` renders `StatusText`).
 
 ### Buttons
 
 | Primitive | Spec | Rules |
 | --- | --- | --- |
-| `Button variant="primary"` | solid accent, `text-accent-fg`, 32px (`size="sm"` 28, `lg` 36), 6px radius, 500 weight | One per view: the action the page exists for. |
+| `Button variant="primary"` | solid accent, `text-accent-fg`, 32px (`size="sm"` 28, `lg` 36), 4px radius, 500 weight | One per view: the action the page exists for. |
 | `variant="secondary"` (= `outline`) | `bg-panel`, `border-line-strong`, hover `bg-raised` | Default for every other action. |
 | `variant="ghost"` | text only, hover `bg-raised` | Toolbars, Cancel inside dense UI, dismiss. |
 | `variant="subtle"` | `bg-raised` | Rare; toggled filters. |
@@ -198,7 +198,7 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 * `Banner variant=info|success|warn|error title onRetry onDismiss action`: an inline alert with a hairline box, 2px state rule on the left, 6% tint and an icon. Errors use `role="alert"`, the rest `role="status"`.
 * `EmptyState title hint action icon`: text first, one action. The icon is optional, 20px and faint, with no bubble.
 * `Skeleton`, `LoadingState label rows` (`role="status" aria-busy`), `PageSkeleton`.
-* `Tooltip label side`: shows on hover and focus. 12px text on `bg-overlay`. Hidden tooltips are `visibility:hidden` so they never cause overflow.
+* `Tooltip label side`: shows on hover and focus. 12px text on `bg-overlay`. A closed tooltip is `display: none`, so it never widens a table's scroll area.
 * `Dialog title description size onSubmit footer`: header (title, one-line description), scrolling body, footer with actions right-aligned (secondary, then primary). With `onSubmit` the body is a `<form>`, so Enter submits. The close button comes last in DOM order, so focus starts on the first field. Focus trap, Esc, backdrop click and focus restore come from `Modal`.
 * `Drawer title side width actions footer`: a side sheet for details and secondary editing.
 * `ConfirmDialog` and `useConfirm()`: focus starts on Cancel, and a destructive confirm uses `danger`.
@@ -207,13 +207,13 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 
 ### Tables
 
-`Table caption` (a focusable, named scroll region), `THead`, `TableSort`, `Th sortKey align srOnly`, `Tr highlight`, `Td header align`, `RowActions`.
+`Table caption` (a focusable, named scroll region), `THead`, `TableSort`, `Th sortKey hint align srOnly`, `Tr highlight`, `Td header align`, `RowActions`.
 
 * Header: 32px, 12px medium muted, sentence case, no fill. The sort icon appears on hover or focus and is accent when the column is active.
 * Rows: 8px vertical padding (about 36px), hairline between rows, hover tint at 3.5%, selected or edited row `highlight` (2px accent rule plus a 7% accent tint).
 * Numbers are right-aligned and tabular. Mono for identifiers. The first cell is `Td header` (row header) holding the name, with the endpoint under it in mono `text-xs text-muted`.
 * Row actions go last, as icon buttons with full labels ("Edit Plant broker").
-* Wide tables set a `min-w-*` on `Table` and scroll inside their region on phones.
+* Wide tables set a `min-w-*` on `Table` and scroll inside their region on phones (Alerts and Devices switch to cards instead; see [Known issues](../KNOWN-ISSUES.md)).
 
 ### Layout primitives
 
@@ -229,7 +229,6 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 
 **Detail or drawer.** `Drawer` for inspecting a row without leaving the list (`KeyValue` on top, then sections with 13px headings, actions in the footer). Use a full page only when the object has its own sub-navigation (tabs).
 
-**Wizard (pattern retained; no page uses it today).** The Tags wizard was replaced by the single-sheet mapping editor (see the full-height editor pattern below); the pattern is kept for a future multi-step flow. A `Dialog size="lg"`. A step indicator in the header area (numbered text such as "1 Target · 2 Naming · 3 Options", current step `text-fg`, others `text-subtle`, done steps with a check), the body as a `role="region"` named after the step, and a footer with Back (secondary), then Next or Create (primary). Validate on Next and show errors inline in `Field error`, never as toasts.
 
 **Dashboard** (reference: `Overview.jsx`). Top to bottom: (1) **Needs attention**: a `Panel` list of what is wrong, worst first, each row linking to where it is fixed; when nothing is wrong it collapses to one line with a green dot. (2) Small sections with a 13px heading, each holding a `StatGroup` of `Stat`s with `to` links. (3) Two columns from `xl`: the connection table (problems first) and the latest values (`Path` and readable value with unit, raw payload in the tooltip). Don't use icon tiles, hero numbers or charts that only decorate.
 
@@ -259,108 +258,9 @@ Do put the primary action last (right) in a header or footer. Don't place two pr
 * Contrast: AA for all text in both themes (section 3.4). `prefers-contrast: more` and `prefers-reduced-motion` are honoured.
 * Accessible names and roles that tests and users rely on were kept (headings, "Open navigation menu", row headers, region names).
 
-## 11. Legacy class names (compatibility layer removed)
+## 11. Candidates to promote to `components/ui`
 
-Until November 2026 `tailwind.config.js` and a block of `index.css` remapped the old class names (`slate-*`, `surface-*`, `rose`/`amber`/`emerald`/`sky`, `white/x` glass, `backdrop-blur`, gradient tiles, uppercase micro-labels, `rounded-xl`, `shadow-lg`, ...) onto the tokens so unmigrated pages followed both themes. Every page and shared component is migrated, so the layer is gone: the Tailwind palette is replaced by the semantic tokens, and a legacy name now renders nothing. `client/src/test/designSystemClasses.test.js` fails the unit tests when one appears in `client/src`. Use section 12 to translate any old snippet.
-
-## 12. Migration guide (mechanical)
-
-For translating old snippets (from a branch, an issue or an older version): replace patterns top-down using the table, then check the page in both themes at 1440 and 390 (`npm run build`, then the e2e routes spec). The legacy names on the left no longer exist in the theme, and the guard test rejects them.
-
-### Surfaces and structure
-
-| Old | New |
-| --- | --- |
-| `<Card className="p-5">` + `<h2 className="flex items-center gap-2 text-sm font-semibold text-slate-200"><Icon/> Title</h2>` | `<Panel title="Title">` (no icon) |
-| `rounded-2xl border border-white/5 bg-surface-900/60 backdrop-blur …` | `<Panel>` / `<Card>` or `rounded-lg border border-line bg-panel` |
-| A card nested in a card (`rounded-xl border-white/5 bg-white/[0.02] p-3` inside a Card) | rows separated by `divide-y divide-line`, or a `KeyValue`, or a `StatGroup` |
-| `rounded-xl border border-white/5 bg-surface-950/40 p-4` (advanced section) | `border-l-2 border-line pl-4`, or a sub-`Panel` without nesting |
-| `bg-surface-950` / `bg-surface-900` / `bg-surface-800` | `bg-app` / `bg-panel` / `bg-raised` |
-| `bg-surface-900/85 backdrop-blur` (floating toolbar) | `bg-panel border border-line shadow-overlay rounded-md` |
-| `border-white/5`, `border-white/10` | `border-line` |
-| `border-white/20`, `hover:border-white/20` | `border-line-strong`, `hover:border-line-stronger` |
-| `divide-white/5` | `divide-line` |
-| `bg-white/5`, `hover:bg-white/5` | `bg-raised`, `hover:bg-raised` |
-| `bg-white/[0.02]` row fill | remove (rows are separated by hairlines) |
-| `bg-black/20` well | `bg-app` (or `bg-raised` inside an overlay) |
-| `p-5`, `p-6` in panels | `p-4`, or `Panel` default |
-| `space-y-6` between sections | `space-y-5` |
-
-### Text
-
-| Old | New |
-| --- | --- |
-| `text-slate-100`, `text-slate-200`, `text-white` (on surfaces) | `text-fg` |
-| `text-slate-300` | `text-fg` (values) or `text-muted` (secondary) |
-| `text-slate-400`, `text-muted` | `text-muted` |
-| `text-slate-500`, `helper` | `text-subtle` / `helper` |
-| `text-slate-600` | `text-faint` |
-| `text-xs font-semibold uppercase tracking-wide text-slate-400` | `text-xs font-medium text-muted` (label), or a `Panel` title / 13px `h2` |
-| `label-xs` on a `Th` | nothing: `Th` already has the style |
-| `text-accent-300`, `text-accent-400`, `text-sky-300` (links, selected) | `text-accent-text` |
-| `text-xl font-semibold` inside a page body | `text-lg font-semibold` is reserved for the page `h1`; section headings are `text-sm font-medium` |
-| `text-3xl font-semibold` stat number | `<Stat value=…>` (20px) |
-| `mono` | keep `mono`, add `text-xs` for identifiers |
-
-### State
-
-| Old | New |
-| --- | --- |
-| `<Badge status={s} />` | `<StatusText status={s} />` (Badge still works) |
-| `bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30 rounded-full px-2` (status pill) | `<StatusText tone="good">online</StatusText>` |
-| `bg-white/5 text-slate-300 ring-1 ring-white/10 rounded-full` (label pill) | `<Badge>Modbus TCP</Badge>` |
-| `text-rose-300`, `text-red-400` (error text) | `text-bad` |
-| `text-amber-300` | `text-warn` |
-| `text-emerald-300`, `text-emerald-400` | `text-good` |
-| `text-sky-300` (notice) | `text-info` |
-| `rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-rose-200` + retry button | `<Banner variant="error" title onRetry>` |
-| `border-sky-500/30 bg-sky-500/10 text-sky-100` notice `<p>` | `<Banner variant="info">` |
-| `border-amber-500/30 bg-amber-500/10 text-amber-200` | `<Banner variant="warn">` |
-| `h-2 w-2 rounded-full bg-emerald-400` | `<StatusDot tone="good" />` |
-| `hover:bg-rose-500/10 hover:text-rose-300` on a delete icon | `hover:bg-bad/10 hover:text-bad` (or `RowActions`) |
-
-### Controls
-
-| Old | New |
-| --- | --- |
-| `<Button>` with `shadow-*` or `bg-sky-*` classes | `<Button>` (variant only) |
-| More than one `<Button>` (primary) in a view | keep one primary, the rest `variant="secondary"` |
-| `variant="outline"` | `variant="secondary"` (outline is an alias) |
-| `<Link to=…><Button>…</Button></Link>` | `<ButtonLink to=… variant=…>` |
-| A button showing "Saving…" with `disabled={busy}` | `<Button loading={busy}>Save</Button>` |
-| Hand-rolled tabs (`bg-accent-500/15 ring-1 …` on the active button) | `<Tabs>` + `<TabPanel>` (sections) or `<SegmentedControl>` (views/modes) |
-| A row of toggle buttons for ranges (15m / 1h / …) | `<SegmentedControl size="sm">` |
-| Native `<select className={selectClass}>` | `<Select label=…>` (or `aria-label`) |
-| `accent-sky-500` checkbox | `<Checkbox>` |
-| Inline create/edit form card toggled by a header button | `<Dialog onSubmit footer>` (see Brokers) |
-| `fixed inset-0` overlay div | `<Dialog>` / `<Drawer>` / `<Modal>` |
-
-### Data
-
-| Old | New |
-| --- | --- |
-| Gradient icon tile + number + label card | `<Stat label value unit sub to tone>` inside `<StatGroup className="grid-cols-2 xl:grid-cols-4">` |
-| `<Card>` with "UPTIME" micro-label + value + sparkline placeholder | `<Stat>`; put the sparkline under the value if it is real data |
-| `formatDistanceToNow(…)` in a cell | `<Timestamp value={…} />` |
-| Truncated topic `truncate mono` | `<Path value={topic} />` |
-| `{n}` counters | `{n.toLocaleString()}` in a `tabular-nums` cell, right-aligned |
-| Poll-cycle bar (`h-1.5 rounded-full bg-white/10` + inner `bg-emerald-500`) | `<Meter value={avgMs} max={intervalMs} warnAt={0.8} badAt={1} label="Poll cycle" />` |
-| Icon bubble empty state | `<EmptyState title hint action>` |
-
-## 13. Migration status and open items
-
-**Every page and shared component is migrated** and the compatibility layer is removed (November 2026). The guard test `client/src/test/designSystemClasses.test.js` scans `client/src` for the legacy idioms on every unit-test run; the last leftovers (`JsonView`, `GraphLegend`, the unused `ViewTab`) were migrated or deleted before the removal, and the full Playwright suite plus screenshots of every route in both themes were compared after it.
-
-| Page / area | Status |
-| --- | --- |
-| Overview, MQTT Brokers, Devices (table, drawer, form, Profiles, bulk, browse import), Discovery | on the design system |
-| Tags (workspace, Mappings tab, mapping editor), Pipelines (all five tabs), OPC UA, CESMII SMIP, i3X, Settings (all four tabs), unlock screen, UNS icon picker | on the design system |
-| Topics, UNS, Flows, Trends, Health (System) and their canvases and charts | on the design system; canvases themed from tokens (section 14) |
-| `components/ui.jsx` and `components/ui/*` | the primitives |
-
-### Candidates to promote to `components/ui`
-
-Primitives built locally by pages that other pages already need or would reuse. None is promoted yet; each has one home today.
+Primitives built locally by pages that other pages already need or would reuse. None is promoted yet; each has one home today. Promote one to `components/ui` when a second page needs it.
 
 | Component | File | What it is | Reuse |
 | --- | --- | --- | --- |
@@ -375,7 +275,7 @@ Primitives built locally by pages that other pages already need or would reuse. 
 
 `ReadOnlyNote` and `useReadOnly` (`components/ReadOnlyNote.jsx`) are already shared by every page that mutates.
 
-## 14. Canvas rendering: tokens, the data palette and the style presets
+## 12. Canvas rendering: tokens, the data palette and the style presets
 
 **How a canvas reads tokens.** A canvas cannot use `rgb(var(--token))`. `client/src/graph/canvasTokens.js` reads these 20 custom properties from the computed style of `<html>` once per theme change, converts them to hex and caches a frozen snapshot (`getCanvasTokens()`, `useCanvasTokens()`): `bg panel raised overlay border border-strong border-stronger text text-muted text-subtle text-faint accent accent-text accent-fg good warn bad info aux control-off`. It refreshes on `<html data-theme|class|style>` mutations, `prefers-contrast`, `prefers-color-scheme` and `storage`. `FALLBACK_TOKENS` (first render, unit tests) mirrors `index.css`; `test/canvasTheme.test.js` fails if they drift. The faces are `FONT` (IBM Plex Sans Variable) and `MONO` (IBM Plex Mono), exported by the same module. Three theme objects are derived from the snapshot:
 

@@ -86,7 +86,8 @@ The user's tag type (`number`, `bool`, `string`, `json`) overrides the table.
   extra `endpoint_parents` field — neither is used.
 - **Large installations**: the node dump is one message. Frame and message caps default to
   32 MB (`maxMessageMB`); a larger message closes the connection with 1009 and the device shows
-  the reason.
+  the reason. The WebSocket client (`../common/wsClient.js`) also caps a message at 4,096 fragments
+  and the pongs queued for a server that does not read them at 1 MiB.
 - **Malformed or unknown messages** drop the connection (an update may have been lost); the
   runtime reconnects with backoff and `start_listening` reloads the full state.
 - **Half-open TCP**: WebSocket ping after 20 s of silence, connection dropped after 10 s more.

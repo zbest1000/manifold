@@ -280,7 +280,7 @@ function normalizeDevice(device) {
 /**
  * @param {object} device device config
  * @param {{assertTarget?:Function}} [deps]
- * @returns {object} driver (contract in southbound-drivers.md section 4.1)
+ * @returns {object} driver (contract in docs/design/driver-contract.md)
  */
 function createDriver(device, deps = {}) {
   const cfg = normalizeDevice(device);

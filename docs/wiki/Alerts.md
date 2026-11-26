@@ -7,7 +7,7 @@ page, **Observe → Alerts**, in three tabs:
 |---|---|
 | **Active** | what is firing now, and value rules that are breached but not firing yet; acknowledge alarms here |
 | **History** | every firing, resolution, acknowledgement and end, kept across restarts; filter and export CSV |
-| **Rules** | add, edit and delete the rules (this used to be **Settings → Alert rules**; Settings now links here, and the old link `/settings?tab=alerts` opens this tab) |
+| **Rules** | add, edit and delete the rules |
 
 The **Alerts** item in the sidebar shows a red count while any **critical** alarm is firing and nobody
 has acknowledged it. The Overview's **Needs attention** list links each firing or breached rule

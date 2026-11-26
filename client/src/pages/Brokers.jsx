@@ -16,7 +16,7 @@ import BrokerDetail from '@/pages/brokers/BrokerDetail';
 import { canaryConfigFromForm, canaryFormFromBroker, canaryLine, canaryTone, postureText, postureTone, presetToForm, defaultCanaryTopic } from '@/lib/brokerHealth';
 
 /**
- * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md#list-page).
+ * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md, Page patterns).
  * A sortable table of connections; create and edit happen in one dialog.
  */
 

@@ -6,8 +6,8 @@ const cx = require('./bindingContext');
 const mq = require('./bindingMqtt');
 
 /**
- * Binding model - the pure half of tag bindings (docs/design/southbound-drivers.md
- * section 6): validation, expansion of a binding into publishing UNITS, topic
+ * Binding model - the pure half of tag bindings (ARCHITECTURE.md, Bindings;
+ * docs/wiki/Mapping-to-the-UNS.md): validation, expansion of a binding into publishing UNITS, topic
  * resolution, payload shapes, the `_meta` document, the retained-topic set a
  * binding owns, save-time warnings and the preview. No I/O; TagBindings
  * (./tagBindings.js) runs the hot path on top of it.

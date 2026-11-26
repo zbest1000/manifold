@@ -7,7 +7,7 @@ const model = require('../services/bindingModel');
 const SparkplugPublisher = require('../services/sparkplugPublisher');
 const SparkplugDecoder = require('../services/sparkplugDecoder');
 
-// Phase 4 mapping features (docs/design/southbound-drivers.md section 6):
+// Mapping features (ARCHITECTURE.md, Bindings):
 // metadata, _meta, retained cleanup, object-per-asset, assetPath, percent
 // deadband, direct historian target, profile-level bindings.
 

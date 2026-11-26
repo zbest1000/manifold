@@ -12,7 +12,7 @@ const { hostIdentity, secretRequiredMessage } = require('./endpointIdentity');
 
 /**
  * Device manager: the main-process side of the southbound drivers
- * (docs/design/southbound-drivers.md). It owns device configuration, validates
+ * (docs/design/driver-contract.md). It owns device configuration, validates
  * it with each driver's pure validators, applies the egress guard, feeds the
  * desired device set to the DriverSupervisor (which runs the drivers in child
  * processes), keeps the latest value per tag, and exposes the normalized

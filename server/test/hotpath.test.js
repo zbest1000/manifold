@@ -2,8 +2,7 @@
 
 // Hot-path correctness: Sparkplug messages must survive the 100 ms coalescing
 // window, growth must stay bounded and visible, and broker lifecycle edits
-// must not destroy a working connection. See docs/REVIEW-2026-11.md, server
-// findings 3, 9, 10, 11, 13 and 15.
+// must not destroy a working connection.
 
 const { test } = require('node:test');
 const assert = require('node:assert');

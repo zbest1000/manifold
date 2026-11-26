@@ -11,7 +11,7 @@ single quiet line when nothing is: connections that are down, routes and histori
 with rejected points or a pending backlog that keeps growing, alert rules firing or
 breached, enabled mappings that are not publishing with the first reason, and stored
 objects with a broken reference, from `GET /api/system/broken-references`), **Sources** (MQTT brokers, Devices, OPC UA servers,
-Topics, Ingest rate), **Data flow** (pipeline routes and what they delivered, historian
+Topics, Ingest), **Data flow** (pipeline routes and what they delivered, historian
 points and what is queued, tag values published and how many the deadband held back,
 alert events and rules configured), **Connections** (every broker, device and OPC UA
 connection with its state, problems first) and **Latest values**:
@@ -102,9 +102,10 @@ the network. Exposing an open instance off-host is a deliberate act:
 MANIFOLD_HOST=0.0.0.0 npm start   # UNAUTHENTICATED and on the network — you were warned
 ```
 
-The Docker demo already does this safely: it binds `0.0.0.0` inside the
-container but maps only to host loopback (`127.0.0.1:5000:5000`), so `docker
-compose up` is reachable at `localhost` and nowhere else until you set a token.
+The Docker demo does this: it binds `0.0.0.0` inside the container but maps only
+to host loopback (`127.0.0.1:5000:5000`), so `docker compose up` is reachable at
+`localhost` and nowhere else. Because it is not bound to loopback, the `Host` check
+below does not apply to it; set a token if it runs for long.
 
 An open instance on loopback also checks the `Host` header: it answers only to
 `localhost`, `127.x` and `::1`, and refuses any other name with 421. A web page on
@@ -113,10 +114,6 @@ drive it, and the Socket.IO connection refuses foreign `Origin`s. If you reach a
 token-less local instance by another name (an `/etc/hosts` alias), list it in
 `MANIFOLD_ALLOWED_HOSTS` (comma-separated). With a token, or a non-loopback bind,
 the token is the protection and any `Host` is accepted.
-
-The published image has no token and no `MANIFOLD_HOST` set, so inside the container
-it binds `127.0.0.1` and a published port reaches nothing. Pass
-`-e MANIFOLD_AUTH_TOKEN=...` (see [Docker image](#docker-image)).
 
 ### Named tokens
 
@@ -244,7 +241,7 @@ With auth enabled `/metrics` returns 401 without a token; set
 | `manifold_broker_messages_received_total`, `manifold_broker_topics` | per-broker ingest |
 | `manifold_broker_canary_state` (`state` ok/slow/failing/not-permitted/pending/unknown, 1 for the current one), `manifold_broker_canary_success_ratio`, `manifold_broker_canary_latency_ms` (`quantile` 0.5/0.95), `manifold_broker_canary_last_success_age_seconds`, `manifold_broker_canary_probes_total` | the opt-in [broker canary](Broker-Setup#broker-canary-opt-in-round-trip-probe); only brokers that turned it on appear |
 | `manifold_broker_posture_findings` (`severity` high/medium/low/info) | security findings per broker, see [Security posture](Broker-Setup#security-posture) |
-| `manifold_pipeline_messages_total` | per-route pipeline counters, `result` = `matched`, `delivered`, `error`, `loop_blocked` |
+| `manifold_pipeline_messages_total` | per-route pipeline counters, `result` = `matched`, `routed`, `delivered`, `rejected`, `error`, `loop_blocked` |
 | `manifold_pipeline_pending_points` (`route`) | points a route handed to a historian target that are still waiting (queued or spilled) |
 | `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_pending_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; points waiting in memory and on disk; spill size |
 | `manifold_recorder_points_total` | points per recording |
@@ -300,14 +297,8 @@ because anything with a matching id is overwritten.
 
 ## Alerts
 
-Alert rules, active alarms (with acknowledgement) and the durable alarm history are on the
-**Alerts** page; the full reference is **[Alerts](Alerts)**. In short: rules have a severity
-(info, warning, critical); value rules have a sustain time and a clear value against flapping; firing
-alarms can be acknowledged with a note (who and when are recorded; an acknowledgement never silences
-an alarm and ends when it clears); every event is kept in `alerts.jsonl` in the data directory (two
-size-capped segments, `MANIFOLD_ALERT_HISTORY_MAX_BYTES`, default 8 MiB), and alarms that were active
-when the server stopped are closed as *Ended by restart* and re-fire from live data if the condition
-still holds.
+Alert rules, active alarms, acknowledgement and the durable alarm history are described in
+**[Alerts](Alerts)**, with their metrics and API.
 
 ## Broker health in operation
 
@@ -372,76 +363,10 @@ Two optional read-outs per MQTT broker, both described in [Broker setup](Broker-
 
 ## Upgrade notes: behaviour changes an operator must know
 
-Collected from the changelog; each is verified against the code.
-
-- **The UI was redesigned.** Every page was rebuilt; routes and URLs are unchanged. The Tags
-  wizard is now the mapping editor, Devices is a table with a drawer and a full-page form,
-  and the graph styles are Standard, Schematic and Monochrome (old stored ids map to the nearest).
-  Light, dark and system themes are new (the preference is `tc.theme` in the browser).
-- **`device-values` is one Socket.IO event per 250 ms flush** carrying every touched device
-  (`{ batch: [{ deviceId, values }] }`), reliable when it carries a quality change. Anything
-  that listened to per-device events must read the batch. The contract is in
-  [ARCHITECTURE.md](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md#socketio-events).
-- **Devices are validated at save**: unique names, driver options, S7 rack and slot. A device that
-  used to save and then sit offline is now refused with the driver's message.
-- **A historian that something still uses cannot be deleted** (409 naming the pipeline routes,
-  recordings and mappings). Pipeline source filters, `repath` targets, model targets and recorder
-  filters are validated as MQTT topics; an invalid one that used to save is refused.
-- **Bulk device creation is all-or-nothing**, one request, at most 200 rows.
-- **Viewer allowlist** gained mapping preview and name suggestions and CESMII history.
-- **A mapping's Retain values is off by default**; a Bad sample is recorded in history when a source
-  goes offline, for plain mappings too; `_meta` and `_status` that fail to publish (broker not yet
-  connected) are retried on a 15 s timer.
-- **Mapping options**: with none of the new options (selection rules, overrides, fields, context)
-  a mapping publishes byte for byte what it did before; this is asserted against a captured fixture.
-- **Sparkplug host STATE sessions** reconnect with the new settings when started again after a
-  broker edit; they do not notice an edit by themselves.
-- **Recordings** can be paused and resumed (the pause/resume control on the Recorder tab).
-- **Secrets and address changes**: changing a connection's host, port or scheme with its
-  password left blank is refused (400 `secret-required`); type the password again. Scripts
-  that PUT a broker, OPC UA connection or device with a new host and no password must now
-  send the password.
-- **Alert webhook URLs** are no longer returned to admins either (`hasWebhook`,
-  `webhookOrigin`); a rule saved without `webhookUrl` keeps it, `""` removes it. Scripts
-  that cleared a webhook by omitting the field must send `""`.
-- **Brokers, OPC UA endpoints and historians** on a link-local or cloud-metadata address are
-  refused (403 at save, an error at connect).
-- **Canary topics** must start with `manifold/canary/` and contain no command level.
-- **`GET /api/recorder/:id/series` needs `tags`** (1-10); a series stops after 1,000,000
-  samples (`meta.truncated`), and a recording's `maxBytes` is at most 4 GiB.
-- **`MANIFOLD_TRUST_PROXY`** is new; set it behind a reverse proxy (see
-  [rate limiting](#brute-force-protection-and-rate-limiting)).
-- **A token-less instance bound to loopback refuses foreign host names** (421) and the
-  Socket.IO connection refuses foreign `Origin`s. Reaching it as `localhost`, `127.x` or `::1`
-  works as before; add any other name to `MANIFOLD_ALLOWED_HOSTS`.
-- **Alert rules moved from Settings to the Alerts page** (Settings links to them;
-  `/settings?tab=alerts` redirects).
-- **Stored device secrets are answered as `null`** (the HTTP drivers used to answer
-  `********`); a save that leaves a secret out, blank or `null` keeps it.
-- **A viewer token alone enables auth**, and then nobody is admin: also set
-  `MANIFOLD_AUTH_TOKEN` or an admin entry in `MANIFOLD_TOKENS`.
-- **Unknown roles in `MANIFOLD_TOKENS` are rejected** (an entry such as
-  `bob:secret:readonly` used to become an admin token). Rejected entries are logged at
-  startup; if tokens were configured but all were rejected, auth stays on and every request is 401.
-- **`/metrics` needs a bearer token** (any role) when auth is on. Give Prometheus a viewer
-  token, or set `MANIFOLD_METRICS_PUBLIC=1`. `/health` stays open.
-- **Fail closed by default**: with no token the server binds `127.0.0.1` only.
-- **Alert webhooks pass the egress guard**: a webhook to `localhost`, a link-local address or
-  (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) a private address is refused; redirects are
-  re-checked on every hop.
-- **Device targets are guarded**: loopback hosts need `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` and
-  private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
-- **Sparkplug messages are delivered in order and un-coalesced** (a bounded queue; overflow
-  is counted), so they reach consumers at flush cadence, up to 100 ms later. Mappings publish a
-  Bad-quality value when a source goes offline and a retained `_status` topic.
-- **The historian spill is segment files plus a cursor** under `outbox/` (a legacy
-  `<id>.jsonl` is still read first and drained, no conversion needed); permanently rejected
-  points go to a dead-letter file.
-- **InfluxDB typing is stricter**: only real numbers write `value`; booleans and everything
-  else write `raw` as text (booleans were `1`/`0`).
-- **`audit.jsonl` rotates by size** and records rejected requests (401/403/429).
-- **Config export keeps device tag `key` fields** (an earlier build blanked them) and an
-  import applies immediately.
+Upgrading from 1.0.0? The behaviour changes that can break a script, a bookmark or a deployment
+(auth that fails closed, secrets that must be re-entered when an address changes, the `device-values`
+event shape, stricter validation, the egress guard on webhooks and devices, and more) are listed once,
+in the [CHANGELOG's upgrade notes](https://github.com/zbest1000/manifold/blob/main/CHANGELOG.md#upgrade-notes).
 
 ## Limits that protect the server
 
@@ -495,7 +420,9 @@ everything again. Until then, changes are lost on restart.
 ## Docker image
 
 Every `v*` tag publishes `ghcr.io/zbest1000/manifold` — server plus built UI
-in one container:
+in one container. The image sets no token and no `MANIFOLD_HOST`, so without
+`MANIFOLD_AUTH_TOKEN` it binds `127.0.0.1` inside the container and a published
+port reaches nothing:
 
 ```bash
 docker run -p 5000:5000 \

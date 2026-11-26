@@ -43,8 +43,8 @@ The list shows each connection with its **State**, **Security**, how many nodes 
 connected; **Exploring** marks the one the explorer below shows. The explorer shows the address space as a graph, in 3D or as a tree. In the tree, arrow keys move and
 expand (→ expands, ← collapses), Enter selects. Select a variable to see its attributes (with
 engineering units and range when the server publishes them) and choose **Monitor value**. Monitored
-values stay monitored when you select other nodes; **Stop monitoring** ends them. A node a tag binding
-maps stays sampled for the binding.
+values stay monitored when you select other nodes; **Stop monitoring** ends them. A node a mapping
+reads stays sampled for the mapping.
 
 Quality is shown as Good, Uncertain or Bad, with the status code (for example `BadSensorFailure`), on the
 panel, in **Monitored values** and on the tree node. Timestamps are the server's **source** timestamps.

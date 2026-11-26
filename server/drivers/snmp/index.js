@@ -4,7 +4,7 @@
  * Read-only SNMP driver (v1, v2c, v3/USM) over UDP. EXPERIMENTAL until
  * verified on real agents — see NOTES.md.
  *
- * Contract: southbound-drivers.md section 4.1 as consumed by the polling
+ * Contract: docs/design/driver-contract.md as consumed by the polling
  * runtime (connect / plan / execute / bisect / browse / probe / close).
  * Only Get, GetNext and GetBulk are ever sent (message.js cannot encode
  * anything else).

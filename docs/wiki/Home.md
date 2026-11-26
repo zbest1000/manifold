@@ -55,6 +55,7 @@ Deep design documentation lives in the repository:
 - 🏗️ [ARCHITECTURE.md](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md) — system design, hot path, API surface, testing
 - 🐳 [DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md) — one-command demo stack
 - 📝 [CHANGELOG.md](https://github.com/zbest1000/manifold/blob/main/CHANGELOG.md) — release history
+- ⚠️ [Known issues](https://github.com/zbest1000/manifold/blob/main/docs/KNOWN-ISSUES.md) — what is still open or unverified
 
 ---
 

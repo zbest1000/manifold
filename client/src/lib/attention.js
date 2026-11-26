@@ -71,7 +71,7 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
     const where = st?.topic ? ` on ${st.topic}` : '';
     const value = st && st.value !== undefined && st.value !== null ? ` · value ${st.value}` : '';
     if (st?.state === 'firing' && st.firingTopics > 1) {
-      // A wildcard rule firing on several topics (S14): one line for the rule that counts them, and
+      // A wildcard rule firing on several topics: one line for the rule that counts them, and
       // the Active list (which shows each) as the place to act, rather than one topic that may be
       // an acknowledged occurrence while another is not.
       const unack = Number(st.unacknowledged) || 0;

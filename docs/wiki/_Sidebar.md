@@ -24,3 +24,4 @@
 - 🏗️ [Architecture](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md)
 - 🐳 [Docker stack](https://github.com/zbest1000/manifold/blob/main/DOCKER.md)
 - 📝 [Changelog](https://github.com/zbest1000/manifold/blob/main/CHANGELOG.md)
+- ⚠️ [Known issues](https://github.com/zbest1000/manifold/blob/main/docs/KNOWN-ISSUES.md)

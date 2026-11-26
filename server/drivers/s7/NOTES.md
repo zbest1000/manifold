@@ -3,7 +3,7 @@
 Everything below was implemented from public protocol descriptions (Wireshark
 S7comm dissector, Apache PLC4X S7 docs, Snap7 docs, G. Miru's S7 write-ups)
 and checked only against `server/test/support/s7Simulator.js`, which was
-written by the same author. Each item needs a capture (Wireshark, `s7comm`
+written together with the driver. Each item needs a capture (Wireshark, `s7comm`
 filter) or an observation on a real CPU before the driver leaves
 "experimental".
 
@@ -37,7 +37,8 @@ filter) or an observation on a real CPU before the driver leaves
    PG resource free; the driver only offers that via remoteTsap override.
 8. **COTP CR parameters.** TPDU size 1024 (code 0x0A) is requested. Confirm
    the CPU's CC and that no CPU fragments S7 PDUs over several DT TPDUs at
-   PDU 960 (the parser reassembles fragments anyway).
+   PDU 960 (the parser reassembles fragments anyway, at most 1,024 per PDU,
+   empty ones included).
 9. **SZL layouts used for identity** (best effort; failures are skipped,
    and a CPU that ignores SZL is reconnected without identity):
    - 0x011C index 1/2/5/7 → system name / module name / serial number /

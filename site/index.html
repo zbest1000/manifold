@@ -214,7 +214,7 @@
           <div class="card">
             <div class="ic">🔎</div>
             <h3>Explore</h3>
-            <p>Live topic tree, 2D/3D graphs, and a WebGL renderer for 60k+ topics.</p>
+            <p>Live topic tree, 2D/3D graphs, and a WebGL renderer for very large namespaces.</p>
             <ul>
               <li>MQTT 3.1.1 &amp; 5 over tcp/tls/ws/wss, with <code>$share</code> subscriptions</li>
               <li>OPC UA address space with live values &amp; secure connections</li>
@@ -360,8 +360,8 @@ MANIFOLD_AUTH_TOKEN=$(openssl rand <span class="k">-hex</span> 24) npm start</pr
           </div>
           <ul class="checks">
             <li><b>Named, revocable tokens</b> with admin / read-only roles, enforced on REST <em>and</em> the socket.</li>
-            <li><b>Egress guard</b> blocks the scanner and outbound clients from loopback, cloud metadata, and (unless opted in) private ranges.</li>
-            <li><b>No token, local only:</b> a token-less instance answers only to <code>localhost</code> names (<code>MANIFOLD_ALLOWED_HOSTS</code> adds more), so a web page cannot drive it.</li>
+            <li><b>Egress guard</b> keeps network scans, devices, webhooks and the HTTP clients off loopback, cloud metadata and (unless opted in) private ranges; brokers, OPC UA servers and historians are refused link-local and metadata addresses.</li>
+            <li><b>No token, local only:</b> a token-less instance bound to loopback answers only to <code>localhost</code> names (<code>MANIFOLD_ALLOWED_HOSTS</code> adds more), so a web page cannot drive it.</li>
             <li><b>Brute-force throttle</b> and security headers on every entry point.</li>
             <li><b>Audit log</b> of every mutation, with secrets redacted.</li>
             <li><b>Config as code</b> — export/import the whole setup, secrets stripped.</li>

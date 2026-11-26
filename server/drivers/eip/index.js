@@ -5,7 +5,7 @@
  * controllers (ControlLogix / CompactLogix). EXPERIMENTAL until verified on
  * real hardware — see NOTES.md.
  *
- * Contract: southbound-drivers.md section 4.1, as specialised for the
+ * Contract: docs/design/driver-contract.md, as specialised for the
  * driver runtime (plan / execute / bisect / browse / probe).
  */
 

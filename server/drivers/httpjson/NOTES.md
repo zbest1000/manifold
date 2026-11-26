@@ -1,7 +1,7 @@
 # HTTP/JSON polling driver: notes and hardware checklist
 
 Status: **experimental** (`describe().experimental === true`). Tested only against
-`server/test/support/httpJsonSimulator.js`, written by the same person as the driver, so the tests
+`server/test/support/httpJsonSimulator.js`, written together with the driver, so the tests
 show the two agree. Real devices (energy meters, smart plugs, gateways) deviate in ways listed below
 that no simulator of ours reproduces completely.
 
@@ -59,7 +59,9 @@ Protocol id `http-json`. Code: `index.js` (device, tags, execution), `selector.j
   authentication does not use is dropped on save. Credentials are sent only to the device's own host.
 - **Keep-alive**: one socket (`maxSockets: 1`), reused between polls; `options.keepAlive: false` sends
   `Connection: close`.
-- **Browse** (`capabilities.browse`): root lists the base path `/` and every path used by a tag; opening a
+- **Device `path`**: an optional prefix (for example `/api/v1`) put in front of every request path; tag
+  paths and browse paths are relative to it.
+- **Browse** (`capabilities.browse`): root lists `/` and every path used by a tag; opening a
   path fetches it and lists up to 500 leaf selectors (depth 10, 25 array items) with type and sample value,
   as addresses ready to use. **Probe** takes `/path` (all leaves) or `/path#$.selector` (one value).
 - **Test connection**: a GET of `options.testPath` (default `/`). Any HTTP answer counts as reachable,

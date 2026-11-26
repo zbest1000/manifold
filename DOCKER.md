@@ -1,94 +1,97 @@
-# Running Manifold with Docker
+# Running the Manifold demo stack with Docker
 
-A one-command stack to try every feature locally — no external brokers or
-servers required.
+`docker-compose.yml` starts Manifold with a broker, an OPC UA server, simulated devices and a
+traffic generator, already connected, so every page has live data without your own equipment.
+For running Manifold itself in production, use the published image instead (see
+[Production image](#production-image)).
 
 ```bash
 docker compose up --build
 ```
 
-Then open **http://localhost:5000**.
-
-The first build takes a few minutes (it builds the React client and installs
-server dependencies). Subsequent starts are fast.
+Then open **http://localhost:5000**. The first build takes a few minutes (it builds the client
+and installs the server's dependencies); later starts are fast.
 
 ## What comes up
 
 | Service | Image | Purpose | Host port |
 |---|---|---|---|
-| `app` | built from `docker/app/Dockerfile` | Manifold (server + built client) | `5000` |
-| `mqtt` | `eclipse-mosquitto:2` | MQTT broker (anonymous) | `1883`, `9001` (ws) |
+| `app` | built from `docker/app/Dockerfile` | Manifold (server and built client), seeded with demo connections | `127.0.0.1:5000` |
+| `mqtt` | `eclipse-mosquitto:2` | MQTT broker, anonymous (`docker/mosquitto/mosquitto.conf`) | `1883`, `9001` (WebSocket) |
 | `opcua` | `mcr.microsoft.com/iotedge/opc-plc` | Simulated OPC UA server | `50000` |
-| `simulator` | built from `docker/simulator` | Publishes MQTT + Sparkplug B traffic | — |
-| `device-sim` | the same image as `app` | Simulated Modbus TCP, Siemens S7 and EtherNet/IP devices (`server/tools/simulators.js`) | `5020`, `10102`, `44818` (host loopback) |
+| `simulator` | built from `docker/simulator` | Publishes JSON telemetry and Sparkplug B traffic (`SIM_SCALE: "3"`, about 1,000 topics) | none |
+| `device-sim` | the `app` image | Simulated Modbus TCP, Siemens S7 and EtherNet/IP devices (`server/tools/simulators.js`) | `127.0.0.1:5020`, `:10102`, `:44818` |
+| `i3x` | built from `docker/i3x-mock` | Mock i3X server with a small ISA-95 hierarchy | `127.0.0.1:18080` |
+| `cesmii-mock` | built from `docker/cesmii-mock` | Mock CESMII SMIP GraphQL server (any credentials) | `127.0.0.1:14000` |
+
+## How the demo is reached and secured
+
+The demo runs **without a token**. The `app` service sets `MANIFOLD_HOST=0.0.0.0` so the server
+listens on every interface inside the container, and the port mapping `127.0.0.1:5000:5000` keeps
+it on your machine's loopback. Because the server is not bound to loopback, its check that
+refuses requests with a non-loopback `Host` header does not apply, so do not leave the demo
+running while you browse untrusted sites, and never widen the port mapping without a token.
+
+To require a token, uncomment `MANIFOLD_AUTH_TOKEN` on the `app` service, recreate it
+(`docker compose up -d app`) and enter the same token on the unlock screen. Only then is it safe to
+change the mapping to `"5000:5000"`.
 
 ## Pre-seeded demo data
 
-The app is **pre-seeded** (via `docker/app/seed/profiles.json`) to auto-connect
-on startup to:
+On first start the entrypoint copies `docker/app/seed/profiles.json` into the `app-data` volume.
+The app then connects to:
 
-- the MQTT broker at `mqtt:1883` (auto-subscribed to `#` and `$SYS/#`)
-- the OPC UA server at `opc.tcp://opcua:50000`
-- three simulated devices from `device-sim`: *Demo pump (Modbus TCP)* at
-  `device-sim:5020`, *Demo CPU (S7)* at `device-sim:10102` and *Demo Logix
-  (EtherNet/IP)* at `device-sim:44818`, polled every second
-- two mappings (the API and `profiles.json` call them bindings) for the Modbus device: *Demo pump to UNS* publishes its tags as
-  TVQ envelopes under `demo/plant1/pump1/` (a legacy `pathTemplate`, plus a
-  retained `demo/plant1/pump1/_status` and a 10 s heartbeat), and *Demo pump as
-  one object* publishes all tags as one JSON object to `demo/plant1/pump1-object`
-  (`assetPath` with `object-per-asset`, same heartbeat). The retained `_meta`
-  documents are published once the broker is connected; if the app starts before
-  the broker, the publish is retried on a 15 s timer
+- the broker `mqtt:1883` (intake subscription to `#`, plus `$SYS/#`);
+- the OPC UA server `opc.tcp://opcua:50000`;
+- three devices on `device-sim`, polled every second: *Demo pump (Modbus TCP)* on port 5020,
+  *Demo CPU (S7)* on 10102 and *Demo Logix (EtherNet/IP)* on 44818;
+- two mappings of the Modbus device: *Demo pump to UNS* publishes TVQ envelopes under
+  `demo/plant1/pump1/` with a retained `_status` and a 10 s heartbeat, and *Demo pump as one
+  object* publishes all tags as one JSON object to `demo/plant1/pump1-object`;
+- a recording, *Built-in historian*, of `factory/#` to a file, which Trends opens by default.
 
-The simulator continuously publishes a tree of plain JSON telemetry topics
-(`factory/…`, `building/…`, `energy/…`) plus valid Sparkplug B
-(`spBv1.0/Plant1/…`). So the moment the page loads you should see:
+The traffic generator publishes plain JSON under `factory/`, `building/`, `energy/` and similar
+roots, and Sparkplug B for the edge nodes `Plant1/Line1`, `Plant1/Line2` and `Plant2/PackHall`.
+The pages to look at first: **Topics** and **UNS** (the live namespace, Sparkplug included),
+**Flows** (producers and consumers), **Devices** (three devices online with live values and
+Probe), **Tags** (the two mappings on the Mappings tab), **OPC UA** (browse and monitor the
+OPC-PLC address space) and **Trends**.
 
-- **Topics** — a live topic node graph (try the 2D / 3D / WebGL renderers)
-- **Flows** — producer → topic → consumer lineage
-- **Sparkplug** — the Plant1 → Line1 → Robot1 device topology with resolved metrics
-- **OPC UA** — browse the OPC-PLC address space, read and monitor nodes
-- **MQTT Brokers** — the connected broker with live message/topic counts
-- **Devices** — three devices online with cycle times, live tag values, and the probe
-- **Tags** (Mappings tab) — the *Demo pump to UNS* and *Demo pump as one object* mappings, publishing `demo/plant1/pump1/#` and `demo/plant1/pump1-object`
+Seeding happens only when `profiles.json` does not exist yet. `docker compose down -v` wipes the
+volume, and the next start seeds again.
 
-## Connecting things manually
+## Connecting things by hand
 
-You can also add connections from the UI. Because the app runs inside the
-compose network, use the **service names** as hosts:
+The app runs inside the compose network, so use the service names as hosts:
 
-- MQTT broker → host `mqtt`, port `1883`
-- OPC UA → `opc.tcp://opcua:50000`
-- Devices → host `device-sim`, ports `5020` (Modbus), `10102` (S7), `44818` (EtherNet/IP)
-
-External tools on your host machine can use `localhost:1883` and
-`opc.tcp://localhost:50000`.
+| What | From the app | From your machine |
+|---|---|---|
+| MQTT broker | `mqtt`, port `1883` | `localhost:1883` |
+| OPC UA | `opc.tcp://opcua:50000` | `opc.tcp://localhost:50000` |
+| Devices | `device-sim`, ports `5020`, `10102`, `44818` | `127.0.0.1` on the same ports |
+| i3X | `http://i3x:8080` | `http://localhost:18080` |
+| CESMII SMIP | `http://cesmii-mock:4000/graphql` | `http://localhost:14000/graphql` |
 
 ## Simulated devices
 
-`device-sim` runs `server/tools/simulators.js` from the app image. It starts
-the **same simulators the test suite uses** (`server/test/support/`), listening
-on all interfaces inside the container, and moves their values every second.
-They are test doubles, not real devices: they accept write function codes so
-the tests can count them, and they say nothing about real firmware. Never point
-production tooling at them.
+`device-sim` runs `server/tools/simulators.js` from the app image: the **same simulators the test
+suite uses** (`server/test/support/`), listening on every interface in the container, values
+changing every second. They are test doubles, not real devices: they accept write function codes
+so the tests can count them, and they say nothing about real firmware.
 
-The app reaches them as host `device-sim`. That name resolves to a private
-address on the compose network, and device targets pass the egress guard, which
-refuses private addresses by default. The `app` service already sets
-`MANIFOLD_ALLOW_PRIVATE_TARGETS=1` for Discovery, which is also what allows the
-devices; the comment in `docker-compose.yml` says so. (Loopback device targets
-are a separate opt-in, `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, used below for
-running outside Docker.)
+`device-sim` resolves to a private address on the compose network, and device targets pass the
+egress guard, which refuses private addresses by default. The `app` service sets
+`MANIFOLD_ALLOW_PRIVATE_TARGETS=1`, which allows both the devices and Discovery scans of the
+compose subnet.
 
-What each simulator serves (enter these on the Devices page, **Add device**, or use **Probe** and the tag table's paste and CSV import):
+What each simulator serves (enter these under **Devices → Add device**, or use **Probe**):
 
 | Protocol | Device settings | Address | Type | Value |
 |---|---|---|---|---|
 | Modbus TCP | unit ID `1` (or `255`), address base 0 | `holding:0` | `int16`, scale `0.1` | temperature around 21.5 |
 | | | `holding:1` | `uint16` | rpm around 1450 |
 | | | `holding:2` | `float32` | flow |
-| | | `holding:4` | `float32`, **word order little** | pressure (a word-swapped value: use Probe to see it) |
+| | | `holding:4` | `float32`, **word order little** | pressure (word-swapped: use Probe to see it) |
 | | | `holding:6` | `uint32` | part counter |
 | | | `holding:8` | `string`, length 8 | `PUMP-1` |
 | | | `input:0` | `int16` | supply temperature x10 |
@@ -104,43 +107,25 @@ What each simulator serves (enter these on the Devices page, **Add device**, or 
 | | | `Motor.Speed`, `Motor.Count`, `Motor.Running` | UDT members | speed, count, running |
 | | | `Program:MainProgram.LocalReal` | | program-scope tag |
 
-The EtherNet/IP simulator also has arrays, a matrix, a BOOL array and a few
-tags with restricted External Access; `GET /api/devices/<id>/browse` lists them.
+The EtherNet/IP simulator also has arrays, a matrix, a BOOL array and tags with restricted
+External Access; **Import from controller** on the device form lists them.
 
-### Scan the simulators with Discovery
-
-The simulators are scannable. Each answers the same read-only identification the scanner sends (Modbus register read, S7 COTP connect plus SZL identity read, EtherNet/IP ListIdentity), so a scan shows them as verified devices with an identity.
-
-**Docker demo stack.** `app` already sets `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`, and `device-sim` is a private compose address. In the Discovery page, tick **Modbus TCP**, **Siemens S7** and **EtherNet/IP** (acknowledge the OT notice), set the range to the compose subnet (`docker network inspect` shows it; the page's "this subnet" helper fills in the app container's own /24) and scan.
-
-**Without Docker** (the commands this was verified with):
-
-```bash
-node server/tools/simulators.js --modbus 15020 --s7 15102 --eip 15818 --quiet &
-(cd server && MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 PORT=15099 npm start) &
-curl -s -X POST localhost:15099/api/system/discovery/start -H 'Content-Type: application/json' -d '{
-  "range":"127.0.0.1/32","includeDevices":true,"includeI3x":false,
-  "modbusPorts":[15020],"s7Ports":[15102],"eipPorts":[15818],"mqttPorts":[],"opcuaPorts":[]}'
-sleep 3; curl -s localhost:15099/api/system/discovery/results
-```
-
-Expected: three verified results: an S7 CPU 1516-3 PN/DP (firmware V2.9.4), an EtherNet/IP 1769-L33ER/A LOGIX5333ER and a Modbus TCP server (answered by register read; the simulator has no FC 43 device identification). `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` is required: loopback ranges are refused otherwise.
+**Discovery.** Each simulator answers the read-only identification the scanner sends. On the
+Discovery page, tick **Modbus TCP**, **Siemens S7** and **EtherNet/IP**, set the range to the
+compose subnet (**This subnet** fills in the app container's own /24) and scan.
 
 ### Run the simulators without Docker
 
-Needs only Node and `npm ci` in `server/` (the simulators use no packages, but
-the server in the next step does):
+Needs Node and `npm ci` in `server/`:
 
 ```bash
-# 1. the three simulators (Modbus 5020, S7 10102, EtherNet/IP 44818) on loopback
-node server/tools/simulators.js --modbus 5020 --s7 10102 --eip 44818
-# options: --host 0.0.0.0, --interval 1000, --quiet, --help
-# with no protocol flag all three start on those default ports
+# 1. the three simulators on loopback (defaults: Modbus 5020, S7 10102, EtherNet/IP 44818)
+node server/tools/simulators.js            # options: --modbus/--s7/--eip [port], --host, --interval, --quiet
 
-# 2. a server that is allowed to talk to loopback devices (second terminal)
+# 2. a server allowed to reach loopback devices (second terminal)
 cd server && MANIFOLD_ALLOW_LOOPBACK_DEVICES=1 PORT=5099 npm start
 
-# 3. create a device against each simulator (third terminal)
+# 3. a device against the Modbus simulator (third terminal)
 curl -s -X POST localhost:5099/api/devices -H 'Content-Type: application/json' -d '{
   "name":"Pump (Modbus)","protocol":"modbus-tcp","host":"127.0.0.1","port":5020,"unitId":1,
   "pollGroups":[{"id":"fast","intervalMs":1000}],
@@ -149,77 +134,42 @@ curl -s -X POST localhost:5099/api/devices -H 'Content-Type: application/json' -
     {"key":"pressure","address":"holding:4","type":"float32","wordOrder":"little","pollGroup":"fast"},
     {"key":"running","address":"coil:0","type":"bool","pollGroup":"fast"}]}'
 
-curl -s -X POST localhost:5099/api/devices -H 'Content-Type: application/json' -d '{
-  "name":"CPU (S7)","protocol":"s7","host":"127.0.0.1","port":10102,"rack":0,"slot":1,
-  "tags":[
-    {"key":"temperature","address":"DB1.DBW0","type":"INT"},
-    {"key":"pressure","address":"DB1.DBD2","type":"REAL"},
-    {"key":"name","address":"DB1.DBB12","type":"STRING","length":16}]}'
-
-curl -s -X POST localhost:5099/api/devices -H 'Content-Type: application/json' -d '{
-  "name":"Logix (EIP)","protocol":"ethernet-ip","host":"127.0.0.1","port":44818,"slot":0,
-  "tags":[
-    {"key":"RealTag","address":"RealTag"},
-    {"key":"MotorSpeed","address":"Motor.Speed"}]}'
-
-# 4. read the values back (use the ids that GET /api/devices returns)
-curl -s localhost:5099/api/devices | node -e "for (const d of JSON.parse(require('fs').readFileSync(0)).devices) console.log(d.id, d.name, d.status.state)"
+# 4. read the values back (the id is in the answer, or in GET /api/devices)
 curl -s localhost:5099/api/devices/<id>/values
 ```
 
-Verified this way on the branch that wrote this document: all three devices
-reached `online`, and `/values` returned live values with quality 192, for
-example the Modbus word-swapped pressure decoded correctly with `wordOrder:
-little`, the S7 `STRING` as `"PUMP-1"`, and the EtherNet/IP `Motor.Speed` UDT
-member. `POST /api/devices/<id>/probe` with `{"address":"holding:4","count":2}`
-showed the same registers decoded four ways, and the `CDAB` row held the right
-number. With `MANIFOLD_ALLOW_LOOPBACK_DEVICES` unset, the same requests are
-refused with an egress error, by design.
-
-The S7 and EtherNet/IP simulators can only listen on loopback with a random
-port, and the test support files are not modified for this tool, so for those
-two `simulators.js` listens on the requested `host:port` and forwards each
-connection to the loopback simulator. Modbus binds the requested address
-directly.
-
-> **Not run in Docker.** The `device-sim` compose service and the seeded
-> devices were written and checked without a Docker daemon: the compose file
-> passes `docker compose config`, parses as YAML, and the exact command the
-> service runs (`node server/tools/simulators.js --modbus 5020 --s7 10102 --eip
-> 44818 --host 0.0.0.0 --quiet`), its health check and a SIGTERM shutdown were
-> run directly with Node. The seeded devices and bindings were run against a
-> local server and an in-process MQTT broker with the hostnames rewritten to
-> loopback. `docker compose up` itself, the image build, and name resolution of
-> `device-sim` on the compose network have **not** been exercised. If something
-> is off, `docker compose logs device-sim` and `docker compose logs app` are the
-> first places to look.
-
-## Auth
-
-The stack runs **open** by default (fine for localhost). To require a token,
-set `MANIFOLD_AUTH_TOKEN` on the `app` service in `docker-compose.yml`, then enter the
-same token in the app's unlock screen.
+S7 and EtherNet/IP devices are created the same way (`"protocol":"s7"` with `"rack":0,"slot":1`;
+`"protocol":"ethernet-ip"` with `"slot":0`), using the addresses in the table above.
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` is required: without it loopback device targets and loopback
+Discovery ranges are refused. The simulator tool also reads `SIM_HOST`, `SIM_MODBUS_PORT`,
+`SIM_S7_PORT` and `SIM_EIP_PORT` as defaults for its flags.
 
 ## Common commands
 
 ```bash
-docker compose up --build        # build + start (foreground)
-docker compose up -d --build     # build + start (detached)
-docker compose logs -f app       # tail the app logs
-docker compose logs -f simulator # watch the data generator
-docker compose logs -f device-sim # the device simulators (values are quiet; remove --quiet to log them)
-docker compose down              # stop
-docker compose down -v           # stop + wipe saved profiles (the app-data volume)
+docker compose up -d --build       # build and start in the background
+docker compose logs -f app         # the app
+docker compose logs -f simulator   # the traffic generator
+docker compose logs -f device-sim  # the device simulators (remove --quiet in the compose file to log values)
+docker compose down                # stop
+docker compose down -v             # stop and wipe the app-data volume (the next start seeds again)
 ```
 
-## Notes
+The compose file and the commands its services run were checked without a Docker daemon (the
+image build and `docker compose up` itself have not been run); if something is off,
+`docker compose logs app` and `docker compose logs device-sim` are the first places to look.
 
-- Saved connections persist in the `app-data` Docker volume. `down -v` clears
-  them and the next start re-seeds the demo connections, devices and mappings.
-  Seeding happens only when `profiles.json` does not exist yet, so an existing
-  volume from an older version does not gain the demo devices until you run
-  `docker compose down -v`.
-- The simulator re-sends Sparkplug BIRTH certificates on every (re)connect, so
-  metric aliases always resolve.
-- The Mosquitto config allows anonymous access — it is for local testing only,
-  not for exposure to an untrusted network.
+## Production image
+
+The published image `ghcr.io/zbest1000/manifold` (root `Dockerfile`) is Manifold alone, with no
+demo data. Without a token the server binds `127.0.0.1`, which is unreachable from outside the
+container, so always pass a token:
+
+```bash
+docker run -p 5000:5000 -v manifold-data:/data \
+  -e MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) \
+  ghcr.io/zbest1000/manifold:1.1.0
+```
+
+Deployment notes (reverse proxy, private targets, the data volume) are in
+[ARCHITECTURE.md: Deployment](ARCHITECTURE.md#deployment) and [SECURITY.md](SECURITY.md).

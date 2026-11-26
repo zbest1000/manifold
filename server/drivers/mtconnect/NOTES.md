@@ -44,6 +44,8 @@ the exact URL set, that no request has a body and that no `interval=` is ever re
   value is the highest-severity active state (fault over warning over normal; the later sequence wins a
   tie). A `string` tag reads `normal`/`warning`/`fault`, a `number` tag 0/1/2, a `bool` tag "is anything
   active". The tag field `field` selects `nativeCode`, `text`, `severity`, `qualifier` or `type` instead.
+  At most 256 active conditions are kept per data item (the oldest is evicted), and observations are
+  kept only for data items the agent declared in `/probe`, so a hostile agent cannot grow the state.
 - **Source timestamp** (`tSource`) is the observation's own `timestamp` (fractional seconds to six digits
   are accepted; milliseconds are kept). **Units** come from `/probe` (`units`, shown as a symbol) and are
   offered as the tag's `unit` when importing from the agent (browse); the driver does not scale values.
@@ -58,7 +60,9 @@ the exact URL set, that no request has a body and that no `interval=` is ever re
   processing instructions, CDATA, BOM, DOCTYPE (skipped; **entity declarations are never expanded**, only the
   five predefined entities and numeric references), unquoted attribute values, stray or misnested end tags.
 - Bounded: nesting depth 64, 2,000,000 elements, and the response size cap (`options.maxResponseBytes`,
-  default 8 MiB for `/probe` of large machines; larger answers abort and the tags go Bad `too-large`).
+  default 8 MiB for `/probe` of large machines, at most 256 MiB; larger answers abort and the tags go Bad
+  `too-large`). A whole answer is held and parsed in memory, so one driver process can use that much for
+  a hostile agent: an accepted limit (`docs/KNOWN-ISSUES.md`).
 - Observations are the children of `Samples`, `Events` and `Condition` inside a `ComponentStream`, with a
   `dataItemId`; the element name is the type (any type, including unknown ones from newer versions).
 

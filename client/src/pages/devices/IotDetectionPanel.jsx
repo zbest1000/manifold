@@ -12,7 +12,7 @@ import { saveIotConfig } from './iotHooks';
  *
  * The panel opens on the broker that has detection on (else the first), and once a broker has
  * conventions on it shows a one-line summary with an "Edit detection settings" button, so the device
- * list is on the first screen (S15). With nothing on yet (first run) the settings are open.
+ * list is on the first screen. With nothing on yet (first run) the settings are open.
  */
 export default function IotDetectionPanel({ brokers, error, loading, onRetry, onSaved, readOnly }) {
   const [pick, setPick] = useState(null);

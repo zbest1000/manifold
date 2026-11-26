@@ -49,11 +49,13 @@ COV is not used: SubscribeCOV writes to the device's subscription list. Values a
    optional on many objects) are ignored.
 6. **Whole-RPM Error.** Some devices answer an RPM naming one unknown object with a single Error PDU
    for the whole request; the driver splits until the bad object is isolated.
-7. **Invoke ids.** One socket per device; ids 0-255 allocated round-robin, never reused while
-   pending, and **retired for 10 s after a timeout**, so a late reply is dropped instead of answering
+7. **Invoke ids.** One socket per device; ids 0-255 (8 bits, the protocol's size) allocated
+   round-robin from a cryptographically random start, never reused while pending, and **retired for 10 s after a timeout**, so a late reply is dropped instead of answering
    a newer request (the UDP equivalent of the TCP drivers' "destroy the socket after a timeout").
    Replies must also match the request's service choice. Concurrency is configurable
-   (`maxOutstanding`, default 1) and used for browse and the ReadProperty fallback.
+   (`maxOutstanding`, default 1) and used for browse and the ReadProperty fallback. Accepted limit:
+   a peer that sees the traffic and can spoof the device's address could still answer first
+   (`docs/KNOWN-ISSUES.md`).
 8. **Retries and timeouts.** Each confirmed request is re-sent with the same invoke id up to
    `apduRetries` times after `apduTimeoutMs`, all within the runtime's request deadline. No answer
    at all is fatal: the runtime marks every tag Bad, closes the socket and reconnects with backoff
@@ -71,9 +73,11 @@ COV is not used: SubscribeCOV writes to the device's subscription list. Values a
 13. **object-list too large for one APDU**: browse reads `object-list[0]` (the count) and then the
     entries by array index, batched in RPMs (or one ReadProperty each), capped at 10,000 objects.
     Types are folders; more than 100 objects of a type are paged.
-14. **Character strings**: UTF-8, UCS-2 (big endian), UCS-4, ISO 8859-1 are decoded; DBCS and JIS
+14. **Bounded decoding**: values nested deeper than 32 levels are refused (a hostile device cannot make
+    the decoder recurse without limit).
+15. **Character strings**: UTF-8, UCS-2 (big endian), UCS-4, ISO 8859-1 are decoded; DBCS and JIS
     are returned as latin1 text with the character set named (no code-page tables).
-15. **Quality**: with present-value the driver reads status-flags, reliability and out-of-service.
+16. **Quality**: with present-value the driver reads status-flags, reliability and out-of-service.
     Reliability other than no-fault-detected or the FAULT flag = Bad (`reliability: <name>` /
     `fault`); out-of-service = Uncertain. IN_ALARM and OVERRIDDEN keep Good (the value is real).
     In ReadProperty mode only status-flags is read (one extra request per tag).
@@ -116,4 +120,5 @@ The only shared change is the registration line in `services/deviceManager.js`.
 7. object-list browse on a device with thousands of objects (time, RPM batching limits).
 8. Character sets other than UTF-8 in object names.
 9. Status-flags / reliability semantics per vendor for quality.
-10. Discovery probe (unicast Who-Is + wildcard read) against real devices and IDS reactions.
+10. Discovery probe (unicast Who-Is + wildcard read; the BACnet entry of the shared UDP probe table
+    `UDP_PROBES` in `server/services/discovery.js`) against real devices and IDS reactions.

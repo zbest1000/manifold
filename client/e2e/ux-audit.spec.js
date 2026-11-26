@@ -4,11 +4,11 @@ import { api, baseUrl, publisher, startBroker, startHistorianStub, startOpcua, c
 
 /**
  * UX audit (November 2026) against the real backend, with data present rather than empty states:
- *   - S14: a wildcard value rule firing on two topics, one acknowledged, is one Overview line that
+ *   - a wildcard value rule firing on two topics, one acknowledged, is one Overview line that
  *     counts them and links to the Active list, not one topic name;
- *   - S15: IoT over MQTT, a broker with detection on shows a one-line summary and the device list
+ *   - IoT over MQTT, a broker with detection on shows a one-line summary and the device list
  *     on the first screen; the settings open with a button;
- *   - S16: a focused search box shows one focus indicator (its ring), not the global outline too;
+ *   - a focused search box shows one focus indicator (its ring), not the global outline too;
  *   - axe on the Routes table with routes (sortable headers with hints) and on OPC UA with a
  *     connection (the Explore / Exploring button), where the empty pages had nothing to find.
  */
@@ -18,7 +18,7 @@ async function seriousAxe(page) {
   return r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.slice(0, 2).map((n) => n.html.slice(0, 120)).join(' | ')}`);
 }
 
-test('S14: a wildcard rule firing on two topics, one acknowledged, is counted on the Overview', async ({ page }) => {
+test('a wildcard rule firing on two topics, one acknowledged, is counted on the Overview', async ({ page }) => {
   const tag = unique('w');
   const ruleName = unique('Robot hot ');
   const topics = [`e2e/${tag}/robot-a/temperature`, `e2e/${tag}/robot-b/temperature`];
@@ -53,7 +53,7 @@ test('S14: a wildcard rule firing on two topics, one acknowledged, is counted on
   }
 });
 
-test('S15: with detection on, the IoT tab summarises it and shows the device list first', async ({ page }) => {
+test('with detection on, the IoT tab summarises it and shows the device list first', async ({ page }) => {
   const broker = await startBroker();
   const brokerId = unique('s15');
   const brokerName = unique('S15 broker ');
@@ -83,7 +83,7 @@ test('S15: with detection on, the IoT tab summarises it and shows the device lis
   }
 });
 
-test('S16: a focused search box shows one focus indicator', async ({ page }) => {
+test('a focused search box shows one focus indicator', async ({ page }) => {
   await page.goto('/uns');
   const search = page.getByRole('combobox').or(page.getByRole('searchbox')).first();
   await expect(search).toBeVisible();

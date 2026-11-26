@@ -196,7 +196,7 @@ The connection form takes four transports:
 | Protocol | Transport | Notes |
 |---|---|---|
 | `mqtt` | plain TCP | default, port 1883 |
-| `mqtts` | TLS | for self-signed broker certificates, disable *Reject unauthorized* |
+| `mqtts` | TLS | for a private CA paste its certificate; for a test broker with a self-signed certificate untick *Verify TLS certificate* (a high posture finding) |
 | `ws` | WebSocket | set the **path** — there is no universal default (Mosquitto `9001`, EMQX `8083/mqtt`, proxies `443`); Manifold defaults to `/mqtt` |
 | `wss` | WebSocket over TLS | same path rule |
 

@@ -129,7 +129,7 @@ the Tree views and tables, but drawing a graph is not accessible in the way a ta
 | `/pipelines?tab=<routes\|models\|historians\|recorder\|contracts\|codecs>` | a Pipelines tab |
 | `/alerts?tab=<active\|history\|rules>` | an Alerts tab |
 | `/alerts?alarm=<ruleId>\|<topic>` | the Active tab with that alarm highlighted (the Overview's Needs attention links use it) |
-| `/settings?tab=<general\|configuration\|audit>` | a Settings tab (`?tab=alerts`, the old place of the alert rules, opens `/alerts?tab=rules`) |
+| `/settings?tab=<general\|configuration\|audit>` | a Settings tab |
 
 **Show in UNS** on a mapping row and **Open in Topics** in the UNS panel use these links.
 

@@ -1,6 +1,6 @@
 /**
  * Manifold UI primitives. Implementation lives in ./ui/*.jsx; import from here.
- * Design rules, tokens and the migration guide: docs/design/ui-design-system.md
+ * Design rules and tokens: docs/design/ui-design-system.md
  *
  *   controls  Button, ButtonLink, buttonClass, IconButton, Spinner, Input, Textarea, Field, Select,
  *             Toggle (= Switch), Checkbox, Radio, SegmentedControl, Tabs,

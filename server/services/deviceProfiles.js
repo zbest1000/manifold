@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Device profiles and instances (docs/design/southbound-drivers.md 4.4) - the
+ * Device profiles and instances (ARCHITECTURE.md, Device profiles) - the
  * pure half: parameter resolution, placeholder substitution and the merge of a
  * profile with one device instance into the EFFECTIVE device the drivers see.
  * No I/O, no driver knowledge; DeviceManager adds driver validation on top.

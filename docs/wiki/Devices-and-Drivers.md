@@ -8,6 +8,17 @@ Manifold already speaks OPC UA. If the device has an OPC UA server you can
 license and use, prefer it: it carries types, names and authentication. The
 drivers here are for the many devices that only speak other protocols.
 
+This page is the reference for adding and running devices: start with the table below and
+[The Devices page](#the-devices-page), then read the section for your protocol.
+
+**Contents:** [Drivers at a glance](#drivers-at-a-glance) · [Concepts](#concepts) ·
+[The Devices page](#the-devices-page) · [Common to every driver](#common-to-every-driver) ·
+[The drivers](#the-drivers) ([Modbus TCP](#modbus-tcp), [S7](#siemens-s7),
+[EtherNet/IP](#ethernetip-logix), [BACnet/IP](#bacnetip), [SNMP](#snmp), [HTTP/JSON](#http--json),
+[MTConnect](#mtconnect), [CoAP](#coap)) · [Profiles and bulk creation](#device-profiles-and-instances) ·
+[Discovery](#finding-devices-on-the-network-discovery) · [Polling health](#polling-health) ·
+[Not yet verified](#what-is-not-yet-verified) · [Try it without hardware](#try-it-without-hardware)
+
 ## Drivers at a glance
 
 | Driver | `protocol` | Status | Transport, default port | Browse | The only requests it can build |
@@ -88,7 +99,7 @@ began, and three tabs:
 - **Tags**: the live table: tag key and address, **Value**, **Unit**, **Quality** (Good,
   Uncertain, Bad), **Age** and **Reason**. Filter by key, address or reason; **All** and
   **Problems**. Values refresh from the `device-values` stream (see
-  [Operations](Operations#upgrade-notes-behaviour-changes-an-operator-must-know)).
+  [ARCHITECTURE.md](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md#socketio-events)).
 - **Probe**: read raw registers or bytes at one address and see every decoding (below).
 
 The drawer's footer has the **Polling enabled** switch, **Delete**, **Map to UNS** (opens the
@@ -113,8 +124,6 @@ The drawer's footer has the **Polling enabled** switch, **Delete**, **Map to UNS
 
 ![The device form for the S7 device: connection settings with the CPU presets and the experimental note](images/device-form.png)
 
-Tags are `key` (what you call it here: 1 to 128 characters of `A-Z a-z 0-9 _ . - : [ ]`), an
-`address`, a `type` and optional decode settings, unit, description and a UNS `property` name.
 For EtherNet/IP, **Import from controller** opens a tree of the controller's own tag list
 (controller scope, programs, UDT members, External Access; arrow keys and Enter drive it) and
 appends the tags you tick, with generated keys and suggested property names. EtherNet/IP tags
@@ -174,7 +183,7 @@ after switching to SNMPv3) is dropped. Config export and the audit log redact th
 such as `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode` or
 `unavailable`; each driver section lists its own reasons. Bad is never silently replaced by the
 last good value. Drivers that know the device's own time (HTTP/JSON with `timestampSelector`,
-MTConnect, CoAP SenML) report it as the sample's source time.
+MTConnect) report it as the sample's source time; the others, CoAP SenML included, use the read time.
 
 ### Egress: which addresses a device may use
 
@@ -216,15 +225,8 @@ reach the socket:
 - **SNMP:** GetRequest, GetNextRequest and GetBulkRequest only, every value
   NULL. There is no SetRequest encoder at all; the message layer refuses to
   wrap any other PDU, and the tests check every datagram the driver sent.
-- **Matter Server:** `start_listening`, `get_nodes`, `get_node`, `server_info`,
-  `diagnostics` and `read_attribute` only. Commissioning, `device_command`,
-  `write_attribute`, `remove_node`, `interview_node` and the rest cannot be encoded.
-- **Z-Wave JS Server:** `set_api_schema`, `start_listening`,
-  `node.get_defined_value_ids`, `node.get_value_metadata` and `node.get_value`
-  only, all answered from the server's cache. `node.set_value`, `node.poll_value`,
-  refresh, inclusion/exclusion, healing, firmware and `driver.*` setters cannot be
-  encoded. The test simulators of both servers refuse and record any other
-  command, and every test asserts that none arrived.
+- **Matter Server and Z-Wave JS Server:** a short list of allow-listed read commands each; see
+  [Matter and Z-Wave bridge servers](Bridge-Servers#read-only-and-what-is-not-verified).
 
 What this does and does not mean:
 
@@ -311,8 +313,9 @@ turns Bad instead of publishing the number), string `length` in registers, and
 a device-level **max registers** (125 is the protocol limit; many devices
 accept fewer) and **max gap**. Max gap is how many unused registers one block
 read may span; it defaults to **0** because many devices answer a read over an
-unmapped register with an error. Ranges known to be unmapped can be listed in
-the device's `options.unmapped` (REST only) and are never crossed.
+unmapped register with an error. Ranges known to be unmapped can be listed under
+**Advanced → Unmapped register ranges** in the device form (`options.unmapped` in the API) and
+are never crossed.
 
 **Not yet verified.** **Modbus TCP** is tested against a fault-injecting simulator (late replies,
   wrong transaction ids, dropped sockets, truncated frames, exceptions).
@@ -854,7 +857,7 @@ partly blocked scans the rest and lists what it skipped. See [SECURITY.md](../..
 ### Try it against the simulators
 
 `node server/tools/simulators.js` starts the Modbus, S7 and EtherNet/IP simulators; scan them from a local server with
-`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`. [DOCKER.md](../../DOCKER.md#scan-the-simulators-with-discovery) has the exact commands for both
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`. [DOCKER.md](../../DOCKER.md#simulated-devices) has the commands for both
 the local and the Docker demo.
 
 ## Polling health
@@ -928,10 +931,9 @@ checklist per driver.
   with rack 0 slot 1 and the SZL identity read, ListIdentity, the OPC UA Hello)
   have also only been run against the simulators; how real devices, gateways and
   intrusion-detection systems react to them is part of the checklist.
-- The design intent is that a driver leaves "experimental" only after
-  verification against real hardware. The consolidated, ordered procedure is
-  [Verifying on real hardware](Verifying-on-Real-Hardware); the design is in
-  [`docs/design/southbound-drivers.md`](https://github.com/zbest1000/manifold/blob/main/docs/design/southbound-drivers.md).
+- A driver leaves "experimental" only after verification against real hardware. Contributors
+  adding or changing a driver: see the driver contract,
+  [`docs/design/driver-contract.md`](https://github.com/zbest1000/manifold/blob/main/docs/design/driver-contract.md).
 
 ## Try it without hardware
 

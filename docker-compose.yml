@@ -4,8 +4,8 @@
 #   → open http://localhost:5000
 #
 # Brings up the app plus a Mosquitto MQTT broker, a Microsoft OPC-PLC OPC UA
-# server, a data simulator, and `device-sim` (simulated Modbus TCP, Siemens S7
-# and EtherNet/IP devices). The app is pre-seeded to auto-connect to the broker
+# server, a data simulator, `device-sim` (simulated Modbus TCP, Siemens S7
+# and EtherNet/IP devices) and mock i3X and CESMII SMIP servers. The app is pre-seeded to auto-connect to the broker
 # and OPC UA server, to poll the three simulated devices, and to publish the
 # Modbus device into the UNS under demo/plant1/pump1/. The simulator publishes
 # MQTT + Sparkplug B traffic, so every view has live data immediately.

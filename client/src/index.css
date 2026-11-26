@@ -193,7 +193,7 @@ table,
 
 /* Visible keyboard focus everywhere (mouse clicks do not trigger it). In the base layer, so a
    control that draws its own indicator (text fields: border + ring, via focus:outline-hidden) shows
-   that one instead of two (S16); unlayered CSS would beat every utility. */
+   that one instead of two; unlayered CSS would beat every utility. */
 @layer base {
   :focus-visible {
     outline: 2px solid rgb(var(--focus));

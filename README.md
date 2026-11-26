@@ -194,7 +194,7 @@ The two tables list every `MANIFOLD_*`, `PORT` and `CLIENT_URL` variable that `g
 
 </details>
 
-Limits and their settings are explained in [Operations: limits](docs/wiki/Operations.md#limits-that-protect-the-server). Upgrading from an earlier build? Read [Operations: upgrade notes](docs/wiki/Operations.md#upgrade-notes-behaviour-changes-an-operator-must-know) and the [changelog](CHANGELOG.md).
+Limits and their settings are explained in [Operations: limits](docs/wiki/Operations.md#limits-that-protect-the-server). Upgrading from 1.0.0? Read the [upgrade notes](CHANGELOG.md#upgrade-notes) in the changelog.
 
 ## MCP server
 
@@ -222,7 +222,7 @@ This is the first public release. What has and has not been proven:
 - **Not proven on real hardware:** no device driver and no IoT convention has been run against a real device. Every driver except Modbus TCP is marked *Experimental* in the UI. If you have a PLC, the checklist is [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md).
 - **Not confirmed:** some Timebase REST behaviour (ordering of old samples, Bad samples without a value, quality codes); the public test-broker presets in the connect form were written from memory; WebGL and 3D views were only run on a software renderer.
 
-Known issues are listed in the [changelog](CHANGELOG.md); release steps and verification status are in [docs/RELEASING.md](docs/RELEASING.md).
+Open issues and accepted limits are listed in [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md); release steps and verification status are in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Development and testing
 

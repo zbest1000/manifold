@@ -52,7 +52,7 @@ describe('Overview: needs attention', () => {
     expect(items[3].detail).toBe('Firing · acknowledged');
   });
 
-  it('a wildcard rule firing on several topics is counted, never named by one possibly acknowledged topic (S14)', () => {
+  it('a wildcard rule firing on several topics is counted, never named by one possibly acknowledged topic', () => {
     const rule = (firingTopics, unacknowledged) => [{ id: 'w', name: 'Robot hot', type: 'value-threshold', state: { state: 'firing', topic: 'a/robot-3/temperature', value: 41, firingTopics, unacknowledged } }];
     const one = engineAttention({ alertRules: rule(2, 1) })[0];
     expect(one.detail).toBe('Firing on 2 topics · 1 unacknowledged');

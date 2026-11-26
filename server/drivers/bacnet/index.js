@@ -2,7 +2,7 @@
 
 /**
  * BACnet/IP driver (read-only): describe / validateTag / createDriver, the contract of
- * docs/design/southbound-drivers.md section 4.1 as consumed by drivers/runtime/deviceRuntime.js.
+ * docs/design/driver-contract.md as consumed by drivers/runtime/deviceRuntime.js.
  *
  * Services sent: Who-Is (unicast to the configured device only), ReadProperty and
  * ReadPropertyMultiple. Nothing else can be encoded (see ./frame.js). Pitfalls handled and what

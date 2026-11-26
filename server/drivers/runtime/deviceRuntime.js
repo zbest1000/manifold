@@ -2,7 +2,7 @@
 
 /**
  * DeviceRuntime: protocol-agnostic runtime for ONE device (see
- * docs/design/southbound-drivers.md sections 3, 4.1-4.3).
+ * docs/design/driver-contract.md and ARCHITECTURE.md).
  *
  * Owns the connection state machine (connecting -> online -> backoff -> ...),
  * the poll scheduler (one cycle per group, overruns skipped never queued, all

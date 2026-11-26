@@ -4,7 +4,7 @@
  * Read-only CoAP (UDP, RFC 7252) driver for constrained devices and sensors.
  * EXPERIMENTAL until verified on real hardware: see NOTES.md.
  *
- * Contract: southbound-drivers.md section 4.1 as consumed by the polling runtime
+ * Contract: docs/design/driver-contract.md as consumed by the polling runtime
  * (plan / execute / bisect / browse / probe). The only request this driver can
  * send is GET (a CoAP ping at connect time is an empty message).
  *

@@ -7,7 +7,7 @@ import { newState, buildMapping, withTagDefs, supportsRules, supportsOverrides }
 
 const dev = (o = {}) => ({ id: 'z2m:0x01', sourceId: 'bk|z2m:0x01', brokerId: 'bk', brokerName: 'Home', name: 'living_room/climate', convention: 'zigbee2mqtt', manufacturer: 'Aqara', model: 'WSDCGQ11LM', availability: 'online', tagCount: 5, ...o });
 
-describe('Detection panel (S15)', () => {
+describe('Detection panel', () => {
   const conv = [{ id: 'zigbee2mqtt', label: 'Zigbee2MQTT' }, { id: 'homeassistant', label: 'Home Assistant MQTT discovery' }];
   const plain = { id: 'plant', conventions: conv, config: { conventions: {} } };
   const suggested = { id: 'lab', conventions: conv, config: { conventions: {} }, suggestions: [{ convention: 'zigbee2mqtt', topic: 'zigbee2mqtt/bridge/devices' }] };

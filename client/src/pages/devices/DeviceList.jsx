@@ -141,7 +141,7 @@ const RowImpl = memo(function Row({ r, selected, experimental, profileName, busy
 });
 
 /**
- * The device table (docs/design/ui-design-system.md#list-page): sortable, filterable, dense. State,
+ * The device table (docs/design/ui-design-system.md, Page patterns): sortable, filterable, dense. State,
  * poll health, quarantined tags and the last error scan down the page; a row opens the detail.
  */
 export default function DeviceList({ devices, hosts, deviceStates, labels, experimental, profileById, selectedId, busyId, readOnly, onOpen, onEdit, onDelete, onToggle, onMap }) {

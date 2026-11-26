@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { descriptorLabel } from '@/pages/devices/FormControls';
 
-describe('device form descriptor labels (S17)', () => {
+describe('device form descriptor labels', () => {
   it('adds "optional" once, inside a label\'s own parenthesis', () => {
     expect(descriptorLabel({ name: 'localTsap', label: 'Local TSAP (advanced)', optional: true })).toBe('Local TSAP (advanced, optional)');
     expect(descriptorLabel({ name: 'path', label: 'Path', optional: true })).toBe('Path (optional)');

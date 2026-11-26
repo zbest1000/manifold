@@ -28,7 +28,9 @@ npm start              # serves API + built client on :5000
 One command brings up Manifold, a Mosquitto broker, an OPC UA simulator, simulated
 Modbus TCP / S7 / EtherNet/IP devices, and a traffic generator publishing plain MQTT
 and Sparkplug B — pre-wired, so the UI is alive the moment it loads (the
-Devices page already polls the three simulators, and the Tags page already has two mappings):
+Devices page already polls the three simulators, and the Tags page already has two mappings).
+The demo runs without a token and is reachable only from your machine; see
+[DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md):
 
 ```bash
 docker compose up --build
@@ -46,18 +48,16 @@ docker run -p 5000:5000 -v manifold-data:/data \
 # open http://localhost:5000 and enter the token
 ```
 
-The token is not optional here: without one the server binds `127.0.0.1` inside the
-container, where the published port cannot reach it.
-
 The volume at `/data` keeps profiles, history, and the OPC UA PKI across
-container restarts. See [Operations](Operations) for tokens and hardening.
+container restarts.
 
 > ⚠️ **Loopback by default.** With **no** token set (`MANIFOLD_AUTH_TOKEN`,
 > `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TOKENS`) the server binds `127.0.0.1` only:
-> it is reachable from its own host, not the network. To reach it from other machines,
-> set a token (recommended) or `MANIFOLD_HOST=0.0.0.0`. If a token is set, the first page
-> is the **Manifold is locked** screen: enter the access token there. See
-> [Operations](Operations).
+> it is reachable from its own host, not the network, and inside a container not even
+> through a published port, which is why the image needs a token. To reach it from other
+> machines, set a token (recommended) or `MANIFOLD_HOST=0.0.0.0`. If a token is set, the
+> first page is the **Manifold is locked** screen: enter the access token there. See
+> [Operations](Operations) for tokens and hardening.
 
 ## The first page
 
@@ -137,10 +137,10 @@ The Topics page has the equivalent `/topics?broker=<broker id>&topic=<topic>`. Y
 ## Where to next
 
 - Read a PLC, controller, meter or sensor directly (Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect,
-  CoAP) → [Devices and Drivers](Devices-and-Drivers); Matter and Z-Wave → [Bridge servers](Bridge-Servers)
+  CoAP), find them on the network and create many from a profile → [Devices and Drivers](Devices-and-Drivers);
+  Matter and Z-Wave → [Bridge servers](Bridge-Servers)
 - See the Zigbee, Z-Wave, Wi-Fi and LoRaWAN devices a bridge publishes on your broker → [IoT devices over MQTT](IoT-Devices-over-MQTT)
 - Alarm on values and silent topics, acknowledge, keep a history → [Alerts](Alerts)
-  (it can also find them on the network and create many from a profile)
 - Publish tags with units, context and quality → [Mapping to the UNS](Mapping-to-the-UNS)
 - Light and dark themes, shortcuts, deep links, phones → [User interface](User-Interface)
 - Have a real PLC and want to help lift the "experimental" label →

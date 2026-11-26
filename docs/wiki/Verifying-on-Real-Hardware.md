@@ -118,9 +118,11 @@ serial timeout; there is no warning in the UI, so check by hand).
 what a second client sees while Manifold is connected.
 
 **M9. Discovery probe (optional).** With **Modbus TCP** ticked in Discovery,
-scan only the device's address. The probe is one Read Holding Registers request
-for one register at address 0, unit 1. *Confirms:* the device is reported
-(register or exception reply both count). *Report:* whether the device logged
+scan only the device's address. The probe is a Read Device Identification
+(FC 43 / MEI 14) and, if the device refuses or ignores it, one Read Holding
+Registers request for one register at address 0, unit 1. *Confirms:* the device
+is reported (an identification, register or exception reply all count), and
+whether it answered FC 43. *Report:* whether the device logged
 the request, answered at all, or reacted badly. Do not scan a production range.
 
 ## Siemens S7 (S7 items 1 to 14)

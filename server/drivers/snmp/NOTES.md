@@ -4,7 +4,7 @@ Read-only SNMP v1 / v2c / v3 (USM) over UDP, BER written by hand, crypto from
 Node's built-in `crypto` only. Implemented from the RFCs (1155/1157 v1, 1905 /
 3416 PDUs, 2578 SMIv2, 3412 message processing, 3414 USM, 3584 coexistence,
 3826 AES, 7860 SHA-2 HMAC) and checked against `server/test/support/snmpSimulator.js`
-(same author) plus the RFC 3414 A.3 key-localisation vectors and the FIPS 81
+(written together with the driver) plus the RFC 3414 A.3 key-localisation vectors and the FIPS 81
 DES-CBC vector. **Experimental until checked against real agents.**
 
 Independent interoperability check (manual, once, not part of the test suite):
@@ -25,12 +25,12 @@ the SHA-2 localised key (as pysnmp does); other agents may differ there.
 | `ber.js` | BER primitives: definite lengths only, SMI application types, v2 exceptions |
 | `message.js` | v1/v2c and v3 framing; **can only encode Get, GetNext, GetBulk** with NULL values |
 | `usm.js` | password-to-key, localisation, HMAC truncation, CBC-DES and CFB-AES-128 |
-| `session.js` | one UDP socket, request-id / msgID matching, retries, v3 engine state |
+| `session.js` | one UDP socket, request-id / msgID matching (ids and the v3 privacy salt start from a cryptographic random value), retries, v3 engine state |
 | `planner.js` | packs OIDs into PDUs by count and estimated response size |
 | `decode.js` | varbind value -> sample (types, text/hex, Opaque float/double) |
 | `rate.js` | counter -> per-second rate with wrap and restart handling |
 | `oids.js` | numeric OIDs, the small built-in name table, browse roots |
-| `identify.js` | the opt-in discovery probe (one v2c Get, community "public") |
+| `identify.js` | the opt-in discovery probe (one v2c Get, community "public"); registered in the shared UDP probe table `UDP_PROBES` in `server/services/discovery.js`, next to BACnet/IP and CoAP |
 | `../runtime/udpTransport.js` | the UDP socket (pinned literal IP, egress re-check, source filter) |
 
 ## Deviations and pitfalls handled

@@ -32,7 +32,7 @@ hardware.
   Uncertain (`stale`).
 - Content formats: text/plain, application/json, application/cbor (own decoder: integers, half,
   single and double floats, byte and text strings including indefinite length, arrays, maps, tags,
-  simple values), application/senml+json and senml+cbor (base name/time/unit/value/sum), link-format,
+  simple values; bignums wider than 64 bytes are refused), application/senml+json and senml+cbor (base name/time/unit/value/sum), link-format,
   octet-stream (hex). A response without a Content-Format is read as text when it is printable UTF-8,
   otherwise as hex.
 - Tag address: `[observe:]/path[?query][#selector]`. The selector is a dotted path into JSON/CBOR
@@ -79,7 +79,8 @@ hardware.
 - Unicast only: no multicast group is ever joined or addressed (no multicast discovery).
 - `coapUdp.js` is deliberately self-contained so other UDP drivers can adopt or replace it later.
 - Discovery: an opt-in probe (`coapPorts` or `includeCoap`) sends ONE unicast `GET /.well-known/core`
-  (one retransmission) per address and port. `includeDevices` does not turn it on.
+  (one retransmission) per address and port. `includeDevices` does not turn it on. It is the CoAP entry
+  of the shared UDP probe table (`UDP_PROBES` in `server/services/discovery.js`).
 
 ## Not supported
 

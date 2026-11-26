@@ -470,7 +470,7 @@ Behaviour that changes for someone upgrading from 1.0.0. Each item is detailed u
   (`opcua.png`).
 - New wiki pages **Devices and Drivers**, **Mapping to the UNS** and **Verifying
   on real hardware** (one ordered checklist for Modbus, S7 and EtherNet/IP), and
-  a design document for the drivers (`docs/design/southbound-drivers.md`).
+  a design document for the drivers (now `docs/design/driver-contract.md`).
 - **Documentation for the new drivers, IoT over MQTT, alerts, broker tools and codecs.** Devices and Drivers is one
   table of every driver, a common section and one section per driver in the same shape; Matter and Z-Wave have their
   own page (Bridge servers); Verifying on real hardware has a checklist per driver and for the IoT conventions;
@@ -920,12 +920,8 @@ Behaviour that changes for someone upgrading from 1.0.0. Each item is detailed u
   decision (see Security above); only link-local and cloud-metadata targets are refused for them.
 - WebGL and 3D were only run on a software renderer; accessibility is checked
   automatically (axe, both themes) but not audited by hand or with a screen reader.
-- See `docs/REVIEW-2026-11.md` for the full list, including defects seen while
-  capturing the documentation screenshots and still open: an overflowing large float in the device
-  drawer (S1); a reopened OPC UA mapping's tag table leaves Unit and Description blank (S8); a wildcard value rule is
-  one Overview line naming one topic, possibly an acknowledged one (S14); the IoT detection panel fills the first
-  screen when every convention is on (S15); two focus indicators in search boxes (S16); S7 advanced field labels with
-  two parenthesised suffixes (S17).
+- What is still open, including UI issues and accepted security limits, is listed in
+  [Known issues](docs/KNOWN-ISSUES.md).
 
 ## [1.0.0] - 2026-07-15
 

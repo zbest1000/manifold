@@ -151,11 +151,11 @@ server/   Express + Socket.IO backend; protocol managers and engines
 client/   React 19 + Vite + Tailwind; design system (src/components/ui), pages,
           canvas renderers (src/graph), Zustand store; e2e/ holds the Playwright suite
 mcp/      MCP server (stdio), forwards to the backend REST API
-native/   Rust/napi hot-path experiment, kept as a reproducible benchmark
+native/   Rust/napi hot-path benchmark; not built or used by the product
 docker/   Demo stack: app, mosquitto, OPC PLC simulator, traffic generator,
           simulated Modbus / S7 / EtherNet/IP devices (docker-compose.yml)
-docs/     design notes (docs/design/), the review, the UI backlog and the wiki
-          sources (docs/wiki/); site/ is the static landing page
+docs/     contributor notes (docs/design/), known issues, release steps and the
+          wiki sources (docs/wiki/); site/ is the static landing page
 ```
 
 ## Deployment
@@ -459,8 +459,7 @@ flowchart LR
   Timebase accepts for a Bad sample with no value (Manifold sends `v: null`
   with the quality), whether samples closer than its advertised 500 ms
   resolution are kept, and its quality-code semantics. CI runs against
-  `timebase/historian:1.3.4`; 2.x is current. See
-  [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md) §11.
+  `timebase/historian:1.3.4`; 2.x is current.
 
 ## Alerting
 
@@ -887,9 +886,10 @@ connection. Routes: `/api/iot/*`; MCP: `iot_devices`.
 Read-only drivers for Modbus TCP, Siemens S7 (S7comm), EtherNet/IP (Logix), BACnet/IP,
 SNMP, HTTP/JSON, MTConnect and CoAP devices, and for Matter and Z-Wave networks through
 the Matter Server and Z-Wave JS Server, with tags landing in the same binding engine as
-OPC UA. The design is in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
-(status: implemented; every driver except Modbus TCP is experimental, and nothing was
-verified on real hardware); this section describes what exists. Transports: TCP
+OPC UA. Every driver except Modbus TCP is experimental, and nothing was verified on real
+hardware. The driver contract, its design rules and the checklist for adding a driver are in
+[`docs/design/driver-contract.md`](docs/design/driver-contract.md); this section describes how
+the drivers run. Transports: TCP
 (Modbus, S7, EtherNet/IP), UDP (BACnet/IP, SNMP, CoAP), HTTP GET (HTTP/JSON, MTConnect,
 through one shared client) and WebSocket (the two bridge servers, through a hand-written
 RFC 6455 client in the runtime). The bridge drivers are **subscription drivers**
@@ -1049,10 +1049,11 @@ driver host: `manifold_driver_host_up` and `_restarts_total`; and per binding
 are capped (500 devices, bindings and hosts; 16 groups and 16 exception codes per
 device).
 
-**Samples.** A sample is `{ key, v, type, q, qReason?, tRead }`; `qReason` is one
-of `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode`,
-`unavailable`. Polled protocols have no device timestamp, so `tRead` is the
-honest timestamp.
+**Samples.** A sample is `{ key, v, type, q, qReason?, tRead, tSource? }`. The runtime
+sets `qReason` to `disconnected`, `quarantined`, `unit-down` or `device-exception`;
+drivers add their own (`decode`, `unavailable`, `stale`, `layout` and others). Polled
+protocols have no device timestamp, so `tRead` is the honest timestamp; `tSource` is
+set only by a driver whose device supplies one (MTConnect).
 
 **Refusal reasons.** A tag that a device refuses (an S7 CPU with PUT/GET off or
 optimized access, a Modbus exception, a CIP status) is quarantined with the

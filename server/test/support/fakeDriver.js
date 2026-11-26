@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Fake driver module (contract: docs/design/southbound-drivers.md 4.1), used by
+ * Fake driver module (contract: docs/design/driver-contract.md), used by
  * driver-supervisor.test.js through the real host process. Behaviour is
  * controlled by device.fake:
  *   failConnect: true          connect() throws

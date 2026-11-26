@@ -14,7 +14,7 @@ import { engineAttention, recordPending, storageAttention } from '@/lib/attentio
 import { canaryAttention } from '@/lib/brokerHealth';
 
 /**
- * Overview: the dashboard pattern (docs/design/ui-design-system.md#dashboard).
+ * Overview: the dashboard pattern (docs/design/ui-design-system.md, Page patterns).
  * Top to bottom: what needs attention, the numbers that describe the estate,
  * then the connection list and the latest values. No decoration.
  */

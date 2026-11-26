@@ -13,9 +13,10 @@ recorder never write to a database directly: everything passes through a
 
 **The Historians tab.** One row per historian: the name and type, the endpoint (`url`, dataset, org and bucket, or
 database), whether credentials are stored on the server (the secret itself is never shown again), a **State** and
-the counters **Written** (accepted by the historian), **Queued** (waiting in memory), **Spilled** (held on disk
-while the historian is unreachable), **Dead-lettered** (refused for good, kept in a dead-letter file) and **Skipped**
-(had no usable value, so nothing was sent). The state reads *Healthy*, *No traffic yet*, *Buffering* (points are
+the counters **Admitted** (taken into the local buffer from routes, recordings and mappings), **Delivered** (written
+by the historian), **Pending** (admitted but not delivered yet: in memory or on disk), **Spilled** (the on-disk
+buffer size while the historian is unreachable), **Rejected** (refused for good, kept in a dead-letter file) and
+**Skipped** (had no usable value, so nothing was sent); each header explains itself on hover. The state reads *Healthy*, *No traffic yet*, *Buffering* (points are
 waiting or on disk), *Retrying* (the last write failed; the error is shown), *Dropping points* (the offline buffer is full
 and the drop policy is discarding) or *Rejecting points* (the historian refused some for good). **Test** writes one real
 point (`manifold/connection-test`) and answers *Test write succeeded* or *Test write failed* with the reason; the
@@ -51,7 +52,7 @@ flowchart LR
   and the credential errors 401/403; Postgres data or integrity errors) does
   not block the queue. It is split (bounded extra requests) to isolate the bad
   points, which go to a **dead-letter file** (capped at 5 MiB, counted in the
-  historian's stats as `deadLettered` and shown in the **Dead-lettered** column; it is not a Prometheus series); the rest is delivered. Credential errors (401/403) do the
+  historian's stats as `deadLettered` and shown in the **Rejected** column; it is not a Prometheus series); the rest is delivered. Credential errors (401/403) do the
   opposite: the backlog waits for you to fix the token, it is not discarded.
 - The memory queue holds 5,000 points; beyond that the oldest queued points
   spill. Writes are asynchronous and serialized per historian.
@@ -67,7 +68,7 @@ Under `MANIFOLD_DATA_DIR/outbox/`, per historian:
 | `<id>.<seq>.seg` | append-only JSONL segments, one point per line, rotated at 4 MiB |
 | `<id>.cursor` | how many bytes of the oldest segment are already delivered; written atomically (temp file, fsync, rename), so a crash re-sends at most a batch (**at-least-once**) and never loses or half-writes the spill |
 | `<id>.deadletter.jsonl` | permanently rejected points (capped at 5 MiB) |
-| `<id>.jsonl` | **legacy** single-file spill from older versions: read first, never appended to, so upgrading needs no conversion |
+| `<id>.jsonl` | **legacy** single-file spill from 1.0.0: read first, never appended to, so upgrading needs no conversion |
 
 > 💡 **Choosing a drop policy:** *newest* (default) preserves the beginning of
 > an outage — useful for post-mortems. *Oldest* keeps the freshest data —
@@ -146,14 +147,9 @@ binding stores the number itself.
 - **Device tags**: publish them to the UNS with a mapping
   ([Mapping to the UNS](Mapping-to-the-UNS)), then either let Timebase's own
   collector subscribe, route the topics through a pipeline, or give the mapping
-  a **direct historian target** (Delivery section of the editor): every sample it publishes is also enqueued to
-  the outbox here with its read timestamp, the value itself and its quality,
-  under the resolved topic as the tag name. The target must be a **Timebase or
-  TimescaleDB** historian; a mapping that names an InfluxDB historian is
-  rejected at save time. See
-  [Mapping to the UNS](Mapping-to-the-UNS#historians-timebase-is-the-reference)
-  for what is stored, and the limits (use `envelope` or the object layout so
-  quality changes reach history).
+  a **direct historian target** (Timebase or TimescaleDB only; what is stored and
+  its limits are in
+  [Mapping to the UNS](Mapping-to-the-UNS#historians-timebase-is-the-reference)).
 - The **Recorder** capturing a topic filter straight into a historian.
 
 ## Reading it back: the Trends page

@@ -65,7 +65,8 @@ multicast `set_value`, `endpoint.invoke_cc_api`. The simulator refuses and recor
   state is stale, so the connection is dropped and reloaded.
 - **Message compression** (server schema 10+) is permessage-deflate on the server side; Manifold
   never offers the extension, so the server sends plain frames.
-- **Large networks**: the full state is one message; caps default to 32 MB (`maxMessageMB`).
+- **Large networks**: the full state is one message; caps default to 32 MB (`maxMessageMB`), plus
+  the WebSocket client's caps of 4,096 fragments per message and 1 MiB of unread pongs.
 - **Malformed or unknown messages** drop the connection; the runtime reconnects and
   `start_listening` reloads everything.
 
