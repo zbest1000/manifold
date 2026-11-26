@@ -33,7 +33,7 @@
     "socket.io-client": "^4.7.5",
     "three": "^0.185.1",
     "uplot": "^1.6.32",
-    "zustand": "^4.5.5"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
