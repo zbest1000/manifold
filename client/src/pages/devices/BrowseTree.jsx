@@ -12,7 +12,7 @@ import { flattenTree, nodeDisabledReason } from './model';
  * addresses are not unique across folders). Tags with `meta.hasChildren` (UDTs)
  * are selectable AND expandable. `selection` is a Map<id, node>.
  */
-export default function BrowseTree({ deviceId, selection, onToggle, takenAddresses }) {
+export default function BrowseTree({ deviceId, selection, onToggle, takenAddresses, noun = 'controller' }) {
   const [nodes, setNodes] = useState({});
   const [expanded, setExpanded] = useState(() => new Set());
   const [loading, setLoading] = useState(() => new Set());
@@ -96,18 +96,18 @@ export default function BrowseTree({ deviceId, selection, onToggle, takenAddress
     <div className="min-h-0 flex-1 space-y-2">
       <p className="helper">Keys: arrows move, Right/Left expand or collapse, Space selects, Enter expands. Folders and UDTs load when opened.</p>
       {failed.map(([k, msg]) => (
-        <Banner key={k || 'root'} variant="error" title={`Could not load ${k ? `"${k}"` : 'the controller'}`} onRetry={() => load(k, true)}>
+        <Banner key={k || 'root'} variant="error" title={`Could not load ${k ? `"${k}"` : `the ${noun}`}`} onRetry={() => load(k, true)}>
           {msg}
         </Banner>
       ))}
       {!nodes[''] && !errors[''] && (
         <p className="flex items-center gap-2 py-3 text-sm text-muted">
-          <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Reading the controller's tag list…
+          <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Reading the {noun}'s tag list…
         </p>
       )}
-      {nodes[''] && nodes[''].length === 0 && <p className="py-3 text-sm text-muted">The controller reported no tags.</p>}
+      {nodes[''] && nodes[''].length === 0 && <p className="py-3 text-sm text-muted">The {noun} reported no tags.</p>}
       {items.length > 0 && (
-        <div role="tree" aria-label="Controller tags" aria-multiselectable="true" className="max-h-[48vh] overflow-y-auto rounded-lg border border-line bg-app p-1">
+        <div role="tree" aria-label={`${noun[0].toUpperCase()}${noun.slice(1)} tags`} aria-multiselectable="true" className="max-h-[48vh] overflow-y-auto rounded-lg border border-line bg-app p-1">
           {items.map((item) => {
             const { node } = item;
             const isTag = node.kind === 'tag';

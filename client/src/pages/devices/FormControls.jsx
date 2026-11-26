@@ -47,7 +47,7 @@ export function FormSection({ title, hint, children, className }) {
 const optValue = (o) => (typeof o === 'object' ? o.value : o);
 const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 
-/** Renders one protocol-descriptor field (number | select | text | boolean). */
+/** Renders one protocol-descriptor field (number | select | text | password | boolean). */
 export function DescriptorField({ field, value, onChange, error, disabled }) {
   const v = value ?? field.default ?? '';
   const label = `${field.label || field.name}${field.optional ? ' (optional)' : ''}`;
@@ -72,7 +72,8 @@ export function DescriptorField({ field, value, onChange, error, disabled }) {
         ) : (
           <Input
             {...a}
-            type={field.type === 'number' ? 'number' : 'text'}
+            type={field.type === 'number' ? 'number' : field.type === 'password' ? 'password' : 'text'}
+            autoComplete={field.type === 'password' ? 'new-password' : undefined}
             min={field.min}
             max={field.max}
             disabled={disabled}
@@ -92,12 +93,22 @@ function coerceSelect(field, raw) {
   return match === undefined ? raw : optValue(match);
 }
 
+// A field with `showWhen: { name, in: [...] }` is shown only while another field has one of those values
+// (the HTTP drivers show the user name only for basic authentication, for example).
+const shown = (f, values) => {
+  const w = f.showWhen;
+  if (!w) return true;
+  const v = values?.[w.name];
+  return (w.in || []).includes(v);
+};
+
 /** A grid of descriptor fields writing into `values`. */
-export function DescriptorFields({ fields, values, onChange, errors = {}, disabled }) {
+export function DescriptorFields({ fields, values, onChange, errors = {}, disabled, siblings }) {
   if (!fields?.length) return null;
+  const lookup = { ...Object.fromEntries((siblings || fields).filter((f) => f.default !== undefined).map((f) => [f.name, f.default])), ...values };
   return (
     <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
-      {fields.map((f) => (
+      {fields.filter((f) => shown(f, lookup)).map((f) => (
         <DescriptorField key={f.name} field={f} value={values?.[f.name]} onChange={(v) => onChange(f.name, v)} error={errors[f.name]} disabled={disabled} />
       ))}
     </div>

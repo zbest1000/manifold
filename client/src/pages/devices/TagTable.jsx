@@ -5,7 +5,7 @@ import { Button, Input, Banner } from '@/components/ui';
 import TagRow, { ProfileTagRow } from './TagRow';
 import TagImportDialog from './TagImportDialog';
 import BrowseImportDialog from './BrowseImportDialog';
-import { tagTypeNames, typeOptional as isTypeOptional, addressExample, extraColumns } from './model';
+import { tagTypeNames, typeOptional as isTypeOptional, addressExample, extraColumns, browseNoun } from './model';
 import { serializeTags, pasteIntoTags } from '@/lib/deviceTags';
 import { isStale } from '@/lib/deviceStatus';
 import { downloadText } from '@/lib/download';
@@ -137,7 +137,7 @@ export default function TagTable({
         </Button>
         {browse?.supported && (
           <Button type="button" size="sm" variant="secondary" onClick={() => setBrowsing(true)} disabled={Boolean(browse.reason) || readOnly} title={browse.reason || ''}>
-            <Cable size={14} aria-hidden="true" /> Import from controller
+            <Cable size={14} aria-hidden="true" /> Import from {browseNoun(descriptor)}
           </Button>
         )}
         <Button type="button" size="sm" variant="ghost" onClick={exportCsv} disabled={!tags.length}>
@@ -160,7 +160,7 @@ export default function TagTable({
         )}
       </div>
 
-      {browse?.supported && browse.reason && <p className="helper">Import from controller is unavailable: {browse.reason}</p>}
+      {browse?.supported && browse.reason && <p className="helper">Import from {browseNoun(descriptor)} is unavailable: {browse.reason}</p>}
       {dupHint && (
         <Banner variant="warn" title="Address validation unavailable" onRetry={validation.retry}>
           {dupHint}
@@ -296,7 +296,7 @@ export default function TagTable({
           onAdd={(rows) => {
             setTags((ts) => [...ts, ...rows]);
             setBrowsing(false);
-            toast.success(`Added ${rows.length} tag${rows.length === 1 ? '' : 's'} from the controller. Save the device to keep them.`);
+            toast.success(`Added ${rows.length} tag${rows.length === 1 ? '' : 's'} from the ${browseNoun(descriptor)}. Save the device to keep them.`);
           }}
         />
       )}

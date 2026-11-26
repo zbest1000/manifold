@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The `$SYS/#` subscription no longer reports a refusal as an error (public and managed brokers commonly refuse it).
+- **HTTP/JSON and MTConnect device drivers (experimental, read-only).** HTTP/JSON polls a device's REST endpoints with
+  GET only and picks values with a small JSONPath (`$.a.b[0]`, `['key']`, `[?(@.id=="x")]`), one request per path per
+  cycle, ETag support, clear Bad-quality reasons (HTTP status, timeout, not JSON, no match, too large), basic, bearer or
+  custom-header authentication kept out of the API and exports, TLS verified by default with CA, fingerprint pin and
+  explicit opt-out, same-host redirects only and address pinning. MTConnect reads an agent (`/probe`, `/current`, then
+  `/sample` from the next sequence) without gaps, resynchronises after an agent restart or buffer overflow, reads
+  conditions as normal/warning/fault with native codes and uses each observation's own timestamp; no multipart
+  streaming. Both can be browsed (**Import from device** / **Import from agent**) and tested from the device form.
+  Drivers may now report a per-sample source timestamp, and a descriptor field of type `password` is stored, masked
+  and kept on edit.
 
 ### Fixed
 

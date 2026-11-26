@@ -507,6 +507,7 @@ class DeviceRuntime {
     for (const r of res.results || []) {
       const s = { key: r.key, v: r.v, type: r.type, q: r.q, tRead };
       if (r.qReason) s.qReason = r.qReason;
+      if (r.tSource !== undefined) s.tSource = r.tSource; // a driver's own source timestamp (ms), e.g. MTConnect
       samples.push(s);
     }
   }

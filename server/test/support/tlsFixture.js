@@ -1,0 +1,30 @@
+'use strict';
+
+/**
+ * A self-signed certificate for localhost / 127.0.0.1 (EC P-256, valid for 100 years) used only by
+ * the in-process HTTPS simulators in tests. It protects nothing: the key is public on purpose.
+ */
+
+const KEY = `-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgZKtWlNyoh62LMA8K
+vZF2SrMs9Kvotb4YLTK7aHKwPmWhRANCAARWgygbMtPwHE7y0zUqaxrrtX+eV01w
+hRErPOfuN8I0/bS8E0FEBDh8LSbgkxN3++JlcAqBGhrTTJXiyVbBJVmx
+-----END PRIVATE KEY-----
+`;
+
+const CERT = `-----BEGIN CERTIFICATE-----
+MIIBnDCCAUGgAwIBAgIUBPOb9cblYEFVvA2rw6jeG6qitkEwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTEyNjAzNDgyNVoYDzIxMjYxMTAy
+MDM0ODI1WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO
+PQMBBwNCAARWgygbMtPwHE7y0zUqaxrrtX+eV01whRErPOfuN8I0/bS8E0FEBDh8
+LSbgkxN3++JlcAqBGhrTTJXiyVbBJVmxo28wbTAdBgNVHQ4EFgQUfX/lM4hi8VVZ
+V5pfki3FHK71H+YwHwYDVR0jBBgwFoAUfX/lM4hi8VVZV5pfki3FHK71H+YwDwYD
+VR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SHBH8AAAEwCgYIKoZI
+zj0EAwIDSQAwRgIhAPnX/rOidPnq8QMTJ73W8XBpAwi2Q2yr4nZ5HKNcGUJuAiEA
+7tf3mLZY2JLHwyQmF+IhHGEMeFUWEh5myEMbrGrWAuk=
+-----END CERTIFICATE-----
+`;
+
+const FINGERPRINT256 = '1E:5A:CE:80:42:FE:BB:42:74:FA:7C:D5:03:3B:30:6D:35:B4:7A:F9:AC:49:25:A0:7B:58:6F:99:12:D1:65:30';
+
+module.exports = { KEY, CERT, FINGERPRINT256 };

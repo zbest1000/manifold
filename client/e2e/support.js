@@ -73,6 +73,22 @@ export async function startEip() {
   return { port: sim.port, close: () => sim.stop() };
 }
 
+/** HTTP/JSON simulator: /api/meter = { power: { total: 12.5 }, state: "OK" }. Returns { port, sim, close() }. */
+export async function startHttpJson() {
+  const { startHttpJsonSimulator } = requireServer('./test/support/httpJsonSimulator.js');
+  const sim = await startHttpJsonSimulator({ docs: { '/api/meter': { power: { total: 12.5 }, state: 'OK', device: { online: true } } } });
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** MTConnect agent simulator with the default milling machine; Xact = 12.5, exec = ACTIVE. Returns { port, sim, close() }. */
+export async function startMtconnect() {
+  const { startMtconnectSimulator } = requireServer('./test/support/mtconnectSimulator.js');
+  const sim = await startMtconnectSimulator({});
+  sim.setValue('Xact', 12.5);
+  sim.setValue('exec', 'ACTIVE');
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
 // ---- REST ------------------------------------------------------------------------------
 
 async function call(method, url, body) {

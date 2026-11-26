@@ -36,9 +36,15 @@ export function lengthDefault(info) {
   return m ? Number(m[1]) : null;
 }
 
+/** What the driver's own tag list is called in the UI: "controller" unless the descriptor says otherwise. */
+export function browseNoun(descriptor) {
+  return descriptor?.browseNoun || 'controller';
+}
+
 /** First example in the driver's address help, for input placeholders. */
 export function addressExample(descriptor) {
   const help = String(descriptor?.addressHelp || '');
+  if (descriptor?.id === 'http-json' || descriptor?.id === 'mtconnect') return descriptor.addressForms?.[0] || 'address';
   const first = help.split(/[.,;]\s|, /)[0].trim();
   if (descriptor?.id === 's7') return 'DB1.DBD0';
   if (descriptor?.id === 'ethernet-ip') return 'Program:MainProgram.Tag';
@@ -149,15 +155,21 @@ export function nodesToTags(nodes, { descriptor, existing = [], pollGroup = '', 
   const props = new Set(existing.map((t) => t.property).filter(Boolean));
   const known = new Set(tagTypeNames(descriptor));
   return nodes.map((node) => {
-    const dataType = String(node.meta?.dataType || '').toUpperCase();
+    const raw = String(node.meta?.dataType || '');
+    // Drivers name types in their own case (DINT, float32, number): match without regard to case.
+    const dataType = [...known].find((k) => k.toLowerCase() === raw.toLowerCase()) || '';
     const isArray = (node.meta?.dims || []).length > 0;
+    const unit = typeof node.meta?.unit === 'string' ? node.meta.unit : '';
+    const description = typeof node.meta?.description === 'string' ? node.meta.description : '';
     return {
       _id: makeId(),
       key: uniqueName(String(node.address).replace(KEY_SAFE, '_').slice(0, 120), keys),
       address: node.address,
-      type: known.has(dataType) && !isArray ? dataType : '',
+      type: dataType && !isArray ? dataType : '',
       pollGroup,
-      property: uniqueName(suggestProperty(node.address), props)
+      property: uniqueName(suggestProperty(node.address), props),
+      ...(unit ? { unit } : {}),
+      ...(description ? { description } : {})
     };
   });
 }
@@ -191,6 +203,8 @@ export function flattenTree(childrenByParent, expanded) {
 export function probeSpec(protocol) {
   if (protocol === 'modbus-tcp') return { count: { label: 'Registers', min: 1, max: 125, def: 2 }, unitId: true, placeholder: 'holding:100' };
   if (protocol === 's7') return { count: { label: 'Bytes', min: 1, max: 480, def: '' }, unitId: false, placeholder: 'DB1.DBD0' };
+  if (protocol === 'http-json') return { count: null, unitId: false, placeholder: '/api/status or /api/status#$.power.total' };
+  if (protocol === 'mtconnect') return { count: null, unitId: false, placeholder: 'Xact' };
   return { count: null, unitId: false, placeholder: 'Program:MainProgram.Tag' };
 }
 
@@ -214,7 +228,7 @@ export function blankDevice(descriptor) {
     port: descriptor.defaultPort,
     ...fieldDefaults(descriptor.deviceFields),
     options: fieldDefaults(descriptor.optionFields),
-    limits: { ...DEFAULT_LIMITS },
+    limits: { ...DEFAULT_LIMITS, ...(descriptor.limits || {}) },
     pollGroups: [{ id: 'default', intervalMs: 1000 }],
     tags: []
   };

@@ -13,6 +13,8 @@ drivers here are for the many devices that only speak the older protocols.
 | **Modbus TCP** | supported | 502 | no | Registers and coils; byte/word order and addressing are explicit |
 | **Siemens S7** (S7comm) | **experimental** | 102 | no | Classic S7-300/400/1200/1500 access. Needs PUT/GET and non-optimized DBs |
 | **EtherNet/IP** (Logix) | **experimental** | 44818 | yes (**Import from controller**, and REST) | CompactLogix / ControlLogix tags by name |
+| **HTTP / JSON** | **experimental** | 80 / 443 | yes (**Import from device**) | GET-polls a device's REST endpoints and picks values with a small JSONPath |
+| **MTConnect** | **experimental** | 5000 | yes (**Import from agent**) | Machine-tool agent over HTTP: `/probe`, `/current`, then `/sample` without gaps |
 
 **Experimental** means the S7 and EtherNet/IP drivers were checked only against
 in-process simulators written by the same author as the drivers. The
@@ -266,8 +268,67 @@ controller's own template. EtherNet/IP tags have no `scale` or `offset`.
 
 `GET /api/devices/<id>/browse` lists the controller's tags and data types
 (controller scope, program scope, UDT members, External Access); the Devices
-page's **Import from controller** is a tree over it. Only EtherNet/IP can be
-browsed: classic S7comm has no tag list and Modbus has no names.
+page's **Import from controller** is a tree over it. EtherNet/IP, HTTP/JSON and
+MTConnect can be browsed: classic S7comm has no tag list and Modbus has no names.
+
+### HTTP / JSON
+
+For devices with a local REST API: energy meters, smart plugs, gateways,
+sensors. Manifold sends **GET requests only, never a body**, and picks values
+out of the JSON. Because the device is entered as a URL, the form has **Scheme**
+(`http` or `https`; https usually means port 443), the **Host** and **Port**,
+and an optional **Base path** (such as `/api/v1`).
+
+A tag address is `path#selector`, for example `/api/status#$.power.total` or
+`/meters#$.items[?(@.id=="main")].kwh`. The selector is a small JSONPath:
+`$.a.b`, `$['key']`, `$.list[0]` (negative counts from the end) and an equality
+filter `[?(@.id=="x")]` that takes the first match. Wildcards, `..`, slices and
+script expressions are not supported and are refused when you save. The tag
+types are `number`, `bool` and `string`; scale and offset belong to the mapping.
+All tags on one path share **one request per poll cycle**, and an `ETag` is
+sent back as `If-None-Match` when the device provides one. Optional tag fields
+(set through the API or CSV): `timestampSelector` (the device's own time),
+`qualitySelector` with `qualityEquals` (the tag is Bad unless that field has
+that value) and `okStatus` (accepted HTTP status codes, default 2xx).
+
+A tag is **Bad with a reason** when the status is not accepted (`http-404`),
+the request times out, the body is not JSON, the selector matches nothing, the
+response is larger than **Max response size**, or the value does not fit the
+type. The device stays Online for these; it goes Offline when the connection is
+refused or reset, TLS fails, or three requests in a row time out.
+
+Authentication is none, basic, bearer token or one custom header. The secrets
+are stored with the device, shown as `********` afterwards (leave the field
+blank when editing to keep the stored value), redacted in exports and the audit
+log, and sent only to the device's own host. **TLS is verified.** For a device
+with a private CA paste the CA certificate; for a self-signed device pin its
+SHA-256 fingerprint; **Do not verify the TLS certificate** is an explicit opt-out
+that accepts any certificate. Redirects are followed only within the same host,
+port and scheme: a redirect to another host is refused. **Import from device**
+fetches a path and lists every value in it as a ready-made address with a
+sample. Details and limits: [`server/drivers/httpjson/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/httpjson/NOTES.md).
+
+> ⚠️ A device that changes state on a GET request would be affected by polling.
+> Check the device's documentation before adding a path.
+
+### MTConnect
+
+Reads an MTConnect agent (machine tools) over HTTP GET: `/probe` for the device
+model, `/current` for the first snapshot, then `/sample?from=<nextSequence>` on
+every poll so that no observation is missed. If the agent restarts (its
+`instanceId` changes) or the sequence has left its buffer (`OUT_OF_RANGE`),
+Manifold takes a fresh `/current` and carries on. Streaming (`interval=`) is
+**not** used: this driver polls.
+
+A tag address is the agent's **data item id** (`Xact`), or `device/id` when the
+agent serves several devices. SAMPLE items read as numbers, EVENT items as
+text, and `UNAVAILABLE` is Bad. CONDITION items read as `normal`, `warning` or
+`fault` (a `number` tag reads 0, 1 and 2; the optional tag field `field` selects
+the native code, text, severity or qualifier instead). The observation's own
+timestamp is the value's source time. **Import from agent** shows the devices,
+components and data items from `/probe` and fills each tag's unit. Time series
+and data set items are not supported and read Bad. Details and limits:
+[`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
 
 ## Device profiles and instances
 
@@ -506,6 +567,10 @@ reach the socket:
   Fragmented, Multiple Service Packet (every inner service checked), and
   attribute/template reads. The client also re-parses each buffer before
   `socket.write`.
+- **HTTP/JSON and MTConnect:** one shared HTTP client whose only request is
+  `GET` with no body (a test asserts this against the client source and the
+  simulators log every method they see). MTConnect sends only `/probe`,
+  `/current` and `/sample`.
 
 What this does and does not mean:
 
@@ -548,6 +613,14 @@ refused. See [Operations](Operations#network-safety-egress-guard).
   be wrong), template sizes, Multiple Service Packet limits, behaviour after a
   controller download, and route paths through a bridge. The Rockwell and ODVA
   documents were not available when the driver was written.
+- **HTTP/JSON** and **MTConnect**: checked only against in-process simulators
+  (`server/test/support/httpJsonSimulator.js`, `mtconnectSimulator.js`) and
+  documents written from the public MTConnect schema and examples. Their
+  `NOTES.md` files list what to confirm on real devices and agents: keep-alive
+  and compression behaviour of small embedded servers, digest authentication
+  (not implemented), the status an agent uses for `OUT_OF_RANGE`, and very
+  large probe documents. Discovery does not scan for them: a URL is entered by
+  hand, and **Test connection** checks it.
 - **Discovery probes** (Modbus FC 43/14 then FC 3 at address 0 unit 1, S7 COTP CR
   with rack 0 slot 1 and the SZL identity read, ListIdentity, the OPC UA Hello)
   have also only been run against the simulators; how real devices, gateways and

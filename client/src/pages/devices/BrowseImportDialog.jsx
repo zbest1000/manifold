@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Dialog, Button } from '@/components/ui';
 import BrowseTree from './BrowseTree';
-import { nodesToTags } from './model';
+import { nodesToTags, browseNoun } from './model';
 
 /**
  * "Import from controller": pick tags from the controller's own list and append
@@ -21,7 +21,7 @@ export default function BrowseImportDialog({ device, descriptor, existing, pollG
   return (
     <Dialog
       title={`Import tags from ${device.name}`}
-      description="Pick tags from the controller's own list. They are added to the editor; save the device to keep them."
+      description={`Pick tags from the ${browseNoun(descriptor)}'s own list. They are added to the editor; save the device to keep them.`}
       size="lg"
       onClose={onClose}
       footer={
@@ -38,7 +38,7 @@ export default function BrowseImportDialog({ device, descriptor, existing, pollG
         </>
       }
     >
-      <BrowseTree deviceId={device.id} selection={selection} onToggle={toggle} takenAddresses={taken} />
+      <BrowseTree noun={browseNoun(descriptor)} deviceId={device.id} selection={selection} onToggle={toggle} takenAddresses={taken} />
     </Dialog>
   );
 }

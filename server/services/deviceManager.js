@@ -35,7 +35,9 @@ const profilesModel = require('./deviceProfiles');
 const DRIVER_MODULES = {
   'modbus-tcp': path.join(__dirname, '..', 'drivers', 'modbus', 'index.js'),
   s7: path.join(__dirname, '..', 'drivers', 's7', 'index.js'),
-  'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js')
+  'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js'),
+  'http-json': path.join(__dirname, '..', 'drivers', 'httpjson', 'index.js'),
+  mtconnect: path.join(__dirname, '..', 'drivers', 'mtconnect', 'index.js')
 };
 
 const MAX_TAGS_PER_DEVICE = 20000;
@@ -114,6 +116,20 @@ function checkPollGroups(input) {
     groupIds.add(g.id);
   }
   return pollGroups;
+}
+
+// Device fields a driver declares secret (`describe().secretFields`: passwords, tokens). They are
+// stored with the device, never returned by the API (a placeholder says one is set), kept when an
+// edit leaves them blank or sends the placeholder back, and dropped when the driver says they are
+// not in use (`activeSecretFields`, e.g. a token left over after switching to basic authentication).
+const SECRET_PLACEHOLDER = '********';
+const hasValue = (v) => v !== undefined && v !== null && v !== '';
+
+function maskSecrets(device, fields) {
+  if (!fields.length) return device;
+  const out = { ...device };
+  for (const f of fields) if (hasValue(out[f])) out[f] = SECRET_PLACEHOLDER;
+  return out;
 }
 
 function loadDrivers(modules) {
@@ -313,9 +329,30 @@ class DeviceManager extends EventEmitter {
 
   // ---- configuration ---------------------------------------------------------
 
+  _secretFields(protocol) {
+    const mod = this.drivers[protocol]?.mod;
+    const d = mod && mod.describe ? mod.describe() : {};
+    return Array.isArray(d.secretFields) ? d.secretFields : [];
+  }
+
+  /** An edit that leaves a secret blank (or sends the placeholder back) keeps the stored one. */
+  _keepStoredSecrets(input, id) {
+    const d = input || {};
+    const stored = id ? this.profiles.getIn('devices', id) : null;
+    const fields = this._secretFields(d.protocol || stored?.protocol);
+    if (!stored || !fields.length) return d;
+    const out = { ...d };
+    for (const f of fields) if ((!hasValue(out[f]) || out[f] === SECRET_PLACEHOLDER) && hasValue(stored[f])) out[f] = stored[f];
+    return out;
+  }
+
+  _maskDevice(device) {
+    return device ? maskSecrets(device, this._secretFields(device.protocol)) : device;
+  }
+
   /** Driver descriptors in the one shape the UI renders forms from. */
   protocols() {
-    const TYPES = { integer: 'number', number: 'number', select: 'select', boolean: 'boolean' };
+    const TYPES = { integer: 'number', number: 'number', select: 'select', boolean: 'boolean', password: 'password' };
     const field = (f) => ({
       ...f,
       name: f.name ?? f.key,
@@ -459,6 +496,9 @@ class DeviceManager extends EventEmitter {
       const own = Array.isArray(error.details) ? error.details.filter((x) => !x.key).map((x) => x.error) : [];
       throw new DeviceValidationError(own.length ? own.join('; ') : error.message);
     }
+    // A secret the driver does not use with the chosen settings is not kept.
+    const active = driver.mod.activeSecretFields ? driver.mod.activeSecretFields(device) : null;
+    if (active) for (const f of this._secretFields(protocol)) if (!active.includes(f)) delete device[f];
     return device;
   }
 
@@ -590,7 +630,7 @@ class DeviceManager extends EventEmitter {
     return this.profiles.listIn('devices').map((device) => {
       const e = eff.get(device.id);
       const tags = e ? e.device.tags : device.tags || [];
-      const out = { ...device, tags, status: this.statusOf({ ...device, tags }, status) };
+      const out = { ...this._maskDevice(device), tags, status: this.statusOf({ ...device, tags }, status) };
       if (device.profileId) {
         out.ownTags = device.tags || [];
         out.profileErrors = e?.errors || [];
@@ -621,13 +661,13 @@ class DeviceManager extends EventEmitter {
 
   async save(input, id, { expectRev } = {}) {
     if (id) this.profiles.assertRev?.('devices', id, expectRev); // a stale edit is refused before anything else
-    const device = this.normalize(input, id);
+    const device = this.normalize(this._keepStoredSecrets(input, id), id);
     await this.guard(device.host); // refuse to store an unreachable-by-policy target
     const clash = this.profiles.listIn('devices').find((d) => d.id !== device.id && d.name === device.name);
     if (clash) throw new DeviceValidationError(`name "${device.name}" is already used by another device; pick a different name`);
     const saved = this.profiles.upsertIn('devices', device.id, device, { expectRev });
     await this.apply();
-    return saved;
+    return this._maskDevice(saved);
   }
 
   /**
@@ -677,7 +717,7 @@ class DeviceManager extends EventEmitter {
   }
 
   async test(input) {
-    const device = this.normalize({ ...input, tags: [] }, input?.id || 'test');
+    const device = this.normalize({ ...this._keepStoredSecrets(input, input?.id), tags: [] }, input?.id || 'test');
     const addresses = await this.guard(device.host);
     const started = Date.now();
     try {
@@ -736,6 +776,7 @@ class DeviceManager extends EventEmitter {
         type: s.type || 'unknown',
         q: s.q,
         qReason: s.qReason,
+        ...(s.tSource !== undefined ? { tSource: s.tSource } : {}),
         tRead
       });
     }
