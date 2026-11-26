@@ -7,6 +7,10 @@ const s7Driver = require('../drivers/s7');
 const eipFrame = require('../drivers/eip/frame');
 const { COMMAND, CPF } = require('../drivers/eip/cip');
 const { parseIdentity } = require('../drivers/eip/client');
+const bacnetFrame = require('../drivers/bacnet/frame');
+const { BacnetClient } = require('../drivers/bacnet/client');
+const { WILDCARD_INSTANCE } = require('../drivers/bacnet/encoding');
+const { SEGMENTATION } = require('../drivers/bacnet/enums');
 
 /**
  * Read-only identification probes for the Discovery CIDR scan. A probe opens one
@@ -30,6 +34,12 @@ const { parseIdentity } = require('../drivers/eip/client');
  *    only for hosts that answered COTP. `deep: false` keeps COTP only.
  *  - EtherNet/IP: encapsulation ListIdentity (no CIP service): vendor, device type,
  *    product code, revision, serial, product name, state.
+ *  - BACnet/IP (UDP, opt-in): one UNICAST Who-Is to the address and, at the same time, a
+ *    ReadProperty of the wildcard device instance 4194303 (many devices answer Who-Is only with a
+ *    broadcast I-Am, which a probe socket on an ephemeral port never receives). Either answer
+ *    identifies the device; its device object is then read (object-name, vendor-name, model-name,
+ *    vendor-identifier, firmware-revision) with ReadPropertyMultiple, or ReadProperty when RPM is
+ *    rejected. Frames come from the BACnet driver's read-only encoder; nothing is broadcast.
  *  - OPC UA: the UA-TCP Hello message (connection level, before any secure channel or
  *    session); an Acknowledge or Error reply identifies an OPC UA server.
  *
@@ -386,8 +396,92 @@ async function identifyOpcua(host, port = 4840, { timeoutMs = IDENTIFY_TIMEOUT_M
   return { protocol: 'opcua', verified: true, method: 'ua-hello', identity: { ...r, endpointUrl } };
 }
 
+// ---- BACnet/IP -------------------------------------------------------------------------
+
+const BACNET_PROPS = { objectName: 77, vendorName: 121, modelName: 70, vendorId: 120, firmwareRevision: 44 };
+
+function firstApp(values) {
+  return values && values.length === 1 && values[0].tag ? values[0] : null;
+}
+
+/**
+ * BACnet/IP identification (see the module comment). `timeoutMs` bounds the wait for the first
+ * answer (the Discovery connect timeout), `identifyTimeoutMs` the device-object read after it.
+ * @returns {Promise<object|null>} { protocol:'bacnet-ip', verified, method, identity } or null
+ */
+async function identifyBacnet(host, port = 47808, { timeoutMs = 1200, identifyTimeoutMs = IDENTIFY_TIMEOUT_MS, signal } = {}) {
+  if (aborted(signal) || !net.isIP(host)) return null;
+  const client = new BacnetClient({ host, port, maxOutstanding: 2 });
+  const onAbort = () => client.close();
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  try {
+    await client.open();
+    const rp = (ref, deadlineMs) =>
+      client.request((id) => bacnetFrame.readPropertyPacket(id, ref), { service: bacnetFrame.SERVICE.READ_PROPERTY, apduTimeoutMs: deadlineMs, retries: 0, deadlineMs, label: 'identify' });
+    const [iam, wild] = await Promise.all([client.whoIs({ waitMs: timeoutMs }), rp({ objectType: 8, instance: WILDCARD_INSTANCE, property: 75 }, timeoutMs)]);
+    if (aborted(signal)) return null;
+    let instance = iam ? iam.instance : null;
+    let method = iam ? 'who-is' : null;
+    if (instance === null && wild.ok) {
+      try {
+        const v = firstApp(bacnetFrame.parseReadPropertyAck(wild.apdu.body).values);
+        if (v && v.tag === 'object-identifier') {
+          instance = v.value.instance;
+          method = 'read-property';
+        }
+      } catch {
+        /* not a usable answer */
+      }
+    }
+    if (instance === null) {
+      // A BACnet Error/Reject/Abort still proves a BACnet device is listening.
+      if (!wild.ok && ['error', 'reject', 'abort'].includes(wild.kind)) return { protocol: 'bacnet-ip', verified: true, method: 'read-property', identity: { answered: wild.kind } };
+      return null;
+    }
+    const identity = { deviceInstance: instance };
+    if (iam) Object.assign(identity, { vendorId: iam.vendorId, maxApdu: iam.maxApdu, segmentation: SEGMENTATION[iam.segmentation] || iam.segmentation });
+    const deadlineMs = identifyTimeoutMs;
+    const refs = Object.values(BACNET_PROPS).map((property) => ({ property }));
+    const store = (property, values) => {
+      const v = firstApp(values);
+      if (!v) return;
+      const name = Object.keys(BACNET_PROPS).find((k) => BACNET_PROPS[k] === property);
+      if (name === 'vendorId') identity.vendorId ??= Number(v.value);
+      else if (v.tag === 'character-string') identity[name] = String(v.value).slice(0, 128);
+    };
+    const multi = await client.request((id) => bacnetFrame.readPropertyMultiplePacket(id, [{ objectType: 8, instance, refs }]), { service: bacnetFrame.SERVICE.READ_PROPERTY_MULTIPLE, apduTimeoutMs: deadlineMs, retries: 0, deadlineMs, label: 'identify' });
+    if (multi.ok) {
+      try {
+        for (const a of bacnetFrame.parseReadPropertyMultipleAck(multi.apdu.body)) for (const r of a.results) if (!r.error) store(r.property, r.values);
+      } catch {
+        /* identity stays partial */
+      }
+    } else if (!aborted(signal) && multi.kind !== 'timeout' && multi.kind !== 'transport') {
+      const until = Date.now() + deadlineMs;
+      for (const property of [BACNET_PROPS.modelName, BACNET_PROPS.vendorName, BACNET_PROPS.objectName]) {
+        const left = until - Date.now();
+        if (left <= 0 || aborted(signal)) break;
+        const r = await rp({ objectType: 8, instance, property }, left);
+        if (!r.ok) continue;
+        try {
+          store(property, bacnetFrame.parseReadPropertyAck(r.apdu.body).values);
+        } catch {
+          /* skip */
+        }
+      }
+    }
+    return { protocol: 'bacnet-ip', verified: true, method, identity };
+  } catch {
+    return null;
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+    client.close();
+  }
+}
+
 module.exports = {
   identifyModbus,
+  identifyBacnet,
   identifyS7,
   identifyEip,
   identifyOpcua,

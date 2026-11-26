@@ -37,7 +37,8 @@ const DRIVER_MODULES = {
   s7: path.join(__dirname, '..', 'drivers', 's7', 'index.js'),
   'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js'),
   'http-json': path.join(__dirname, '..', 'drivers', 'httpjson', 'index.js'),
-  mtconnect: path.join(__dirname, '..', 'drivers', 'mtconnect', 'index.js')
+  mtconnect: path.join(__dirname, '..', 'drivers', 'mtconnect', 'index.js'),
+  'bacnet-ip': path.join(__dirname, '..', 'drivers', 'bacnet', 'index.js')
 };
 
 const MAX_TAGS_PER_DEVICE = 20000;

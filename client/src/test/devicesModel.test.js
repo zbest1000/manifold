@@ -96,6 +96,18 @@ describe('browse import', () => {
     );
     expect(rows.map((r) => r.type)).toEqual(['DINT', '', '']);
   });
+  it('BACnet browse nodes: property from the object name, unit and description carried over', () => {
+    const bac = { id: 'bacnet-ip', tagTypes: ['float32'], tagTypeOptional: true, deviceFields: [], optionFields: [], limits: { requestDeadlineMs: 6000, connectTimeoutMs: 8000, interRequestDelayMs: 0 } };
+    const rows = nodesToTags(
+      [{ id: 'obj:0:1', address: 'analog-input:1', meta: { objectName: 'Zone Temp', unit: '°C', description: 'Room 101' } }, { id: 'obj:5:1', address: 'binary-value:1', meta: {} }],
+      { descriptor: bac, existing: [], makeId: () => 'x' }
+    );
+    expect(rows[0]).toMatchObject({ key: 'analog-input:1', address: 'analog-input:1', type: '', property: 'zoneTemp', unit: '°C', description: 'Room 101' });
+    expect(rows[1].property).toBe('binaryValue1');
+    expect('unit' in rows[1]).toBe(false);
+    expect(blankDevice(bac).limits).toEqual({ requestDeadlineMs: 6000, connectTimeoutMs: 8000, interRequestDelayMs: 0 });
+    expect(blankDevice(eip).limits).toEqual({ requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 });
+  });
   it('explains disabled nodes', () => {
     expect(nodeDisabledReason({ kind: 'tag', address: 'Secret', meta: { accessible: false, reason: 'External Access is None' } })).toBe('External Access is None');
     expect(nodeDisabledReason({ kind: 'tag', address: '' , meta: {} })).toMatch(/Type definition/);

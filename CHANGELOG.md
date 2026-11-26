@@ -119,6 +119,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **BACnet/IP driver (experimental — not verified on real hardware).** Protocol `bacnet-ip`, read-only by
+  construction: only unicast Who-Is, ReadProperty and ReadPropertyMultiple can be encoded (no WriteProperty, no COV
+  subscriptions, no broadcast). Addresses such as `analog-input:3`, `analog-value:7/units` or
+  `device:1234/object-list[0]`; every application tag decoded; quality from status-flags, reliability and
+  out-of-service; requests sized to the device's max APDU without segmentation; automatic fallback to ReadProperty;
+  devices behind BACnet routers (network number + MAC); devices that answer Who-Is only by broadcast or from another
+  port; classified Error/Reject/Abort messages; **Import from controller** over the object list with object names and
+  unit text. Discovery gains an opt-in BACnet/IP probe (`bacnetPorts`). See the
+  [Devices and Drivers](docs/wiki/Devices-and-Drivers.md#bacnetip) page and `server/drivers/bacnet/NOTES.md`.
+
 - **CPU and host metrics** in `/metrics`: `manifold_process_cpu_seconds_total` (user/system),
   `manifold_host_load_average`, `manifold_host_cpus` and `manifold_host_memory_bytes` (carried over from PR #45).
 

@@ -82,7 +82,7 @@ router.post('/discovery/plan', async (req, res) => {
 });
 
 // POST /api/system/discovery/start { range, includeDevices, mqttPorts, opcuaPorts, i3xPorts, modbusPorts,
-//   s7Ports, eipPorts, mqttWsPorts, concurrency, perHost, timeoutMs, identifyTimeoutMs }
+//   s7Ports, eipPorts, bacnetPorts, mqttWsPorts, concurrency, perHost, timeoutMs, identifyTimeoutMs }
 router.post('/discovery/start', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {

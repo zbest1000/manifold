@@ -11,14 +11,15 @@ const deviceIdentify = require('./deviceIdentify');
 
 /**
  * Network discovery: a CIDR scan that finds MQTT brokers, OPC UA servers and i3X
- * servers and, opt-in, Modbus TCP / Siemens S7 / EtherNet/IP devices.
+ * servers and, opt-in, Modbus TCP / Siemens S7 / EtherNet/IP / BACnet/IP devices.
  *
  * What it does, in order, for every host:port it is asked to look at:
  *   1. a plain TCP connect (bounded by `timeoutMs`); nothing is sent;
  *   2. only if the port is open, a protocol-specific identification handshake
  *      (MQTT CONNECT, OPC UA Hello then GetEndpoints over security None, i3X
  *      GET /info, Modbus device-id/FC3 read, S7 COTP (+ SZL identity),
- *      EtherNet/IP ListIdentity). Identification never writes (see
+ *      EtherNet/IP ListIdentity). BACnet/IP is UDP and skips step 1: a unicast
+ *      Who-Is plus a wildcard ReadProperty is its probe. Identification never writes (see
  *      ./deviceIdentify.js);
  *   3. one result per host:port. `verified: true` means the protocol answered;
  *      `verified: false` means:
@@ -42,6 +43,9 @@ const DEFAULT_I3X_PORTS = [80, 443, 8080];
 const DEFAULT_MODBUS_PORTS = [502];
 const DEFAULT_S7_PORTS = [102];
 const DEFAULT_EIP_PORTS = [44818];
+// BACnet/IP is UDP: no connect step. Only scanned when `bacnetPorts` is given explicitly
+// (not by `includeDevices`): see identifyBacnet in ./deviceIdentify.js.
+const DEFAULT_BACNET_PORTS = [47808];
 // Common base paths an i3X server might be mounted under; each open HTTP port is
 // checked for a live /info document at one of these prefixes.
 const DEFAULT_I3X_PATHS = ['', '/v1', '/i3x', '/i3x/v1'];
@@ -63,8 +67,9 @@ const BOUNDS = Object.freeze({
   identifyTimeoutMs: [500, 15000]
 });
 const MAX_PORTS_PER_KIND = 32;
-const KIND_ORDER = ['mqtt', 'opcua', 'i3x', 'modbus', 's7', 'ethernet-ip'];
-const DEVICE_KINDS = new Set(['modbus', 's7', 'ethernet-ip']);
+const KIND_ORDER = ['mqtt', 'opcua', 'i3x', 'modbus', 's7', 'ethernet-ip', 'bacnet'];
+const DEVICE_KINDS = new Set(['modbus', 's7', 'ethernet-ip', 'bacnet']);
+const UDP_KINDS = new Set(['bacnet']);
 
 function maxHosts() {
   const n = Number(process.env.MANIFOLD_DISCOVERY_MAX_HOSTS);
@@ -163,7 +168,8 @@ function kindsFromOptions(options) {
     i3x: intList('i3xPorts', options.i3xPorts, options.includeI3x === false ? [] : DEFAULT_I3X_PORTS),
     modbus: intList('modbusPorts', options.modbusPorts, devices ? DEFAULT_MODBUS_PORTS : []),
     s7: intList('s7Ports', options.s7Ports, devices ? DEFAULT_S7_PORTS : []),
-    'ethernet-ip': intList('eipPorts', options.eipPorts, devices ? DEFAULT_EIP_PORTS : [])
+    'ethernet-ip': intList('eipPorts', options.eipPorts, devices ? DEFAULT_EIP_PORTS : []),
+    bacnet: intList('bacnetPorts', options.bacnetPorts, [])
   };
   const mqttWs = intList('mqttWsPorts', options.mqttWsPorts, []);
   return { kinds, mqttWs };
@@ -357,19 +363,21 @@ class DiscoveryService extends EventEmitter {
    * or null when the port does not speak the protocol.
    */
   async identifyDevice(kind, host, port, opts = {}) {
-    const fn = { modbus: deviceIdentify.identifyModbus, s7: deviceIdentify.identifyS7, 'ethernet-ip': deviceIdentify.identifyEip }[kind];
+    const fn = { modbus: deviceIdentify.identifyModbus, s7: deviceIdentify.identifyS7, 'ethernet-ip': deviceIdentify.identifyEip, bacnet: deviceIdentify.identifyBacnet }[kind];
     if (!fn) return null;
     const r = await fn(host, port, opts).catch(() => null);
     if (!r) return null;
     const id = r.identity || {};
     const product = id.productName || id.modelName || id.moduleTypeName || id.orderCode || null;
     const name = product ? `${product} ${host}` : `${r.protocol} ${host}`;
+    const suggestedDevice = { name, protocol: r.protocol, host, port };
+    if (r.protocol === 'bacnet-ip' && Number.isInteger(id.deviceInstance)) suggestedDevice.deviceInstance = id.deviceInstance;
     return {
       verified: true,
       protocol: r.protocol,
       method: r.method,
       identity: r.identity,
-      suggestedDevice: { name, protocol: r.protocol, host, port }
+      suggestedDevice
     };
   }
 
@@ -419,7 +427,7 @@ class DiscoveryService extends EventEmitter {
       localSubnet: this.detectLocalSubnet(),
       defaults: { ...DEFAULTS },
       bounds: BOUNDS,
-      ports: { mqtt: DEFAULT_MQTT_PORTS, opcua: DEFAULT_OPCUA_PORTS, i3x: DEFAULT_I3X_PORTS, modbus: DEFAULT_MODBUS_PORTS, s7: DEFAULT_S7_PORTS, 'ethernet-ip': DEFAULT_EIP_PORTS },
+      ports: { mqtt: DEFAULT_MQTT_PORTS, opcua: DEFAULT_OPCUA_PORTS, i3x: DEFAULT_I3X_PORTS, modbus: DEFAULT_MODBUS_PORTS, s7: DEFAULT_S7_PORTS, 'ethernet-ip': DEFAULT_EIP_PORTS, bacnet: DEFAULT_BACNET_PORTS },
       limits: { maxHosts: maxHosts() },
       policy: { loopback: g('127.0.0.1').allowed, private: g('192.168.0.1').allowed }
     };
@@ -809,10 +817,21 @@ class DiscoveryService extends EventEmitter {
     this._finish = finish;
 
     const runJob = async (job) => {
+      const base = { host: job.host, port: job.port, discoveredAt: new Date().toISOString() };
+      // UDP kinds (BACnet/IP) have no connect step: one unicast identification, bounded by timeoutMs
+      // for the first answer (so the plan's worst case still holds) and identifyTimeoutMs after it.
+      for (const kind of job.kinds.filter((k) => UDP_KINDS.has(k))) {
+        if (signal.aborted) return null;
+        const found = await this.identifyDevice(kind, job.host, job.port, { timeoutMs: settings.timeoutMs, identifyTimeoutMs: settings.identifyTimeoutMs, signal });
+        if (found) {
+          scan.open++;
+          return { ...base, kind, ...found };
+        }
+      }
+      if (job.kinds.every((k) => UDP_KINDS.has(k))) return null;
       const open = await this.probePort(job.host, job.port, { timeoutMs: settings.timeoutMs, signal });
       if (!open || signal.aborted) return null;
       scan.open++;
-      const base = { host: job.host, port: job.port, discoveredAt: new Date().toISOString() };
       const identifyOpts = { timeoutMs: settings.identifyTimeoutMs, signal };
       let fallback = null;
       for (const kind of job.kinds) {
@@ -832,7 +851,7 @@ class DiscoveryService extends EventEmitter {
           const found = await this.identifyI3xServer(job.host, job.port, { deadlineMs: settings.identifyTimeoutMs + 1000, signal });
           // An open HTTP port that is not an i3X server is not a result
           if (found) return { ...base, kind, protocol: 'i3x', ...found, identity: { serverName: found.serverName, specVersion: found.specVersion } };
-        } else if (DEVICE_KINDS.has(kind)) {
+        } else if (DEVICE_KINDS.has(kind) && !UDP_KINDS.has(kind)) {
           const found = await this.identifyDevice(kind, job.host, job.port, identifyOpts);
           // An open port that did not answer the protocol is never reported as a device
           if (found) return { ...base, kind, ...found };
@@ -910,5 +929,6 @@ class DiscoveryService extends EventEmitter {
 
 DiscoveryService.DiscoveryError = DiscoveryError;
 DiscoveryService.DEFAULTS = DEFAULTS;
+DiscoveryService.DEFAULT_BACNET_PORTS = DEFAULT_BACNET_PORTS;
 DiscoveryService.BOUNDS = BOUNDS;
 module.exports = DiscoveryService;

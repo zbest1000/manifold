@@ -48,6 +48,7 @@ export function addressExample(descriptor) {
   const first = help.split(/[.,;]\s|, /)[0].trim();
   if (descriptor?.id === 's7') return 'DB1.DBD0';
   if (descriptor?.id === 'ethernet-ip') return 'Program:MainProgram.Tag';
+  if (descriptor?.id === 'bacnet-ip') return 'analog-input:1';
   return first.length > 0 && first.length < 30 ? first : 'address';
 }
 
@@ -159,17 +160,17 @@ export function nodesToTags(nodes, { descriptor, existing = [], pollGroup = '', 
     // Drivers name types in their own case (DINT, float32, number): match without regard to case.
     const dataType = [...known].find((k) => k.toLowerCase() === raw.toLowerCase()) || '';
     const isArray = (node.meta?.dims || []).length > 0;
-    const unit = typeof node.meta?.unit === 'string' ? node.meta.unit : '';
-    const description = typeof node.meta?.description === 'string' ? node.meta.description : '';
+    const meta = node.meta || {};
     return {
       _id: makeId(),
       key: uniqueName(String(node.address).replace(KEY_SAFE, '_').slice(0, 120), keys),
       address: node.address,
       type: dataType && !isArray ? dataType : '',
       pollGroup,
-      property: uniqueName(suggestProperty(node.address), props),
-      ...(unit ? { unit } : {}),
-      ...(description ? { description } : {})
+      // A device that names its points (BACnet object-name) gives a better property than the address.
+      property: uniqueName(suggestProperty(meta.objectName || node.address), props),
+      ...(typeof meta.unit === 'string' && meta.unit ? { unit: meta.unit } : {}),
+      ...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {})
     };
   });
 }
@@ -205,6 +206,7 @@ export function probeSpec(protocol) {
   if (protocol === 's7') return { count: { label: 'Bytes', min: 1, max: 480, def: '' }, unitId: false, placeholder: 'DB1.DBD0' };
   if (protocol === 'http-json') return { count: null, unitId: false, placeholder: '/api/status or /api/status#$.power.total' };
   if (protocol === 'mtconnect') return { count: null, unitId: false, placeholder: 'Xact' };
+  if (protocol === 'bacnet-ip') return { count: null, unitId: false, placeholder: 'analog-input:1' };
   return { count: null, unitId: false, placeholder: 'Program:MainProgram.Tag' };
 }
 
@@ -219,6 +221,11 @@ export function probeBody(protocol, { address, count, unitId }) {
 
 export const DEFAULT_LIMITS = { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 };
 
+function pickLimits(limits) {
+  if (!limits || typeof limits !== 'object') return {};
+  return Object.fromEntries(Object.keys(DEFAULT_LIMITS).filter((k) => Number.isFinite(limits[k])).map((k) => [k, limits[k]]));
+}
+
 export function blankDevice(descriptor) {
   return {
     name: '',
@@ -228,7 +235,8 @@ export function blankDevice(descriptor) {
     port: descriptor.defaultPort,
     ...fieldDefaults(descriptor.deviceFields),
     options: fieldDefaults(descriptor.optionFields),
-    limits: { ...DEFAULT_LIMITS, ...(descriptor.limits || {}) },
+    // A driver that needs longer deadlines (BACnet: APDU timeout x retries) says so in its descriptor.
+    limits: { ...DEFAULT_LIMITS, ...pickLimits(descriptor.limits) },
     pollGroups: [{ id: 'default', intervalMs: 1000 }],
     tags: []
   };

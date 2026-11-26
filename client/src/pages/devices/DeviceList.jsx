@@ -50,7 +50,7 @@ const RowImpl = memo(function Row({ r, selected, experimental, profileName, busy
   const why = readOnly ? READ_ONLY_REASON : undefined;
   const nameOf = d.name;
   const endpoint = `${d.host}:${d.port}`;
-  const extra = d.unitId !== undefined ? `unit ${d.unitId}` : d.rack !== undefined && d.slot !== undefined ? `rack ${d.rack} / slot ${d.slot}` : d.protocol === 'ethernet-ip' && d.slot !== undefined ? `slot ${d.slot}` : '';
+  const extra = d.unitId !== undefined ? `unit ${d.unitId}` : d.rack !== undefined && d.slot !== undefined ? `rack ${d.rack} / slot ${d.slot}` : d.protocol === 'ethernet-ip' && d.slot !== undefined ? `slot ${d.slot}` : d.protocol === 'bacnet-ip' && d.deviceInstance !== undefined ? `device ${d.deviceInstance}${d.network ? ` · net ${d.network}` : ''}` : '';
   return (
     <Tr highlight={selected} className="cursor-pointer" onClick={(e) => !e.target.closest('a,button,input,label') && onOpen(d)} data-device={d.id}>
       <Td header className="max-w-[9.5rem] md:max-w-[14rem]">

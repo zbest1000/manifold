@@ -15,6 +15,7 @@ drivers here are for the many devices that only speak the older protocols.
 | **EtherNet/IP** (Logix) | **experimental** | 44818 | yes (**Import from controller**, and REST) | CompactLogix / ControlLogix tags by name |
 | **HTTP / JSON** | **experimental** | 80 / 443 | yes (**Import from device**) | GET-polls a device's REST endpoints and picks values with a small JSONPath |
 | **MTConnect** | **experimental** | 5000 | yes (**Import from agent**) | Machine-tool agent over HTTP: `/probe`, `/current`, then `/sample` without gaps |
+| **BACnet/IP** | **experimental** | 47808 (UDP) | yes (object list, with names and units) | Building automation objects; ReadProperty / ReadPropertyMultiple only |
 
 **Experimental** means the S7 and EtherNet/IP drivers were checked only against
 in-process simulators written by the same author as the drivers. The
@@ -330,6 +331,69 @@ components and data items from `/probe` and fills each tag's unit. Time series
 and data set items are not supported and read Bad. Details and limits:
 [`server/drivers/mtconnect/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/mtconnect/NOTES.md).
 
+### BACnet/IP
+
+> **Experimental — not verified on real hardware.** Checked only against the
+> in-process simulator; see
+> [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md).
+
+BACnet has no authentication: anything that can reach UDP port 47808 can
+command the device. Manifold sends only **Who-Is** (unicast, to this device;
+nothing is ever broadcast), **ReadProperty** and **ReadPropertyMultiple**. It
+never writes, commands, or subscribes to COV (a subscription is itself a write
+to the device), so values are polled.
+
+Device settings:
+
+- **Host** and **Port** (47808): the device, or the BACnet router in front of it.
+- **Device instance** (optional): the device object number. Leave it empty and
+  the driver learns it from the I-Am, or, when the device answers Who-Is only
+  by broadcast (common; Manifold does not listen for broadcasts), by reading
+  the device object at the wildcard instance 4194303. Set it when several
+  devices share one IP address.
+- **Network number** and **MAC address** (advanced): for a device behind a
+  BACnet router (MS/TP, or B/IP on another network). MAC is `0`-`127` for MS/TP,
+  `10.0.0.5:47808` for remote BACnet/IP, or hex bytes. A router that cannot
+  reach the network says so in the device's last error.
+- **ReadPropertyMultiple** `auto` / `on` / `off`, **Read status with values**,
+  **APDU timeout** and **Retries** (all within the request deadline; slow
+  MS/TP links need 3000 ms or more), and, under Advanced, **Max APDU** (to
+  override a device that misreports), **Max properties per request** and
+  **Requests in flight**.
+
+Addresses are `object-type:instance[/property][[index]]`:
+
+| Address | Reads |
+|---|---|
+| `analog-input:3` | present-value of AI 3 (short forms `ai:3`, `av:7`, `bi:1`, `msv:2` work too) |
+| `analog-value:7/units` | another property, by name or number |
+| `device:1234/object-list[0]` | an array element (index 0 is the array length) |
+| `130:5/85` | a proprietary object type and property by number |
+
+The tag type is optional: the value keeps the type the device sends (real ->
+float32, double -> float64, unsigned/enumerated -> uint32, signed -> int32,
+boolean, character strings in UTF-8, UCS-2 and ISO 8859-1, octet strings as hex,
+dates, times and object identifiers as text, bit strings and arrays as
+structures). Binary objects' present-value is a boolean. A declared type casts
+the value.
+
+**Quality.** With each present-value the driver also reads status-flags,
+reliability and out-of-service: a reliability other than *no-fault-detected*
+or the FAULT flag makes the tag **Bad** (the reason says which); out of
+service makes it **Uncertain**. Turn **Read status with values** off to read
+present-value alone.
+
+**Import from controller** lists the device's objects by type (read from
+`object-list` by array index, so large lists work without segmentation);
+importing a point takes its **object-name** as the UNS property and its
+**engineering units** as the unit text (`°C`, `kPa`, `%`, ...).
+
+Reads are packed into ReadPropertyMultiple requests that fit the device's
+maximum APDU; Manifold does not accept segmented replies, so a reply that
+would not fit is split, and a single value that never fits (a long array) is
+quarantined with the advice to read it by index. A device without
+ReadPropertyMultiple is read one property at a time.
+
 ## Device profiles and instances
 
 When many devices are the same kind of thing (fifty meters, ten drives), define
@@ -398,7 +462,7 @@ Map the whole set to the UNS with one profile binding; see
 ![The Discovery page after a scan: the PLCs, the OPC UA server (Verified, with its application name and security) and the broker identified, those Manifold already has marked Already added, and one new Modbus meter to add](images/discovery.png)
 
 The **Discovery** page runs a CIDR scan that finds **MQTT brokers**, **OPC UA servers** and **i3X servers** and,
-opt-in, **Modbus TCP**, **Siemens S7** and **EtherNet/IP** devices, and lets you add what it found.
+opt-in, **Modbus TCP**, **Siemens S7**, **EtherNet/IP** and **BACnet/IP** devices, and lets you add what it found.
 
 ### Running a scan
 
@@ -434,6 +498,7 @@ handshake per protocol, read-only by construction:
 | Modbus TCP (502) | **FC 43 / MEI 14 Read Device Identification** (vendor, product code, revision, product name), then, if the device refuses or ignores it, **FC 3** for one register at address 0, unit 1, on the same connection | any well-formed Modbus reply. `method` records which request answered (`fc43-device-id` or `fc3-register-read`) |
 | S7 (102) | one **COTP Connection Request** (rack 0 slot 1; slot 2 if refused), then, if the CPU accepts, the S7 driver's read-only **identity read** (setup communication and read SZL, on a second connection opened after the first closed) | a COTP Connection Confirm or a Disconnect from a CPU that refuses the TSAP. With the identity read: CPU type, order code, firmware, serial, run state |
 | EtherNet/IP (44818) | the encapsulation **ListIdentity** command (no CIP service) | vendor, device type, product code, revision, serial, product name, state |
+| BACnet/IP (UDP 47808) | no connect step (UDP): one **unicast Who-Is** to the address and, at the same time, a **ReadProperty** of the device object at the wildcard instance 4194303; on an answer, the device object's names via ReadPropertyMultiple (or ReadProperty) | an I-Am or a read reply: device instance, vendor, model name, object name, firmware. The wait for the first answer is the connect timeout. Only scanned when ticked (`bacnetPorts`); `includeDevices` does not add it. Nothing is broadcast, so a device on another subnet is found only by its own address |
 
 An open port that does not answer a **device, OPC UA or i3X** protocol is **never reported**; an MQTT port that is
 open but silent is shown as **Open port** (not *Verified*), since the port is conventional. One result per
@@ -571,6 +636,10 @@ reach the socket:
   `GET` with no body (a test asserts this against the client source and the
   simulators log every method they see). MTConnect sends only `/probe`,
   `/current` and `/sample`.
+- **BACnet/IP:** BVLC Original-Unicast only, no network-layer messages, and
+  the APDUs ReadProperty, ReadPropertyMultiple (unsegmented) and Who-Is.
+  WriteProperty, COV subscriptions, device control, BBMD registration and every
+  other service are refused before a datagram is built.
 
 What this does and does not mean:
 
@@ -621,6 +690,10 @@ refused. See [Operations](Operations#network-safety-egress-guard).
   (not implemented), the status an agent uses for `OUT_OF_RANGE`, and very
   large probe documents. Discovery does not scan for them: a URL is entered by
   hand, and **Test connection** checks it.
+- **BACnet/IP**: [`server/drivers/bacnet/NOTES.md`](https://github.com/zbest1000/manifold/blob/main/server/drivers/bacnet/NOTES.md)
+  lists 10 items, among them which devices answer a unicast Who-Is by unicast,
+  the wildcard device read, RPM sizing on small-APDU devices, routing through a
+  real MS/TP router and devices that only reply to port 47808.
 - **Discovery probes** (Modbus FC 43/14 then FC 3 at address 0 unit 1, S7 COTP CR
   with rack 0 slot 1 and the SZL identity read, ListIdentity, the OPC UA Hello)
   have also only been run against the simulators; how real devices, gateways and

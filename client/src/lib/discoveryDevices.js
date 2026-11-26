@@ -5,7 +5,8 @@
 export const SCAN_PROTOCOLS = [
   { id: 'modbus-tcp', kind: 'modbus', label: 'Modbus TCP', field: 'modbusPorts', port: 502 },
   { id: 's7', kind: 's7', label: 'Siemens S7', field: 's7Ports', port: 102 },
-  { id: 'ethernet-ip', kind: 'ethernet-ip', label: 'EtherNet/IP', field: 'eipPorts', port: 44818 }
+  { id: 'ethernet-ip', kind: 'ethernet-ip', label: 'EtherNet/IP', field: 'eipPorts', port: 44818 },
+  { id: 'bacnet-ip', kind: 'bacnet', label: 'BACnet/IP', field: 'bacnetPorts', port: 47808 }
 ];
 
 /** Parse "502, 1502" -> { ports: [502, 1502], bad: [] }; invalid entries are returned in `bad`. */
@@ -78,6 +79,17 @@ export function identityText(r) {
     ].filter(Boolean);
     return bits.length ? bits.join(' · ') : 'EtherNet/IP device';
   }
+  if (r?.protocol === 'bacnet-ip') {
+    if (id.deviceInstance === undefined) return `BACnet device answered (${id.answered || 'reply'}), identity not read`;
+    const bits = [
+      id.modelName,
+      id.vendorName || (id.vendorId !== undefined ? `vendor ${id.vendorId}` : ''),
+      `device ${id.deviceInstance}`,
+      id.objectName && id.objectName !== id.modelName ? `"${id.objectName}"` : '',
+      id.firmwareRevision ? `firmware ${id.firmwareRevision}` : ''
+    ].filter(Boolean);
+    return bits.join(' · ');
+  }
   if (r?.kind === 'mqtt') {
     if (!r.verified) return 'Port open, but it did not answer an MQTT CONNECT';
     return id.anonymousAccess ? 'Anonymous access allowed' : 'Authentication required';
@@ -99,6 +111,7 @@ export function draftFromResult(r) {
   const id = r.identity || {};
   if (s.protocol === 's7' && id.rack !== undefined) Object.assign(draft, { rack: id.rack, slot: id.slot });
   if (s.protocol === 'modbus-tcp' && id.unitId !== undefined) draft.unitId = id.unitId;
+  if (s.protocol === 'bacnet-ip' && Number.isInteger(s.deviceInstance ?? id.deviceInstance)) draft.deviceInstance = s.deviceInstance ?? id.deviceInstance;
   return draft;
 }
 
@@ -132,7 +145,8 @@ export const SCAN_KINDS = [
   { id: 'i3x', field: 'i3xPorts', label: 'i3X servers', ports: [80, 443, 8080], on: true },
   { id: 'modbus', field: 'modbusPorts', label: 'Modbus TCP', ports: [502], device: true },
   { id: 's7', field: 's7Ports', label: 'Siemens S7', ports: [102], device: true },
-  { id: 'ethernet-ip', field: 'eipPorts', label: 'EtherNet/IP', ports: [44818], device: true }
+  { id: 'ethernet-ip', field: 'eipPorts', label: 'EtherNet/IP', ports: [44818], device: true },
+  { id: 'bacnet', field: 'bacnetPorts', label: 'BACnet/IP (UDP)', ports: [47808], device: true }
 ];
 export const DEVICE_KIND_IDS = SCAN_KINDS.filter((k) => k.device).map((k) => k.id);
 

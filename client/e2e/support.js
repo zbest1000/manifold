@@ -89,6 +89,13 @@ export async function startMtconnect() {
   return { port: sim.port, sim, close: () => sim.close() };
 }
 
+/** BACnet/IP device simulator (UDP) with its default objects (analog-input:1 = 21.5 Good, analog-input:2 = fault, ...). */
+export async function startBacnet(opts = {}) {
+  const { BacnetSimulator } = requireServer('./test/support/bacnetSimulator.js');
+  const sim = await new BacnetSimulator(opts).start();
+  return { port: sim.port, sim, close: () => sim.stop() };
+}
+
 // ---- REST ------------------------------------------------------------------------------
 
 async function call(method, url, body) {
