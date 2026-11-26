@@ -41,6 +41,65 @@ export function seedExpansion(roots) {
   return keys;
 }
 
+// "Expand all" stops opening branches once the map would lay out this many
+// nodes: past it, drawing and hit-testing slow down and the map is unreadable.
+export const EXPAND_ALL_CAP = 2500;
+
+/**
+ * Expansion keys for "Expand all": every branch, breadth first, of the broker
+ * namespaces (mounted sources stay as they are), honouring the paging of long
+ * branches (only the shown page of a branch counts and is opened further), and
+ * stopping before the laid-out node count would pass `cap`.
+ * Returns { keys, laid, complete, opened, total } where total counts every
+ * branch that could be opened and complete says whether all were.
+ */
+export function expandAllKeys(roots, paging = null, cap = EXPAND_ALL_CAP) {
+  const keys = [];
+  let laid = 0;
+  let complete = true;
+  let total = 0;
+  const queue = [];
+  for (const r of roots) {
+    if (isMountNode(r)) continue;
+    laid++;
+    queue.push(r);
+  }
+  const countBranches = (n) => {
+    let c = 0;
+    const stack = [n];
+    while (stack.length) {
+      const x = stack.pop();
+      if (x.children.size) {
+        c++;
+        for (const k of x.children.values()) stack.push(k);
+      }
+    }
+    return c;
+  };
+  for (const r of roots) if (!isMountNode(r)) total += countBranches(r);
+  for (let i = 0; i < queue.length; i++) {
+    const n = queue[i];
+    if (!n.children.size) continue;
+    const all = [...n.children.values()].sort(compareSiblings);
+    const shown = isPaged(all.length) ? pageSlice(all, paging?.get(n.id) || null).items : all;
+    const cost = shown.length + (isPaged(all.length) ? 1 : 0); // + the pager row
+    if (laid + cost > cap) {
+      complete = false;
+      continue; // a smaller sibling branch may still fit
+    }
+    laid += cost;
+    keys.push(nodeKey(n));
+    for (const c of shown) if (c.children.size) queue.push(c);
+  }
+  if (keys.length < total) complete = false;
+  return { keys, laid, complete, opened: keys.length, total };
+}
+
+/** Keys for "Collapse all": each broker namespace open one level (its first-level branches closed). */
+export function collapseAllKeys(roots) {
+  return roots.filter((r) => !isMountNode(r)).map((r) => nodeKey(r));
+}
+
 /**
  * Sibling order: by name (natural: line2 before line10). Deliberately NOT by
  * live topic count, which changes on every data flush and used to reorder a

@@ -440,6 +440,35 @@ class Recorder {
   }
 
   /**
+   * Every sample of the wanted tags in [from, to], for the CSV export: an async
+   * iterator of { tag, t, value, quality, unit? } read straight from the file
+   * (nothing is averaged or held whole). Records are in arrival order, and a
+   * source timestamp can run slightly behind it, so a bounded reorder buffer
+   * (REORDER samples) puts them in time order before they are yielded.
+   */
+  async *rawSamples(id, { tags = [], from = 0, to = Infinity } = {}) {
+    await this.sync(id);
+    const REORDER = 5000;
+    const wanted = new Set(tags);
+    let buf = [];
+    for await (const p of this._records(id)) {
+      if (p.t < from || p.t > to) continue;
+      if (!wanted.has(p.topic) && !(Array.isArray(p.m) && p.m.some((e) => wanted.has(`${p.topic}/${e?.n}`)))) continue;
+      for (const smp of recordSamples(p)) {
+        if (!wanted.has(smp.tag) || smp.t < from || smp.t > to) continue;
+        buf.push(smp);
+      }
+      if (buf.length > REORDER * 2) {
+        buf.sort((a, b) => a.t - b.t);
+        yield* buf.slice(0, REORDER);
+        buf = buf.slice(REORDER);
+      }
+    }
+    buf.sort((a, b) => a.t - b.t);
+    yield* buf;
+  }
+
+  /**
    * Distinct numeric tags captured by a recording (topics, and Sparkplug
    * metrics as "<topic>/<metric>"), so the Trends "Recording" source can offer
    * a searchable tag list instead of blind typing. Bounded and sorted.

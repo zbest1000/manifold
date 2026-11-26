@@ -188,4 +188,18 @@ flowchart LR
 - **Auto refresh** (off by default) re-queries every 30 s while the tab is visible; **Refresh** does it now. The time axis
   names its time zone.
 
+- **Export CSV** saves the shown tags and range. Choose **CSV: as charted (bucketed)** for the points the chart draws
+  (at most 1000 per series; denser data averaged per interval with the quality rules above) or **CSV: raw samples** for
+  every stored sample (Live is always raw: the recent message buffer). The file name says which
+  (`manifold-trends-raw-<from>-<to>.csv` / `manifold-trends-bucketed-...`), and so do its first lines, which start with `#`
+  and also name the source, the range and the quality scale. Then: a `time` column (ISO 8601 UTC with milliseconds), and per
+  tag a value column headed `<tag> (<unit>)` and a `<tag> quality` column (OPC code; `<code> partial` for a bucket that
+  mixed Bad and usable samples). Samples of several tags at the same time share a row; an empty cell means that tag had no
+  sample then, and a Bad sample has an empty value with its quality. InfluxDB stores no quality, so its quality cells are
+  empty. The file is streamed from the server (`GET /api/trends/export.csv`): raw historian data is read in pages
+  (TimescaleDB 10,000 rows at a time, InfluxDB and Timebase one hour at a time) and a recording straight from its file, so a
+  long range is never held in memory. An export stops at 1,000,000 rows (`MANIFOLD_EXPORT_MAX_ROWS`) with a `# Truncated`
+  line. Without an API token the browser saves the stream directly; with one the file is fetched with the token first.
+  Spreadsheet formulas are neutralised in header cells (a tag starting with `=` gets a leading `'`).
+
 > 💡 Trends is also how you verify a pipeline to historian route end to end: if the tag appears in the tag search, it landed.

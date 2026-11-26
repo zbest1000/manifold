@@ -802,6 +802,122 @@ async function querySeries(conn = {}, { tags = [], start, end, maxPoints = 1000 
   return backend(conn, { tags, ...range }, fetchImpl);
 }
 
+// ---- raw read-back (CSV export) ------------------------------------------------
+//
+//   queryRaw(conn, { tags, start, end }) -> async iterator of
+//     { tag, t, value: number|null, quality: number|null } in time order
+// Unlike querySeries nothing is averaged: every stored sample comes back, so the
+// export can stream a long range without holding it. Work is paged: TimescaleDB
+// by keyset (ts, topic) pages of RAW_PAGE rows; InfluxDB and Timebase by time
+// windows of RAW_WINDOW_MS, each window merged across tags and sorted. A Bad
+// sample has a null value and its quality; InfluxDB returns quality null.
+
+const RAW_PAGE = 10_000;
+const RAW_WINDOW_MS = 3_600_000;
+
+function rawTags(tags) {
+  if (!Array.isArray(tags) || tags.length < 1 || tags.length > 10 || tags.some((t) => typeof t !== 'string' || !t.trim())) {
+    throw new Error('tags must be an array of 1-10 non-empty strings');
+  }
+  return tags;
+}
+
+async function* timescaleRaw(conn, { tags, start, end }) {
+  const table = safeIdent(conn.table || 'manifold_samples');
+  const { pool } = pgEntryFor(conn);
+  let afterTs = new Date(start - 1);
+  let afterTopic = '';
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT ts, topic, value, quality FROM ${table}
+       WHERE topic = ANY($1) AND ts BETWEEN $2 AND $3 AND (ts, topic) > ($4, $5)
+       ORDER BY ts, topic LIMIT ${RAW_PAGE}`,
+      [tags, new Date(start), new Date(end), afterTs, afterTopic]
+    );
+    for (const row of rows) {
+      const t = row.ts instanceof Date ? row.ts.getTime() : Date.parse(row.ts);
+      if (!Number.isFinite(t)) continue;
+      const q = qualityCode(row.quality) ?? QUALITY_GOOD;
+      const v = row.value == null ? NaN : Number(row.value);
+      yield { tag: row.topic, t, value: Number.isFinite(v) && !isBadCode(q) ? v : null, quality: q };
+    }
+    if (rows.length < RAW_PAGE) return;
+    const last = rows[rows.length - 1];
+    afterTs = last.ts instanceof Date ? last.ts : new Date(last.ts);
+    afterTopic = last.topic;
+  }
+}
+
+async function* influxRaw(conn, { tags, start, end }, fetchImpl) {
+  const topicFilter = tags.map((t) => `r.topic == ${fluxString(t, 'tag')}`).join(' or ');
+  for (let from = start; from < end; from += RAW_WINDOW_MS) {
+    const to = Math.min(end, from + RAW_WINDOW_MS);
+    const flux = [
+      `from(bucket: ${fluxString(conn.bucket, 'bucket')})`,
+      `  |> range(start: ${new Date(from).toISOString()}, stop: ${new Date(to).toISOString()})`,
+      `  |> filter(fn: (r) => r._measurement == ${fluxString(conn.measurement || 'manifold', 'measurement')} and r._field == "value")`,
+      `  |> filter(fn: (r) => ${topicFilter})`,
+      `  |> keep(columns: ["_time", "_value", "topic"])`
+    ].join('\n');
+    const rows = await influxQuery(conn, flux, fetchImpl);
+    const out = [];
+    for (const row of rows) {
+      if (!tags.includes(row.topic) || !row._time) continue;
+      const t = Date.parse(row._time);
+      const v = Number(row._value);
+      if (Number.isFinite(t) && Number.isFinite(v)) out.push({ tag: row.topic, t, value: v, quality: null });
+    }
+    out.sort((a, b) => a.t - b.t);
+    yield* out;
+  }
+}
+
+async function* timebaseRaw(conn, { tags, start, end }, fetchImpl) {
+  for (let from = start; from < end; from += RAW_WINDOW_MS) {
+    const to = Math.min(end, from + RAW_WINDOW_MS);
+    // The same documented dataset GET as timebaseQuerySeries, one window at a time, without bucketing.
+    const base = String(conn.url || '').replace(/\/+$/, '');
+    if (!base) throw new Error('timebase url is required');
+    if (!conn.dataset) throw new Error('timebase dataset is required');
+    const tagParams = tags.map((t) => `tagname=${encodeURIComponent(t).replace(/%2F/gi, '/')}`).join('&');
+    const url =
+      `${base}/api/datasets/${encodeURIComponent(conn.dataset)}/data?${tagParams}` +
+      `&start=${encodeURIComponent(new Date(from).toISOString())}&end=${encodeURIComponent(new Date(to).toISOString())}`;
+    const res = await httpFetch(conn, url, { headers: { ...(conn.apiKey ? { Authorization: `Bearer ${conn.apiKey}` } : {}) } }, fetchImpl);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`timebase query failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
+    }
+    const data = await res.json().catch(() => null);
+    const out = [];
+    for (const s of Array.isArray(data?.tl) ? data.tl : []) {
+      const tag = s?.t?.n;
+      if (!tags.includes(tag)) continue;
+      for (const p of Array.isArray(s.d) ? s.d : []) {
+        const t = Date.parse(p?.t);
+        // Half-open windows [from, to) so a sample on a boundary is exported once; the last window includes `end`.
+        if (!Number.isFinite(t) || t < from || (to < end ? t >= to : t > end)) continue;
+        const q = qualityCode(p?.q);
+        const v = p?.v === null || p?.v === undefined || p?.v === '' ? NaN : Number(p.v);
+        if (!Number.isFinite(v) && !isBadCode(q)) continue; // text values do not export as numbers
+        out.push({ tag, t, value: Number.isFinite(v) && !isBadCode(q) ? v : null, quality: q ?? QUALITY_GOOD });
+      }
+    }
+    out.sort((a, b) => a.t - b.t);
+    yield* out;
+  }
+}
+
+const RAW_BACKENDS = { timescaledb: timescaleRaw, influxdb: influxRaw, timebase: timebaseRaw };
+
+/** Every stored sample for up to 10 tags over [start, end], in time order (async iterator). */
+function queryRaw(conn = {}, { tags = [], start, end } = {}, fetchImpl = timedFetch) {
+  const backend = RAW_BACKENDS[conn.type];
+  if (!backend) throw new Error(`unsupported historian type "${conn.type}" (supported: ${Object.keys(BACKENDS).join(', ')})`);
+  const range = normalizeRange({ start, end });
+  return backend(conn, { tags: rawTags(tags), start: range.start, end: range.end }, fetchImpl);
+}
+
 /** Close pooled Postgres connections and TLS socket pools (shutdown). */
 async function closePools() {
   for (const { pool } of pgPools.values()) await pool.end().catch(() => {});
@@ -836,6 +952,7 @@ module.exports = {
   writePoints,
   queryTags,
   querySeries,
+  queryRaw,
   supportedTypes,
   publicConfig,
   toLineProtocol,

@@ -188,6 +188,12 @@ export const api = {
   deleteContract: (id) => request(`/api/contracts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   contractViolations: (limit = 200) => request(`/api/contracts/violations?limit=${limit}`),
 
+  // Payload codecs (topic filter -> codec + schema; decoded on ingest)
+  listCodecs: () => request('/api/codecs'),
+  saveCodec: (c) => request('/api/codecs', { method: 'POST', body: JSON.stringify(c) }),
+  deleteCodec: (id) => request(`/api/codecs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testCodec: (spec) => request('/api/codecs/test', { method: 'POST', body: JSON.stringify(spec) }),
+
   // Models
   listModels: () => request('/api/models'),
   saveModel: (m) => request('/api/models', { method: 'POST', body: JSON.stringify(m) }),

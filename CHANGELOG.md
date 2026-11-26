@@ -155,6 +155,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit text. Discovery gains an opt-in BACnet/IP probe (`bacnetPorts`). See the
   [Devices and Drivers](docs/wiki/Devices-and-Drivers.md#bacnetip) page and `server/drivers/bacnet/NOTES.md`.
 
+- **Payload codecs for MQTT.** Non-JSON payloads are decoded on ingest, so topics, Trends, mappings, routes and
+  recordings see values: hand-written CBOR (RFC 8949), MessagePack (timestamp extension included) and SenML
+  JSON/CBOR (RFC 8428, resolved into records), plus Protobuf and Avro against a schema you attach to a topic filter
+  (Protobuf decoded through protobufjs reflection, never generated code; Avro binary decoded by hand with logical
+  types and an optional single-object header). Binary CBOR and MessagePack without a binding are auto-detected only
+  when the bytes leave no doubt; text, JSON and undecodable binary stay exactly as before. A new **Codecs** tab under
+  Pipelines lists the bindings with decoded and failed counters, compiles schemas on save (clear parser errors, 128 KiB
+  cap), and has a test box; the topic details name the codec that decoded a payload. Decoding is bounded (256 KiB,
+  32 levels, 100,000 items) and a failure never blocks ingest. 64-bit integers stay exact (decimal strings).
+  API `/api/codecs`; MCP `codecs_list` and `codec_test`. See [Pipelines and Models](docs/wiki/Pipelines-and-Models.md#codecs--payloads-that-are-not-json).
+- **Trends CSV export** of the shown tags and range, as charted (bucketed) or raw samples: ISO 8601 UTC times, a value
+  column per tag with its unit and a quality column, gaps and Bad samples kept, the mode stated in the file name and
+  header comments. Streamed from the server (`GET /api/trends/export.csv`) for recordings, historians (TimescaleDB,
+  InfluxDB, Timebase) and the live buffer, with a row cap.
+- **UNS map Expand all / Collapse all** (breadth first, one page per long branch, capped at 2,500 nodes on the map) and a
+  **search box whose results can be picked** with the keyboard (arrows, Enter, Escape; announced to screen readers) to
+  select and reveal a node, on the UNS map and on the Topics, OPC UA and i3X graphs.
 - **CPU and host metrics** in `/metrics`: `manifold_process_cpu_seconds_total` (user/system),
   `manifold_host_load_average`, `manifold_host_cpus` and `manifold_host_memory_bytes` (carried over from PR #45).
 

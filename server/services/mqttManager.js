@@ -130,6 +130,7 @@ class MqttManager extends EventEmitter {
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
+    this.codecs = null; // PayloadCodecs (services/codecs), attached by index.js; null = no decoding
     this.maxMsgProps = MAX_MSG_PROPS;
     this.subscribeRetries = SUBSCRIBE_RETRIES;
     this.subscribeRetryBaseMs = SUBSCRIBE_RETRY_BASE_MS;
@@ -429,11 +430,33 @@ class MqttManager extends EventEmitter {
   // Build the full message object for a drained topic row (parse, type
   // detection, Sparkplug decode). Runs at most once per topic per flush.
   // `row` is a TopicStore row: { topic, buffer, qos, retain, ts, count }.
-  buildMessage(brokerId, row) {
+  //
+  // Payload codecs (services/codecs): a codec binding that matches the topic is
+  // tried first (a Protobuf or Avro payload can be valid UTF-8); a binary
+  // payload with no binding is offered to the conservative CBOR / MessagePack
+  // auto-detection. A failed decode falls through to the plain handling below,
+  // so a bad payload or schema never blocks ingest. Sparkplug topics have their
+  // own decoder and skip both. `count: false` (read path) leaves codec counters alone.
+  buildMessage(brokerId, row, { count = true } = {}) {
     const message = row.buffer;
     let payload;
     let payloadFormat = 'text';
-    if (row.truncated) {
+    let decoded = null; // codec result: { value, codec, sourceTimestamp? } | { error, codec } | { raw, codec }
+    const codecs = this.codecs;
+    // Sparkplug classification from the per-slot cache when it exists (no regex per message).
+    const sparkOf = () => {
+      const m = row.slot !== undefined ? this.topicMeta.get(brokerId)?.[row.slot] : undefined;
+      return m ? m.spark : this.isSparkplugTopic(row.topic);
+    };
+    let codecsApply = Boolean(codecs) && !row.truncated;
+    if (codecsApply && codecs.hasBindings()) {
+      if (sparkOf()) codecsApply = false;
+      else decoded = codecs.decodeBound(brokerId, row.topic, message, { count });
+    }
+    if (decoded && decoded.value !== undefined) {
+      payload = decoded.value;
+      payloadFormat = 'decoded';
+    } else if (row.truncated) {
       // Oversized payload: only the first maxPayloadBytes were retained. Do not
       // JSON.parse a partial buffer — surface it as a bounded preview instead.
       payloadFormat = 'large';
@@ -459,6 +482,14 @@ class MqttManager extends EventEmitter {
         if (text.includes('�')) {
           payloadFormat = 'binary';
           payload = message.toString('base64');
+          if (codecsApply && !decoded && !sparkOf()) {
+            const auto = codecs.decodeAuto(message, { count });
+            if (auto) {
+              decoded = auto;
+              payload = auto.value;
+              payloadFormat = 'decoded';
+            }
+          }
         }
       }
     }
@@ -494,10 +525,20 @@ class MqttManager extends EventEmitter {
     const props = this.msgProps.get(brokerId)?.get(row.topic);
     if (props) messageObj.properties = props;
 
+    // Which codec decoded the payload ({ name, bindingId?, binding?, auto? }), or
+    // why the bound codec could not (the payload then shows as it arrived).
+    if (decoded && decoded.codec && !decoded.raw) {
+      if (decoded.error) messageObj.codecError = { ...decoded.codec, error: decoded.error };
+      else {
+        messageObj.codec = decoded.codec;
+        if (Number.isFinite(decoded.sourceTimestamp)) messageObj.sourceTimestamp = decoded.sourceTimestamp;
+      }
+    }
+
     // Source time and quality, when the payload carries them. `timestamp`
     // stays arrival time; consumers prefer `sourceTimestamp` / `quality` when
     // present (absent means: arrival time, quality Good).
-    if (payloadFormat === 'json') {
+    if (payloadFormat === 'json' || payloadFormat === 'decoded') {
       const tvq = tvqOf(payload);
       if (tvq) {
         if (tvq.t !== undefined) messageObj.sourceTimestamp = tvq.t;
@@ -1049,8 +1090,10 @@ class MqttManager extends EventEmitter {
     const cache = this.rowCache.get(brokerId);
     const topics = store.getTopics(limit).map((row) => {
       const hit = cache?.get(row.slot);
-      if (hit && hit.count === row.count) return hit.obj;
-      const msg = this.buildMessage(brokerId, row);
+      // A codec binding change re-decodes: the cache is also keyed on the codec table's revision.
+      const codecRev = this.codecs ? this.codecs.rev : 0;
+      if (hit && hit.count === row.count && hit.codecRev === codecRev) return hit.obj;
+      const msg = this.buildMessage(brokerId, row, { count: false });
       const obj = {
         topic: row.topic,
         messageCount: row.count,
@@ -1059,9 +1102,11 @@ class MqttManager extends EventEmitter {
         type: msg.type,
         retain: msg.retain,
         payload: msg.payload,
-        properties: msg.properties // MQTT 5 only; undefined otherwise (dropped by JSON)
+        properties: msg.properties, // MQTT 5 only; undefined otherwise (dropped by JSON)
+        codec: msg.codec, // payload codec that decoded it; undefined otherwise
+        codecError: msg.codecError
       };
-      cache?.set(row.slot, { count: row.count, obj });
+      cache?.set(row.slot, { count: row.count, codecRev, obj });
       return obj;
     });
     return { topics, total: store.topicCount(), dropped: store.dropped, capReached: store.capReached };
@@ -1078,7 +1123,7 @@ class MqttManager extends EventEmitter {
     // topic has aged entirely out of the ring do we rebuild it from the store.
     if (matches.length === 0) {
       const row = this.stores.get(brokerId)?.getLatest(topic);
-      if (row) matches.push(this.buildMessage(brokerId, row));
+      if (row) matches.push(this.buildMessage(brokerId, row, { count: false }));
     }
     return matches.reverse();
   }

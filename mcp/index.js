@@ -116,7 +116,7 @@ server.tool(
 
 server.tool(
   'config_export',
-  'Export the full DataOps configuration (pipelines, historians, models, recordings, contracts, bindings, mounts, alert rules) as one JSON document. Secrets are stripped.',
+  'Export the full DataOps configuration (pipelines, historians, models, recordings, contracts, bindings, codec bindings, mounts, alert rules) as one JSON document. Secrets are stripped.',
   {},
   async () => {
     try {
@@ -232,9 +232,16 @@ server.tool(
   }
 );
 
+// How payloads appear in topic and message results (see codecs_list).
+const PAYLOAD_NOTE =
+  ' Payloads: JSON is parsed; non-JSON payloads are decoded by a payload codec when one applies (a codec binding: CBOR, ' +
+  'MessagePack, SenML, Protobuf or Avro with a schema; or auto-detected binary CBOR / MessagePack), and then `codec` names it ' +
+  '({ name, binding?, auto? }) and `codecError` explains a bound codec that failed; anything else that is not text is base64 ' +
+  '(payloadFormat "binary"). 64-bit integers from codecs are decimal strings.';
+
 server.tool(
   'mqtt_list_topics',
-  'List all topics seen on a broker, with message counts and last-activity timestamps. Ideal for building a topic tree.',
+  'List all topics seen on a broker, with message counts, last-activity timestamps and the latest payload. Ideal for building a topic tree.' + PAYLOAD_NOTE,
   { brokerId: z.string() },
   async ({ brokerId }) => {
     try {
@@ -247,7 +254,7 @@ server.tool(
 
 server.tool(
   'mqtt_get_messages',
-  'Get recent messages for a specific topic on a broker, including decoded Sparkplug B payloads where applicable.',
+  'Get recent messages for a specific topic on a broker, including decoded Sparkplug B payloads where applicable.' + PAYLOAD_NOTE,
   {
     brokerId: z.string(),
     topic: z.string(),
@@ -584,6 +591,39 @@ server.tool(
   async ({ limit }) => {
     try {
       return ok(await api(`/api/contracts/violations${limit ? `?limit=${Number(limit)}` : ''}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'codecs_list',
+  'Payload codec bindings (topic filter -> CBOR, MessagePack, SenML, Protobuf or Avro, with the schema) and their decoded / failed counters, plus auto-detection counts and the decode limits. Read-only.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/codecs'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'codec_test',
+  'Decode one payload with a codec without storing anything (read-only): codec "auto" (CBOR / MessagePack detection), a built-in codec, a schema codec with schemaText (+ messageType for Protobuf), or a saved binding by bindingId.',
+  {
+    codec: z.enum(['auto', 'cbor', 'msgpack', 'senml-json', 'senml-cbor', 'protobuf', 'avro']).optional().describe('Omit when bindingId is given.'),
+    bindingId: z.string().optional(),
+    schemaText: z.string().optional().describe('.proto text or Avro JSON schema (max 128 KiB).'),
+    messageType: z.string().optional().describe('Protobuf message type, e.g. plant.v1.Pump.'),
+    payload: z.string().describe('The payload bytes as text in `encoding`.'),
+    encoding: z.enum(['hex', 'base64', 'text']).optional().describe('Default hex.')
+  },
+  async (args) => {
+    try {
+      return ok(await api('/api/codecs/test', { method: 'POST', body: JSON.stringify(args) }));
     } catch (error) {
       return fail(error);
     }

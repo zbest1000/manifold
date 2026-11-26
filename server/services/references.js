@@ -7,6 +7,7 @@
  *   model              -> target broker, every attribute's source broker
  *   recording          -> broker, historian (historian target)
  *   contract           -> broker
+ *   codec binding      -> broker (optional)
  *   alert rule         -> broker
  *   binding (mapping)  -> source / target broker, historian (read-only here)
  *
@@ -56,6 +57,7 @@ function refsOf(kind, obj) {
       break;
     case 'contracts':
     case 'alertRules':
+    case 'codecs': // a codec binding's broker is optional (absent = every broker)
       add('broker', obj.brokerId, 'brokerId');
       break;
     case 'bindings':
@@ -105,6 +107,7 @@ function usersOfBroker(id, ctx) {
   scan('alertRules', 'alert rule', () => p.alertRules());
   scan('models', 'model', () => p.listIn('models'));
   scan('contracts', 'contract', () => p.listIn('contracts'));
+  scan('codecs', 'codec binding', () => p.listIn('codecs'));
   const hosts = ctx.sparkplugPublisher?.hostSessions;
   if (hosts && typeof hosts.values === 'function') {
     for (const h of hosts.values()) {
@@ -130,6 +133,7 @@ function scanBroken(ctx) {
   add('alertRules', 'alert rule', p.alertRules());
   add('models', 'model', p.listIn('models'));
   add('contracts', 'contract', p.listIn('contracts'));
+  add('codecs', 'codec binding', p.listIn('codecs'));
   return out;
 }
 

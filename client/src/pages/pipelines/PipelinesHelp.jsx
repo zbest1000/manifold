@@ -53,6 +53,14 @@ export default function PipelinesHelp() {
           Manifold flags drift when a message stops matching, so you catch a firmware change that renamed a field.
         </p>
       </div>
+      <div>
+        <p className="font-medium text-fg">Codecs</p>
+        <p>
+          Decode payloads that are not JSON: CBOR, MessagePack, SenML, and Protobuf or Avro with your schema. Bind a
+          topic filter to a codec and the values reach topics, Trends, mappings and routes. Binary CBOR and
+          MessagePack are also recognised without a binding when the bytes leave no doubt.
+        </p>
+      </div>
     </div>
 
     <p className="text-subtle">

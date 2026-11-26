@@ -59,7 +59,8 @@ most screenshots in this wiki; light is a full theme, not an inverted one, with 
 | Mapping editor | `Ctrl+S` (or `Cmd+S`) saves; `Esc` asks before discarding changes; in the tag table, the up and down arrows move between rows and shift-click selects a range |
 | UNS map (focus the canvas) | arrow keys pan; `+` and `-` zoom; `F` fits everything (also the **Fit to view (F)** button); `Esc` clears a multi-selection; `Ctrl`/`Cmd`-click toggles a node in the selection; `Shift`-drag on empty canvas draws a selection box |
 | Trees (Topics tree, UNS tree, tag trees, controller import) | up and down arrows move; `Right` expands (or enters), `Left` collapses; `Home` and `End` jump; `Enter` or `Space` selects. Rows are virtualised but stay reachable by keyboard |
-| Graph search box | `Enter` frames the matches; `Esc` clears the query |
+| Search boxes on the UNS map and the Topics, OPC UA and i3X graphs | type to list matches (ranked by name, then path; `+` and `#` work as MQTT filters); `Down` and `Up` move through the list, `Enter` picks the highlighted match (the first when none is) and selects and reveals it; `Esc` closes the list, a second `Esc` clears the box. The match count and the pick are announced. On the graphs, **Zoom to matches** frames every match |
+| UNS map controls | **Expand all** opens every branch of the broker namespaces, breadth first, one page per long branch, and stops at 2,500 nodes on the map (it says how far it got); **Collapse all** leaves each namespace open one level |
 | Replay scrubber | `Left` and `Right` seek 5 percent, `Home` and `End`, `Space` or `Enter` play and pause |
 | Icon picker | arrow keys move across the grid, `Home` and `End` |
 | Tabs and segmented controls | arrow keys move, `Home` and `End` jump |

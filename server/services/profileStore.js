@@ -5,10 +5,11 @@ const path = require('path');
 
 // DataOps collections stored alongside connection profiles. Generic CRUD keeps
 // the store from growing three near-identical method triples per module.
-// `devices` / `deviceProfiles` hold the southbound device-driver config.
+// `devices` / `deviceProfiles` hold the southbound device-driver config;
+// `codecs` the payload codec bindings (topic filter -> codec + schema).
 const COLLECTIONS = [
   'historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'icons',
-  'devices', 'deviceProfiles'
+  'devices', 'deviceProfiles', 'codecs'
 ];
 function emptyCollections() {
   return Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));

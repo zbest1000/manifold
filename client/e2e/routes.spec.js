@@ -17,6 +17,7 @@ const ROUTES = [
   { path: '/trends', heading: 'Trends' },
   { path: '/alerts', heading: 'Alerts' },
   { path: '/pipelines', heading: 'Pipelines' },
+  { path: '/pipelines?tab=codecs', heading: 'Pipelines' },
   { path: '/tags', heading: 'Tags' },
   { path: '/brokers', heading: 'MQTT Brokers', text: 'E2E broker' },
   { path: '/devices', heading: 'Devices' },

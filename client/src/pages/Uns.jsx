@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Network, ListTree, Share2, ShieldCheck, History, Layers, Plug, ChevronUp, ChevronDown } from 'lucide-react';
+import { Network, ListTree, Share2, ShieldCheck, History, Layers, Plug, ChevronUp, ChevronDown, Search } from 'lucide-react';
 import { useStore } from '@/store/store';
 import { api } from '@/lib/api';
 import UnsTopology from '@/graph/UnsTopology';
@@ -14,7 +14,8 @@ import useIngestRate from '@/graph/useIngestRate';
 import { formatRate } from '@/graph/rateWindow';
 import PageHeader from '@/components/PageHeader';
 import GraphTree from '@/components/GraphTree';
-import { Banner, ButtonLink, EmptyState, Input, SegmentedControl, Select, StatusDot } from '@/components/ui';
+import SearchPick from '@/components/SearchPick';
+import { Banner, ButtonLink, EmptyState, IconButton, Input, SegmentedControl, Select, StatusDot } from '@/components/ui';
 import { BarDivider, CanvasNote, FloatingBar, SidePanel, ToolToggle } from '@/components/CanvasChrome';
 import LevelsEditor from './uns/LevelsEditor';
 import MountManager from './uns/MountManager';
@@ -75,6 +76,8 @@ export default function Uns() {
   const [i3xStatus, setI3xStatus] = useState(null);
   // Docked side panel: one of PANELS, or null (then the selected node's details show).
   const [panel, setPanel] = useState(null);
+  // Phones: the search box opens on its own row from a Find button, so the toolbar keeps one row and the map its height.
+  const [findOpen, setFindOpen] = useState(false);
   const [levels, setLevels] = useState(loadLevels);
   const [mounts, setMounts] = useState([]);
   const [mountRoots, setMountRoots] = useState([]);
@@ -237,6 +240,26 @@ export default function Uns() {
     setFocusTarget({ brokerId, path });
   };
 
+  // Search-and-pick over every node of the shown namespaces: picking one selects it, opens its ancestors
+  // and the page of any long branch on the way, and centres it on the map.
+  const searchItems = useMemo(() => {
+    const multi = roots.length > 1;
+    const out = [];
+    const rootName = new Map(roots.map((r) => [r.brokerId, r.name]));
+    for (const n of flat.byId.values()) {
+      out.push({ id: n.id, label: n.name, path: n.path || n.name, hint: multi && n.path ? rootName.get(n.brokerId) : undefined });
+    }
+    return out;
+  }, [flat, roots]);
+  const pickSearch = (item) => {
+    const node = flat.byId.get(item.id);
+    if (!node) return;
+    select(node);
+    showPageOf(node.brokerId, node.path);
+    setView('topology');
+    setFocusTarget({ brokerId: node.brokerId, path: node.path });
+  };
+
   // Resolve a pending deep link as soon as its node exists (topics may stream
   // in after the first render). Adjusted during render, not in an effect.
   if (pendingLink) {
@@ -310,10 +333,21 @@ export default function Uns() {
           ]}
         />
         <BarDivider />
+        <SearchPick items={searchItems} onPick={pickSearch} label="Find a node in the namespace" placeholder="Find a node or topic/#" className="hidden w-64 sm:block" testId="uns-search" />
+        <span className="hidden sm:contents">
+          <BarDivider />
+        </span>
         {PANELS.map((p) => (
           <ToolToggle key={p.id} pressed={panel === p.id} onClick={() => togglePanel(p.id)} icon={p.icon} label={p.label} showLabel="sm" />
         ))}
+
       </div>
+
+      {findOpen && (
+        <div className="border-b border-line px-4 py-1.5 sm:hidden">
+          <SearchPick items={searchItems} onPick={pickSearch} label="Find a node in the namespace" placeholder="Find a node or topic/#" className="w-full" inputClassName="w-full" />
+        </div>
+      )}
 
       {loadError && (
         <div className="border-b border-line px-4 py-2 sm:px-6">
@@ -353,7 +387,16 @@ export default function Uns() {
           </div>
         ) : (
           <div className="relative min-h-0 min-w-0 flex-1">
-            <UnsTopology roots={roots} levels={levels} selectedId={selected?.id || null} onSelect={select} focusTarget={focusTarget} paging={paging} onPage={setPage} />
+            <UnsTopology
+              roots={roots}
+              levels={levels}
+              selectedId={selected?.id || null}
+              onSelect={select}
+              focusTarget={focusTarget}
+              paging={paging}
+              onPage={setPage}
+              extraControls={<IconButton icon={Search} label="Find a node" side="left" aria-pressed={findOpen} className="sm:hidden" onClick={() => setFindOpen((v) => !v)} />}
+            />
             <SourceStatus rate={rate} brokers={scoped} opcua={opcua} i3xStatus={i3xStatus} />
             <div className="pointer-events-none absolute inset-x-0 top-14 z-10 flex flex-col gap-2 px-4">
               {totalTopics === 0 && <CanvasNote>No topics yet. Waiting for traffic on the connected broker. If it stays empty, check the broker&apos;s subscribe filter on the MQTT Brokers page.</CanvasNote>}

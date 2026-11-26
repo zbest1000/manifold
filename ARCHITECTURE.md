@@ -167,6 +167,14 @@ Key mechanics:
   A subscribe that fails for another reason (a timeout, a busy client) is
   retried with exponential backoff, at most three times, before an error is
   surfaced.
+- **Payload codecs** (`server/services/codecs/`) run inside `buildMessage`, so once per touched
+  topic per flush, never per raw message: a codec binding matching the topic (most specific filter
+  first) decodes CBOR, MessagePack, SenML, Protobuf (reflection over the protobufjs parse, no code
+  generation) or Avro (hand-written binary reader) before the JSON/text detection; a binary payload
+  without a binding is offered to a conservative CBOR / MessagePack auto-detection. Work per payload
+  is bounded (256 KiB, depth 32, 100,000 items); a failure is counted on the binding and the payload
+  falls through unchanged. Sparkplug topics skip both. The read path (`getTopics`) decodes without
+  counting and re-decodes when the codec table's revision changes.
 - **Source time and quality** travel with the message when the payload has
   them: a TVQ envelope's `t` and `q`, a Sparkplug message and metric
   timestamp, and a metric's `Quality` property. `timestamp` stays arrival
@@ -1241,6 +1249,11 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `POST` | `/api/contracts` | Lock (create or edit) a contract |
 | `DELETE` | `/api/contracts/:id` | Delete a contract |
 | `GET` | `/api/contracts/violations` | Recent violations |
+| `GET` | `/api/codecs` | Payload codec bindings, per-binding decoded / failed counters, auto-detection counts, limits |
+| `POST` | `/api/codecs` | Create or edit a codec binding; the schema is compiled first (`400` with the parser's message, `413` over 128 KiB) |
+| `DELETE` | `/api/codecs/:id` | Delete a codec binding |
+| `POST` | `/api/codecs/test` | Decode one pasted payload; nothing stored or counted (*viewer*) |
+| `GET` | `/api/trends/export.csv` | Trends CSV export of up to 10 tags over a range, raw or bucketed, streamed |
 | `GET` | `/api/tags/sources` | What can be browsed right now (devices, OPC UA, Sparkplug, MQTT) |
 | `GET` | `/api/tags/browse` | One level of children under a node (`type`, `id`, `node`) |
 | `GET` | `/api/tags/bindings` | Mappings (stored as bindings) with run-time status |
@@ -1398,6 +1411,7 @@ authenticated REST API (and therefore the same audit log) as the UI.
 | Pipelines | `pipelines_list` · `pipeline_preview` · `pipeline_save` · `pipeline_delete` |
 | Historians | `historians_list` · `historian_save` · `historian_delete` · `historian_test` |
 | Contracts | `contracts_list` · `contract_infer` · `contract_lock` · `contract_delete` · `contracts_violations` |
+| Codecs | `codecs_list` · `codec_test` |
 | Models | `models_list` · `model_save` · `model_delete` |
 | Tags & bindings | `tags_sources` · `tags_browse` · `bindings_list` · `binding_save` · `binding_delete` |
 | Recorder & replay | `recorder_list` · `recorder_save` · `recorder_delete` · `recorder_data` · `replay_start` · `replay_stop` |

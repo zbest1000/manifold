@@ -30,6 +30,7 @@ const { parseNamedTokens, roleAllows } = require('./services/authConfig');
 const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
+const { PayloadCodecs } = require('./services/codecs');
 const { DeviceManager } = require('./services/deviceManager');
 
 const mqttRoutes = require('./routes/mqtt');
@@ -43,6 +44,8 @@ const historianRoutes = require('./routes/historians');
 const pipelineRoutes = require('./routes/pipelines');
 const recorderRoutes = require('./routes/recorder');
 const contractRoutes = require('./routes/contracts');
+const codecRoutes = require('./routes/codecs');
+const trendRoutes = require('./routes/trends');
 const modelRoutes = require('./routes/models');
 const tagRoutes = require('./routes/tags');
 const deviceRoutes = require('./routes/devices');
@@ -213,11 +216,14 @@ const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplu
 // the tag source the binding engine sees.
 const devices = new DeviceManager({ profiles, io });
 bindings.registerSource('device', devices);
+// Payload codecs: decode CBOR / MessagePack / SenML / Protobuf / Avro on ingest.
+const codecs = new PayloadCodecs({ profiles });
+mqttManager.codecs = codecs;
 
 app.locals.services = {
   mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings, devices
+  outbox, audit, sparkplugPublisher, bindings, devices, codecs
 };
 
 // (The audit middleware is mounted ahead of auth, above.)
@@ -315,6 +321,8 @@ app.use('/api/historians', historianRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/recorder', recorderRoutes);
 app.use('/api/contracts', contractRoutes);
+app.use('/api/codecs', codecRoutes);
+app.use('/api/trends', trendRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/devices', deviceRoutes);
