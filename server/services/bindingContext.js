@@ -550,7 +550,7 @@ function bindingSchema({ defaultObjectCap, minObjectCap, maxObjectCap, previewMa
   const text = (maxLength, description) => ({ type: 'string', maxLength, description });
   return {
     version: 1,
-    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug', 'mqtt'],
+    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug', 'mqtt', 'iot'],
     mqttSource: {
       description: 'An MQTT topic tree as a source: each entry reads one value from a topic payload',
       fields: {

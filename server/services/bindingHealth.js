@@ -26,7 +26,7 @@ function sourceMissing(b, ctx) {
       return { code: 'source-missing', message: `The OPC UA connection ${s.connectionId} was removed.`, fix: 'Reconnect the server under OPC UA (same connection), or delete this mapping.' };
     }
   }
-  if ((s.type === 'mqtt' || s.type === 'sparkplug') && !brokerKnown(s.brokerId, profiles, mqttManager)) {
+  if ((s.type === 'mqtt' || s.type === 'sparkplug' || s.type === 'iot') && !brokerKnown(s.brokerId, profiles, mqttManager)) {
     return { code: 'source-missing', message: `The source broker ${s.brokerId} was removed.`, fix: 'Add the broker again under Brokers (same id), or delete this mapping.' };
   }
   return null;
@@ -62,6 +62,7 @@ function diagnose(b, ctx) {
       const allOff = Array.isArray(s.tags) && s.tags.length && s.tags.every((e) => e && typeof e === 'object' && e.enabled === false);
       if (allOff) reasons.push({ code: 'all-disabled', message: 'Every tag of this mapping is switched off.', fix: 'Edit the mapping and switch tags on under Tags.' });
       else if (s.type === 'mqtt' && s.tags === 'all') reasons.push({ code: 'no-topics', message: `No topic on the broker matches ${s.filter}${s.select ? ' and the rules' : ''} yet.` });
+      else if (s.type === 'iot' && s.tags === 'all') reasons.push({ code: 'no-topics', message: `IoT device ${s.deviceId} has not been seen on broker ${s.brokerId} yet (is detection enabled for its convention?).` });
       else if (s.tags === 'all') reasons.push({ code: 'no-match', message: '0 tags match the selection rules.', fix: 'Edit the rules under What.' });
       else reasons.push({ code: 'no-tags', message: 'The mapping has no tags.' });
     }

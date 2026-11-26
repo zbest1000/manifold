@@ -268,7 +268,8 @@ class TagBindings {
       adapter,
       onSample: (smp) => this.onSample(smp),
       onState: (evt) => this.onSourceState(evt),
-      onBatchEnd: (evt) => this.onBatchEnd(evt)
+      onBatchEnd: (evt) => this.onBatchEnd(evt),
+      onMeta: () => this.onSourceMeta()
     };
     this.sources.set(type, entry);
     if (this.started) {
@@ -281,12 +282,27 @@ class TagBindings {
     e.adapter.on('sample', e.onSample);
     e.adapter.on('source-state', e.onState);
     e.adapter.on('batch-end', e.onBatchEnd);
+    e.adapter.on('meta-changed', e.onMeta);
   }
 
   _detach(e) {
     e.adapter.off?.('sample', e.onSample);
     e.adapter.off?.('source-state', e.onState);
     e.adapter.off?.('batch-end', e.onBatchEnd);
+    e.adapter.off?.('meta-changed', e.onMeta);
+  }
+
+  /**
+   * A source whose tag set or tag metadata changed at run time (IoT-over-MQTT devices: discovery
+   * configs, device lists) emits 'meta-changed': the compiled index is rebuilt, new tags get
+   * monitors and changed metadata is republished.
+   */
+  onSourceMeta() {
+    if (!this.started) return;
+    this._metaVer++;
+    this._publishMetaAll();
+    this._refreshSparkplugMeta();
+    this.syncMonitors();
   }
 
   start() {

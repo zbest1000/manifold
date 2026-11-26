@@ -21,6 +21,7 @@ const ROUTES = [
   { path: '/tags', heading: 'Tags' },
   { path: '/brokers', heading: 'MQTT Brokers', text: 'E2E broker' },
   { path: '/devices', heading: 'Devices' },
+  { path: '/devices?tab=iot', heading: 'Devices' },
   { path: '/opcua', heading: 'OPC UA' },
   { path: '/cesmii', heading: 'CESMII SMIP' },
   { path: '/i3x', heading: 'i3X' },

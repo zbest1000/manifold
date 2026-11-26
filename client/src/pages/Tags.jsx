@@ -16,7 +16,7 @@ import TagsHelp from './tags/TagsHelp';
 import { saveBinding, removeBinding } from './tags/tagsApi';
 import { useTagsData } from './tags/useTagsData';
 import { healthFallback, WARNING_LABEL } from './tags/bindingHealthView';
-import { buildBoundIndex, groupSources, parseSourceParam, sourceKey } from './tags/helpers';
+import { buildBoundIndex, bindingSourceId, groupSources, parseSourceParam, sourceKey } from './tags/helpers';
 
 const NO_SELECTION = new Map();
 
@@ -24,8 +24,7 @@ const NO_SELECTION = new Map();
 const fromSource = (b, s) => {
   if (!s) return false;
   const src = b.source || {};
-  const id = src.type === 'opcua' ? src.connectionId : src.type === 'sparkplug' || src.type === 'mqtt' ? src.brokerId : src.deviceId;
-  return src.type === s.type && id === s.id;
+  return src.type === s.type && bindingSourceId(src) === s.id;
 };
 const asNode = (n) => ({ id: n.id, address: n.address, name: n.name, meta: n.meta || {} });
 

@@ -203,7 +203,7 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
   const rootLoaded = nodes[''];
   const otherErrors = Object.entries(errors).filter(([k]) => k !== '');
   const filtering = filter.trim().length > 0;
-  const showMeta = source.type === 'device' || source.type === 'opcua'; // OPC UA: what the server publishes per variable
+  const showMeta = source.type === 'device' || source.type === 'opcua' || source.type === 'iot'; // OPC UA / IoT: what the server or bridge says per tag
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -255,6 +255,8 @@ export default function TagTree({ source, selection, onToggle, onAddMany, boundI
               ? 'No Sparkplug birth certificates seen yet. Metrics appear once an edge node publishes NBIRTH or DBIRTH on this broker.'
               : source.type === 'mqtt'
                 ? 'No topics seen on this broker yet. They appear as messages arrive.'
+                : source.type === 'iot'
+                  ? 'This IoT device has no tags yet. They appear when it publishes its first values or its description.'
                 : 'This source returned no tags. Add tags to the device on the Devices page, then reload.'
           }
           action={

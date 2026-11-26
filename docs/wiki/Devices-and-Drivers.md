@@ -28,6 +28,11 @@ against its simulator; it has not been run against real devices either.**
 The Devices page marks S7 and EtherNet/IP with an **Experimental** badge and
 shows the same notice before the first connect.
 
+Zigbee, Z-Wave, Tasmota, Shelly, Home Assistant and LoRaWAN devices that a bridge or gateway
+already publishes over MQTT are not polled by a driver: Manifold reads them from the broker
+(**Devices → IoT over MQTT**). It reads from the bridge and does not pair or control them; see
+[IoT devices over MQTT](IoT-Devices-over-MQTT).
+
 ## Concepts
 
 ```mermaid

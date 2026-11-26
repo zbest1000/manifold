@@ -687,7 +687,7 @@ server.tool(
 
 server.tool(
   'tags_sources',
-  'List browsable tag sources right now: connected OPC UA servers, Sparkplug registries, and MQTT topic tries.',
+  'List browsable tag sources right now: devices, connected OPC UA servers, Sparkplug registries, IoT devices over MQTT (type "iot", id "<brokerId>|<deviceId>") and MQTT topic tries.',
   {},
   async () => {
     try {
@@ -702,14 +702,39 @@ server.tool(
   'tags_browse',
   'Browse one level of device tags under a node in a source (from tags_sources). Nodes are { id, name, kind: "folder"|"tag", address }.',
   {
-    type: z.enum(['opcua', 'sparkplug', 'mqtt']).describe('Source type.'),
-    id: z.string().describe('Source id (connectionId or brokerId).'),
+    type: z.enum(['opcua', 'sparkplug', 'mqtt', 'iot']).describe('Source type.'),
+    id: z.string().describe('Source id (connectionId, brokerId, or "<brokerId>|<deviceId>" for iot).'),
     node: z.string().optional().describe('Node to browse under; omit for the root level.')
   },
   async ({ type, id, node }) => {
     try {
       const q = new URLSearchParams({ type, id, ...(node ? { node } : {}) });
       return ok(await api(`/api/tags/browse?${q}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'iot_devices',
+  'IoT devices over MQTT (read-only): Zigbee2MQTT, Z-Wave JS UI, Home Assistant MQTT discovery, Tasmota, Shelly, ChirpStack and The Things Stack devices that detection found on connected brokers, ' +
+    'each with convention, broker, availability, last seen and tag count. Pass brokerId + deviceId for one device with its tags (unit, type, range, enum, topic, selector) and live values with quality. ' +
+    'Manifold only reads these from the bridge; it never controls them. Detection is opt-in per broker (GET/PUT /api/iot/brokers/:id).',
+  {
+    brokerId: z.string().optional().describe('Only devices on this broker (or, with deviceId, the broker of that device).'),
+    deviceId: z.string().optional().describe('One device (e.g. "z2m:0x00158d0001a2b3c4"); needs brokerId.'),
+    convention: z.enum(['zigbee2mqtt', 'zwavejs', 'homeassistant', 'tasmota', 'shelly', 'chirpstack', 'ttn']).optional().describe('Only devices of this convention.'),
+    q: z.string().optional().describe('Text filter on name, model, manufacturer or id.')
+  },
+  async ({ brokerId, deviceId, convention, q }) => {
+    try {
+      if (deviceId) {
+        if (!brokerId) throw new Error('deviceId needs brokerId');
+        return ok(await api(`/api/iot/devices/${encodeURIComponent(brokerId)}/${encodeURIComponent(deviceId)}`));
+      }
+      const qs = new URLSearchParams({ ...(brokerId ? { brokerId } : {}), ...(convention ? { convention } : {}), ...(q ? { q } : {}) });
+      return ok(await api(`/api/iot/devices${qs.toString() ? `?${qs}` : ''}`));
     } catch (error) {
       return fail(error);
     }
@@ -747,8 +772,8 @@ server.tool(
     name: z.string().optional(),
     enabled: z.boolean().optional().describe('Default true.'),
     rev: z.number().optional().describe('Revision of the stored binding this edit is based on (optimistic concurrency, when the server supports it).'),
-    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt']) }).passthrough()
-      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? }, { type: "device-profile", profileId, tags, select?, overrides? } or { type: "mqtt", brokerId, tags | tags:"all" + filter, field?, staleAfterMs?, select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
+    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt', 'iot']) }).passthrough()
+      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? }, { type: "device-profile", profileId, tags, select?, overrides? }, { type: "mqtt", brokerId, tags | tags:"all" + filter, field?, staleAfterMs?, select?, overrides? } or { type: "iot", brokerId, deviceId (from iot_devices), tags (tag keys) | "all", select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
     target: z.object({ mode: z.enum(['mqtt', 'sparkplug']), brokerId: z.string() }).passthrough()
       .describe('Target: { mode, brokerId, assetPath | assetPathTemplate, format?, layout?, fields?, metaFields?, context?, contextMode?, ... }; sparkplug mode also needs group and edge.'),
     rbe: z.object({}).passthrough().optional().describe('Report by exception: { heartbeatMs?, deadband?: { type: "absolute"|"percent", value } }.')

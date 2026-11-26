@@ -32,6 +32,8 @@ const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
 const { PayloadCodecs } = require('./services/codecs');
 const { DeviceManager } = require('./services/deviceManager');
+const { IotManager } = require('./services/iot/iotManager');
+const { attachIotSource } = require('./services/bindingModel');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -49,6 +51,7 @@ const trendRoutes = require('./routes/trends');
 const modelRoutes = require('./routes/models');
 const tagRoutes = require('./routes/tags');
 const deviceRoutes = require('./routes/devices');
+const iotRoutes = require('./routes/iot');
 
 const app = express();
 const server = http.createServer(app);
@@ -220,10 +223,16 @@ bindings.registerSource('device', devices);
 const codecs = new PayloadCodecs({ profiles });
 mqttManager.codecs = codecs;
 
+// IoT devices over MQTT (Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly,
+// LoRaWAN network servers): read-only device registry per broker, a tag source for mappings.
+const iot = new IotManager({ mqttManager, profiles });
+attachIotSource(profiles, { device: (b, d) => iot.rawDevice(b, d), readFilters: (b) => iot.readFilters(b) });
+bindings.registerSource('iot', iot);
+
 app.locals.services = {
   mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings, devices, codecs
+  outbox, audit, sparkplugPublisher, bindings, devices, codecs, iot
 };
 
 // (The audit middleware is mounted ahead of auth, above.)
@@ -287,6 +296,7 @@ pipelines.start();
 recorder.start();
 contracts.start();
 models.start();
+iot.start();
 bindings.start();
 devices.start().catch((error) => console.warn(`devices: ${error.message}`));
 
@@ -326,6 +336,7 @@ app.use('/api/trends', trendRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/devices', deviceRoutes);
+app.use('/api/iot', iotRoutes);
 
 // GET /api/whoami — lets the client discover whether auth is on and what role
 // the caller holds, so the UI can render a read-only badge and disable mutation
@@ -549,6 +560,7 @@ const shutdown = async () => {
   contracts.stop();
   models.stop();
   bindings.stop();
+  iot.stop();
   await devices.stop().catch(() => {}); // stops driver host processes
   await sparkplugPublisher.stop().catch(() => {}); // clean NDEATHs, not broker-side wills
   await require('./services/historians').closePools().catch(() => {});

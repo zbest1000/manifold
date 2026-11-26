@@ -15,6 +15,7 @@ import DeleteDeviceDialog from './devices/DeleteDeviceDialog';
 import ProfilesTab from './devices/ProfilesTab';
 import PickProfileDialog from './devices/PickProfileDialog';
 import InstantiateDialog from './devices/InstantiateDialog';
+import IotDevicesTab from './devices/IotDevicesTab';
 import { useDevicesData } from './devices/useDevicesData';
 import { blankDevice } from './devices/model';
 import { hostIssues, hostFor, deviceStateView, fleetSummary } from '@/lib/deviceStatus';
@@ -44,7 +45,7 @@ export default function Devices() {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const tab = params.get('tab') === 'profiles' ? 'profiles' : 'devices';
+  const tab = params.get('tab') === 'profiles' ? 'profiles' : params.get('tab') === 'iot' ? 'iot' : 'devices';
   const detailId = params.get('device');
 
   const protocols = data?.protocols ?? NO_PROTOCOLS;
@@ -60,7 +61,7 @@ export default function Devices() {
     return { ...(cur?.status || {}), ...(deviceStates[editing.id] || {}) };
   }, [editing, data, deviceStates]);
 
-  const setTab = (t) => setParams(t === 'profiles' ? { tab: 'profiles' } : {}, { replace: true });
+  const setTab = (t) => setParams(t === 'devices' ? {} : { tab: t }, { replace: true });
   const openDetail = useCallback(
     (d, opts) => {
       setDetailOpts(opts || null);
@@ -175,7 +176,15 @@ export default function Devices() {
     <div className="flex h-full flex-col">
       <PageHeader
         title="Devices"
-        subtitle={tab === 'profiles' ? (profiles ? `${profiles.length} profile${profiles.length === 1 ? '' : 's'}` : undefined) : summary || (data ? 'No devices yet' : undefined)}
+        subtitle={
+          tab === 'iot'
+            ? 'Devices that bridges and gateways publish over MQTT'
+            : tab === 'profiles'
+              ? profiles
+                ? `${profiles.length} profile${profiles.length === 1 ? '' : 's'}`
+                : undefined
+              : summary || (data ? 'No devices yet' : undefined)
+        }
         actions={
           <>
             <IconButton icon={RefreshCw} label="Refresh device list" onClick={refresh} disabled={refreshing} />
@@ -202,7 +211,8 @@ export default function Devices() {
           onChange={setTab}
           tabs={[
             { id: 'devices', label: 'Devices', count: countOf.devices },
-            { id: 'profiles', label: 'Profiles', count: countOf.profiles }
+            { id: 'profiles', label: 'Profiles', count: countOf.profiles },
+            { id: 'iot', label: 'IoT over MQTT' }
           ]}
         />
 
@@ -221,6 +231,8 @@ export default function Devices() {
         {loading && !data && !error && <LoadingState label="devices" rows={4} />}
 
         <TabPanel idPrefix={TABS_ID} id={tab} className="space-y-4">
+          {tab === 'iot' && <IotDevicesTab readOnly={readOnly} />}
+
           {tab === 'profiles' && data && (
             <ProfilesTab profiles={profiles} error={profilesError} loading={loading} onRetry={load} protocols={protocols} devices={data.devices} labels={labels} focusId={params.get('profile')} onChanged={load} />
           )}

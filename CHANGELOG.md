@@ -172,6 +172,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UNS map Expand all / Collapse all** (breadth first, one page per long branch, capped at 2,500 nodes on the map) and a
   **search box whose results can be picked** with the keyboard (arrows, Enter, Escape; announced to screen readers) to
   select and reveal a node, on the UNS map and on the Topics, OPC UA and i3X graphs.
+- **IoT devices over MQTT** (Devices → IoT over MQTT): Zigbee2MQTT, Z-Wave JS UI, Home Assistant MQTT discovery,
+  Tasmota, Shelly (Gen1 and Gen2+), ChirpStack v4 and The Things Stack v3 traffic on a connected broker shows up as
+  devices with named tags, units, types, ranges and allowed values instead of raw topics, labelled by convention and
+  "via broker". Detection is opt-in per broker and convention, with suggestions when matching traffic is seen.
+  Values carry quality (offline availability -> Bad, missing attribute -> Uncertain) and the payload's source time.
+  The devices are a mapping source in the Tags workspace (`source.type: "iot"`) with the metadata pre-filled; renames
+  keep identity where the convention has a stable id. Home Assistant value templates go through a small safe
+  evaluator (no code is executed). Read-only by construction: Manifold never publishes to these ecosystems' command,
+  set or downlink topics, and does not pair or control devices. Bounded (devices/tags per broker, payload size, JSON
+  depth); hostile payloads are counted and skipped. Not verified against real hardware: tested against a simulator
+  (`server/test/support/iotMqttSimulator.js`). API `/api/iot/*`, MCP `iot_devices`. See the wiki page
+  [IoT devices over MQTT](docs/wiki/IoT-Devices-over-MQTT.md).
 - **CPU and host metrics** in `/metrics`: `manifold_process_cpu_seconds_total` (user/system),
   `manifold_host_load_average`, `manifold_host_cpus` and `manifold_host_memory_bytes` (carried over from PR #45).
 

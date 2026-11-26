@@ -10,9 +10,9 @@ export const COPY_KEYS = ['unit', 'range', 'dataType', 'scale', 'offset', 'preci
 
 const hasVal = (x) => x !== undefined && x !== null && x !== '';
 const isObj = (o) => Boolean(o) && typeof o === 'object' && !Array.isArray(o);
-const RULE_SOURCES = new Set(['device', 'device-profile', 'mqtt']);
+const RULE_SOURCES = new Set(['device', 'device-profile', 'mqtt', 'iot']);
 export const supportsRules = (srcType) => RULE_SOURCES.has(srcType);
-export const supportsOverrides = (srcType) => srcType === 'device' || srcType === 'device-profile' || srcType === 'opcua' || srcType === 'mqtt';
+export const supportsOverrides = (srcType) => srcType === 'device' || srcType === 'device-profile' || srcType === 'opcua' || srcType === 'mqtt' || srcType === 'iot';
 export const renameable = (srcType) => srcType !== 'sparkplug';
 
 /** A published name as a topic level, like the server: MQTT-topic sources keep "/" levels (each cleaned). */

@@ -8,6 +8,7 @@
 - 🗄️ [Historians](Historians)
 - 🔀 [Pipelines and Models](Pipelines-and-Models)
 - 🔧 [Devices and Drivers](Devices-and-Drivers)
+- 📡 [IoT devices over MQTT](IoT-Devices-over-MQTT)
 - 🏭 [OPC UA](OPC-UA)
 - 🗺️ [Mapping to the UNS](Mapping-to-the-UNS)
 - ✅ [Verifying on real hardware](Verifying-on-Real-Hardware)

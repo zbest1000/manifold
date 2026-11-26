@@ -9,7 +9,7 @@ const path = require('path');
 // `codecs` the payload codec bindings (topic filter -> codec + schema).
 const COLLECTIONS = [
   'historians', 'pipelines', 'models', 'recordings', 'contracts', 'bindings', 'icons',
-  'devices', 'deviceProfiles', 'codecs'
+  'devices', 'deviceProfiles', 'codecs', 'iotDetection'
 ];
 function emptyCollections() {
   return Object.fromEntries(COLLECTIONS.map((c) => [c, {}]));
