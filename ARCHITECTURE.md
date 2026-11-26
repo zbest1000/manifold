@@ -1211,7 +1211,10 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `GET` | `/api/alerts/rules` | Alert rules, rule types, webhook health (webhook URLs hidden from viewers) |
 | `POST` | `/api/alerts/rules` | Create or edit a rule (upsert by id) |
 | `DELETE` | `/api/alerts/rules/:id` | Delete a rule |
-| `GET` | `/api/alerts/events` | Recent firings |
+| `GET` | `/api/alerts/events` | Recent events from memory (`?ruleId=`) |
+| `GET` | `/api/alerts/active` | Active alarms (firing, and breached value rules) with severity and acknowledgement, plus counts |
+| `POST` | `/api/alerts/ack` | Acknowledge one alarm or every firing alarm of a rule, with an optional note (records who and when) |
+| `GET` | `/api/alerts/history` | Durable alarm history (`data/alerts.jsonl`): cursor paging, filters, `format=csv` |
 | `GET` | `/api/pipelines` | Routes, live metrics, outbox health, transform types |
 | `POST` | `/api/pipelines` | Create or edit a route (upsert by id); the source filter and `repath` targets are validated as MQTT topics |
 | `DELETE` | `/api/pipelines/:id` | Delete a route |

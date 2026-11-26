@@ -10,6 +10,7 @@ const TopicGraph = lazy(() => import('./pages/TopicGraph'));
 const Uns = lazy(() => import('./pages/Uns'));
 const Flows = lazy(() => import('./pages/Flows'));
 const Trends = lazy(() => import('./pages/Trends'));
+const Alerts = lazy(() => import('./pages/Alerts'));
 const Pipelines = lazy(() => import('./pages/Pipelines'));
 const Tags = lazy(() => import('./pages/Tags'));
 const Brokers = lazy(() => import('./pages/Brokers'));
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="uns" element={<S><Uns /></S>} />
         <Route path="flows" element={<S><Flows /></S>} />
         <Route path="trends" element={<S><Trends /></S>} />
+        <Route path="alerts" element={<S><Alerts /></S>} />
         <Route path="pipelines" element={<S><Pipelines /></S>} />
         <Route path="tags" element={<S><Tags /></S>} />
         <Route path="brokers" element={<S><Brokers /></S>} />

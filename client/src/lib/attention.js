@@ -31,10 +31,13 @@ const PLACE = {
   route: '/pipelines',
   mapping: '/tags?view=mappings',
   recording: '/pipelines?tab=recorder',
-  'alert rule': '/settings?tab=alerts',
+  'alert rule': '/alerts?tab=rules',
   model: '/pipelines?tab=models',
   contract: '/pipelines?tab=contracts'
 };
+
+// The Alerts page with one alarm highlighted (same id scheme as the server: `ruleId|topic`).
+const alarmTo = (ruleId, topic) => `/alerts?alarm=${encodeURIComponent(`${ruleId}|${topic || ''}`)}`;
 
 const missingText = (missing) => (missing || []).map((m) => `${m.kind} ${m.id}`).join(', ');
 
@@ -67,11 +70,11 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
     const st = r.state;
     const where = st?.topic ? ` on ${st.topic}` : '';
     const value = st && st.value !== undefined && st.value !== null ? ` · value ${st.value}` : '';
-    if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}`, to: '/settings?tab=alerts' });
-    else if (st?.state === 'breached') items.push({ key: `a-${r.id}`, tone: 'warn', what: `Alert ${r.name || r.id}`, detail: `Breached${where}${value}${st.remainingMs ? `, fires in ${Math.ceil(st.remainingMs / 1000)} s if it lasts` : ''}`, to: '/settings?tab=alerts' });
+    if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}${st.unacknowledged === 0 ? ' · acknowledged' : ''}`, to: alarmTo(r.id, r.type === 'value-threshold' ? st.topic : null) });
+    else if (st?.state === 'breached') items.push({ key: `a-${r.id}`, tone: 'warn', what: `Alert ${r.name || r.id}`, detail: `Breached${where}${value}${st.remainingMs ? `, fires in ${Math.ceil(st.remainingMs / 1000)} s if it lasts` : ''}`, to: alarmTo(r.id, st.topic) });
     else if (st?.state === 'broken') {
       listed.add(`alert rule:${r.id}`);
-      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Broken reference: ${missingText(st.broken)} no longer exists`, to: '/settings?tab=alerts' });
+      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Broken reference: ${missingText(st.broken)} no longer exists`, to: '/alerts?tab=rules' });
     }
   }
 

@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { test, expect } from './fixtures.js';
+import { api, publisher, unique } from './support.js';
 
 /**
  * Every route, at desktop and mobile width (the two Playwright projects), in
@@ -14,6 +15,7 @@ const ROUTES = [
   { path: '/uns', heading: 'Namespace' },
   { path: '/flows', heading: 'Flows' },
   { path: '/trends', heading: 'Trends' },
+  { path: '/alerts', heading: 'Alerts' },
   { path: '/pipelines', heading: 'Pipelines' },
   { path: '/tags', heading: 'Tags' },
   { path: '/brokers', heading: 'MQTT Brokers', text: 'E2E broker' },
@@ -138,6 +140,36 @@ for (const theme of THEMES) {
     await page.getByRole('button', { name: /Consumers/ }).click();
     await expect(page.getByRole('region', { name: 'Broker admin connection' })).toBeVisible();
     await audit(page, '/flows#consumers', consoleErrors);
+  });
+}
+
+// The Alerts page's other tabs, and its Active tab with a firing critical alarm (table on desktop, cards on
+// phones, the count on the menu item), in both themes and at both widths.
+for (const theme of THEMES) {
+  for (const tab of ['history', 'rules']) {
+    test(theme === 'dark' ? `/alerts ${tab} tab` : `/alerts ${tab} tab (${theme} theme)`, async ({ page, consoleErrors }) => {
+      await useTheme(page, theme);
+      await page.goto(`/alerts?tab=${tab}`);
+      await settle(page);
+      await expect(page.getByRole('tab', { name: new RegExp(`^${tab}`, 'i') })).toHaveAttribute('aria-selected', 'true');
+      await audit(page, `/alerts#${tab}${theme === 'dark' ? '' : `@${theme}`}`, consoleErrors);
+    });
+  }
+  test(theme === 'dark' ? '/alerts with a firing alarm' : `/alerts with a firing alarm (${theme} theme)`, async ({ page, consoleErrors }) => {
+    const topic = `e2e/routes/${unique('a')}`;
+    const pub = await publisher();
+    const rule = await api.post('/api/alerts/rules', { name: unique('Smoke alarm '), type: 'value-threshold', brokerId: 'e2e-broker', topic, op: '>', value: 0, severity: 'critical' });
+    try {
+      await pub.publish(topic, '1');
+      await useTheme(page, theme);
+      await page.goto('/alerts');
+      await settle(page);
+      await expect(page.getByRole('button', { name: /^Acknowledge Smoke alarm/ }).first()).toBeVisible({ timeout: 20_000 });
+      await audit(page, `/alerts#active${theme === 'dark' ? '' : `@${theme}`}`, consoleErrors);
+    } finally {
+      await pub.close();
+      await api.del(`/api/alerts/rules/${rule.json.id}`).catch(() => {});
+    }
   });
 }
 

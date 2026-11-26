@@ -23,13 +23,15 @@ import {
   X,
   Monitor,
   Sun,
-  Moon
+  Moon,
+  BellRing
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '@/store/store';
 import { useTheme } from '@/lib/theme';
 import { StatusDot, Tooltip, IconButton, Modal, Kbd } from './ui';
 import ErrorLog from './ErrorLog';
+import { useActiveAlarms } from '@/lib/useActiveAlarms';
 
 // Grouped by the job the user is doing: OBSERVE the estate, BUILD on the
 // stream, CONNECT sources, run the SYSTEM.
@@ -44,7 +46,8 @@ const NAV_GROUPS = [
       { to: '/topics', label: 'Topics', icon: Share2 },
       { to: '/uns', label: 'UNS', icon: Network },
       { to: '/flows', label: 'Flows', icon: Waypoints },
-      { to: '/trends', label: 'Trends', icon: LineChart }
+      { to: '/trends', label: 'Trends', icon: LineChart },
+      { to: '/alerts', label: 'Alerts', icon: BellRing, badge: 'alarms' }
     ]
   },
   {
@@ -157,6 +160,10 @@ function SidebarBody({ collapsed, onNavigate, drawer = false, onCloseDrawer }) {
   const viewerReadOnly = useStore((s) => s.authRole === 'viewer');
   const toggleNav = useStore((s) => s.toggleNav);
   const brokersUp = brokers.filter((b) => b.status === 'connected').length;
+  // Unacknowledged critical alarms, counted on the Alerts item until someone acknowledges them.
+  const alarms = useActiveAlarms({ interval: 15_000 });
+  const critical = alarms.data?.counts?.unacknowledgedCritical || 0;
+  const badgeText = critical > 0 ? `${critical} unacknowledged critical ${critical === 1 ? 'alarm' : 'alarms'}` : '';
 
   return (
     <>
@@ -200,12 +207,12 @@ function SidebarBody({ collapsed, onNavigate, drawer = false, onCloseDrawer }) {
               ))}
             <div className="space-y-px">
               {group.items.map((item) => (
-                <Tooltip key={item.to} label={collapsed ? item.label : ''} side="right" block>
+                <Tooltip key={item.to} label={collapsed ? (item.badge && critical ? `${item.label}: ${badgeText}` : item.label) : ''} side="right" block>
                   <NavLink
                     to={item.to}
                     end={item.end}
                     onClick={onNavigate}
-                    aria-label={collapsed ? item.label : undefined}
+                    aria-label={collapsed && !(item.badge && critical) ? item.label : undefined}
                     className={({ isActive }) =>
                       clsx(
                         'group relative flex items-center rounded-md text-sm transition-colors duration-100',
@@ -219,6 +226,20 @@ function SidebarBody({ collapsed, onNavigate, drawer = false, onCloseDrawer }) {
                         {isActive && <span aria-hidden="true" className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent" />}
                         <item.icon size={16} className={clsx('shrink-0', isActive ? 'text-fg' : 'text-subtle group-hover:text-muted')} aria-hidden="true" />
                         {!collapsed && item.label}
+                        {/* The count is read from this text; the visible pill is decorative. */}
+                        {item.badge && critical > 0 && <span className="sr-only">{`${collapsed ? item.label : ''}, ${badgeText}`}</span>}
+                        {item.badge && critical > 0 && (
+                          <span
+                            aria-hidden="true"
+                            data-testid="nav-alarm-badge"
+                            className={clsx(
+                              'grid min-w-4 place-items-center rounded-full bg-danger px-1 text-[0.6875rem] font-semibold leading-4 tabular-nums text-danger-fg',
+                              collapsed ? 'absolute right-1 top-0.5' : 'ml-auto'
+                            )}
+                          >
+                            {critical > 99 ? '99+' : critical}
+                          </span>
+                        )}
                       </>
                     )}
                   </NavLink>

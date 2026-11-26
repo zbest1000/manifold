@@ -206,7 +206,9 @@ With auth enabled `/metrics` returns 401 without a token; set
 | `manifold_outbox_points_total`, `manifold_outbox_queued_points`, `manifold_outbox_spill_bytes` | historian store-and-forward: `result` = `written`, `spilled`, `dropped`; queue depth; spill size |
 | `manifold_recorder_points_total` | points per recording |
 | `manifold_contract_checks_total`, `manifold_contract_violations_total` | schema contracts |
-| `manifold_alert_events` | alert firings |
+| `manifold_alert_events` | events in the in-memory alert ring |
+| `manifold_alerts_active` (`state`, `severity`), `manifold_alerts_unacknowledged` (`severity`) | active alarms; firing alarms nobody has acknowledged (see [Alerts](Alerts#metrics)) |
+| `manifold_alert_transitions_total` (`state`, `severity`), `manifold_alert_history_bytes`, `manifold_alert_history_write_errors_total` | alert events since start; the alarm history on disk |
 | `manifold_binding_published_total`, `manifold_binding_suppressed_total`, `manifold_binding_errors_total` | per mapping (labelled by the first 8 characters of its binding id): publishes, samples suppressed by report-by-exception, publish errors |
 | `manifold_device_up`, `manifold_device_connects_total`, `manifold_device_requests_total`, `manifold_device_timeouts_total` | per device |
 | `manifold_device_exceptions_total` | protocol exceptions, by `code` |
@@ -255,29 +257,14 @@ because anything with a matching id is overwritten.
 
 ## Alerts
 
-Four rule types, evaluated server-side:
-
-| Rule | Fires when | Evaluated |
-|---|---|---|
-| 📉 Branch silent | nothing under a path for N seconds | every 15 s |
-| 🔇 Topic silent | a specific topic stops | every 15 s |
-| 🆕 New topic | a topic appears (optionally under a prefix) | every 15 s |
-| 📈 Value threshold | a numeric value crosses a limit | **per message**, as it arrives |
-
-Value-threshold rules watch a topic's payload — or a dot-path `field` inside
-a JSON payload (`motor.temp`) — against `>`, `>=`, `<`, `<=`, `==`, `!=`,
-with two anti-flap controls:
-
-- **Sustain** — the condition must hold continuously for `sustainMs` before
-  the rule fires (one spiky sample is not an incident).
-- **Clear value** — hysteresis: a `> 90` rule with clear value `85` fires at
-  90 but only resolves back below 85, so a signal hovering at the threshold
-  cannot flap.
-
-Rules fire on transitions (firing → resolved) and can POST each event to a
-webhook (5 s timeout). Webhook delivery failures are counted and the last
-error is shown with the rules — a dead webhook is visible, not silent. Recent
-events show in **Settings → Alert rules**. Each rule shows the engine's own state: *Idle*, *Breached* (the condition holds but `sustainMs` has not elapsed; a countdown shows the time left), *Firing*, *Disabled* or *Broken* (it references a broker that no longer exists), plus the current value, when the state began, the last transition and webhook health. `GET /api/alerts/rules` returns it as `state` on every rule (never the webhook URL for a viewer), `GET /api/alerts/events?ruleId=` returns one rule's recent events, and changes stream as `alert-state` on the socket.
+Alert rules, active alarms (with acknowledgement) and the durable alarm history are on the
+**Alerts** page; the full reference is **[Alerts](Alerts)**. In short: rules have a severity
+(info, warning, critical); value rules have a sustain time and a clear value against flapping; firing
+alarms can be acknowledged with a note (who and when are recorded; an acknowledgement never silences
+an alarm and ends when it clears); every event is kept in `alerts.jsonl` in the data directory (two
+size-capped segments, `MANIFOLD_ALERT_HISTORY_MAX_BYTES`, default 8 MiB), and alarms that were active
+when the server stopped are closed as *Ended by restart* and re-fire from live data if the condition
+still holds.
 
 ## Broker health in operation
 

@@ -186,7 +186,7 @@ test('an alert rule shows Breached with a countdown inside its sustain window, t
   const created = await api.post('/api/alerts/rules', { name, type: 'value-threshold', brokerId: 'e2e-broker', topic: 'plant/line2/count', field: 'value', op: '>', value: 0, sustainMs: 9000 });
   expect(created.status).toBe(201);
   try {
-    await page.goto('/settings?tab=alerts');
+    await page.goto('/alerts?tab=rules');
     const row = page.getByRole('row', { name: new RegExp(name) });
     await expect(row.getByText('Breached', { exact: true })).toBeVisible({ timeout: 20_000 });
     const countdown = row.getByTestId('alert-countdown');

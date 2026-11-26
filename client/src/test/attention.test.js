@@ -30,23 +30,26 @@ describe('Overview: needs attention', () => {
     expect(growing[1].detail).toContain('30 points pending and growing');
   });
 
-  it('alert rules firing, breached and broken link to the alert rules', () => {
+  it('alert rules firing and breached link to their alarm on the Alerts page; broken ones to the rules', () => {
     const items = engineAttention({
       alertRules: [
-        { id: 'a1', name: 'Hot tank', state: { state: 'firing', topic: 'plant/t', value: 99 } },
-        { id: 'a2', name: 'Warm', state: { state: 'breached', value: 70, remainingMs: 4200 } },
-        { id: 'a3', name: 'Lost broker', state: { state: 'broken', broken: [{ kind: 'broker', id: 'b9', field: 'brokerId' }] } }
+        { id: 'a1', name: 'Hot tank', type: 'value-threshold', state: { state: 'firing', topic: 'plant/t', value: 99, unacknowledged: 1 } },
+        { id: 'a2', name: 'Warm', type: 'value-threshold', state: { state: 'breached', topic: 'plant/w', value: 70, remainingMs: 4200 } },
+        { id: 'a3', name: 'Lost broker', state: { state: 'broken', broken: [{ kind: 'broker', id: 'b9', field: 'brokerId' }] } },
+        { id: 'a4', name: 'Quiet line', type: 'branch-silent', state: { state: 'firing', unacknowledged: 0 } }
       ],
       broken: [{ type: 'alert rule', id: 'a3', name: 'Lost broker', missing: [{ kind: 'broker', id: 'b9' }] }]
     });
     expect(items.map((i) => [i.what, i.tone, i.to])).toEqual([
-      ['Alert Hot tank', 'bad', '/settings?tab=alerts'],
-      ['Alert Warm', 'warn', '/settings?tab=alerts'],
-      ['Alert Lost broker', 'bad', '/settings?tab=alerts']
+      ['Alert Hot tank', 'bad', '/alerts?alarm=a1%7Cplant%2Ft'],
+      ['Alert Warm', 'warn', '/alerts?alarm=a2%7Cplant%2Fw'],
+      ['Alert Lost broker', 'bad', '/alerts?tab=rules'],
+      ['Alert Quiet line', 'bad', '/alerts?alarm=a4%7C']
     ]);
     expect(items[0].detail).toBe('Firing on plant/t · value 99');
     expect(items[1].detail).toContain('fires in 5 s');
     expect(items[2].detail).toBe('Broken reference: broker b9 no longer exists');
+    expect(items[3].detail).toBe('Firing · acknowledged');
   });
 
   it('mappings that do not publish, with the reason; disabled and waiting ones are not problems', () => {

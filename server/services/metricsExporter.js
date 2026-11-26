@@ -115,6 +115,35 @@ function render(services) {
   gauge('manifold_alert_events', 'Alert events in the history ring');
   out += line('manifold_alert_events', null, alerts?.history?.length ?? 0);
 
+  // Active alarms by state and severity (every combination is present, zero included, so alert rules on
+  // these series never see "no data"). Unacknowledged = firing and not acknowledged yet.
+  const am = alerts?.getMetrics?.();
+  if (am) {
+    gauge('manifold_alerts_active', 'Active alarms by state and severity');
+    gauge('manifold_alerts_unacknowledged', 'Firing alarms nobody has acknowledged, by severity');
+    let activeLines = '';
+    let unackLines = '';
+    for (const severity of ['info', 'warning', 'critical']) {
+      for (const state of ['firing', 'breached']) {
+        const n = (am.active[`${state}|${severity}|true`] || 0) + (am.active[`${state}|${severity}|false`] || 0);
+        activeLines += line('manifold_alerts_active', { state, severity }, n);
+      }
+      unackLines += line('manifold_alerts_unacknowledged', { severity }, am.active[`firing|${severity}|false`] || 0);
+    }
+    out = out.replace('# HELP manifold_alerts_unacknowledged', `${activeLines}# HELP manifold_alerts_unacknowledged`) + unackLines;
+    counter('manifold_alert_transitions_total', 'Alert events since start, by state and severity');
+    for (const [k, n] of Object.entries(am.transitions)) {
+      const [state, severity] = k.split('|');
+      out += line('manifold_alert_transitions_total', { state, severity }, n);
+    }
+    if (am.journal) {
+      gauge('manifold_alert_history_bytes', 'Size of the durable alert history on disk (both segments)');
+      out += line('manifold_alert_history_bytes', null, am.journal.bytes);
+      counter('manifold_alert_history_write_errors_total', 'Failed writes to the alert history file');
+      out += line('manifold_alert_history_write_errors_total', null, am.journal.writeErrors);
+    }
+  }
+
   counter('manifold_binding_published_total', 'Tag binding publishes');
   counter('manifold_binding_suppressed_total', 'Tag binding samples suppressed by report-by-exception');
   counter('manifold_binding_errors_total', 'Tag binding publish errors');

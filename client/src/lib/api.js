@@ -66,6 +66,23 @@ async function request(path, options = {}) {
   return body;
 }
 
+// GET a text (CSV) body with the bearer token, so an authenticated server can still be exported from.
+async function requestText(path) {
+  const token = getAuthToken();
+  const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  const text = await res.text();
+  if (!res.ok) {
+    let raw = `Request failed (${res.status})`;
+    try {
+      raw = JSON.parse(text).error || raw;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(humanizeError(raw).summary);
+  }
+  return text;
+}
+
 // Fetch the Prometheus /metrics exposition as raw text (it lives outside /api
 // and stays token-optional for scrapers; we attach the token anyway if present).
 async function metricsText() {
@@ -194,6 +211,10 @@ export const api = {
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   alertEvents: (limit = 200, ruleId = '') => request(`/api/alerts/events?limit=${limit}${ruleId ? `&ruleId=${encodeURIComponent(ruleId)}` : ''}`),
+  activeAlarms: () => request('/api/alerts/active'),
+  acknowledgeAlarm: (body) => request('/api/alerts/ack', { method: 'POST', body: JSON.stringify(body) }),
+  alertHistory: (query) => request(`/api/alerts/history?${query}`),
+  alertHistoryCsv: (query) => requestText(`/api/alerts/history?${query}`),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),

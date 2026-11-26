@@ -23,6 +23,7 @@
 | 🗺️ | **[Mapping to the UNS](Mapping-to-the-UNS)** | The mapping editor section by section, selecting tags by pick or by rule, per-tag settings, context, exact payloads from worked examples, quality, `_status` and `_meta`, deadband and heartbeat, profile mappings, preview, the direct historian target |
 | ✅ | **[Verifying on real hardware](Verifying-on-Real-Hardware)** | The ordered checklist for an engineer with a real Modbus, S7 or EtherNet/IP device or a Timebase historian |
 | 🏷️ | **[Tags and Sparkplug](Tags-and-Sparkplug)** | Browse tags, publish them into the UNS, run a Sparkplug primary host |
+| 🔔 | **[Alerts](Alerts)** | Alert rules and severities, active alarms and acknowledging them, the durable history and CSV export, what a restart does |
 | 🛡️ | **[Operations](Operations)** | Fail-closed auth, roles and the viewer experience, session switching, the egress guard and its limits, audit, profile durability, the Health page and every metric, config as code, alerts, upgrade notes |
 | 🩺 | **[Troubleshooting](Troubleshooting)** | Symptom → cause → fix, including devices, the mapping editor, canvases and themes |
 

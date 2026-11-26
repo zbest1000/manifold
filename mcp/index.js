@@ -843,17 +843,24 @@ server.tool(
 
 server.tool(
   'alert_rule_save',
-  'Create or update an alert rule (changes server state). Types: branch-silent (no traffic under path), topic-silent (a specific topic goes quiet; requires topic), new-topic (new topic appears under prefix). Optional webhookUrl is POSTed on firing.',
+  'Create or update an alert rule (changes server state). Types: branch-silent (no traffic under path for thresholdMs), topic-silent (a specific topic goes quiet; requires topic), new-topic (new topic appears under prefix), value-threshold (a numeric payload or dot-path field crosses value per op; requires topic, which may be an MQTT filter with + and #). severity is info, warning (default) or critical. For value-threshold, sustainMs is how long the condition must hold before it fires and clearValue the hysteresis level it must return past to resolve. Optional webhookUrl is POSTed on firing and resolving. To update, pass the rule id and the rev you read; a stale rev is refused with 409.',
   {
     id: z.string().optional().describe('Rule id to update; omit to create.'),
+    rev: z.number().optional().describe('The rev of the rule as read; refused (409) if it changed since.'),
     name: z.string().optional(),
-    type: z.enum(['branch-silent', 'topic-silent', 'new-topic']),
+    type: z.enum(['branch-silent', 'topic-silent', 'new-topic', 'value-threshold']),
     brokerId: z.string(),
+    severity: z.enum(['info', 'warning', 'critical']).optional().describe('Default warning.'),
     path: z.string().optional().describe('UNS branch path for branch-silent rules.'),
-    topic: z.string().optional().describe('Exact topic for topic-silent rules (required for that type).'),
+    topic: z.string().optional().describe('Exact topic for topic-silent rules; topic or +/# filter for value-threshold rules.'),
     prefix: z.string().optional().describe('Topic prefix for new-topic rules.'),
     thresholdMs: z.number().optional().describe('Silence threshold in ms (default 60000).'),
-    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires.'),
+    field: z.string().optional().describe('value-threshold: dot-path into a JSON payload (omit for a plain numeric payload).'),
+    op: z.enum(['>', '>=', '<', '<=', '==', '!=']).optional().describe('value-threshold: comparison.'),
+    value: z.number().optional().describe('value-threshold: the limit.'),
+    sustainMs: z.number().optional().describe('value-threshold: ms the condition must hold before firing (default 0).'),
+    clearValue: z.number().optional().describe('value-threshold: resolve only once the value is back past this level.'),
+    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires or resolves.'),
     enabled: z.boolean().optional().describe('Default true.')
   },
   async (args) => {
@@ -880,11 +887,48 @@ server.tool(
 
 server.tool(
   'alert_events',
-  'Recent alert firings, newest first.',
+  'Recent alert events (firing, resolved, acknowledged, ended), newest first, from the in-memory ring. For filtering or older events use alert_history.',
   { limit: z.number().optional().describe('Max events (default 200, max 500).') },
   async ({ limit }) => {
     try {
       return ok(await api(`/api/alerts/events${limit ? `?limit=${Number(limit)}` : ''}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'alerts_active',
+  'Alarms active now: every firing rule (per concrete topic for wildcard value rules) and value rules breached but not firing yet, with severity, value, since, and whether and by whom each was acknowledged. Also counts (firing, breached, unacknowledged, unacknowledgedCritical). Read-only.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/alerts/active'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'alert_history',
+  'Durable alert history (kept across server restarts), newest first. Filters: ruleId, state (comma list of firing, resolved, acknowledged, ended, event), severity (comma list), q (text in rule name, topic, detail, person, note), from/to (epoch ms or ISO). Page with the returned nextCursor. Read-only. Acknowledging alarms is left to people in the UI.',
+  {
+    ruleId: z.string().optional(),
+    state: z.string().optional(),
+    severity: z.string().optional(),
+    q: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    cursor: z.number().optional().describe('nextCursor from the previous page.'),
+    limit: z.number().optional().describe('Page size (default 100, max 500).')
+  },
+  async (args) => {
+    try {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(args)) if (v !== undefined && v !== '') qs.set(k, String(v));
+      return ok(await api(`/api/alerts/history?${qs}`));
     } catch (error) {
       return fail(error);
     }

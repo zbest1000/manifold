@@ -17,6 +17,7 @@ const I3xClient = require('./services/i3xClient');
 const ProfileStore = require('./services/profileStore');
 const HistoryStore = require('./services/historyStore');
 const { AlertEngine } = require('./services/alertEngine');
+const { AlertHistory } = require('./services/alertHistory');
 const { PipelineEngine } = require('./services/pipelineEngine');
 const { scanBroken } = require('./services/references');
 const Recorder = require('./services/recorder');
@@ -196,7 +197,9 @@ const discovery = new DiscoveryService(io, { i3x });
 const cesmii = new CesmiiClient();
 const profiles = new ProfileStore();
 const history = new HistoryStore(mqttManager);
-const alerts = new AlertEngine({ io, profiles, mqttManager });
+// Alert history is durable: data/alerts.jsonl (two size-capped segments), reloaded on start.
+const alertJournal = new AlertHistory({ dir: process.env.MANIFOLD_DATA_DIR || path.join(__dirname, 'data') });
+const alerts = new AlertEngine({ io, profiles, mqttManager, journal: alertJournal });
 const outbox = new HistorianOutbox({ profiles });
 const pipelines = new PipelineEngine({ mqttManager, profiles, outbox });
 const recorder = new Recorder({ mqttManager, profiles, outbox });
@@ -266,6 +269,13 @@ if (process.env.MANIFOLD_NO_RESTORE !== '1') {
 }
 history.start();
 alerts.start();
+if (alerts.restored?.loaded) {
+  console.log(
+    `alerts: restored ${alerts.restored.loaded} history event(s)` +
+      (alerts.restored.ended ? `, ${alerts.restored.ended} alarm(s) active at shutdown ended by restart` : '') +
+      (alerts.restored.tornLines ? `, skipped ${alerts.restored.tornLines} damaged line(s)` : '')
+  );
+}
 outbox.start();
 pipelines.start();
 recorder.start();
@@ -522,6 +532,7 @@ const shutdown = async () => {
   history.snapshot({ sync: true }); // final flush before rings are torn down
   history.stop();
   alerts.stop();
+  await alerts.flush().catch(() => {}); // queued history lines reach data/alerts.jsonl
   pipelines.stop();
   recorder.stop();
   await outbox.flush().catch(() => {}); // last chance to deliver; failures spill to disk

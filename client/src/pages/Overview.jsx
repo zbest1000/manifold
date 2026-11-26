@@ -339,7 +339,7 @@ export default function Overview() {
                 tone={bindingErrors ? 'bad' : undefined}
               />
               <Stat
-                to="/settings"
+                to="/alerts?tab=history"
                 label="Alert events"
                 value={recentAlerts >= 50 ? '50+' : fmt(recentAlerts)}
                 sub={`${alerts?.rules ?? 0} ${alerts?.rules === 1 ? 'rule' : 'rules'} configured`}

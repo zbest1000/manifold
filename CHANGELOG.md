@@ -30,9 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toast, the Subscription column and the details). `mqtt_list_brokers` carries `posture`, `canaryState` and
   `intake`; new MCP tool `mqtt_broker_presets`.
 
-### Changed
-
-- The `$SYS/#` subscription no longer reports a refusal as an error (public and managed brokers commonly refuse it).
 - **HTTP/JSON and MTConnect device drivers (experimental, read-only).** HTTP/JSON polls a device's REST endpoints with
   GET only and picks values with a small JSONPath (`$.a.b[0]`, `['key']`, `[?(@.id=="x")]`), one request per path per
   cycle, ETag support, clear Bad-quality reasons (HTTP status, timeout, not JSON, no match, too large), basic, bearer or
@@ -43,6 +40,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming. Both can be browsed (**Import from device** / **Import from agent**) and tested from the device form.
   Drivers may now report a per-sample source timestamp, and a descriptor field of type `password` is stored, masked
   and kept on edit.
+- **Alerts page** (Observe → Alerts): active alarms, their history, and the alert rules in one place.
+  - **Active**: everything firing now (one alarm per concrete topic for wildcard value rules) and value rules
+    breached inside their sustain time, sortable, with severity and a duration that ticks. **Acknowledge** one
+    alarm or several at once, with an optional note; the acknowledgement records who (the token's name, or
+    `operator` on an open server) and when, holds until the alarm clears and never silences a new occurrence.
+    The sidebar item counts unacknowledged critical alarms. Phone layout uses cards.
+  - **History**: every firing, resolution, acknowledgement and end, kept across restarts in
+    `data/alerts.jsonl` (two size-capped segments, `MANIFOLD_ALERT_HISTORY_MAX_BYTES`, default 8 MiB; written in
+    the background; a line torn by a crash is skipped). Filters for text, rule, state, severity and time range,
+    paged, CSV export of every match.
+  - **Rules** moved here from Settings (Settings links to them; `/settings?tab=alerts` redirects). Rules gain a
+    **severity** (info, warning, critical).
+  - The Overview's Needs attention links each firing or breached rule to its alarm.
+- `GET /api/alerts/active`, `POST /api/alerts/ack`, `GET /api/alerts/history` (cursor, filters, `format=csv`).
+  MCP: `alerts_active` and `alert_history`; `alert_rule_save` takes `severity` and value-threshold rules.
+- Prometheus: `manifold_alerts_active{state,severity}`, `manifold_alerts_unacknowledged{severity}`,
+  `manifold_alert_transitions_total{state,severity}`, `manifold_alert_history_bytes`,
+  `manifold_alert_history_write_errors_total`.
+
+### Changed
+
+- The `$SYS/#` subscription no longer reports a refusal as an error (public and managed brokers commonly refuse it).
+
+### Changed
+
+- **Alarms active when the server stops are closed as "Ended by restart"** on the next start, and fire again from
+  live data if the condition still holds (the engine re-derives state from live data; nothing is restored as
+  firing). Deleting or disabling a rule ends its active alarms immediately instead of leaving them open.
+- Acknowledgements and restart bookkeeping are not sent to rule webhooks; firings and resolutions still are.
 
 ### Fixed
 

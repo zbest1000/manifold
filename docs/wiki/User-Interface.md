@@ -69,8 +69,8 @@ There are no other global shortcuts; the list above was collected from the code.
 ## Accessibility: what is tested, and what is not
 
 **Tested automatically, on every CI run.** The Playwright suite loads **every route** (`/`, `/topics`, `/uns`,
-`/flows`, `/trends`, `/pipelines`, `/tags`, `/brokers`, `/devices`, `/opcua`, `/cesmii`, `/i3x`, `/discovery`,
-`/system`, `/settings`, plus Flows' consumers view) in the **dark and the light theme**, at **1440 px** and at
+`/flows`, `/trends`, `/alerts`, `/pipelines`, `/tags`, `/brokers`, `/devices`, `/opcua`, `/cesmii`, `/i3x`, `/discovery`,
+`/system`, `/settings`, plus Flows' consumers view and the Alerts page's History and Rules tabs and its Active tab with a firing alarm) in the **dark and the light theme**, at **1440 px** and at
 **390 px (touch)**, and fails on:
 
 - any axe-core violation of impact **serious or critical** (WCAG 2.0 and 2.1 A and AA rules and axe best
@@ -103,7 +103,9 @@ the Tree views and tables, but drawing a graph is not accessible in the way a ta
 | `/tags?view=mappings` | the Mappings tab |
 | `/devices?tab=profiles` | the Profiles tab |
 | `/pipelines?tab=<routes\|models\|historians\|recorder\|contracts>` | a Pipelines tab |
-| `/settings?tab=<general\|alerts\|configuration\|audit>` | a Settings tab |
+| `/alerts?tab=<active\|history\|rules>` | an Alerts tab |
+| `/alerts?alarm=<ruleId>\|<topic>` | the Active tab with that alarm highlighted (the Overview's Needs attention links use it) |
+| `/settings?tab=<general\|configuration\|audit>` | a Settings tab (`?tab=alerts`, the old place of the alert rules, opens `/alerts?tab=rules`) |
 
 **Show in UNS** on a mapping row and **Open in Topics** in the UNS panel use these links.
 

@@ -34,11 +34,25 @@
  * ring (GET /api/alerts/events), and optionally POSTed to the rule's
  * `webhookUrl` (5s timeout, failures logged and swallowed — a dead webhook
  * must never break evaluation).
+ *
+ * Alarms. A firing rule (per concrete topic, for wildcard value rules) is an
+ * active alarm (GET /api/alerts/active). Every rule has a `severity` (info |
+ * warning | critical, default warning). An operator can acknowledge a firing
+ * alarm (POST /api/alerts/ack): the acknowledgement records who and when (and
+ * an optional note), holds until the alarm clears, and is dropped when it
+ * clears, so the next firing is a new, unacknowledged occurrence.
+ * Acknowledging never suppresses anything: a later firing always fires.
+ *
+ * Durable history. With a `journal` (services/alertHistory.js) every event,
+ * acknowledgements included, is appended to data/alerts.jsonl, and the ring is
+ * reloaded from it on start, so GET /api/alerts/history survives restarts.
  */
 
 const { matchParts, compiledView } = require('./mqttMatch');
 const { guardedFetch } = require('./egressGuard');
 const { brokenRefs } = require('./references');
+const { stripUrlCredentials } = require('./secrets');
+const { parseQuery, queryEvents } = require('./alertHistory');
 
 const EVAL_MS = 15_000;
 const HISTORY_MAX = 500;
@@ -54,6 +68,12 @@ const guardedWebhookFetch = (url, opts) => guardedFetch(url, opts, WEBHOOK_TIMEO
 const VALUE_STATE_MAX_TOPICS = 5000;
 
 const RULE_TYPES = ['branch-silent', 'topic-silent', 'new-topic', 'value-threshold'];
+const SEVERITIES = ['info', 'warning', 'critical'];
+const DEFAULT_SEVERITY = 'warning';
+const severityOf = (rule) => (SEVERITIES.includes(rule?.severity) ? rule.severity : DEFAULT_SEVERITY);
+const ACK_NOTE_MAX = 500;
+// Statuses that reach a rule's webhook. Acknowledgements and restart bookkeeping stay in the history.
+const WEBHOOK_STATUSES = new Set(['firing', 'resolved', 'event']);
 
 const VALUE_OPS = ['>', '>=', '<', '<=', '==', '!='];
 const OPS = {
@@ -87,8 +107,13 @@ function extractValue(payload, fieldParts) {
 }
 
 class AlertEngine {
-  constructor({ io, profiles, mqttManager, fetchImpl = guardedWebhookFetch, intervalMs = EVAL_MS }) {
+  constructor({ io, profiles, mqttManager, fetchImpl = guardedWebhookFetch, intervalMs = EVAL_MS, journal = null }) {
     this.io = io;
+    this.journal = journal; // AlertHistory or null (in-memory only)
+    this.seq = 0; // monotonic event number, continued from the journal on start
+    this.transitions = new Map(); // `${status}|${severity}` -> count since start (Prometheus)
+    this.knownRules = new Map(); // ruleId -> last seen rule, to close alarms of rules that were deleted
+    this.restored = null; // { loaded, ended, tornLines } after start() read the journal
     this.profiles = profiles;
     this.manager = mqttManager;
     this.fetchImpl = fetchImpl;
@@ -120,6 +145,7 @@ class AlertEngine {
   }
 
   start() {
+    if (this.journal && !this.journal.loaded) this._restore();
     // Value rules ride the live message tap; silence rules keep the interval.
     if (!this.tapping && this.manager?.on) {
       this.manager.on('message', this.onMessage);
@@ -128,6 +154,50 @@ class AlertEngine {
     if (this.timer) return;
     this.timer = setInterval(() => this.evaluate(), this.intervalMs);
     this.timer.unref?.();
+  }
+
+  /**
+   * Read the durable history back in, then settle alarms that were still firing when the server stopped.
+   *
+   * They are CLOSED with an explicit 'ended' event ("ended by restart"), not restored. The engine keeps no
+   * state across a restart: it starts with every rule idle and derives state again from live data — silence
+   * rules on their first evaluation pass (from the topics' last activity), value rules from the next message
+   * per topic (a retained value arrives as soon as the broker reconnects). Restoring 'firing' on top of that
+   * would be wrong both ways: a condition that still holds would fire a second time with no resolve in
+   * between (a duplicate occurrence), and one that cleared while the server was down, or whose topic never
+   * publishes again, would stay 'firing' for ever with nothing to resolve it. Closing the old occurrence
+   * and letting live data re-fire it keeps the record honest; the re-fired alarm is a new, unacknowledged
+   * occurrence (an acknowledgement belongs to the occurrence it was given for).
+   */
+  _restore(now = Date.now()) {
+    let events = [];
+    try {
+      events = this.journal.load();
+    } catch (error) {
+      console.warn(`alertEngine: could not read alert history: ${error.message}`);
+    }
+    this.seq = Math.max(this.seq, this.journal.lastSeq());
+    this.history = events.slice(-HISTORY_MAX);
+    const open = new Map(); // alarm key -> its firing event
+    for (const e of events) {
+      if (e.status === 'firing') open.set(alarmKey(e.ruleId, e.topic), e);
+      else if (e.status === 'resolved' || e.status === 'ended') open.delete(alarmKey(e.ruleId, e.topic));
+    }
+    const rules = new Map((this.profiles?.alertRules() || []).map((r) => [r.id, r]));
+    for (const e of open.values()) {
+      const rule = rules.get(e.ruleId) || { id: e.ruleId, name: e.ruleName, type: e.type, brokerId: e.brokerId, severity: e.severity };
+      this._emit(
+        rule,
+        'ended',
+        {
+          ...(e.topic ? { topic: e.topic } : {}),
+          since: e.ts,
+          detail: 'Ended by restart: the server stopped while this alarm was active. It fires again if the condition still holds.'
+        },
+        { webhook: false, now }
+      );
+    }
+    this.restored = { loaded: events.length, ended: open.size, tornLines: this.journal.stats.tornLines };
   }
 
   stop() {
@@ -142,14 +212,7 @@ class AlertEngine {
 
   /** One evaluation pass over all rules. Exposed for tests. */
   evaluate(now = Date.now()) {
-    const rules = this.profiles?.alertRules() || [];
-    const liveIds = new Set(rules.map((r) => r.id));
-    for (const id of this.state.keys()) if (!liveIds.has(id)) this.state.delete(id);
-    for (const [id, byTopic] of this.valueState) {
-      if (liveIds.has(id)) continue;
-      for (const s of byTopic.values()) this._clearTimer(s);
-      this.valueState.delete(id);
-    }
+    const rules = this.reconcileRules();
 
     for (const rule of rules) {
       try {
@@ -161,6 +224,42 @@ class AlertEngine {
         console.warn(`alertEngine: rule ${rule.id} (${rule.name || rule.type}): ${error.message}`);
       }
     }
+  }
+
+  /**
+   * Drop the state of rules that were deleted, and of rules that were disabled, closing their active alarms
+   * with an 'ended' event so the history never keeps an alarm open that nothing will resolve. Runs on every
+   * evaluation pass and right after a rule is saved or deleted. Returns the current rules.
+   */
+  reconcileRules() {
+    const rules = this.profiles?.alertRules() || [];
+    const live = new Map(rules.map((r) => [r.id, r]));
+    const close = (rule, topic, s, why) => {
+      if (!s?.firing) return;
+      s.firing = false;
+      s.ack = null;
+      this._emit(rule, 'ended', { ...(topic ? { topic } : {}), since: s.since, detail: why }, { webhook: false });
+    };
+    for (const [id, s] of this.state) {
+      const rule = live.get(id);
+      if (rule && rule.enabled !== false) continue;
+      const known = rule || this.knownRules.get(id);
+      if (known) close(known, null, s, rule ? 'Rule disabled while the alarm was active' : 'Rule deleted while the alarm was active');
+      if (!rule) this.state.delete(id);
+    }
+    for (const [id, byTopic] of this.valueState) {
+      const rule = live.get(id);
+      if (rule && rule.enabled !== false) continue;
+      const known = rule || this.knownRules.get(id);
+      for (const [topic, s] of byTopic) {
+        this._clearTimer(s);
+        if (known) close(known, topic, s, rule ? 'Rule disabled while the alarm was active' : 'Rule deleted while the alarm was active');
+      }
+      this.valueState.delete(id);
+      if (rule) this._pushState(rule);
+    }
+    this.knownRules = live;
+    return rules;
   }
 
   _ruleState(rule) {
@@ -199,6 +298,7 @@ class AlertEngine {
         if (victim?.firing) {
           this._emit(rule, 'resolved', {
             topic: oldest,
+            since: victim.since,
             detail: `stopped tracking ${oldest}: rule exceeded ${VALUE_STATE_MAX_TOPICS} concurrent topics`
           });
           this._pushState(rule);
@@ -229,6 +329,7 @@ class AlertEngine {
     if (shouldFire && !s.firing) {
       s.firing = true;
       s.since = now;
+      s.ack = null;
       this._emit(rule, 'firing', {
         silentForMs: last > 0 ? silentFor : null,
         lastActivity: last || null,
@@ -237,7 +338,8 @@ class AlertEngine {
       this._pushState(rule);
     } else if (!shouldFire && s.firing) {
       s.firing = false;
-      this._emit(rule, 'resolved', { lastActivity: last, detail: 'Data is flowing again' });
+      s.ack = null;
+      this._emit(rule, 'resolved', { lastActivity: last, since: s.since, detail: 'Data is flowing again' });
       this._pushState(rule);
     }
   }
@@ -329,9 +431,11 @@ class AlertEngine {
       this._clearTimer(s);
       if (s.firing && this._isCleared(rule, v)) {
         s.firing = false;
+        s.ack = null;
         this._emit(rule, 'resolved', {
           topic: msg.topic,
           value: v,
+          since: s.since,
           detail: `${label} = ${v} back within limit on ${msg.topic}`
         });
         this._pushState(rule);
@@ -346,6 +450,7 @@ class AlertEngine {
     const sustainMs = Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0;
     s.firing = true;
     s.since = now;
+    s.ack = null;
     this._emit(rule, 'firing', {
       topic,
       value: v,
@@ -418,7 +523,9 @@ class AlertEngine {
       topic: null,
       remainingMs: null,
       sustainMs: Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0,
+      severity: severityOf(rule),
       firingTopics: 0,
+      unacknowledged: 0,
       lastTransition: last ? { status: last.status, ts: last.ts } : null,
       webhook: {
         configured: Boolean(rule.webhookUrl),
@@ -446,6 +553,7 @@ class AlertEngine {
       for (const [topic, s] of byTopic || []) {
         if (s.firing) {
           out.firingTopics++;
+          if (!s.ack) out.unacknowledged++;
           if (!firing || s.since < firing.s.since) firing = { topic, s };
         } else if (s.breachedSince && (!breached || s.breachedSince < breached.s.breachedSince)) breached = { topic, s };
         if (s.lastValue !== null) latest = { topic, s };
@@ -466,7 +574,7 @@ class AlertEngine {
       return out;
     }
     const s = this.state.get(rule.id);
-    if (s?.firing) Object.assign(out, { state: 'firing', since: s.since });
+    if (s?.firing) Object.assign(out, { state: 'firing', since: s.since, unacknowledged: s.ack ? 0 : 1 });
     return out;
   }
 
@@ -484,20 +592,26 @@ class AlertEngine {
     return true; // ==/!= have no meaningful deadband
   }
 
-  _emit(rule, status, extra = {}) {
+  _emit(rule, status, extra = {}, { webhook = true, now = Date.now() } = {}) {
+    const severity = severityOf(rule);
     const evt = {
+      seq: ++this.seq,
       ruleId: rule.id,
       ruleName: rule.name || rule.type,
       type: rule.type,
       brokerId: rule.brokerId,
-      status, // 'firing' | 'resolved' | 'event'
-      ts: Date.now(),
+      severity,
+      status, // 'firing' | 'resolved' | 'event' | 'acknowledged' | 'ended'
+      ts: now,
       ...extra
     };
     this.history.push(evt);
     if (this.history.length > HISTORY_MAX) this.history.splice(0, this.history.length - HISTORY_MAX);
+    this.journal?.append(evt);
+    const tk = `${status}|${severity}`;
+    this.transitions.set(tk, (this.transitions.get(tk) || 0) + 1);
     this.io?.emit('alert', evt);
-    if (rule.webhookUrl && typeof this.fetchImpl === 'function') {
+    if (webhook && WEBHOOK_STATUSES.has(status) && rule.webhookUrl && typeof this.fetchImpl === 'function') {
       const wh = this.webhookStats.get(rule.id) || { failures: 0, lastError: null, lastAttemptAt: null, lastOkAt: null };
       this.webhookStats.set(rule.id, wh);
       wh.lastAttemptAt = Date.now();
@@ -533,6 +647,111 @@ class AlertEngine {
     const list = ruleId ? this.history.filter((e) => e.ruleId === ruleId) : this.history;
     return list.slice(-limit).reverse();
   }
+
+  /** One page of the durable history (the ring when there is no journal). See alertHistory.queryEvents. */
+  queryHistory(query = {}, opts = {}) {
+    const filters = parseQuery(query, opts);
+    return queryEvents(this.journal ? this.journal.events() : this.history, filters);
+  }
+
+  /** The firing state objects of a rule as [topic|null, state] pairs (value rules: one per topic). */
+  _firingStates(rule) {
+    if (rule.type === 'value-threshold') return [...(this.valueState.get(rule.id) || [])].filter(([, s]) => s.firing);
+    const s = this.state.get(rule.id);
+    return s?.firing ? [[null, s]] : [];
+  }
+
+  /**
+   * Active alarms, oldest first: every firing (rule, topic), plus value rules that are breached and waiting
+   * out their sustain time (state 'breached', with `remainingMs`). Disabled and deleted rules have none.
+   */
+  getActive(now = Date.now()) {
+    const out = [];
+    for (const rule of this.profiles?.alertRules() || []) {
+      if (rule.enabled === false) continue;
+      const base = { ruleId: rule.id, ruleName: rule.name || rule.type, type: rule.type, brokerId: rule.brokerId, severity: severityOf(rule) };
+      if (rule.type === 'value-threshold') {
+        const sustainMs = Number(rule.sustainMs) > 0 ? Number(rule.sustainMs) : 0;
+        const condition = `${rule.field || 'value'} ${rule.op} ${rule.value}`;
+        for (const [topic, s] of this.valueState.get(rule.id) || []) {
+          if (s.firing) {
+            out.push({ ...base, id: alarmKey(rule.id, topic), topic, value: s.lastValue, since: s.since, state: 'firing', condition, acknowledged: Boolean(s.ack), ack: s.ack || null });
+          } else if (s.breachedSince) {
+            out.push({ ...base, id: alarmKey(rule.id, topic), topic, value: s.lastValue, since: s.breachedSince, state: 'breached', condition, remainingMs: Math.max(0, sustainMs - (now - s.breachedSince)), acknowledged: false, ack: null });
+          }
+        }
+      } else {
+        const s = this.state.get(rule.id);
+        if (!s?.firing) continue;
+        const scope = rule.type === 'topic-silent' ? rule.topic : rule.path || '';
+        const threshold = Math.round((Number(rule.thresholdMs) || 60_000) / 1000);
+        out.push({ ...base, id: alarmKey(rule.id, null), topic: scope || null, value: null, since: s.since, state: 'firing', condition: `silent > ${threshold}s`, acknowledged: Boolean(s.ack), ack: s.ack || null });
+      }
+    }
+    return out.sort((a, b) => a.since - b.since);
+  }
+
+  /**
+   * Acknowledge firing alarms: one ({ ruleId, topic }) or every firing alarm of a rule ({ ruleId, all: true }).
+   * `by` is who acknowledged, `note` optional. `since`, when given, is the start of the occurrence the
+   * operator saw: if the alarm cleared and fired again since, the request is refused ('stale') rather than
+   * acknowledging an occurrence nobody has looked at. An alarm that is already acknowledged keeps its first
+   * acknowledgement. Returns { acknowledged: [{ id, ruleId, topic, by, at, note }], already } or
+   * { error: 'not-found' | 'not-firing' | 'stale' }.
+   */
+  acknowledge({ ruleId, topic = null, all = false, by = 'operator', note = null, since = null, now = Date.now() } = {}) {
+    const rule = (this.profiles?.alertRules() || []).find((r) => r.id === ruleId);
+    if (!rule) return { error: 'not-found' };
+    const cleanNote = typeof note === 'string' && note.trim() ? stripUrlCredentials(note.trim()).slice(0, ACK_NOTE_MAX) : null;
+    let targets = this._firingStates(rule);
+    if (!all) {
+      if (rule.type === 'value-threshold') targets = targets.filter(([t]) => t === topic);
+      if (!targets.length) return { error: 'not-firing' };
+      if (since !== null && since !== undefined && since !== '' && Number(since) !== targets[0][1].since) return { error: 'stale' };
+    }
+    const acknowledged = [];
+    let already = 0;
+    for (const [t, s] of targets) {
+      if (s.ack) {
+        already++;
+        continue;
+      }
+      s.ack = { by: String(by || 'operator').slice(0, 120), at: now, note: cleanNote };
+      acknowledged.push({ id: alarmKey(rule.id, t), ruleId: rule.id, topic: t, ...s.ack });
+      this._emit(
+        rule,
+        'acknowledged',
+        { ...(t ? { topic: t } : {}), since: s.since, ackBy: s.ack.by, ...(cleanNote ? { note: cleanNote } : {}), detail: `Acknowledged by ${s.ack.by}${cleanNote ? `: ${cleanNote}` : ''}` },
+        { webhook: false, now }
+      );
+    }
+    if (acknowledged.length) this._pushState(rule);
+    return { acknowledged, already };
+  }
+
+  /** Counts for Prometheus: active alarms by state/severity/acknowledged, transitions, journal health. */
+  getMetrics(now = Date.now()) {
+    const active = {};
+    for (const a of this.getActive(now)) {
+      const k = `${a.state}|${a.severity}|${a.acknowledged}`;
+      active[k] = (active[k] || 0) + 1;
+    }
+    return {
+      active,
+      transitions: Object.fromEntries(this.transitions),
+      journal: this.journal ? { bytes: this.journal.bytes(), ...this.journal.stats } : null
+    };
+  }
+
+  /** Write the queued history to disk (shutdown). */
+  async flush() {
+    await this.journal?.flush();
+  }
 }
 
-module.exports = { AlertEngine, RULE_TYPES, VALUE_OPS };
+/** Identity of one alarm: the rule plus, for value rules, the concrete topic. */
+function alarmKey(ruleId, topic) {
+  return `${ruleId}|${topic || ''}`;
+}
+
+module.exports = { AlertEngine, RULE_TYPES, VALUE_OPS, SEVERITIES, alarmKey };
