@@ -1,5 +1,6 @@
 // Pure helpers for the device tag editor: delimited-text (CSV / spreadsheet TSV)
 // parsing and serialising, and row <-> tag conversion. No React, no DOM.
+import { neutralizeFormula, restoreFormula } from './csvSafe';
 
 /** Columns in the order the table shows them (advanced ones last); also the CSV export order. */
 export const TAG_COLUMNS = [
@@ -89,19 +90,8 @@ export function parseDelimited(text, delimiter = detectDelimiter(text)) {
   return rows.filter((r) => r.some((c) => c.trim() !== ''));
 }
 
-// Spreadsheet formula injection: tag keys and addresses can come from a device's own names or from
-// MQTT topics. A text cell a spreadsheet would run as a formula gets a leading apostrophe on export,
-// and the apostrophe is dropped again on import, so a round trip keeps the value.
-const FORMULA_START = /^[=+\-@\t\r]/;
-export function neutraliseFormula(s) {
-  return FORMULA_START.test(s) && !Number.isFinite(Number(s)) ? `'${s}` : s;
-}
-export function restoreFormula(s) {
-  return s.length > 1 && s[0] === "'" && FORMULA_START.test(s.slice(1)) ? s.slice(1) : s;
-}
-
 function quoteField(v, delimiter) {
-  const s = neutraliseFormula(v === undefined || v === null ? '' : String(v));
+  const s = v === undefined || v === null ? '' : String(neutralizeFormula(v));
   return s.includes('"') || s.includes('\n') || s.includes('\r') || s.includes(delimiter) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -123,7 +113,7 @@ function headerMap(cells) {
 }
 
 function coerce(col, raw) {
-  const v = restoreFormula(raw.trim());
+  const v = restoreFormula(raw).trim();
   if (v === '') return undefined;
   if (BOOLEAN.has(col)) return /^(true|yes|y|1|x)$/i.test(v);
   if (NUMERIC.has(col)) {

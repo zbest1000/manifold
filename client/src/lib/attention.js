@@ -70,7 +70,14 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
     const st = r.state;
     const where = st?.topic ? ` on ${st.topic}` : '';
     const value = st && st.value !== undefined && st.value !== null ? ` · value ${st.value}` : '';
-    if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}${st.unacknowledged === 0 ? ' · acknowledged' : ''}`, to: alarmTo(r.id, r.type === 'value-threshold' ? st.topic : null) });
+    if (st?.state === 'firing' && st.firingTopics > 1) {
+      // A wildcard rule firing on several topics (S14): one line for the rule that counts them, and
+      // the Active list (which shows each) as the place to act, rather than one topic that may be
+      // an acknowledged occurrence while another is not.
+      const unack = Number(st.unacknowledged) || 0;
+      const ackText = unack === 0 ? 'all acknowledged' : unack === st.firingTopics ? 'none acknowledged' : `${fmt(unack)} unacknowledged`;
+      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing on ${fmt(st.firingTopics)} topics · ${ackText}`, to: '/alerts' });
+    } else if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}${st.unacknowledged === 0 ? ' · acknowledged' : ''}`, to: alarmTo(r.id, r.type === 'value-threshold' ? st.topic : null) });
     else if (st?.state === 'breached') items.push({ key: `a-${r.id}`, tone: 'warn', what: `Alert ${r.name || r.id}`, detail: `Breached${where}${value}${st.remainingMs ? `, fires in ${Math.ceil(st.remainingMs / 1000)} s if it lasts` : ''}`, to: alarmTo(r.id, st.topic) });
     else if (st?.state === 'broken') {
       listed.add(`alert rule:${r.id}`);

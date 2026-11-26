@@ -8,7 +8,7 @@ import useIngestRate from '@/graph/useIngestRate';
 import { socket } from '@/lib/socket';
 import { api } from '@/lib/api';
 import { deviceBadge } from '@/lib/deviceStatus';
-import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf } from '@/components/ui';
+import { ButtonLink, Banner, Panel, Stat, StatGroup, StatusDot, StatusText, Skeleton, Timestamp, Path, Table, THead, Th, Tr, Td, PageBody, toneOf, sentenceCase } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import { engineAttention, recordPending } from '@/lib/attention';
 import { canaryAttention } from '@/lib/brokerHealth';
@@ -393,15 +393,15 @@ const RANK = { bad: 0, warn: 1, neutral: 2, info: 3, good: 4 };
 
 function ConnectionsPanel({ brokers, opcua, deviceRows }) {
   const rows = [
-    ...brokers.map((b) => ({ key: `b-${b.id}`, name: b.name, kind: 'MQTT', endpoint: `${b.host}:${b.port}`, status: b.status, tone: brokerTone(b), label: b.status })),
-    ...opcua.map((c) => ({ key: `o-${c.id}`, name: c.name, kind: 'OPC UA', endpoint: c.endpointUrl, status: c.status, label: c.status })),
+    ...brokers.map((b) => ({ key: `b-${b.id}`, name: b.name, kind: 'MQTT', endpoint: `${b.host}:${b.port}`, status: b.status, tone: brokerTone(b), label: sentenceCase(b.status) })),
+    ...opcua.map((c) => ({ key: `o-${c.id}`, name: c.name, kind: 'OPC UA', endpoint: c.endpointUrl, status: c.status, label: sentenceCase(c.status) })),
     ...deviceRows.map(({ d, badge }) => ({
       key: `d-${d.id}`,
       name: d.name,
       kind: d.protocol,
       endpoint: `${d.host}:${d.port}`,
       status: badge.status,
-      label: badge.label.toLowerCase()
+      label: badge.label
     }))
   ].sort((a, b) => RANK[a.tone || toneOf(a.status)] - RANK[b.tone || toneOf(b.status)] || a.name.localeCompare(b.name));
 

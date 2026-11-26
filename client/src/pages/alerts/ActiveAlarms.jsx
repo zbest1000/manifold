@@ -16,7 +16,7 @@ function AckLine({ ack }) {
   return (
     <span className="block text-xs text-subtle">
       by <span className="text-fg">{ack.by}</span> <Timestamp value={ack.at} />
-      {ack.note && <span className="block max-w-[22rem] truncate" title={ack.note}>“{ack.note}”</span>}
+      {ack.note && <span className="block max-w-[13rem] truncate" title={ack.note}>“{ack.note}”</span>}
     </span>
   );
 }
@@ -162,7 +162,7 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
                 const [key, dir] = e.target.value.split(':');
                 setSort(key ? { key, dir } : null);
               }}
-              wrapperClassName="md:hidden"
+              wrapperClassName="xl:hidden"
               options={SORT_OPTIONS}
             />
             <Button
@@ -194,7 +194,8 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
       {rows.length > 0 && (
         <>
           {/* Desktop: a sortable table. */}
-          <div className="hidden md:block">
+          {/* The table from 1280 px (on a tablet with the sidebar it scrolled Acknowledge out of view); cards below. */}
+          <div className="hidden xl:block">
             <TableSort sort={sort} onSort={(k) => setSort((s) => nextSort(s, k))}>
               <Table caption="Active alarms" className="min-w-[56rem]">
                 <THead>
@@ -214,7 +215,7 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
                   <Th sortKey="value" align="right">
                     Value
                   </Th>
-                  <Th sortKey="since">Active for</Th>
+                  <Th sortKey="since" className="hidden min-[1400px]:table-cell">Active for</Th>
                   <Th sortKey="state">State</Th>
                   <Th srOnly align="right">
                     Actions
@@ -238,12 +239,12 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
                       <Td>
                         <Severity value={a.severity} />
                       </Td>
-                      <Td header>
+                      <Td header className="min-w-[12rem]">
                         <span className="block font-medium text-fg">{a.ruleName}</span>
                         <span className="mono block text-xs text-subtle">{a.condition}</span>
                       </Td>
-                      <Td className="max-w-[18rem] text-xs">
-                        <span className="mono block truncate text-fg" title={a.topic || ''}>
+                      <Td className="text-xs">
+                        <span className="mono block max-w-[14rem] truncate text-fg" title={a.topic || ''}>
                           {a.topic || '—'}
                         </span>
                         <span className="block text-subtle">{brokerName(a.brokerId)}</span>
@@ -251,7 +252,7 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
                       <Td align="right" className="mono tabular-nums">
                         {a.value ?? '—'}
                       </Td>
-                      <Td className="whitespace-nowrap">
+                      <Td className="hidden whitespace-nowrap min-[1400px]:table-cell">
                         <span className="mono tabular-nums text-fg" data-testid="alarm-duration">
                           {formatDuration(serverNow - a.since)}
                         </span>
@@ -273,7 +274,7 @@ export default function ActiveAlarms({ q, highlight, onShowRules }) {
           </div>
 
           {/* Phone: one card per alarm. */}
-          <ul className="space-y-2 md:hidden" aria-label="Active alarms">
+          <ul className="space-y-2 xl:hidden" aria-label="Active alarms">
             {rows.map((a) => (
               <li key={a.id} data-alarm-id={a.id} className={`rounded-lg border bg-panel p-3 ${target?.id === a.id ? 'border-accent' : 'border-line'}`}>
                 <div className="flex items-start gap-2.5">

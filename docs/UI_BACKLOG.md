@@ -38,11 +38,12 @@ page rebuilt, the mapping editor, canvas rendering, the Playwright suite).
   "from server" over empty fields (S6, fixed); at 1440 px the Overview's Connections table and the
   Pipelines Routes table scroll horizontally, cutting off the State column and the row actions (S7, fixed);
   a reopened OPC UA mapping's tag table leaves Unit and Description blank (the details panel has them) (S8).
-- [ ] **Third screenshot pass** (`docs/REVIEW-2026-11.md`, S9 to S17): S9 to S13 are fixed. Open: a
-  wildcard value rule shows as one Overview line naming one topic, possibly an acknowledged one (S14);
-  the IoT over MQTT detection panel fills the first screen when every convention is on and has no
-  collapsed summary (S15); the search boxes show two focus indicators while typing (S16); S7 advanced
-  field labels carry two parenthesised suffixes (S17).
+- [x] **Third screenshot pass** (`docs/REVIEW-2026-11.md`, S9 to S17): all fixed (S14 to S17 in the
+  November client audit).
+- [ ] **Client audit, November 2026** (`docs/REVIEW-2026-11.md`, S18 to S28): S18 to S24 are fixed. Open:
+  wide tables scroll their row actions out of view on tablets and phones (S25, proposal: sticky action
+  column or cards below `lg`); the Overview Type column mixes driver ids and labels (S26); 16 px touch
+  targets on phones (S27); Trends export errors without a token arrive as a downloaded file (S28).
 - [ ] **Verification gaps:** WebGL and 3D were only run on a software renderer; no screen-reader
   or manual keyboard audit beyond what the specs drive.
 

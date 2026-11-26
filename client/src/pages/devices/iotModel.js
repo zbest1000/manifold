@@ -129,3 +129,15 @@ export function iotSummary(devices) {
   const off = devices.filter((d) => d.availability === 'offline').length;
   return `${n} device${n === 1 ? '' : 's'} on ${brokers} broker${brokers === 1 ? '' : 's'}${off ? `, ${off} offline` : ''}`;
 }
+
+/** Conventions switched on (stored config) for a broker of GET /api/iot/brokers: [{ id, label }]. */
+export function enabledConventions(broker) {
+  const conf = broker?.config?.conventions || {};
+  return (broker?.conventions || []).filter((c) => conf[c.id]?.enabled).map((c) => ({ id: c.id, label: c.label }));
+}
+
+/** The broker the Detection panel opens on: one with detection on, else one with suggestions, else the first. */
+export function defaultDetectionBroker(brokers) {
+  if (!brokers?.length) return null;
+  return (brokers.find((b) => enabledConventions(b).length) || brokers.find((b) => b.suggestions?.length) || brokers[0]).id;
+}

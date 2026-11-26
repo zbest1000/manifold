@@ -38,7 +38,7 @@ for (const theme of ['dark', 'light']) {
       await page.getByLabel('Scheme', { exact: true }).selectOption('https');
       await page.getByLabel('Authentication', { exact: true }).selectOption('basic');
       await expect(page.getByLabel('Password')).toBeVisible();
-      await expect(page.getByLabel('Pinned certificate fingerprint (SHA-256)')).toBeVisible();
+      await expect(page.getByLabel(/^Pinned certificate fingerprint \(SHA-256/)).toBeVisible();
       await page.getByRole('button', { name: 'Add tag' }).click();
       const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']).analyze();
       const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.slice(0, 2).map((n) => n.html.slice(0, 120)).join(' | ')}`);

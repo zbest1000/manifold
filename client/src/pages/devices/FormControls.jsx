@@ -48,6 +48,17 @@ const optValue = (o) => (typeof o === 'object' ? o.value : o);
 const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 
 /**
+ * A descriptor field's label with "optional" added: "Port (optional)", and one parenthesis for a label
+ * that already ends in one ("Local TSAP (advanced)" -> "Local TSAP (advanced, optional)").
+ */
+export function descriptorLabel(field) {
+  const base = String(field.label || field.name);
+  if (!field.optional) return base;
+  const m = /^(.*\S)\s*\(([^()]+)\)$/.exec(base);
+  return m ? `${m[1]} (${m[2]}, optional)` : `${base} (optional)`;
+}
+
+/**
  * Renders one protocol-descriptor field (number | select | text | password | boolean).
  * A password field never shows a stored value: the server sends it as null, the input
  * stays empty, and leaving it empty keeps what is stored.
@@ -55,7 +66,7 @@ const optLabel = (o) => (typeof o === 'object' ? o.label ?? o.value : o);
 export function DescriptorField({ field, value, onChange, error, disabled }) {
   if (field.type === 'password') return <SecretField field={field} value={value} onChange={onChange} error={error} disabled={disabled} />;
   const v = value ?? field.default ?? '';
-  const label = `${field.label || field.name}${field.optional ? ' (optional)' : ''}`;
+  const label = descriptorLabel(field);
   if (field.type === 'boolean') {
     return (
       <div className="space-y-1.5 self-end pb-1">

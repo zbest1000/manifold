@@ -12,6 +12,7 @@ import {
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import { drag } from 'd3-drag';
+import { simShouldRun } from './simState';
 import { resolveGraphStyle, LAYOUTS } from './graphStyles';
 import { groupColor } from './buildGraph';
 import { useCanvasTokens, FONT, MONO } from './canvasTokens';
@@ -113,6 +114,7 @@ const ForceGraph = forwardRef(function ForceGraph(
   const lodRef = useRef({ nodes: null, count: 0, order: [] }); // importance-ordered nodes for label LOD
   const gridRef = useRef(null);
   const fittedRef = useRef(false); // fit-to-view once, when nodes first appear
+  const draggingIdRef = useRef(null); // id of the node under an active drag (survives layout rebuilds)
   const fitToRef = useRef(() => {}); // latest fitTo, set below (avoids TDZ in the sim effect)
 
   // Theme-derived style: a new object when the app theme (tokens) or the style
@@ -469,8 +471,9 @@ const ForceGraph = forwardRef(function ForceGraph(
       // React ran the previous build's cleanup (sim.stop()) before this effect.
       // If that refresh landed mid-anneal, resume from the alpha it reached;
       // otherwise the layout freezes as a half-spread clump.
+      // A drag holds it warm too (alphaTarget), even before its first tick has raised alpha.
       const sim = simRef.current;
-      if (sim && sim.alpha() > sim.alphaMin()) sim.restart();
+      if (simShouldRun(sim)) sim.restart();
       schedRef.current?.request();
       return sim ? () => sim.stop() : undefined;
     }
@@ -478,9 +481,15 @@ const ForceGraph = forwardRef(function ForceGraph(
     builtLayoutRef.current = layout;
     const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
     const known = data.nodes.reduce((c, n) => c + (prev.has(n.id) ? 1 : 0), 0);
+    // The node under an active drag keeps its pin: the drag handlers look the node up by id, so they
+    // move this new object from here on (they used to keep moving the replaced one).
+    const draggingId = draggingIdRef.current;
     const nodes = data.nodes.map((n) => {
       const old = prev.get(n.id);
-      return old ? { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...n };
+      if (!old) return { ...n };
+      const carried = { ...n, x: old.x, y: old.y, vx: old.vx, vy: old.vy };
+      if (n.id === draggingId) Object.assign(carried, { fx: old.fx, fy: old.fy });
+      return carried;
     });
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
     const links = data.links
@@ -599,6 +608,7 @@ const ForceGraph = forwardRef(function ForceGraph(
       if (sanitizePositions(nodes)) drawRef.current();
       autoFit();
     });
+    if (draggingId && nodeById.has(draggingId)) sim.alphaTarget(0.25); // a drag in progress keeps it warm
     simRef.current = sim;
     return () => sim.stop();
     // Restarts the simulation only for new data/layout. Style, selection, focus
@@ -837,6 +847,9 @@ const ForceGraph = forwardRef(function ForceGraph(
     };
 
     let dragHeated = false;
+    // The node a drag moves: looked up by id, because a layout rebuild mid-drag (a new topic arrives)
+    // replaces every node object while d3-drag keeps the one it picked on pointerdown.
+    const live = (subject) => nodeByIdRef.current.get(subject.id) || subject;
     const dragBehavior = drag()
       .container(canvas)
       .subject((event) => {
@@ -847,8 +860,10 @@ const ForceGraph = forwardRef(function ForceGraph(
       .on('start', (event) => {
         if (!event.subject) return;
         dragHeated = false;
-        event.subject.fx = event.subject.x;
-        event.subject.fy = event.subject.y;
+        draggingIdRef.current = event.subject.id;
+        const n = live(event.subject);
+        n.fx = n.x;
+        n.fy = n.y;
       })
       .on('drag', (event) => {
         if (!event.subject) return;
@@ -858,17 +873,20 @@ const ForceGraph = forwardRef(function ForceGraph(
         dragHeated = true;
         const t = transformRef.current;
         const rect = canvas.getBoundingClientRect();
-        event.subject.fx = (event.sourceEvent.clientX - rect.left - t.x) / t.k;
-        event.subject.fy = (event.sourceEvent.clientY - rect.top - t.y) / t.k;
+        const n = live(event.subject);
+        n.fx = (event.sourceEvent.clientX - rect.left - t.x) / t.k;
+        n.fy = (event.sourceEvent.clientY - rect.top - t.y) / t.k;
       })
       .on('end', (event) => {
         if (!event.subject) return;
-        if (dragHeated && simRef.current) simRef.current.alphaTarget(0);
+        if (simRef.current) simRef.current.alphaTarget(0);
         dragHeated = false;
+        draggingIdRef.current = null;
         // Keep nodes pinned in tree mode; release them in free-form layouts.
         if (layoutModeRef.current !== 'tree') {
-          event.subject.fx = null;
-          event.subject.fy = null;
+          const n = live(event.subject);
+          n.fx = null;
+          n.fy = null;
         }
       });
     sel.call(dragBehavior);

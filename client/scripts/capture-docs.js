@@ -1325,13 +1325,6 @@ function shots(ids) {
         await page.locator('#iot-broker').selectOption('facility-broker');
         const table = page.getByRole('table', { name: 'IoT devices' });
         for (const name of ['cold-room/temperature-1', 'Compressor room monitor', 'Workshop extractor fan', 'freezer-3']) await table.getByText(name).first().waitFor({ timeout: 20_000 });
-        // The detection settings fill the first screen when every convention is on: show the device list.
-        await page.locator('section[aria-label="IoT devices"]').evaluate((el) => {
-          // Scroll the page's own scroller (scrollIntoView would also shift the overflow-hidden shell).
-          let p = el.parentElement;
-          while (p && !(p.scrollHeight > p.clientHeight && /auto|scroll/.test(getComputedStyle(p).overflowY))) p = p.parentElement;
-          if (p) p.scrollTop += el.getBoundingClientRect().top - p.getBoundingClientRect().top - 16;
-        });
         await sleep(2500);
       }
     },

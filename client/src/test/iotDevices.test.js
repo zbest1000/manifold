@@ -1,11 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import {
-  availabilityView, qualityView, formatIotValue, tagLimits, filterDevices, draftFromConfig, configFromDraft, optionProblem, mapLink, tagDefsFromIot, iotSummary, conventionLabel
+  availabilityView, qualityView, formatIotValue, tagLimits, filterDevices, draftFromConfig, configFromDraft, optionProblem, mapLink, tagDefsFromIot, iotSummary, conventionLabel, enabledConventions, defaultDetectionBroker
 } from '@/pages/devices/iotModel';
 import { bindingSourceId, buildBoundIndex, boundFor, parseSourceParam, groupSources } from '@/pages/tags/helpers';
 import { newState, buildMapping, withTagDefs, supportsRules, supportsOverrides } from '@/pages/tags/mappingModel';
 
 const dev = (o = {}) => ({ id: 'z2m:0x01', sourceId: 'bk|z2m:0x01', brokerId: 'bk', brokerName: 'Home', name: 'living_room/climate', convention: 'zigbee2mqtt', manufacturer: 'Aqara', model: 'WSDCGQ11LM', availability: 'online', tagCount: 5, ...o });
+
+describe('Detection panel (S15)', () => {
+  const conv = [{ id: 'zigbee2mqtt', label: 'Zigbee2MQTT' }, { id: 'homeassistant', label: 'Home Assistant MQTT discovery' }];
+  const plain = { id: 'plant', conventions: conv, config: { conventions: {} } };
+  const suggested = { id: 'lab', conventions: conv, config: { conventions: {} }, suggestions: [{ convention: 'zigbee2mqtt', topic: 'zigbee2mqtt/bridge/devices' }] };
+  const on = { id: 'fac', conventions: conv, config: { conventions: { homeassistant: { enabled: true }, zigbee2mqtt: { enabled: false } } } };
+  it('lists the conventions that are on, in the server order', () => {
+    expect(enabledConventions(on)).toEqual([{ id: 'homeassistant', label: 'Home Assistant MQTT discovery' }]);
+    expect(enabledConventions(plain)).toEqual([]);
+    expect(enabledConventions(null)).toEqual([]);
+  });
+  it('opens on the broker with detection on, else one with suggestions, else the first', () => {
+    expect(defaultDetectionBroker([plain, suggested, on])).toBe('fac');
+    expect(defaultDetectionBroker([plain, suggested])).toBe('lab');
+    expect(defaultDetectionBroker([plain])).toBe('plant');
+    expect(defaultDetectionBroker([])).toBe(null);
+  });
+});
 
 describe('IoT device display helpers', () => {
   it('availability and quality map to tones and words', () => {

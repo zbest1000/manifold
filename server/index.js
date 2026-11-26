@@ -70,10 +70,14 @@ const io = socketIo(server, {
 // A blanket cors() would let any website script an authenticated browser.
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
 
-// Security headers. contentSecurityPolicy is disabled by default because the
-// Vite dev client and the built SPA differ; the served bundle is same-origin and
-// self-contained. crossOriginResourcePolicy is relaxed so the dev client on a
-// different port can still load assets.
+// Security headers. The Content-Security-Policy fits the built client (client/dist), which is
+// same-origin and self-contained: scripts only from this origin (the theme pre-paint script is a
+// file, not inline), no eval, workers from this origin or blob:, the Socket.IO connection to this
+// origin. Inline styles stay allowed (React style attributes and the toast library's injected
+// stylesheet). upgrade-insecure-requests is left out on purpose: plants serve Manifold over plain
+// http on an IP address, where it would break every asset. The Vite dev client is served by Vite,
+// not by this server. crossOriginResourcePolicy is relaxed so the dev client on a different port
+// can still load assets.
 app.use(
   helmet({
     // The built SPA is self-contained (no inline or third-party script; theme-init.js is a file),
@@ -89,7 +93,7 @@ app.use(
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'blob:'],
         fontSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'", 'ws:', 'wss:'],
+        connectSrc: ["'self'"],
         workerSrc: ["'self'", 'blob:'],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],

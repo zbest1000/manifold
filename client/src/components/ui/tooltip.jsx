@@ -29,9 +29,9 @@ export function Tooltip({ label, side = 'top', block = false, className, childre
         role="tooltip"
         id={id}
         className={clsx(
-          'pointer-events-none absolute z-[100] whitespace-nowrap rounded border border-line-strong bg-overlay px-2 py-1 text-xs font-normal text-fg shadow-overlay transition-opacity duration-100',
+          'pointer-events-none absolute z-[100] whitespace-nowrap rounded border border-line-strong bg-overlay px-2 py-1 text-xs font-normal text-fg shadow-overlay',
           pos[side],
-          open ? 'visible opacity-100' : 'invisible opacity-0'
+          !open && 'hidden' // display:none when closed: an invisible tooltip still widens a table's scroll area
         )}
       >
         {label}

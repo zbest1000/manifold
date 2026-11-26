@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { startBigBroker } from './support.js';
+import { startBigBroker, publisher, unique } from './support.js';
 
 /**
  * Canvas / WebGL renderer regressions, asserted deterministically (no stored
@@ -291,6 +291,41 @@ test('Topics graph: dragging a node moves the node, dragging empty canvas pans t
   await page.mouse.up();
   const afterPan = await page.evaluate(() => ({ ...window.__manifoldTest.graph2d.transform }));
   expect(afterPan.x - afterNodeDrag.x, 'background drag pans').toBeGreaterThan(30);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('Topics graph: a node keeps following the drag when the topic set changes mid-drag', async ({ page, consoleErrors }) => {
+  // A new topic arriving rebuilds the layout with fresh node objects. The drag gesture keeps the node it
+  // picked on pointerdown, so before the fix the pointer moved an orphaned copy: the node on screen stopped
+  // following (and lost its pin) until the next press. On a live broker topics appear at any time.
+  await page.addInitScript(() => localStorage.setItem('tc.topicsView', 'graph'));
+  await page.goto('/topics');
+  await page.waitForFunction(() => window.__manifoldTest?.graph2d?.settled && window.__manifoldTest.graph2d.nodes().length >= 5, null, { timeout: 30_000 });
+  await graphStable(page);
+  const node = await page.evaluate(() => {
+    const h = window.__manifoldTest.graph2d;
+    const { w, h: hh } = h.size;
+    return h.nodes().find((n) => n.label && n.sx > 120 && n.sx < w - 360 && n.sy > 120 && n.sy < hh - 200);
+  });
+  expect(node, 'a node clear of the overlays').toBeTruthy();
+  const box = await page.getByTestId('graph2d').boundingBox();
+  const count = await page.evaluate(() => window.__manifoldTest.graph2d.nodes().length);
+  const pub = await publisher();
+  try {
+    await page.mouse.move(box.x + node.sx, box.y + node.sy);
+    await page.mouse.down();
+    for (let i = 1; i <= 4; i++) await page.mouse.move(box.x + node.sx + i * 10, box.y + node.sy);
+    // the topic set changes while the button is held
+    await pub.publish(`e2e/${unique('dragrebuild')}/value`, { value: 1 });
+    await page.waitForFunction((n) => window.__manifoldTest.graph2d.nodes().length > n, count, { timeout: 15_000 });
+    for (let i = 5; i <= 10; i++) await page.mouse.move(box.x + node.sx + i * 10, box.y + node.sy);
+    await expect
+      .poll(() => page.evaluate((id) => window.__manifoldTest.graph2d.nodes().find((n) => n.id === id)?.sx, node.id), { message: 'node follows the pointer after the rebuild' })
+      .toBeGreaterThan(node.sx + 85);
+    await page.mouse.up();
+  } finally {
+    await pub.close();
+  }
   expect(consoleErrors).toEqual([]);
 });
 

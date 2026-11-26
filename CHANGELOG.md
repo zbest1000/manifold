@@ -554,6 +554,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Topics graph: a drag no longer drops when data changes underneath it.** A new topic arriving mid-drag rebuilt the
+  layout with fresh node objects, so the node stopped following the pointer and lost its pin; and a refresh in the
+  drag's first frame left the layout stopped for the whole drag. The drag now follows the node by id and the layout
+  stays warm while it lasts.
+- **UI audit:** a wildcard alert rule firing on several topics reads "Firing on N topics · M unacknowledged" on the
+  Overview; IoT detection collapses to one line once set up so the device list is on the first screen; text fields show
+  one focus ring instead of two; Active alarms fit at 1440 px and use cards below 1280 px; closed tooltips no longer
+  widen tables into a sideways scroll; long IoT device names truncate on phones; state words are in sentence case
+  everywhere; optional-field labels read "(advanced, optional)"; two accessibility defects (a control nested in a sort
+  button, a button whose name did not match its text) are fixed.
+
 #### Drivers and devices
 
 - **DNS re-resolution window for device targets closed.** The validated address is passed to the driver host and

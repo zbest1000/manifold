@@ -66,7 +66,7 @@ export default function ConnectionsTable({ connections, activeId, editingId, onS
                 </Td>
                 <Td align="right" className="w-44">
                   <span className="inline-flex items-center gap-1">
-                    <Button size="sm" variant={active ? 'subtle' : 'secondary'} onClick={() => onSelect(c.id)} aria-pressed={active} aria-label={`Explore ${label}`}>
+                    <Button size="sm" variant={active ? 'subtle' : 'secondary'} onClick={() => onSelect(c.id)} aria-pressed={active} aria-label={`${active ? 'Exploring' : 'Explore'} ${label}`}>
                       {active ? 'Exploring' : 'Explore'}
                     </Button>
                     <IconButton icon={Pencil} label={`${readOnly ? 'View' : 'Edit'} ${label}`} size={14} onClick={() => onEdit(c)} />

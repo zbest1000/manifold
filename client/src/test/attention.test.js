@@ -52,6 +52,17 @@ describe('Overview: needs attention', () => {
     expect(items[3].detail).toBe('Firing · acknowledged');
   });
 
+  it('a wildcard rule firing on several topics is counted, never named by one possibly acknowledged topic (S14)', () => {
+    const rule = (firingTopics, unacknowledged) => [{ id: 'w', name: 'Robot hot', type: 'value-threshold', state: { state: 'firing', topic: 'a/robot-3/temperature', value: 41, firingTopics, unacknowledged } }];
+    const one = engineAttention({ alertRules: rule(2, 1) })[0];
+    expect(one.detail).toBe('Firing on 2 topics · 1 unacknowledged');
+    expect(one.detail).not.toContain('a/robot-3');
+    expect(one.to).toBe('/alerts');
+    expect(engineAttention({ alertRules: rule(3, 0) })[0].detail).toBe('Firing on 3 topics · all acknowledged');
+    expect(engineAttention({ alertRules: rule(2, 2) })[0].detail).toBe('Firing on 2 topics · none acknowledged');
+    expect(engineAttention({ alertRules: rule(1, 1) })[0].detail).toBe('Firing on a/robot-3/temperature · value 41');
+  });
+
   it('mappings that do not publish, with the reason; disabled and waiting ones are not problems', () => {
     const items = engineAttention({
       mappings: [

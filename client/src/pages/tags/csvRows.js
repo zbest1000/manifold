@@ -5,7 +5,7 @@
 // A header line is optional: without one the columns are address,name (a Kepware / Ignition
 // "nodeId,name" export works as is; "nodeId" and "tag" are accepted for address).
 import { makeRow, renameRow, setOv, renameable } from './mappingRows';
-import { neutraliseFormula, restoreFormula } from '../../lib/deviceTags';
+import { neutralizeFormula, restoreFormula } from '@/lib/csvSafe';
 
 const NUMERIC = ['scale', 'offset', 'precision', 'deadband', 'staleAfterMs'];
 const TEXT = ['unit', 'description', 'displayName', 'dataType', 'field'];
@@ -20,9 +20,7 @@ export function csvColumns(srcType) {
 }
 
 const quote = (v) => {
-  // MQTT topics and device names are untrusted: a cell a spreadsheet would run as a formula is
-  // prefixed with an apostrophe (dropped again on import).
-  const s = neutraliseFormula(v === undefined || v === null ? '' : String(v));
+  const s = v === undefined || v === null ? '' : String(neutralizeFormula(v));
   return /[",\n\r;\t]/.test(s) || /^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
@@ -133,8 +131,8 @@ export function applyCsv(state, text, { tagDefs = null } = {}) {
   let updated = 0;
   records.slice(hasHeader ? 1 : 0).forEach((rec, k) => {
     const line = k + (hasHeader ? 2 : 1);
-    const get = (c) => (cols.indexOf(c) >= 0 ? rec[cols.indexOf(c)] ?? '' : '');
-    const address = restoreFormula(get('address').trim());
+    const get = (c) => restoreFormula(cols.indexOf(c) >= 0 ? rec[cols.indexOf(c)] ?? '' : '');
+    const address = get('address').trim();
     if (!address) return errors.push({ line, message: 'No address.' });
     let row;
     if (index.has(address)) row = rows[index.get(address)];

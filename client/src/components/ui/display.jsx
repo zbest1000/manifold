@@ -91,13 +91,16 @@ export function StatusDot({ status, tone, size = 8, className }) {
   );
 }
 
-/** StatusText — dot + word. The standard way to show connection/device state. */
+/** "connected" -> "Connected": a raw state word shown in sentence case (design system: sentence case everywhere). */
+export const sentenceCase = (s) => (typeof s === 'string' && s ? s[0].toUpperCase() + s.slice(1) : s);
+
+/** StatusText — dot + word. The standard way to show connection/device state. A bare `status` reads in sentence case. */
 export function StatusText({ status, tone, children, className }) {
   const t = tone || toneOf(status);
   return (
     <span className={clsx('inline-flex items-center gap-1.5 whitespace-nowrap text-sm', TONE_TEXT[t], className)}>
       <StatusDot tone={t} />
-      {children ?? status}
+      {children ?? sentenceCase(status)}
     </span>
   );
 }

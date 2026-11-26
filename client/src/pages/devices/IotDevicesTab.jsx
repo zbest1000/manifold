@@ -79,7 +79,7 @@ export default function IotDevicesTab({ readOnly }) {
           {list.length === 0 ? (
             <p className="px-1 py-3 text-sm text-muted">No device matches the filter.</p>
           ) : (
-            <Table caption="IoT devices">
+            <Table caption="IoT devices" className="!min-w-0">
               <THead>
                 <Th>Device</Th>
                 <Th>State</Th>
@@ -94,11 +94,12 @@ export default function IotDevicesTab({ readOnly }) {
                   const v = availabilityView(d.availability);
                   return (
                     <Tr key={d.sourceId} highlight={openId === d.sourceId} className="cursor-pointer" onClick={(e) => !e.target.closest('a,button') && setOpen(d)} data-iot-device={d.id}>
-                      <Td header className="max-w-[11rem] md:max-w-[16rem]">
-                        <button type="button" onClick={() => setOpen(d)} className="block max-w-full truncate rounded text-left text-sm font-medium text-fg hover:text-accent-text" title={d.name}>
+                      <Td header>
+                        {/* max-width on a table cell is ignored by the table layout: constrain the content, so a long name truncates instead of pushing State and the Map action off a phone screen */}
+                        <button type="button" onClick={() => setOpen(d)} className="block max-w-[9.5rem] truncate rounded text-left text-sm font-medium text-fg hover:text-accent-text sm:max-w-[14rem] md:max-w-[16rem]" title={d.name}>
                           {d.name}
                         </button>
-                        <span className="block truncate text-xs text-muted">
+                        <span className="block max-w-[9.5rem] truncate text-xs text-muted sm:max-w-[14rem] md:max-w-[16rem]" title={`${conventionLabel(d.convention)} · via ${d.brokerName}`}>
                           <span className="md:hidden">{conventionLabel(d.convention)} · </span>via {d.brokerName}
                         </span>
                       </Td>

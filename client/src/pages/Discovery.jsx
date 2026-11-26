@@ -289,7 +289,7 @@ export default function Discovery() {
                     ? 'Results appear here as hosts answer.'
                     : finished
                       ? `No endpoint answered in ${scan.range}. Check the range and the ports in Advanced options${devicesOn ? '' : ', or tick a PLC protocol to look for devices too'}.`
-                      : 'Choose a range and press Start scan. Ticking Modbus, S7 or EtherNet/IP also looks for PLCs and meters.'
+                      : 'Choose a range and press Start scan. Tick a protocol under PLCs and meters to look for those too; each result can be added as a device or connection.'
                 }
               />
             </div>

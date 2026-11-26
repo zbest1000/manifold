@@ -189,7 +189,7 @@ export default function AlarmHistory({ rules }) {
 
       {state.events.length > 0 && (
         <>
-          <div className="hidden md:block">
+          <div className="hidden xl:block">
             <Table caption="Alert history, newest first" className="min-w-[60rem]">
               <THead>
                 <Th>When</Th>
@@ -233,7 +233,7 @@ export default function AlarmHistory({ rules }) {
               </tbody>
             </Table>
           </div>
-          <ul className="space-y-2 md:hidden" aria-label="Alert history, newest first">
+          <ul className="space-y-2 xl:hidden" aria-label="Alert history, newest first">
             {state.events.map((e) => {
               const w = when(e.ts);
               const sv = severityView(e.severity);
