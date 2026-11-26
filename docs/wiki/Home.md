@@ -1,12 +1,16 @@
 # 🏭 Manifold
 
-**One live map of your industrial data** — MQTT · Sparkplug B · OPC UA · CESMII SMIP · i3X, plus read-only device drivers (Modbus TCP · S7 · EtherNet/IP · BACnet/IP · SNMP · HTTP/JSON · MTConnect · CoAP · Matter and Z-Wave through their bridge servers) and IoT devices read from their MQTT bridges, explored, unified, and shaped into a Unified Namespace. Every driver except Modbus TCP, and every IoT convention, is **experimental — not verified on real hardware**.
+Manifold is a self-hosted web application that reads live data from your plant's brokers, OPC UA servers and devices, shows it as one browsable namespace, and republishes it in a clean, consistent shape for other systems.
 
-[![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
+It reads MQTT (including Sparkplug B), OPC UA, CESMII SMIP and i3X; polls PLCs, meters and controllers through read-only drivers (Modbus TCP, Siemens S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP, and Matter and Z-Wave through their bridge servers); and recognises IoT devices from the MQTT traffic of their bridges. Every driver except Modbus TCP, and every IoT convention, is **experimental: none has been run against real hardware yet**.
+
+How the pieces fit is drawn in the [README](https://github.com/zbest1000/manifold#how-it-works) (one overview) and in [ARCHITECTURE.md](https://github.com/zbest1000/manifold/blob/main/ARCHITECTURE.md#diagrams) (processes, the path of one value, drivers, mappings, store-and-forward, security, alarms, deployment).
+
+[![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/zbest1000/manifold/blob/main/README.md#license) [![Node](https://img.shields.io/badge/node-20.19%2B%20%7C%2022.12%2B-brightgreen.svg)](https://nodejs.org)
 
 ![Live UNS topology with the boiler-1 asset selected](images/uns-topology.png)
 
-> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots in this wiki come from the real app running against simulated devices and a simulated plant, captured by `npm run docs:shots` (see the README); the light theme has its own captures in [User interface](User-Interface).*
+> *The live ISA-95 topology — built entirely from observed traffic: values on leaves, message rates on branches, publishing edges animated. Screenshots in this wiki come from the real app running against simulated devices and a simulated plant, captured by `npm run docs:shots` (see [How the screenshots are made](User-Interface#how-the-screenshots-are-made)); the light theme has its own captures in [User interface](User-Interface).*
 
 ---
 

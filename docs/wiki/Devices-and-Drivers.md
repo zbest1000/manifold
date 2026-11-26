@@ -854,7 +854,7 @@ partly blocked scans the rest and lists what it skipped. See [SECURITY.md](../..
 ### Try it against the simulators
 
 `node server/tools/simulators.js` starts the Modbus, S7 and EtherNet/IP simulators; scan them from a local server with
-`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`. [DOCKER.md](../../DOCKER.md#scan-the-demo-stack) has the exact commands for both
+`MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`. [DOCKER.md](../../DOCKER.md#scan-the-simulators-with-discovery) has the exact commands for both
 the local and the Docker demo.
 
 ## Polling health
@@ -938,7 +938,7 @@ checklist per driver.
 The Docker demo stack includes simulated Modbus, S7 and EtherNet/IP devices; see
 [DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md#simulated-devices). The other
 drivers' simulators live in `server/test/support/`; `client/scripts/capture-docs.js --serve`
-(see the README) starts all of them as a demo plant.
+(see [How the screenshots are made](User-Interface#how-the-screenshots-are-made)) starts all of them as a demo plant.
 
 Next: [Mapping to the UNS](Mapping-to-the-UNS), and
 [Troubleshooting](Troubleshooting#devices).

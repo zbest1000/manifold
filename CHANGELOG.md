@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-26
+
+The first public release (1.0.0 below was recorded but never tagged or published).
+
+### Highlights
+
+- **Nine more read-only device drivers** next to Modbus TCP: Siemens S7, EtherNet/IP (Logix), BACnet/IP, SNMP,
+  HTTP/JSON, MTConnect, CoAP, and Matter and Z-Wave through their bridge servers (all experimental; simulators only).
+- **Devices as a table with profiles and bulk creation**, probe, import from controller or device, and polling health
+  with the device's own reason for every quarantined tag.
+- **IoT devices over MQTT**: Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly, ChirpStack and
+  The Things Stack traffic becomes devices with named tags; Manifold never publishes to them.
+- **A single-sheet mapping editor**: tags by list or by rule, per-tag units, scale, states, limits and context,
+  quality, `_status` and `_meta`, MQTT topics and IoT devices as sources, and a direct historian target.
+- **An Alerts page**: severities, active alarms, acknowledgement with notes, and a history that survives restarts.
+- **Broker tools**: a read-only security posture, an opt-in round-trip canary and public test-broker presets.
+- **Payload codecs** (CBOR, MessagePack, SenML, Protobuf, Avro) and **Trends CSV export**.
+- **OPC UA tested against a real node-opcua server**, including Sign and SignAndEncrypt, restarts and outages.
+- **A redesigned interface** with light, dark and system themes and automated accessibility checks on every page.
+- **Security hardening**: open local instances refuse foreign host names and origins, secrets no longer follow an
+  address change, webhook URLs are secrets, link-local targets are refused, read-only allowlists for every driver.
+
+### Upgrade notes
+
+Behaviour that changes for someone upgrading from 1.0.0. Each item is detailed under Changed or Security below.
+
+- **A token-less instance bound to loopback refuses foreign host names** with 421, and the Socket.IO connection
+  refuses foreign browser origins. Reaching it as `localhost`, `127.x` or `::1` works; list any other name in
+  `MANIFOLD_ALLOWED_HOSTS`, or set a token.
+- **Changing a connection's address requires its secret again.** Editing a broker, broker admin API URL, historian,
+  OPC UA connection or device and changing its scheme, host or port without the password, token or community is
+  refused with 400 `secret-required`. Scripts that PUT a new host without the secret must now send it.
+- **Alert rules moved from Settings to the Alerts page** (`/settings?tab=alerts` redirects).
+- **Alert webhook URLs are no longer returned** to any role (`hasWebhook`, `webhookOrigin` instead). A save without
+  `webhookUrl` keeps the stored one; clearing it needs `webhookUrl: ""`.
+- **Stored device secrets are answered as `null`** (the HTTP drivers used to answer `********`).
+- **`GET /api/recorder/:id/series` requires `tags`** (1 to 10); a recording's `maxBytes` is capped at 4 GiB.
+- **A broker canary topic must be under `manifold/canary/`** and may not contain a command level.
+- **Brokers, OPC UA endpoints and historians on link-local or cloud-metadata addresses are refused** (403 at save,
+  an error at connect). Loopback and LAN targets work as before.
+- **Auth fails closed**: with no token the server binds `127.0.0.1` only (in a container, pass a token); a viewer
+  token alone turns auth on and leaves no admin; unknown roles in `MANIFOLD_TOKENS` are rejected; `/metrics` needs
+  a bearer token when auth is on (`MANIFOLD_METRICS_PUBLIC=1` opts out).
+- **Alert webhooks and device targets pass the egress guard**: private addresses need
+  `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`, loopback device targets `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`.
+- **Device live values arrive as one `device-values` Socket.IO event per 250 ms** (`{ batch: [...] }`); listeners
+  of the old per-device events must be updated.
+- **Saving is stricter**: unique device names, driver options and S7 rack/slot validated, topics in pipelines,
+  models and recordings validated, a historian still in use cannot be deleted (409).
+- **Mappings publish more**: a Bad value when a source goes offline, a retained `_status` topic, quality-only changes
+  in envelope format; the editor leaves Retain off by default.
+- **Sparkplug messages are delivered in order and un-coalesced**, up to 100 ms later than before.
+- **Historian spill files changed** to segments plus a cursor under `outbox/` (the old `<id>.jsonl` is drained
+  first, no conversion); InfluxDB writes booleans and non-numbers as `raw` text.
+- **Pipelines, the recorder and historians use the payload's own time and quality** when it carries them.
+- **`audit.jsonl` rotates by size** and records rejected requests; behind a reverse proxy set
+  `MANIFOLD_TRUST_PROXY`.
+- **The UI was redesigned**: routes are unchanged; graph style presets are now Standard, Schematic and Monochrome.
+
 ### Added
 
 #### Drivers and devices
@@ -418,6 +477,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Troubleshooting covers the new drivers, IoT detection, codecs and the canary. The screenshot script seeds the new
   simulators, a facilities broker with IoT traffic, codec payloads and firing, acknowledged and cleared alarms; new
   images `alerts`, `alerts-history`, `broker-details`, `codecs`, `iot-devices` and `uns-search`, all others regenerated.
+- **README rewritten in plain language** with a system overview diagram, a table of what Manifold connects to and
+  how far each part is tested; the upgrade notes moved to the wiki's Operations page and the screenshot script to
+  User interface. **ARCHITECTURE.md gained a Diagrams section**: processes and components, the path of one value from
+  a PLC register to a historian row, deployment, store-and-forward, the alarm lifecycle, the mapping engine, driver
+  supervision and security boundaries, all as Mermaid source. The documented `docker run` line now passes a token
+  (without one the server listens on loopback inside the container and the published port reaches nothing).
 
 ### Changed
 
@@ -961,4 +1026,6 @@ First tagged release.
 - Failed authentication is rate-limited per IP: 20 failures per minute,
   then `429` responses.
 
-[1.0.0]: https://github.com/zbest1000/manifold/releases/tag/v1.0.0
+[Unreleased]: https://github.com/zbest1000/manifold/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/zbest1000/manifold/releases/tag/v1.1.0
+[1.0.0]: https://github.com/zbest1000/manifold/blob/main/CHANGELOG.md#100---2026-07-15

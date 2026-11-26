@@ -3,7 +3,7 @@
 # docker-compose.yml / docker/app/Dockerfile instead.
 #
 # node:22-slim is Debian (glibc): no musl surprises if a native or optional
-# dependency ever lands. As of v1.0.0 the server has no optionalDependencies
+# dependency ever lands. As of v1.1.0 the server has no optionalDependencies
 # and loads no native addon (native/ is a standalone benchmark crate the
 # server never requires — topicStore.js is pure JS), so nothing extra to build.
 

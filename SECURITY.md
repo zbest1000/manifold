@@ -29,6 +29,11 @@ instance beyond your own machine:
   per-user tokens). Without a token the server binds **loopback only** and warns
   loudly; exposing an unauthenticated instance off-host requires deliberately
   setting `MANIFOLD_HOST=0.0.0.0`.
+- **A token-less local instance answers only to loopback names.** While it is bound to
+  loopback without a token, a request whose `Host` is not `localhost`, `127.x`, `::1` or a
+  name listed in `MANIFOLD_ALLOWED_HOSTS` is refused with 421, and the Socket.IO handshake
+  refuses a browser `Origin` other than the page's own or `CLIENT_URL`. A web page you open
+  therefore cannot drive the instance through DNS rebinding or a cross-site WebSocket.
 - **Use a read-only viewer token** (`MANIFOLD_VIEWER_TOKEN`) for anyone who
   should not publish, actuate, or reconfigure. A viewer token on its own also
   turns auth on, so set an admin token as well. In `MANIFOLD_TOKENS` an unknown

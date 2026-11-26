@@ -106,6 +106,18 @@ The Docker demo already does this safely: it binds `0.0.0.0` inside the
 container but maps only to host loopback (`127.0.0.1:5000:5000`), so `docker
 compose up` is reachable at `localhost` and nowhere else until you set a token.
 
+An open instance on loopback also checks the `Host` header: it answers only to
+`localhost`, `127.x` and `::1`, and refuses any other name with 421. A web page on
+another site whose name was re-pointed at `127.0.0.1` (DNS rebinding) therefore cannot
+drive it, and the Socket.IO connection refuses foreign `Origin`s. If you reach a
+token-less local instance by another name (an `/etc/hosts` alias), list it in
+`MANIFOLD_ALLOWED_HOSTS` (comma-separated). With a token, or a non-loopback bind,
+the token is the protection and any `Host` is accepted.
+
+The published image has no token and no `MANIFOLD_HOST` set, so inside the container
+it binds `127.0.0.1` and a published port reaches nothing. Pass
+`-e MANIFOLD_AUTH_TOKEN=...` (see [Docker image](#docker-image)).
+
 ### Named tokens
 
 For teams, `MANIFOLD_TOKENS` issues **individually revocable** tokens with a
@@ -399,8 +411,37 @@ Collected from the changelog; each is verified against the code.
   samples (`meta.truncated`), and a recording's `maxBytes` is at most 4 GiB.
 - **`MANIFOLD_TRUST_PROXY`** is new; set it behind a reverse proxy (see
   [rate limiting](#brute-force-protection-and-rate-limiting)).
-- Earlier changes (fail-closed auth, `/metrics` needs a token, webhooks pass the egress guard,
-  device targets guarded) are listed in the README.
+- **A token-less instance bound to loopback refuses foreign host names** (421) and the
+  Socket.IO connection refuses foreign `Origin`s. Reaching it as `localhost`, `127.x` or `::1`
+  works as before; add any other name to `MANIFOLD_ALLOWED_HOSTS`.
+- **Alert rules moved from Settings to the Alerts page** (Settings links to them;
+  `/settings?tab=alerts` redirects).
+- **Stored device secrets are answered as `null`** (the HTTP drivers used to answer
+  `********`); a save that leaves a secret out, blank or `null` keeps it.
+- **A viewer token alone enables auth**, and then nobody is admin: also set
+  `MANIFOLD_AUTH_TOKEN` or an admin entry in `MANIFOLD_TOKENS`.
+- **Unknown roles in `MANIFOLD_TOKENS` are rejected** (an entry such as
+  `bob:secret:readonly` used to become an admin token). Rejected entries are logged at
+  startup; if tokens were configured but all were rejected, auth stays on and every request is 401.
+- **`/metrics` needs a bearer token** (any role) when auth is on. Give Prometheus a viewer
+  token, or set `MANIFOLD_METRICS_PUBLIC=1`. `/health` stays open.
+- **Fail closed by default**: with no token the server binds `127.0.0.1` only.
+- **Alert webhooks pass the egress guard**: a webhook to `localhost`, a link-local address or
+  (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) a private address is refused; redirects are
+  re-checked on every hop.
+- **Device targets are guarded**: loopback hosts need `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` and
+  private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
+- **Sparkplug messages are delivered in order and un-coalesced** (a bounded queue; overflow
+  is counted), so they reach consumers at flush cadence, up to 100 ms later. Mappings publish a
+  Bad-quality value when a source goes offline and a retained `_status` topic.
+- **The historian spill is segment files plus a cursor** under `outbox/` (a legacy
+  `<id>.jsonl` is still read first and drained, no conversion needed); permanently rejected
+  points go to a dead-letter file.
+- **InfluxDB typing is stricter**: only real numbers write `value`; booleans and everything
+  else write `raw` as text (booleans were `1`/`0`).
+- **`audit.jsonl` rotates by size** and records rejected requests (401/403/429).
+- **Config export keeps device tag `key` fields** (an earlier build blanked them) and an
+  import applies immediately.
 
 ## Limits that protect the server
 
@@ -419,7 +460,7 @@ Collected from the changelog; each is verified against the code.
 | Trends CSV export | 1,000,000 rows | `MANIFOLD_EXPORT_MAX_ROWS` | The file stops with a `# Truncated` line |
 
 See the full list of settings in the
-[README](https://github.com/zbest1000/manifold#environment-variables).
+[README](https://github.com/zbest1000/manifold#configuration).
 
 ## Data directory
 
@@ -459,8 +500,8 @@ in one container:
 ```bash
 docker run -p 5000:5000 \
   -v manifold-data:/data \
-  -e MANIFOLD_AUTH_TOKEN=... \
-  ghcr.io/zbest1000/manifold:latest
+  -e MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) \
+  ghcr.io/zbest1000/manifold:1.1.0
 ```
 
 The image sets `MANIFOLD_DATA_DIR=/data` — mount a volume there or your

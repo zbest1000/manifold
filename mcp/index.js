@@ -53,7 +53,7 @@ function fail(error) {
   return { isError: true, content: [{ type: 'text', text: `Error: ${error.message}` }] };
 }
 
-const server = new McpServer({ name: 'manifold', version: '2.0.0' });
+const server = new McpServer({ name: 'manifold', version: '1.1.0' });
 
 // ---------------------------------------------------------------------------
 // System / discovery

@@ -146,3 +146,26 @@ tables) is easier on a larger screen.
 
 With a viewer token every control that would change something is disabled and says why, and a short note explains it. See
 [Operations](Operations#the-viewer-experience-and-switching-sessions).
+
+## How the screenshots are made
+
+The images in `docs/wiki/images/` (and the copies in `site/assets/`) are generated, not hand-made:
+
+```bash
+cd client && npm run build && npm run docs:shots                # all of them
+npm run docs:shots -- --only overview,trends                    # some of them
+npm run docs:shots -- --out /tmp/shots                          # somewhere else
+npm run docs:shots -- --serve    # seed the demo plant and keep it running; then, in another shell:
+npm run docs:shots -- --attach --only opcua                     # capture against it
+```
+
+`client/scripts/capture-docs.js` starts a demo plant on 127.0.0.1 from the test simulators (a plant MQTT broker with an
+ISA-95 namespace, Sparkplug B edge nodes and some CBOR, MessagePack, SenML and Protobuf payloads; a facilities broker
+with Zigbee2MQTT, Home Assistant, Tasmota, Shelly, Z-Wave JS UI and ChirpStack traffic; Modbus TCP, S7, EtherNet/IP,
+BACnet/IP, SNMP, HTTP/JSON, MTConnect and CoAP simulators, Matter Server and Z-Wave JS Server stand-ins, a small OPC UA
+server and two historian stand-ins), the real backend on a throwaway data directory, seeds it through the REST API
+(devices, a profile, an OPC UA connection, IoT detection, codecs, mappings, routes, historians, alert rules with
+firing, acknowledged and cleared alarms, a recording) and drives Chromium: 1440 x 900 at device scale 2, phone images
+390 x 844, dark unless the name ends in `-light`. Nothing leaves the machine. Set `PW_CHROMIUM_PATH` to use a browser
+other than Playwright's own. When a page changes, update its step in the script's `shots()` list, re-run, and look at
+every image before committing.

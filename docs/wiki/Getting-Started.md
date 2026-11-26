@@ -5,7 +5,7 @@
 
 ## What you need
 
-- Node.js **≥ 20.19** (or 22+) — the OPC UA driver needs modern `require(ESM)` support.
+- Node.js **20.19+ or 22.12+** — the OPC UA client needs `require(ESM)` support and the client build tool (Vite) needs these versions.
 - An MQTT broker to point at — or none at all: the Docker stack ships one with simulated traffic.
 - Optionally a PLC, or the simulators (see [Try it without hardware](Devices-and-Drivers#try-it-without-hardware)).
 
@@ -40,9 +40,14 @@ docker compose up --build
 Just Manifold, no demo services — published to GHCR on every release:
 
 ```bash
-docker run -p 5000:5000 -v manifold-data:/data ghcr.io/zbest1000/manifold:latest
-# open http://localhost:5000
+docker run -p 5000:5000 -v manifold-data:/data \
+  -e MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) \
+  ghcr.io/zbest1000/manifold:1.1.0
+# open http://localhost:5000 and enter the token
 ```
+
+The token is not optional here: without one the server binds `127.0.0.1` inside the
+container, where the published port cannot reach it.
 
 The volume at `/data` keeps profiles, history, and the OPC UA PKI across
 container restarts. See [Operations](Operations) for tokens and hardening.
@@ -147,7 +152,7 @@ The Topics page has the equivalent `/topics?broker=<broker id>&topic=<topic>`. Y
 ## Environment variables
 
 The common ones are below; every variable the server reads, with its default, is in the
-[README](https://github.com/zbest1000/manifold#environment-variables).
+[README](https://github.com/zbest1000/manifold#configuration).
 
 | Variable | Purpose |
 |---|---|
@@ -156,6 +161,7 @@ The common ones are below; every variable the server reads, with its default, is
 | `MANIFOLD_VIEWER_TOKEN` | Read-only token. Setting it alone **also turns auth on**, so set an admin token too |
 | `MANIFOLD_TOKENS` | Named tokens: `name:token:role,...` (roles `admin`/`viewer`) — see [Operations](Operations) |
 | `MANIFOLD_HOST` | Bind address. Default `127.0.0.1` when open, `0.0.0.0` when a token is set |
+| `MANIFOLD_ALLOWED_HOSTS` | Extra host names a token-less loopback instance answers to (others get 421) |
 | `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `1` = let the scanner and outbound clients reach RFC1918/LAN (needed for Discovery and for PLCs on a plant network; fail-closed by default; loopback and cloud metadata always blocked) |
 | `MANIFOLD_ALLOW_LOOPBACK_DEVICES` | `1` = device drivers may target `127.0.0.0/8` / `::1` (local simulators only; off by default) |
 | `MANIFOLD_METRICS_PUBLIC` | `1` = leave `/metrics` open when auth is on |

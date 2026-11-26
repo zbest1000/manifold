@@ -2,11 +2,21 @@
 
 [![CI](https://github.com/zbest1000/manifold/actions/workflows/ci.yml/badge.svg)](https://github.com/zbest1000/manifold/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
-[![Node](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen.svg)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-20.19%2B%20%7C%2022.12%2B-brightgreen.svg)](https://nodejs.org)
 
-Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, CESMII SMIP, and i3X, plus read-only device drivers (Modbus TCP, Siemens S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP, Matter and Z-Wave through their bridge servers) and IoT devices read from their MQTT bridges, with a live Unified Namespace view.
+Manifold is a self-hosted web application that reads live data from your plant's brokers, OPC UA servers and devices, shows it as one browsable namespace, and republishes it in a clean, consistent shape for other systems.
 
-**[Website](https://zbest1000.github.io/manifold/)** · **[Docs / Wiki](../../wiki)** · **[Architecture](ARCHITECTURE.md)** · **[Changelog](CHANGELOG.md)**
+**[Website](https://zbest1000.github.io/manifold/)** · **[Docs (wiki)](https://github.com/zbest1000/manifold/wiki)** · **[Architecture](ARCHITECTURE.md)** · **[Changelog](CHANGELOG.md)** · **[Security](SECURITY.md)**
+
+## What you can do with it
+
+- **See what is on your MQTT brokers** without writing code: every topic, its latest value, its rate, who publishes and who subscribes, decoded Sparkplug B (a standard payload and session format for plant data over MQTT), and a live tree of your namespace.
+- **Read PLCs, meters and controllers without risking a write.** The device drivers can only send read requests (Modbus TCP, Siemens S7, EtherNet/IP and more), and OPC UA servers are browsed and subscribed to, never written.
+- **Build a Unified Namespace (UNS)**, meaning one topic tree on a broker where every asset publishes under a predictable path such as `acme/dallas/line4/filler/temperature`, with units, quality and timestamps, as plain values, JSON envelopes or Sparkplug B.
+- **Reshape messy topics** into clean ones with pipelines (filter, rename, scale, repath) and merge several topics into one object per asset (models).
+- **Keep history** in InfluxDB, TimescaleDB or Timebase. Data is buffered on disk while the historian is down and delivered oldest first when it comes back.
+- **Get alarms** on silent topics, new topics and value thresholds, acknowledge them, and keep a history that survives restarts.
+- **Let an AI agent work with the same data** through the included MCP server, under the same tokens and audit log as the web UI.
 
 <p align="center">
   <img src="docs/wiki/images/overview.png" alt="Manifold Overview page in the dark theme: Needs attention with firing alarms and an unreachable PLC, sources, data flow, connections and latest values for a demo plant" width="850">
@@ -17,134 +27,129 @@ Industrial data explorer and DataOps toolkit: MQTT, Sparkplug B, OPC UA, CESMII 
   <img src="docs/wiki/images/mapping-editor.png" alt="The mapping editor: tag table with the per-tag details panel open and the server's preview on the right" width="420">
 </p>
 
-<sub>Screenshots are from the real application running against simulated devices and a simulated plant namespace (demo data, not a customer site).</sub>
+<sub>Screenshots are from the real application running against simulated devices and a simulated plant (demo data, not a customer site).</sub>
 
-Manifold connects to brokers and servers, streams their data in real time, and renders it as a live UNS topology, interactive topic/address-space graphs, and producer → topic → consumer lineage. A DataOps layer routes and reshapes the stream: pipelines, contextualization models, historian delivery with store-and-forward, recording/replay, schema contracts, and tag mappings with a Sparkplug B publisher. Device drivers read PLCs, controllers, meters and sensors directly, and IoT detection reads the devices that Zigbee, Z-Wave, Wi-Fi and LoRaWAN bridges publish over MQTT; both feed the same mappings. Neither ever writes to a device. An included MCP server exposes the same backend to AI agents.
+## How it works
 
-## Features
+Manifold is a Node.js server with a browser UI. It connects out to your data sources, keeps the latest value of everything it sees in memory, and runs four engines over that live stream: **mappings** (tags into UNS topics), **pipelines** (topic-to-topic routes), **alerts** and the **recorder**. Each device protocol runs in its own supervised child process, so a crashing driver cannot take the server down.
 
-**Interface**
-- One design system across every page (IBM Plex type, semantic colour tokens), with **light, dark and system** themes: the switch is in the sidebar and under Settings, and the topology, graph and chart canvases follow it in place. See [User interface](docs/wiki/User-Interface.md).
-- Accessibility is tested, not just intended: the Playwright suite loads every route in both themes at desktop and phone width and fails on serious or critical axe findings, horizontal overflow and console errors. That is automated checking only; it is not a certified conformance audit.
-- Read-only (viewer) sessions see disabled controls with the reason instead of errors. Deep links: `/uns?broker=<id>&path=<asset path>` and `/topics?broker=<id>&topic=<topic>`.
+```mermaid
+flowchart LR
+    subgraph access["Who uses it"]
+        UI["Web UI (browser)"]
+        MCP["MCP server (mcp/)<br/>AI agents"]
+        SCRIPT["Scripts, Prometheus"]
+    end
 
-**Explore**
-- MQTT topic tree, 2D/3D graphs, and a WebGL renderer for very large namespaces (60k+ topics). JSON, text, binary, and Sparkplug B payloads decoded. The 3D view is real three.js instancing (50k nodes); force layout runs in a Web Worker.
-- MQTT 3.1.1 and 5 (per broker), over `mqtt`/`mqtts`/`ws`/`wss`, with a configurable intake filter including `$share` shared subscriptions. MQTT 5 user properties, content type, response topic, and correlation data decoded on messages; the first three publishable.
-- OPC UA address-space browsing with live monitored values; secure connections (Sign / SignAndEncrypt) with endpoint discovery and a built-in certificate trust store.
-- Producer/consumer lineage: Sparkplug topology from BIRTH/DEATH certificates (including host application STATE), per-client subscriptions from broker admin APIs (EMQX, HiveMQ), wildcard filters resolved against observed topics.
-- Network discovery by CIDR scan with protocol handshake verification; opt-in, read-only identification of Modbus TCP, S7 and EtherNet/IP devices and, each opt-in on its own, BACnet/IP, CoAP and SNMP over UDP, with "Add as device".
-- Per-broker tools: a read-only **security posture** (TLS, authentication, wildcard intake, `$SYS`, client-id collisions; findings with what to change, no score), an opt-in **round-trip canary** (off by default; when on it publishes a small, never-retained probe and measures delivery) and **public test-broker presets** in the connect form (their host names and ports were written from memory: check them before relying on them).
-- **Payload codecs**: CBOR, MessagePack and SenML are decoded on ingest, Protobuf and Avro against a schema bound to a topic filter (Pipelines → **Codecs**, with a test box); undecodable payloads stay as they arrived.
-- Message history survives restarts; any two payloads can be diffed structurally.
+    subgraph sources["Sources"]
+        IOTB["IoT bridges<br/>Zigbee2MQTT, Tasmota, ..."]
+        BRK["MQTT brokers"]
+        OPC["OPC UA servers"]
+        PLC["PLCs, meters,<br/>controllers"]
+    end
 
-**Unified Namespace**
-- Live ISA-95 topology built from observed traffic: values on leaves, per-branch message rates, publishing edges animated.
-- Per-topic staleness calibrated to each topic's own publish cadence.
-- Namespace lint (0–100 score with structural findings), event feed (new topics, Sparkplug lifecycle), editable level ladder, and mounts for OPC UA / i3X sources.
-- **Expand all / Collapse all** on the map and a **search box whose results can be picked** with the keyboard to select and reveal a node (also on the Topics, OPC UA and i3X graphs).
-- Curated industrial icon set (~130 icons) with automatic mapping, plus user-defined custom SVG icons.
+    subgraph server["Manifold server"]
+        API["REST API and Socket.IO<br/>tokens and roles"]
+        ING["Ingest<br/>MQTT intake, OPC UA client,<br/>driver processes"]
+        STORE["Topic store<br/>latest values, UNS view"]
+        MAP["Mappings and<br/>Pipelines"]
+        ALR["Alerts"]
+        REC["Recorder"]
+        OUT["Outbox<br/>store-and-forward"]
+    end
 
-**DataOps**
-- Pipelines: filter → transform chain (repath, pick/rename/set, scale, numeric, Sparkplug flatten, TVQ envelope) → broker or historian, with a dry-run preview against live topics and two-layer loop protection.
-- Models: merge fields from many topics into one object at a clean UNS path.
-- Historians: InfluxDB v2, TimescaleDB/PostgreSQL, and Timebase (Flow Software) — all through a store-and-forward outbox with segmented disk spill, strict oldest-first delivery, dead-lettering of permanently rejected points, and a configurable drop policy. Timebase is the reference historian for device data; InfluxDB stores no quality and is not offered for it.
-- Trends: chart stored series from InfluxDB, TimescaleDB and Timebase — or a local file **recording**, with no external database — up to 10 tags per chart, downsampled server-side, auto-refreshing, with **CSV export** of the tags and range on screen (as charted or raw).
-- Recorder and replay, schema contracts with drift detection, alert rules with webhooks — silence/new-topic rules plus value thresholds with sustain and hysteresis, evaluated at message latency — and an Alerts page: active alarms by severity, acknowledgement with notes, and a history that survives restarts (filters, CSV).
-- Everything edits in place: brokers, OPC UA connections, pipelines, historians, models, bindings, and alert rules update without delete/re-add.
+    subgraph outputs["Outputs"]
+        UNS["UNS topics on a broker"]
+        SPB["Sparkplug B on a broker"]
+        HIS[("Historians<br/>InfluxDB, TimescaleDB, Timebase")]
+        WH["Webhooks"]
+    end
 
-**Devices** (southbound drivers, **read-only by construction**)
-- **Modbus TCP**, and, each **experimental — not verified on real hardware**: **Siemens S7** (S7comm), **EtherNet/IP** (Logix), **BACnet/IP**, **SNMP** v1/v2c/v3, **HTTP/JSON**, **MTConnect**, **CoAP** (no DTLS), and **Matter** and **Z-Wave** through the open-source Matter Server and Z-Wave JS Server. Experimental means checked only against in-process simulators written with the drivers; each driver's `NOTES.md` (`server/drivers/<name>/NOTES.md`) lists what it handles, what it does not, and what to confirm on a real device. The table of drivers is in [Devices and Drivers](docs/wiki/Devices-and-Drivers.md).
-- Devices are a sortable table with a detail drawer (Overview, live Tags, Probe) and a full-page add/edit form: protocol presets and experimental badges, spreadsheet paste and CSV import, inline address validation, a connection test, polling health with the device's own reason for every quarantined tag, an **Advanced** section (Modbus unmapped register ranges, one driver process per device) and a **probe** that shows raw registers decoded under all four Modbus byte/word orders. Many devices at once: **From profile** and a bulk table that is created all-or-nothing. Modbus addresses accept `holding:100` or Modicon `40001` / `400001` with explicit 0/1-based handling. Drivers that can list their points import them: **Import from controller** (EtherNet/IP), **from device** (HTTP/JSON, BACnet/IP, CoAP), **from agent** (MTConnect, SNMP) or **from server** (Matter, Z-Wave). Device secrets (HTTP passwords and tokens, SNMP communities and v3 passwords, bridge tokens) are stored on the server and every API answer carries them as `null`.
-- **Device profiles**: define a meter, drive or PLC type once (tags with `{param}` placeholders, poll groups, options), then create devices from it one at a time or in bulk from a pasted table or CSV.
-- Each driver runs in a supervised child process: a crash, hang or protocol fault takes down only that process, which restarts with backoff and is parked if it crash-loops. Each device keeps one connection, reconnects forever with jittered backoff, skips (and counts) overrunning poll cycles instead of queueing them, and quarantines tags that fail permanently while the rest keep polling.
-- Read-only is enforced where bytes are built: each driver's single encoder has an allowlist (Modbus function codes 1-4; S7 setup, Read Var and SZL read; CIP read and connection services; BACnet Who-Is, ReadProperty and ReadPropertyMultiple; SNMP Get, GetNext and GetBulk; HTTP `GET` without a body; CoAP `GET`; a handful of read commands for the two bridge servers), and the tests assert that nothing else ever reaches a socket. It is a guarantee about Manifold, not about your network: most of these protocols do not authenticate the client.
+    UI -- "REST + Socket.IO" --> API
+    MCP -- "REST" --> API
+    SCRIPT -- "REST, /metrics" --> API
+    API -- "config, queries" --> STORE
 
-**IoT devices over MQTT** (Devices → IoT over MQTT; **experimental — not verified on real hardware**)
-- Zigbee2MQTT, Z-Wave JS UI, Home Assistant MQTT discovery, Tasmota, Shelly (Gen1 and Gen2+), ChirpStack v4 and The Things Stack v3 traffic on a connected broker shows up as devices with named tags, units, types and quality, labelled by convention and "via broker". Detection is off by default, per broker and per convention, with suggestions when matching traffic is seen. The devices are a mapping source (`source.type: "iot"`).
-- Manifold only subscribes: it never publishes to these ecosystems' command, set or downlink topics, and does not pair or control devices. Tested against a simulator of the projects' documented messages, not against real bridges. See [IoT devices over MQTT](docs/wiki/IoT-Devices-over-MQTT.md).
+    IOTB -- "publish over MQTT" --> BRK
+    BRK -- "messages (subscribe)" --> ING
+    OPC -- "values (read-only)" --> ING
+    PLC -- "registers, tags (read-only)" --> ING
+    ING -- "values with quality and time" --> STORE
+    STORE -- "live stream" --> MAP & ALR & REC
+    MAP -- "values, TVQ, objects" --> UNS
+    MAP -- "BIRTH / DATA" --> SPB
+    MAP -- "points" --> OUT
+    REC -- "points" --> OUT
+    OUT -- "batches, oldest first" --> HIS
+    ALR -- "alarm events" --> WH
+```
 
-**Tags**
-- Unified tag browser (devices, OPC UA, Sparkplug registry, MQTT trie) with an accessible tree, filter and CSV import.
-- A **mapping** (the UI's word for what the API calls a binding) publishes tags under an **ISA-95 asset path** as plain values, TVQ envelopes with units, **one JSON object per asset** (size-capped), or a Sparkplug B device (typed metrics: Int16, Float, Boolean, ...), with absolute or percent deadband, a heartbeat, and quality mapping. Quality is part of change detection; when a source goes offline every tag gets one Bad publish and a retained `<path>/_status` document (or DDEATH for Sparkplug), and a retained `<path>/_meta` document carries types, units, ranges and sources. A **profile mapping** maps every instance of a device profile with one definition. Retained topics are cleared when a mapping is renamed or deleted. The single-sheet **mapping editor** (Mapping, What, Where, Tags, Context, Payload, Delivery) previews exactly what the server would publish and warns about raw-address names, topic collisions and options that cannot take effect. Read-only toward devices.
-- Sources: devices, device profiles, OPC UA, Sparkplug, MQTT topics and IoT-over-MQTT devices.
-- **Selective mapping and context**: pick tags from a list or select them by rule (include and exclude globs, poll groups, types, has-a-property) so tags added to the device later are picked up; per tag set name, unit, description, range, scale and offset, publish type, decimals, states, limits and deadband; add asset and tag context (`{device}`, `{protocol}`, ...) to `_meta` or to every payload; choose the fields of each payload.
-- An opt-in **direct historian target** on a mapping (Timebase or TimescaleDB; InfluxDB is refused because it stores no quality).
-- Optional Sparkplug primary-host session: Manifold publishes retained `STATE` so edge nodes see a host application.
-
-**Operations**
-- Token auth with admin and read-only roles (including named, individually revocable tokens), enforced identically on the REST API and the Socket.IO handshake, with per-IP auth-failure rate limiting on both. Unknown roles are rejected, never treated as admin. Audit log (rejected requests included, rotated by size), config export/import with secrets stripped and the import validated whole before it is applied.
-- Fail-closed by default: with no token the server binds `127.0.0.1` only. An egress guard blocks the network scanner, i3X/CESMII/broker-admin clients, alert webhooks and device targets from reaching loopback (device targets: opt-in for simulators), cloud-metadata, and (unless opted in) private ranges. It does not cover MQTT broker, OPC UA or historian endpoints, which an admin configures by hand. Security headers (`helmet`) and a general request rate limit are on by default.
-- Durable state: `profiles.json` is written with fsync and rotating backups, and recovered from the newest valid backup if it is ever corrupt.
-- OPC UA connections are supervised: a lost session or a restart retries forever with jittered backoff and rebuilds its monitored items.
-- Self-observability: a **System (Health)** page renders Manifold's own Prometheus `/metrics` live — process health, per-broker ingest, and every engine counter, each with a rolling sparkline. `/metrics` requires a bearer token when auth is on. Device and driver-host health (state, cycle times, overruns, timeouts, exceptions, quarantined tags) is on `/metrics` as `manifold_device_*` and `manifold_driver_host_*`, on the Devices page and in `GET /api/devices`.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works: system design, the message hot path, the API surface, protocol notes, and testing. Operational guides (broker ACLs, historian setup, transform reference, troubleshooting) live in the [wiki](../../wiki), generated from [`docs/wiki/`](docs/wiki). Release history is in [CHANGELOG.md](CHANGELOG.md); release steps and verification status are in [docs/RELEASING.md](docs/RELEASING.md).
+The full set of diagrams (processes, the path of one value from a PLC register to a historian row, driver supervision, mappings, store-and-forward, security boundaries, alarms and deployment) is in [ARCHITECTURE.md](ARCHITECTURE.md#diagrams).
 
 ## Quick start
 
-Requires Node.js ≥ 20.19 (or 22+).
+### Docker
+
+The image serves the API and the built UI from one container. Without a token the server listens on loopback only, which inside a container means nobody can reach it, so pass a token:
 
 ```bash
-npm run install:all
-npm run dev            # client on :3000, backend on :5000
+docker run -p 5000:5000 -v manifold-data:/data \
+  -e MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) \
+  ghcr.io/zbest1000/manifold:1.1.0
+# open http://localhost:5000 and enter the token on the unlock screen
 ```
 
-Production build:
+`/data` holds the saved configuration, message history, historian spill files, the alert and audit logs and the OPC UA certificates. Keep it on a volume.
+
+To try everything without your own equipment, `docker compose up --build` starts Manifold with an MQTT broker, an OPC UA simulator, simulated Modbus, S7 and EtherNet/IP devices and a traffic generator, already connected. See [DOCKER.md](DOCKER.md).
+
+### From source
+
+Requires Node.js 20.19+ or 22.12+ (the OPC UA client and the client build tool need it).
 
 ```bash
-npm run build
-npm start              # serves API + built client on :5000
+npm run install:all    # root, server, client and mcp dependencies
+npm run dev            # UI on http://localhost:3000, API on :5000
 ```
 
-## Docker
-
-A prebuilt image serves the API and the built UI from one container (published on every `v*` tag):
+For a production-style run:
 
 ```bash
-docker run -p 5000:5000 -v manifold-data:/data ghcr.io/zbest1000/manifold:latest
-# open http://localhost:5000
+npm run build          # builds the client into client/dist
+npm start              # serves the API and the built UI on http://localhost:5000
 ```
 
-`/data` holds profiles, history, spill files, and the OPC UA PKI (`MANIFOLD_DATA_DIR`). Pass auth tokens as `-e` environment variables. A full demo stack (broker, OPC UA simulator, simulated Modbus / S7 / EtherNet/IP devices, traffic generator) is one command away — see [DOCKER.md](DOCKER.md).
+Next steps (connect a broker, add a device, map its tags) are in [Getting started](docs/wiki/Getting-Started.md).
 
-## Authentication
+## What it connects to
 
-Manifold is a control plane: it can publish to brokers, send Sparkplug commands, and start network scans. Before exposing it beyond localhost, set a token:
+| Source or target | How | Read-only? | Status |
+|---|---|---|---|
+| MQTT 3.1.1 and 5 brokers | subscribe; publish for mappings, pipelines and manual publish | No | Tested in CI against a real EMQX broker |
+| Sparkplug B | decode from MQTT; publish as an edge node; optional primary-host `STATE` | No | Tested against an in-process broker |
+| OPC UA servers | browse, read, subscribe; None, Sign, SignAndEncrypt | Yes | Tested against a real node-opcua server; Kepware, S7-1500, Ignition etc. not tested |
+| Modbus TCP | device driver (function codes 1-4 only) | Yes | Supported; tested against simulators only |
+| Siemens S7, EtherNet/IP (Logix), BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP | device drivers | Yes | Experimental; tested against simulators only |
+| Matter and Z-Wave networks | through the Matter Server and Z-Wave JS Server | Yes | Experimental; tested against stand-ins only |
+| Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly, ChirpStack, The Things Stack | read their MQTT traffic | Yes (never publishes to them) | Experimental; tested against a simulator of their documented messages |
+| CESMII SMIP, i3X | HTTP clients | Reads (SMIP also has a raw GraphQL passthrough) | Mock servers in the demo stack only; not tested against the real services |
+| InfluxDB v2, TimescaleDB / PostgreSQL | write through the outbox; read back for Trends | n/a | Tested in CI against real containers |
+| Timebase (Flow Software) | write through the outbox; read back for Trends | n/a | Tested in CI against a real container (1.3.4); some REST details unconfirmed |
+| Webhooks, Prometheus | alert events out; `/metrics` scraped | n/a | Tested |
 
-```bash
-MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) npm start
-```
+Payloads in JSON, text, Sparkplug B, CBOR, MessagePack, SenML, Protobuf and Avro are decoded. Driver details: [Devices and Drivers](docs/wiki/Devices-and-Drivers.md). IoT details: [IoT devices over MQTT](docs/wiki/IoT-Devices-over-MQTT.md).
 
-With a token set (`MANIFOLD_AUTH_TOKEN`, `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TOKENS`), all API routes and the socket handshake require `Authorization: Bearer <token>`, and the UI shows an unlock screen. `MANIFOLD_VIEWER_TOKEN` adds a read-only role, and `MANIFOLD_TOKENS` (`name:token:role,…`) issues named, individually revocable tokens whose names appear in the audit trail. Failed authentication is rate-limited per IP (on both the REST and socket paths). Without a token the server **binds `127.0.0.1` only** and warns at startup — an unauthenticated instance is reachable off-host only if you set `MANIFOLD_HOST=0.0.0.0` deliberately.
+## Security
 
-**Behaviour changes to know about when upgrading**
+- **Drivers cannot write.** Each driver builds every frame through one encoder with an allowlist of read services, and tests prove nothing else reaches a socket. Many plant protocols do not authenticate clients, so other machines on that network still can write.
+- **Tokens and roles.** `MANIFOLD_AUTH_TOKEN` (admin), `MANIFOLD_VIEWER_TOKEN` (read-only) or named tokens in `MANIFOLD_TOKENS` protect the REST API and the Socket.IO connection the same way.
+- **No token, local only.** Without a token the server binds `127.0.0.1` and answers only to loopback host names (add names with `MANIFOLD_ALLOWED_HOSTS`), so a web page you visit cannot drive it.
+- **Egress guard.** Network scans, alert webhooks, device targets and the outbound HTTP clients never reach cloud-metadata addresses, and reach loopback or private addresses only when you allow it (`MANIFOLD_ALLOW_PRIVATE_TARGETS`, `MANIFOLD_ALLOW_LOOPBACK_DEVICES`). Brokers, OPC UA servers and historians are configured by an admin and may be on the LAN, but refuse link-local and metadata addresses.
+- Reporting a vulnerability and the full deployment checklist: [SECURITY.md](SECURITY.md). Operating details: [Operations](docs/wiki/Operations.md).
 
-- A **viewer token alone enables auth**, and then nobody is admin: also set `MANIFOLD_AUTH_TOKEN` or an admin entry in `MANIFOLD_TOKENS`.
-- **Unknown roles are rejected** (an entry such as `bob:secret:readonly` used to become an admin token). Rejected entries are logged at startup, and if tokens were configured but all were rejected, auth stays on and every request is 401.
-- **`/metrics` needs a bearer token** (any role) when auth is on. Give Prometheus a viewer token, or set `MANIFOLD_METRICS_PUBLIC=1`. `/health` stays open.
-- **Alert webhooks now pass the egress guard**, so a webhook to `localhost`, a link-local address, or (without `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`) a private address is refused. Redirects are re-checked on every hop.
-- Viewers can call a short list of read-only POSTs (historian queries, pipeline preview, subscription resolve, schema inference, device tag validation, mapping preview and name suggestions, i3X reads, CESMII history) and no longer see alert webhook URLs.
-- **Alert webhook URLs are secrets for every role**: rule answers carry `hasWebhook` and `webhookOrigin` only. Saving a rule without `webhookUrl` (or with `null`) keeps the stored one, `""` removes it.
-- **A stored secret no longer follows an address change.** Editing a broker, broker admin API URL, historian, OPC UA connection or device and changing its scheme, host or port with the password, token or community left blank is refused (400 `secret-required`, naming the field): type the secret again. A name or path change still keeps it. Config import never restores a stored secret into an item whose endpoint differs.
-- **Brokers, OPC UA servers and historians refuse link-local and cloud-metadata targets** (169.254.0.0/16, fe80::/10, metadata host names), at save (403) and at connect. Loopback and LAN targets work as before.
-- A **broker canary topic** must start with `manifold/canary/` (a level named `canary` elsewhere is no longer accepted) and may not contain a command level (`set`, `get`, `cmnd`, `command`, ...).
-- `GET /api/recorder/:id/series` needs `tags` (1-10), and a recording's `maxBytes` is capped at 4 GiB.
-- **Device targets** are guarded: loopback hosts need `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` and private ranges need `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`.
-- Sparkplug messages are delivered **in order and un-coalesced** (a bounded queue; overflow is counted, not silent), and mappings **publish a Bad-quality envelope when a source goes offline** and a retained `_status` topic. The mapping editor leaves **Retain values** off by default.
-- The historian spill is now **segment files plus a cursor** under `outbox/` (a legacy `<id>.jsonl` is still read first and drained, no conversion needed), and permanently rejected points go to a dead-letter file.
-- `audit.jsonl` rotates by size and now records rejected requests (401/403/429).
-- Config export keeps device tag `key` fields (an earlier build blanked them) and an import applies immediately.
-- **UI redesign.** Every page was rebuilt on a new design system, the Tags wizard became the mapping editor, Devices became a table with a drawer and a full-page form, and the old per-canvas dark styles gave way to token-driven themes. Bookmarks to routes still work. The graph style presets are now Standard, Schematic and Monochrome (old ids map to the closest one).
-- Device live values reach the browser as **one `device-values` Socket.IO event per 250 ms flush** (`{ batch: [...] }`), delivered reliably when the flush carries a quality change; anything that listens to the old per-device events must be updated.
-- Saving a device now validates driver options (and S7 rack/slot), names must be unique, a historian that a route, recording or mapping still uses cannot be deleted (409), and pipeline, model and recorder topics are validated.
-- **Not verified on real hardware:** no device driver and no IoT convention has been run against real devices, and the Timebase REST behaviour is unconfirmed. See [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md) and the [changelog's known issues](CHANGELOG.md).
+## Configuration
 
-Connection profiles persist in `server/data/profiles.json` (mode 0600; directory configurable via `MANIFOLD_DATA_DIR`, restore disabled via `MANIFOLD_NO_RESTORE=1`). The file may contain broker credentials, so protect the host.
-
-### Environment variables
-
-Every variable the server reads. All are optional.
+Manifold is configured in the UI and stored in `<data dir>/profiles.json` (mode 0600; it contains broker and historian credentials, so protect the host). The server process reads environment variables (and a `.env` file in its working directory). All are optional. The ones most deployments touch:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -152,15 +157,21 @@ Every variable the server reads. All are optional.
 | `MANIFOLD_AUTH_TOKEN` | _(none)_ | Admin bearer token. With any of the three token variables set, auth is on; with none set the server binds loopback only |
 | `MANIFOLD_VIEWER_TOKEN` | _(none)_ | Read-only token (GETs and a short list of read-only POSTs succeed, other mutations 403). Setting it alone turns auth on, so also set an admin token |
 | `MANIFOLD_TOKENS` | _(none)_ | Named revocable tokens: `name:token[:role]`, e.g. `alice:secret:admin,grafana:tok:viewer`. Role is `admin` or `viewer` (default `admin` when omitted); an unrecognised role rejects that entry with a startup error (never treated as admin), and a token containing `:` needs an explicit role (`bot:ab:cd:viewer`). If entries are configured but all rejected, auth stays on (everything 401) |
-| `MANIFOLD_METRICS_PUBLIC` | `0` | Set to `1` to leave `/metrics` open when auth is on. Otherwise `/metrics` needs a bearer token of any role |
 | `MANIFOLD_HOST` | `127.0.0.1` (open) / `0.0.0.0` (auth on) | Bind address; set to `0.0.0.0` to expose an open instance (not advised) |
 | `MANIFOLD_ALLOWED_HOSTS` | _(none)_ | Open instance on loopback only: extra host names (comma-separated) the server answers to besides `localhost`, `127.x` and `::1`. Any other `Host` is refused with 421, so a DNS-rebinding web page cannot drive an unauthenticated instance |
-| `CLIENT_URL` | `http://localhost:3000` | Allowed CORS origin (dev client); also the one cross-origin page allowed to open the Socket.IO connection (same-origin pages and non-browser clients always may) |
 | `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `0` | Set to `1` to let the Discovery scan, i3X/CESMII/broker-admin clients, alert webhooks and device drivers reach RFC1918/LAN targets (needed for Discovery, on-prem i3X/CESMII and PLCs on a plant network; safe only on a trusted network). Fail-closed by default; cloud-metadata link-local is **always** blocked, loopback is blocked except as below. The server warns at startup when this is on |
+| `MANIFOLD_DATA_DIR` | `server/data` (`/data` in the image) | Where profiles (and their backups), history, outbox spill and dead-letters, audit log, recordings and OPC UA PKI live |
+
+<details>
+<summary>Every other variable the server reads</summary>
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MANIFOLD_METRICS_PUBLIC` | `0` | Set to `1` to leave `/metrics` open when auth is on. Otherwise `/metrics` needs a bearer token of any role |
+| `CLIENT_URL` | `http://localhost:3000` | Allowed CORS origin (dev client); also the one cross-origin page allowed to open the Socket.IO connection (same-origin pages and non-browser clients always may) |
 | `MANIFOLD_ALLOW_LOOPBACK_DEVICES` | `0` | Set to `1` to let **device drivers** and the **Discovery scan** target `127.0.0.0/8` and `::1` (local simulators, such as `node server/tools/simulators.js`). Does not affect webhooks or other clients; i3X is not probed on loopback. Leave unset in production; the server warns at startup when it is on |
 | `MANIFOLD_DISCOVERY_MAX_HOSTS` | `1024` | Largest range one Discovery scan may cover (a /22). A bigger range is refused with its size and expected duration; raise it only if you mean to |
-| `MANIFOLD_DATA_DIR` | `server/data` | Where profiles (and their backups), history, outbox spill and dead-letters, audit log, recordings and OPC UA PKI live |
-| `MANIFOLD_NO_RESTORE` | `0` | Skip reconnecting saved profiles on startup |
+| `MANIFOLD_NO_RESTORE` | `0` | Set to `1` to skip reconnecting saved profiles on startup |
 | `MANIFOLD_RATE_MAX` / `MANIFOLD_RATE_WINDOW_MS` | `600` / `60000` | General `/api` request rate limit |
 | `MANIFOLD_TRUST_PROXY` | _(off)_ | Behind a reverse proxy: the number of proxy hops in front of Manifold (`1` for one proxy) or the proxy addresses/subnets, comma-separated (`10.0.0.5,10.0.1.0/24`, or `loopback`). Then the rate limit, the auth-failure throttle and the audit log use the client address from `X-Forwarded-For`; off, every client behind the proxy shares the proxy's address (one rate-limit bucket for everyone). `true` (trust any hop, so any client could choose its own address) is refused with a startup warning |
 | `MANIFOLD_AUDIT_MAX_BYTES` | `10485760` (10 MiB) | Size at which `audit.jsonl` rotates |
@@ -179,22 +190,15 @@ Every variable the server reads. All are optional.
 | `MANIFOLD_IOT_MAX_TAGS` | `50000` | IoT-over-MQTT tags kept per broker |
 | `MANIFOLD_RETAINED_LEDGER` | `<data dir>/binding-retained.json` | File that records the retained topics mappings own, so orphaned retained topics can be cleared after a restart or an edit made while the target broker was away |
 
-The server also reads a `.env` file in its working directory (`dotenv`). Every `MANIFOLD_*`, `PORT` and `CLIENT_URL` variable that `grep -rn "process.env\." server/` finds outside tests is in the table above (checked November 2026). Test-only variables: `INTEGRATION`, `INTEGRATION_EMQX_HOST`/`_PORT`/`_WS_PORT`, `INTEGRATION_INFLUX_URL`/`_TOKEN`/`_ORG`/`_BUCKET`, `INTEGRATION_TSDB_HOST`/`_PORT` and `INTEGRATION_TIMEBASE_URL` select the real-service integration test; the Playwright suite uses `E2E_PORT` and `PW_CHROMIUM_PATH`.
+The two tables list every `MANIFOLD_*`, `PORT` and `CLIENT_URL` variable that `grep -rn "process.env" server/` finds outside tests (checked November 2026). Test-only variables: `INTEGRATION`, `INTEGRATION_EMQX_HOST`/`_PORT`/`_WS_PORT`, `INTEGRATION_INFLUX_URL`/`_TOKEN`/`_ORG`/`_BUCKET`, `INTEGRATION_TSDB_HOST`/`_PORT` and `INTEGRATION_TIMEBASE_URL` select the real-service integration test; `MANIFOLD_OPCUA_TEST_CERT_CACHE` caches the OPC UA test server's certificates; the Playwright suite uses `E2E_PORT` and `PW_CHROMIUM_PATH`. The MCP server reads `MANIFOLD_API_URL` and `MANIFOLD_AUTH_TOKEN`; the simulator tool reads `SIM_HOST`, `SIM_MODBUS_PORT`, `SIM_S7_PORT` and `SIM_EIP_PORT` (see [DOCKER.md](DOCKER.md#simulated-devices)).
 
-The MCP server (`mcp/`) reads `MANIFOLD_API_URL` and `MANIFOLD_AUTH_TOKEN`. The simulator tool reads `SIM_HOST`, `SIM_MODBUS_PORT`, `SIM_S7_PORT`, `SIM_EIP_PORT` (see [DOCKER.md](DOCKER.md#simulated-devices)).
+</details>
 
-## Project status: what is verified
-
-- **Device drivers and IoT conventions.** Every driver was exercised only against the in-process simulators in `server/test/support/`, which were written together with the drivers, and the IoT conventions only against a simulator of the projects' documented MQTT messages. **No driver and no convention has been run against real hardware.** Every driver except Modbus TCP carries an *Experimental* badge in the UI.
-- **Public test-broker presets.** Their host names and ports were written from memory, not checked against the operators' current documentation. The ordered checklist for an engineer with a real PLC is [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md).
-- **Timebase.** The Timebase REST API reference could not be read when the writer was built, so details of the direct historian path (ordering of old samples, the shape of a Bad sample without a value, resolution, quality codes, batch limits, tokens) are **unverified**. InfluxDB and TimescaleDB are exercised against real containers in CI.
-- **WebGL and 3D.** The WebGL and three.js canvases were only run on a software renderer (SwiftShader) in headless Chromium; their performance on real GPUs is untested.
-- **Accessibility.** Automated axe checks on every route (serious and critical findings fail CI), in both themes at 1440 and 390 px. No screen-reader or keyboard-only session was recorded as part of the test suite beyond the specific keyboard paths the specs drive.
-- **Known gaps** (full list in the [changelog](CHANGELOG.md) and [review](docs/REVIEW-2026-11.md)): MQTT, OPC UA and historian endpoints are outside the egress guard by decision; CoAP over DTLS is not supported.
+Limits and their settings are explained in [Operations: limits](docs/wiki/Operations.md#limits-that-protect-the-server). Upgrading from an earlier build? Read [Operations: upgrade notes](docs/wiki/Operations.md#upgrade-notes-behaviour-changes-an-operator-must-know) and the [changelog](CHANGELOG.md).
 
 ## MCP server
 
-Point any MCP client at `mcp/index.js` with the backend running:
+The MCP server (`mcp/`) lets an MCP client such as an AI agent use Manifold through its REST API: 83 tools for brokers, topics, the UNS, pipelines, historians, mappings, alerts, IoT devices, OPC UA, CESMII and i3X. There are no device or device-profile management tools yet. Run it next to a running backend:
 
 ```json
 {
@@ -202,48 +206,35 @@ Point any MCP client at `mcp/index.js` with the backend running:
     "manifold": {
       "command": "node",
       "args": ["/absolute/path/to/mcp/index.js"],
-      "env": { "MANIFOLD_API_URL": "http://localhost:5000" }
+      "env": { "MANIFOLD_API_URL": "http://localhost:5000", "MANIFOLD_AUTH_TOKEN": "<token, when auth is on>" }
     }
   }
 }
 ```
 
-83 tools cover MQTT (including broker posture, canary and presets), UNS, DataOps (including saves/deletes for every engine, codecs, alerts with active alarms and history), IoT devices over MQTT, OPC UA, CESMII, and i3X; `binding_save` accepts device, device-profile, OPC UA and Sparkplug sources, but there are no device or profile management tools yet. The full list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools). Set `MANIFOLD_AUTH_TOKEN` in the MCP server's environment when the backend runs authenticated.
+Tools that change state say so in their descriptions, and every call is audited like a UI action. The tool list is in [ARCHITECTURE.md](ARCHITECTURE.md#mcp-tools).
 
-## Testing
+## Project status
 
-```bash
-cd server && npm test    # node:test, includes real-broker integration
-cd client && npm test    # Vitest over the pure logic modules
-cd client && npm run build && npm run e2e   # Playwright against the built client and a real backend
-npm run lint             # ESLint for server, client and mcp
-```
+This is the first public release. What has and has not been proven:
 
-CI additionally runs an integration job against real EMQX, InfluxDB, TimescaleDB, and Timebase containers. Details in [ARCHITECTURE.md](ARCHITECTURE.md#testing).
+- **Proven in CI:** MQTT intake and MQTT 5 against a real EMQX broker; writes and Trends read-back against real InfluxDB, TimescaleDB and Timebase containers; OPC UA (including Sign and SignAndEncrypt) against a real node-opcua server; the UI in both themes with automated accessibility checks.
+- **Not proven on real hardware:** no device driver and no IoT convention has been run against a real device. Every driver except Modbus TCP is marked *Experimental* in the UI. If you have a PLC, the checklist is [Verifying on real hardware](docs/wiki/Verifying-on-Real-Hardware.md).
+- **Not confirmed:** some Timebase REST behaviour (ordering of old samples, Bad samples without a value, quality codes); the public test-broker presets in the connect form were written from memory; WebGL and 3D views were only run on a software renderer.
 
-### Documentation screenshots
+Known issues are listed in the [changelog](CHANGELOG.md); release steps and verification status are in [docs/RELEASING.md](docs/RELEASING.md).
 
-The images in `docs/wiki/images/` (and the copies in `site/assets/`) are generated, not hand-made:
+## Development and testing
 
 ```bash
-cd client && npm run build && npm run docs:shots                # all of them
-npm run docs:shots -- --only overview,trends                    # some of them
-npm run docs:shots -- --out /tmp/shots                          # somewhere else
-npm run docs:shots -- --serve    # seed the demo plant and keep it running; then, in another shell:
-npm run docs:shots -- --attach --only opcua                     # capture against it
+npm run lint                                   # ESLint for server, client and mcp
+cd server && npm test                          # node:test, including in-process broker and OPC UA server tests
+cd client && npm test                          # Vitest over the client's logic modules
+cd client && npm run build && npm run e2e      # Playwright against the built client and a real backend
 ```
 
-`client/scripts/capture-docs.js` starts a demo plant on 127.0.0.1 from the test simulators (a plant MQTT broker with an
-ISA-95 namespace, Sparkplug B edge nodes and some CBOR, MessagePack, SenML and Protobuf payloads; a facilities broker
-with Zigbee2MQTT, Home Assistant, Tasmota, Shelly, Z-Wave JS UI and ChirpStack traffic; Modbus TCP, S7, EtherNet/IP,
-BACnet/IP, SNMP, HTTP/JSON, MTConnect and CoAP simulators, Matter Server and Z-Wave JS Server stand-ins, a small OPC UA
-server and two historian stand-ins), the real backend on a throwaway data directory, seeds it through the REST API
-(devices, a profile, an OPC UA connection, IoT detection, codecs, mappings, routes, historians, alert rules with
-firing, acknowledged and cleared alarms, a recording) and drives Chromium: 1440 x 900
-at device scale 2, phone images 390 x 844, dark unless the name ends in `-light`. Nothing leaves the machine. Set
-`PW_CHROMIUM_PATH` to use a browser other than Playwright's own. When a page changes, update its step in the script's
-`shots()` list, re-run, and look at every image before committing.
+CI also runs an integration job against real EMQX, InfluxDB, TimescaleDB and Timebase containers. The screenshots in `docs/wiki/images/` are generated by `cd client && npm run build && npm run docs:shots`, which starts a simulated plant and captures every page; see [How the screenshots are made](docs/wiki/User-Interface.md#how-the-screenshots-are-made). Code layout and the test strategy: [ARCHITECTURE.md](ARCHITECTURE.md#repository-layout).
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
