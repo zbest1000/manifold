@@ -17,7 +17,7 @@
     "helmet": "^7.2.0",
     "mqtt": "^5.16.1",
     "node-opcua-client": "^2.187.34",
-    "pg": "^8.22.0",
+    "pg": "^8.23.1",
     "protobufjs": "^8.7.1",
     "socket.io": "^4.8.3",
     "undici": "^6.27.0"
