@@ -4,7 +4,7 @@
  * DriverSupervisor (main process): forks and watches driver host processes
  * (server/drivers/host.js), one per protocol (or per isolated device), and
  * relays their samples and device states. See
- * docs/design/southbound-drivers.md section 4.2.
+ * ARCHITECTURE.md (Southbound device drivers).
  */
 
 const { EventEmitter } = require('events');

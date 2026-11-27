@@ -17,6 +17,7 @@ import { useEditPresence } from './useEditPresence';
 import { overwriteBody } from './staleEdit';
 import { useSaveFlow } from './useSaveFlow';
 import { useEditorData, tagDefsFor } from './useEditorData';
+import { useIotTagDefs } from '../../devices/iotHooks';
 import { usePreview } from '../usePreview';
 import {
   stateFromBinding, newState, withTagDefs, switchSelectMode, buildMapping, focusDraft, rowVerdict, publishingRows, validateMapping, visibleErrors,
@@ -57,7 +58,18 @@ export default function MappingEditor({ spec, brokers, profiles = [], sources = 
       ? stateFromBinding(editing, { brokers })
       : newState({
           srcType,
-          ref: srcType === 'device' ? { deviceId } : srcType === 'opcua' ? { connectionId: spec.source?.id } : srcType === 'device-profile' ? { profileId } : srcType === 'sparkplug' ? spSource(spec) : { brokerId: spec.source?.id, ...(spec.filter ? { filter: spec.filter } : {}) },
+          ref:
+            srcType === 'device'
+              ? { deviceId }
+              : srcType === 'opcua'
+                ? { connectionId: spec.source?.id }
+                : srcType === 'device-profile'
+                  ? { profileId }
+                  : srcType === 'sparkplug'
+                    ? spSource(spec)
+                    : srcType === 'iot'
+                      ? { brokerId: spec.source?.brokerId, deviceId: spec.source?.deviceId }
+                      : { brokerId: spec.source?.id, ...(spec.filter ? { filter: spec.filter } : {}) },
           picked: spec.picked || [],
           brokers,
           selectMode: isProfile ? 'rules' : spec.selectMode || 'list'
@@ -68,10 +80,12 @@ export default function MappingEditor({ spec, brokers, profiles = [], sources = 
   const { brokerId: srcBroker, filter: srcFilter } = state.ref;
   const mqttFilter = useMemo(() => (filterRules ? { brokerId: srcBroker, filter: String(srcFilter || '').trim() } : null), [filterRules, srcBroker, srcFilter]);
   const data = useEditorData({ srcType, deviceId, profileId, opcuaTags, mqttFilter });
+  // An IoT device: its tags (with the metadata the convention derived) are the tag definitions.
+  const iotDefs = useIotTagDefs(srcType === 'iot' ? state.ref : null);
   const devices = data.devices.data;
   const schema = data.schema.data;
   const mqttDefs = useMemo(() => (mqttFilter && data.suggest.status === 'ok' ? tagDefsFromSuggest(data.suggest.data) : null), [mqttFilter, data.suggest.status, data.suggest.data]);
-  const tagDefs = useMemo(() => (srcType === 'mqtt' ? mqttDefs : tagDefsFor({ srcType, deviceId, profile, devices })), [srcType, mqttDefs, deviceId, profile, devices]);
+  const tagDefs = useMemo(() => (srcType === 'mqtt' ? mqttDefs : srcType === 'iot' ? iotDefs : tagDefsFor({ srcType, deviceId, profile, devices })), [srcType, mqttDefs, iotDefs, deviceId, profile, devices]);
   const device = useMemo(() => (devices || []).find((d) => d.id === deviceId) || null, [devices, deviceId]);
   const suggestions = useMemo(() => (data.suggest.data && srcType !== 'mqtt' ? suggestionMap(data.suggest.data.tags) : null), [data.suggest.data, srcType]);
 
@@ -82,7 +96,7 @@ export default function MappingEditor({ spec, brokers, profiles = [], sources = 
 
   // Fold in the device definitions and suggestions once they arrive (adjusted while rendering,
   // once per profile, rather than in an effect).
-  const needsDefs = srcType === 'device' || isProfile || Boolean(mqttFilter);
+  const needsDefs = srcType === 'device' || srcType === 'iot' || isProfile || Boolean(mqttFilter);
   const ready = (!needsDefs || tagDefs !== null) && (data.suggest.status !== 'loading' || srcType === 'mqtt') && (!isProfile || data.devices.status !== 'loading');
   const seedKey = ready ? `${profileId}` : null;
   // The topics under an MQTT filter change with the filter: fold each new list in (rows keep their settings).
@@ -200,7 +214,7 @@ export default function MappingEditor({ spec, brokers, profiles = [], sources = 
   const sourceLabel = useMemo(() => {
     if (isProfile) return profile ? `Device profile ${profile.name} · ${profile.instances?.length || 0} instance${profile.instances?.length === 1 ? '' : 's'}` : 'Device profile';
     const s = editing?.source || {};
-    const id = srcType === 'device' ? deviceId : srcType === 'opcua' ? s.connectionId || spec.source?.id : s.brokerId || spec.source?.id;
+    const id = srcType === 'device' ? deviceId : srcType === 'opcua' ? s.connectionId || spec.source?.id : srcType === 'iot' ? (s.brokerId ? `${s.brokerId}|${s.deviceId}` : spec.source?.id) : s.brokerId || spec.source?.id;
     const found = sources.find((x) => x.type === srcType && x.id === id);
     return found?.label || spec.source?.label || id || '';
   }, [isProfile, profile, editing, srcType, deviceId, spec.source, sources]);

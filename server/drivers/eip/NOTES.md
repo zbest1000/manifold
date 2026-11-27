@@ -1,20 +1,20 @@
 # EtherNet/IP (Logix) driver: decision record and hardware checklist
 
 Status: **experimental** (`describe().experimental === true`). Tested only
-against `server/test/support/eipSimulator.js`. The same person wrote the
-simulator and the driver, so the tests show the two agree with each other.
+against `server/test/support/eipSimulator.js`, which was written together
+with the driver, so the tests show the two agree with each other.
 They do not show that either one matches real firmware.
 
 ## Decision: our own read-only CIP client on `node:net`, no library
 
-The design doc (section 5.3) said to wrap an existing library. The spike
+The original design said to wrap an existing library. The spike
 checked both candidates against the hard requirements for this task. Both
 are MIT licensed. Source was inspected from `npm pack`.
 
 | Requirement | `ethernet-ip` 2.0.0 | `st-ethernet-ip` 2.7.5 |
 |---|---|---|
 | (a) every outgoing frame passes through one function we control | Partly. `TCPTransport.write` is a single sink and the transport can be replaced. But the CIP encoders (`plc/*.js`, write services included) build raw bytes, so an allowlist would have to re-parse them after the fact. `doUnregisterSession` also writes to the transport directly. | No. `ENIP extends net.Socket`, and writes happen through `this.write` in several places (`connect`, `write_cip`, `destroy`). |
-| (b) per-request deadline, socket destroyed on timeout, no hidden retries | **Fails.** On timeout, `RequestPipeline` rejects the request and moves straight on to the next one on the same socket. `handleData` then hands *any* complete packet to whichever request is pending, with no session, context or sequence check. A late reply is therefore matched to the next request: failure #2 in the design doc. A built-in `Reconnector` also runs exponential-backoff reconnects (on by default). The port is hard-coded to 44818 (`EIP_PORT`), so it cannot be pointed at a simulator. | **Fails.** `promiseTimeout` rejects but does not destroy the socket. Replies are dispatched as events keyed by service code, so a late reply resolves the next request with the same service. `ControllerManager` has its own `setTimeout` reconnect loop. |
+| (b) per-request deadline, socket destroyed on timeout, no hidden retries | **Fails.** On timeout, `RequestPipeline` rejects the request and moves straight on to the next one on the same socket. `handleData` then hands *any* complete packet to whichever request is pending, with no session, context or sequence check. A late reply is therefore matched to the next request: the second design rule in `docs/design/driver-contract.md`. A built-in `Reconnector` also runs exponential-backoff reconnects (on by default). The port is hard-coded to 44818 (`EIP_PORT`), so it cannot be pointed at a simulator. | **Fails.** `promiseTimeout` rejects but does not destroy the socket. Replies are dispatched as events keyed by service code, so a late reply resolves the next request with the same service. `ControllerManager` has its own `setTimeout` reconnect loop. |
 | (c) per-item status for Multiple Service Packet | Yes | Partly. `readTagGroup` rejects the whole group. |
 | (d) no uncaught exceptions on socket errors | `SessionManager` re-emits `'error'`, which is fatal if nobody listens | `throw` inside async event handlers |
 | (e) licence | MIT | MIT. Pulls in 4 dependencies (`task-easy`, `int64-buffer`, ...). |
@@ -115,7 +115,9 @@ each check.
    Access) is one USINT with 0 = Read/Write, 2 = Read Only, 3 = None, and
    that pre-v18 firmware rejects attribute 10 with status 0x14, 0x09 or
    0x0A. On any of those we retry without it. Also check paging: status
-   0x06, then continue at last instance + 1.
+   0x06, then continue at last instance + 1. (The driver refuses a
+   continuation that does not advance and caps a scope at 200,000 symbols,
+   so a faulty controller cannot keep it paging forever.)
 7. **Symbol type word.** Bits 13–14 hold the dimension count, bit 12 marks
    system symbols, and bit 15 marks a structure. Also check what a
    `Program:X` entry and the `Map:`, `Task:` and `Cxn:` entries look like.
@@ -177,5 +179,5 @@ each check.
   numbers, the `- 21` template formula, template parsing behaviour, and the
   external access minimum version v18.
 - libplctag wiki and issues #437 (Large Forward Open unsupported) and #454
-  (Omron limit), as listed in the design doc. Used for behaviour only; no
+  (Omron limit). Used for behaviour only; no
   code was used.

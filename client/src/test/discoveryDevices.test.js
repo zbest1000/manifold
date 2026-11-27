@@ -15,7 +15,25 @@ describe('scan options', () => {
     expect(buildScanOptions({ selected: { 'modbus-tcp': '502', s7: '102, 1102', 'ethernet-ip': '' } })).toEqual({ modbusPorts: [502], s7Ports: [102, 1102], eipPorts: [44818] });
   });
   it('knows the default ports', () => {
-    expect(Object.fromEntries(SCAN_PROTOCOLS.map((p) => [p.id, p.port]))).toEqual({ 'modbus-tcp': 502, s7: 102, 'ethernet-ip': 44818 });
+    expect(Object.fromEntries(SCAN_PROTOCOLS.map((p) => [p.id, p.port]))).toEqual({ 'modbus-tcp': 502, s7: 102, 'ethernet-ip': 44818, 'bacnet-ip': 47808, coap: 5683, snmp: 161 });
+  });
+  it('BACnet/IP is scanned only when ticked, on its UDP port', () => {
+    expect(buildScanOptions({ selected: { 'bacnet-ip': '' } })).toEqual({ bacnetPorts: [47808] });
+  });
+  it('BACnet/IP, CoAP and SNMP ticked together send every UDP field', () => {
+    expect(buildScanOptions({ selected: { 'bacnet-ip': '', coap: '5683' } })).toEqual({ bacnetPorts: [47808], coapPorts: [5683] });
+    expect(buildScanOptions({ selected: { 'bacnet-ip': '', coap: '', snmp: '161, 1161' } })).toEqual({ bacnetPorts: [47808], coapPorts: [5683], snmpPorts: [161, 1161] });
+  });
+  it('CoAP is its own opt-in UDP field', () => {
+    expect(buildScanOptions({ selected: { coap: '' } })).toEqual({ coapPorts: [5683] });
+    expect(buildScanOptions({ selected: { coap: '5683, 5684' } })).toEqual({ coapPorts: [5683, 5684] });
+  });
+  it('describes a CoAP result in one line', () => {
+    const r = { kind: 'coap', protocol: 'coap', verified: true, identity: { resourceCount: 12, observableCount: 2, resources: ['/temp', '/hum', '/json', '/x'] }, suggestedDevice: { name: 'coap 10.0.0.9', protocol: 'coap', host: '10.0.0.9', port: 5683 } };
+    expect(identityText(r)).toBe('CoAP server · 12 resources · 2 observable · /temp, /hum, /json');
+    expect(identityText({ ...r, identity: { resourceCount: 1, partial: true } })).toBe('CoAP server · 1+ resources');
+    expect(identityText({ ...r, identity: { code: '4.04 Not Found', note: 'Answered, but without a resource listing.' } })).toBe('CoAP server · Answered, but without a resource listing');
+    expect(draftFromResult(r)).toEqual({ name: 'coap 10.0.0.9', protocol: 'coap', host: '10.0.0.9', port: 5683 });
   });
   it('parses port lists and reports junk', () => {
     expect(parsePorts('502, 1502;502 x 70000')).toEqual({ ports: [502, 1502], bad: ['x', '70000'] });
@@ -31,6 +49,13 @@ describe('results to device drafts', () => {
     expect(draftFromResult(modbus)).toEqual({ name: 'modbus-tcp 10.0.0.5', protocol: 'modbus-tcp', host: '10.0.0.5', port: 502, unitId: 1 });
     expect(draftFromResult(s7)).toMatchObject({ protocol: 's7', port: 102, rack: 0, slot: 1 });
     expect(draftFromResult(eip)).toEqual({ name: '1756-L83E 10.0.0.7', protocol: 'ethernet-ip', host: '10.0.0.7', port: 44818 });
+  });
+  it('BACnet/IP: the device instance is carried into the draft and the identity text', () => {
+    const bac = { host: '10.0.0.9', port: 47808, kind: 'bacnet', verified: true, protocol: 'bacnet-ip', identity: { deviceInstance: 260001, vendorId: 5, vendorName: 'Acme Controls', modelName: 'AHU-9', objectName: 'AHU 9', firmwareRevision: '2.1' }, suggestedDevice: { name: 'AHU-9 10.0.0.9', protocol: 'bacnet-ip', host: '10.0.0.9', port: 47808, deviceInstance: 260001 } };
+    expect(isDeviceResult(bac)).toBe(true);
+    expect(draftFromResult(bac)).toEqual({ name: 'AHU-9 10.0.0.9', protocol: 'bacnet-ip', host: '10.0.0.9', port: 47808, deviceInstance: 260001 });
+    expect(identityText(bac)).toBe('AHU-9 · Acme Controls · device 260001 · "AHU 9" · firmware 2.1');
+    expect(identityText({ protocol: 'bacnet-ip', identity: { answered: 'reject' } })).toMatch(/identity not read/);
   });
   it('lists only devices, once per address, in address order', () => {
     const drafts = draftsFromResults([eip, mqtt, s7, modbus, { ...modbus }]);

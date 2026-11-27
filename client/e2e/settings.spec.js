@@ -6,14 +6,20 @@ import path from 'node:path';
 
 /**
  * Settings: the tabs live in the URL, config export/import (the same file can be imported twice in a row)
- * and alert rules (editing opens the editor with focus in it; deleting asks first and says it happened).
+ * and alert rules, now on the Alerts page (editing opens the editor with focus in it; deleting asks first and says it happened).
  */
 test('the Settings tab is part of the URL and the theme switch agrees with the sidebar', async ({ page }) => {
+  // alert rules moved to the Alerts page: the old Settings tab URL lands there
   await page.goto('/settings?tab=alerts');
-  await expect(page.getByRole('tab', { name: 'Alert rules' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page).toHaveURL(/\/alerts\?tab=rules$/);
+  await expect(page.getByRole('tab', { name: /^Rules/ })).toHaveAttribute('aria-selected', 'true');
+  await page.goto('/settings?tab=audit');
+  await expect(page.getByRole('tab', { name: 'Audit trail' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'General' }).click();
   await expect(page).not.toHaveURL(/tab=/);
   await expect(page.getByRole('heading', { name: 'Session' })).toBeVisible();
+  // and Settings keeps a way to them
+  await expect(page.getByRole('link', { name: 'Open alert rules' })).toHaveAttribute('href', '/alerts?tab=rules');
 
   await page.getByRole('radio', { name: 'Light' }).first().click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -48,9 +54,9 @@ test('config: export downloads a file, importing the same file twice asks and re
   fs.rmSync(path.dirname(file), { recursive: true, force: true });
 });
 
-test('alert rules: add, edit (the editor is focused), delete with confirmation', async ({ page }) => {
+test('alert rules (Alerts page): add, edit (the editor is focused), delete with confirmation', async ({ page }) => {
   const topic = `plant/${unique('quiet')}/x`;
-  await page.goto('/settings?tab=alerts');
+  await page.goto('/alerts?tab=rules');
   await page.getByRole('button', { name: 'Add rule' }).click();
   const form = page.getByRole('dialog', { name: 'Add alert rule' });
   await form.getByRole('combobox', { name: /^Type/ }).selectOption('topic-silent');

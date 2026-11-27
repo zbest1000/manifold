@@ -23,6 +23,18 @@ describe('app-wide warnings for events that used to be silent', () => {
     expect(toast).toHaveBeenCalledTimes(1);
   });
 
+  it('a root-wildcard fallback is logged and toasted, and the stats push carries the canary state', () => {
+    toast.mockClear();
+    fire('subscription-fallback', { brokerId: 'b1', topic: '#', fallback: '+/#', reason: 'ACL' });
+    const entry = useStore.getState().logs.find((l) => /subscribed "\+\/#" instead/.test(l.message));
+    expect(entry.level).toBe('warning');
+    expect(toast).toHaveBeenCalledTimes(1);
+    fire('broker-stats', [{ brokerId: 'b1', status: 'connected', metrics: {}, canary: { state: 'failing' } }]);
+    expect(useStore.getState().brokers.find((b) => b.id === 'b1').canaryState).toEqual({ state: 'failing' });
+    fire('broker-stats', [{ brokerId: 'b1', status: 'connected', metrics: {}, canary: null }]);
+    expect(useStore.getState().brokers.find((b) => b.id === 'b1').canaryState).toBeNull();
+  });
+
   it('contract violations are all logged, toasted at most once a minute per contract', () => {
     toast.mockClear();
     const evt = { contractId: 'c1', contractName: 'Line temps', brokerId: 'b1', topic: 'plant/t', problems: [{ path: 'temp', kind: 'type-changed' }] };

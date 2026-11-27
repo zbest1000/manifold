@@ -428,7 +428,19 @@ export default function TopicGraph() {
         />
         {view === 'graph' && (
           <>
-            {!showAll && <GraphSearch inline nodes={graph.nodes} onMatches={setMatchIds} onFit={(ids) => graphRef.current?.fitTo(ids)} className="min-w-[10rem] max-w-xs flex-1" />}
+            {!showAll && (
+              <GraphSearch
+                inline
+                nodes={graph.nodes}
+                onMatches={setMatchIds}
+                onFit={(ids) => graphRef.current?.fitTo(ids)}
+                onPick={(n) => {
+                  selectNode(n);
+                  graphRef.current?.fitTo(new Set([n.id]));
+                }}
+                className="min-w-[10rem] max-w-xs flex-1"
+              />
+            )}
             {(graph.capped || showAll) && (
               <ToolToggle
                 pressed={showAll}

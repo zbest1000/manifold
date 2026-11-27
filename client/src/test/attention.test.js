@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { engineAttention, isGrowing, recordPending } from '@/lib/attention';
+import { engineAttention, isGrowing, recordPending, storageAttention } from '@/lib/attention';
 
 describe('Overview: needs attention', () => {
   it('lists nothing when all is well', () => {
@@ -30,23 +30,37 @@ describe('Overview: needs attention', () => {
     expect(growing[1].detail).toContain('30 points pending and growing');
   });
 
-  it('alert rules firing, breached and broken link to the alert rules', () => {
+  it('alert rules firing and breached link to their alarm on the Alerts page; broken ones to the rules', () => {
     const items = engineAttention({
       alertRules: [
-        { id: 'a1', name: 'Hot tank', state: { state: 'firing', topic: 'plant/t', value: 99 } },
-        { id: 'a2', name: 'Warm', state: { state: 'breached', value: 70, remainingMs: 4200 } },
-        { id: 'a3', name: 'Lost broker', state: { state: 'broken', broken: [{ kind: 'broker', id: 'b9', field: 'brokerId' }] } }
+        { id: 'a1', name: 'Hot tank', type: 'value-threshold', state: { state: 'firing', topic: 'plant/t', value: 99, unacknowledged: 1 } },
+        { id: 'a2', name: 'Warm', type: 'value-threshold', state: { state: 'breached', topic: 'plant/w', value: 70, remainingMs: 4200 } },
+        { id: 'a3', name: 'Lost broker', state: { state: 'broken', broken: [{ kind: 'broker', id: 'b9', field: 'brokerId' }] } },
+        { id: 'a4', name: 'Quiet line', type: 'branch-silent', state: { state: 'firing', unacknowledged: 0 } }
       ],
       broken: [{ type: 'alert rule', id: 'a3', name: 'Lost broker', missing: [{ kind: 'broker', id: 'b9' }] }]
     });
     expect(items.map((i) => [i.what, i.tone, i.to])).toEqual([
-      ['Alert Hot tank', 'bad', '/settings?tab=alerts'],
-      ['Alert Warm', 'warn', '/settings?tab=alerts'],
-      ['Alert Lost broker', 'bad', '/settings?tab=alerts']
+      ['Alert Hot tank', 'bad', '/alerts?alarm=a1%7Cplant%2Ft'],
+      ['Alert Warm', 'warn', '/alerts?alarm=a2%7Cplant%2Fw'],
+      ['Alert Lost broker', 'bad', '/alerts?tab=rules'],
+      ['Alert Quiet line', 'bad', '/alerts?alarm=a4%7C']
     ]);
     expect(items[0].detail).toBe('Firing on plant/t · value 99');
     expect(items[1].detail).toContain('fires in 5 s');
     expect(items[2].detail).toBe('Broken reference: broker b9 no longer exists');
+    expect(items[3].detail).toBe('Firing · acknowledged');
+  });
+
+  it('a wildcard rule firing on several topics is counted, never named by one possibly acknowledged topic', () => {
+    const rule = (firingTopics, unacknowledged) => [{ id: 'w', name: 'Robot hot', type: 'value-threshold', state: { state: 'firing', topic: 'a/robot-3/temperature', value: 41, firingTopics, unacknowledged } }];
+    const one = engineAttention({ alertRules: rule(2, 1) })[0];
+    expect(one.detail).toBe('Firing on 2 topics · 1 unacknowledged');
+    expect(one.detail).not.toContain('a/robot-3');
+    expect(one.to).toBe('/alerts');
+    expect(engineAttention({ alertRules: rule(3, 0) })[0].detail).toBe('Firing on 3 topics · all acknowledged');
+    expect(engineAttention({ alertRules: rule(2, 2) })[0].detail).toBe('Firing on 2 topics · none acknowledged');
+    expect(engineAttention({ alertRules: rule(1, 1) })[0].detail).toBe('Firing on a/robot-3/temperature · value 41');
   });
 
   it('mappings that do not publish, with the reason; disabled and waiting ones are not problems', () => {
@@ -94,5 +108,26 @@ describe('Overview: needs attention', () => {
     expect(isGrowing([1, 2, 3, 4])).toBe(true);
     expect(isGrowing([1, 2, 2, 4])).toBe(false);
     expect(isGrowing([1, 2, 3])).toBe(false);
+  });
+});
+
+describe('storage degraded (GET /api/system/status)', () => {
+  it('lists nothing while both stores write', () => {
+    expect(storageAttention({ status: 'ok', storage: { profiles: { ok: true }, alertJournal: { ok: true, writeErrors: 0 } } })).toEqual([]);
+    expect(storageAttention(null)).toEqual([]);
+    expect(storageAttention({ status: 'ok', storage: { profiles: { ok: true }, alertJournal: null } })).toEqual([]);
+  });
+
+  it('says what failed and that changes are not being saved', () => {
+    const items = storageAttention({
+      status: 'degraded',
+      storage: { profiles: { ok: false, error: 'ENOSPC: no space left on device', since: 1 }, alertJournal: { ok: false, writeErrors: 3, lastError: 'EACCES' } }
+    });
+    expect(items.map((i) => i.key)).toEqual(['storage-profiles', 'storage-alerts']);
+    expect(items[0]).toMatchObject({ tone: 'bad', what: 'Configuration storage', to: '/system' });
+    expect(items[0].detail).toContain('Changes are not being saved');
+    expect(items[0].detail).toContain('ENOSPC');
+    expect(items[1].detail).toContain('3 writes to the alert history failed');
+    expect(items[1].detail).toContain('not being saved');
   });
 });

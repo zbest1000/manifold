@@ -206,6 +206,7 @@ function initialSource(state) {
   if (state.srcType === 'opcua') return { type: 'opcua', connectionId: r.connectionId };
   if (state.srcType === 'sparkplug') return { type: 'sparkplug', brokerId: r.brokerId, group: r.group, edge: r.edge, device: r.device ?? null };
   if (state.srcType === 'mqtt') return { type: 'mqtt', brokerId: r.brokerId };
+  if (state.srcType === 'iot') return { type: 'iot', brokerId: r.brokerId, deviceId: r.deviceId };
   return { type: state.srcType };
 }
 

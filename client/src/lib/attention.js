@@ -1,5 +1,7 @@
 // "Needs attention" on the Overview (pure, unit tested in src/test/attention.test.js).
 //
+// Broker canary items come from brokerHealth.canaryAttention.
+//
 // Each item: { key, tone: 'bad' | 'warn', what, detail, to } where `to` is the place to fix it.
 // Nothing is returned when all is well.
 
@@ -29,10 +31,13 @@ const PLACE = {
   route: '/pipelines',
   mapping: '/tags?view=mappings',
   recording: '/pipelines?tab=recorder',
-  'alert rule': '/settings?tab=alerts',
+  'alert rule': '/alerts?tab=rules',
   model: '/pipelines?tab=models',
   contract: '/pipelines?tab=contracts'
 };
+
+// The Alerts page with one alarm highlighted (same id scheme as the server: `ruleId|topic`).
+const alarmTo = (ruleId, topic) => `/alerts?alarm=${encodeURIComponent(`${ruleId}|${topic || ''}`)}`;
 
 const missingText = (missing) => (missing || []).map((m) => `${m.kind} ${m.id}`).join(', ');
 
@@ -65,11 +70,18 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
     const st = r.state;
     const where = st?.topic ? ` on ${st.topic}` : '';
     const value = st && st.value !== undefined && st.value !== null ? ` · value ${st.value}` : '';
-    if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}`, to: '/settings?tab=alerts' });
-    else if (st?.state === 'breached') items.push({ key: `a-${r.id}`, tone: 'warn', what: `Alert ${r.name || r.id}`, detail: `Breached${where}${value}${st.remainingMs ? `, fires in ${Math.ceil(st.remainingMs / 1000)} s if it lasts` : ''}`, to: '/settings?tab=alerts' });
+    if (st?.state === 'firing' && st.firingTopics > 1) {
+      // A wildcard rule firing on several topics: one line for the rule that counts them, and
+      // the Active list (which shows each) as the place to act, rather than one topic that may be
+      // an acknowledged occurrence while another is not.
+      const unack = Number(st.unacknowledged) || 0;
+      const ackText = unack === 0 ? 'all acknowledged' : unack === st.firingTopics ? 'none acknowledged' : `${fmt(unack)} unacknowledged`;
+      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing on ${fmt(st.firingTopics)} topics · ${ackText}`, to: '/alerts' });
+    } else if (st?.state === 'firing') items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Firing${where}${value}${st.unacknowledged === 0 ? ' · acknowledged' : ''}`, to: alarmTo(r.id, r.type === 'value-threshold' ? st.topic : null) });
+    else if (st?.state === 'breached') items.push({ key: `a-${r.id}`, tone: 'warn', what: `Alert ${r.name || r.id}`, detail: `Breached${where}${value}${st.remainingMs ? `, fires in ${Math.ceil(st.remainingMs / 1000)} s if it lasts` : ''}`, to: alarmTo(r.id, st.topic) });
     else if (st?.state === 'broken') {
       listed.add(`alert rule:${r.id}`);
-      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Broken reference: ${missingText(st.broken)} no longer exists`, to: '/settings?tab=alerts' });
+      items.push({ key: `a-${r.id}`, tone: 'bad', what: `Alert ${r.name || r.id}`, detail: `Broken reference: ${missingText(st.broken)} no longer exists`, to: '/alerts?tab=rules' });
     }
   }
 
@@ -84,6 +96,39 @@ export function engineAttention({ routes = {}, historians = {}, routePending = {
   for (const o of broken) {
     if (listed.has(`${o.type}:${o.id}`)) continue; // already listed with its reason
     items.push({ key: `x-${o.type}-${o.id}`, tone: 'bad', what: `${o.type[0].toUpperCase()}${o.type.slice(1)} ${o.name || o.id}`, detail: `Broken reference: ${missingText(o.missing)} no longer exists`, to: PLACE[o.type] || '/' });
+  }
+  return items;
+}
+
+/**
+ * What cannot be written to disk, from GET /api/system/status (`status: 'degraded'`, `storage`):
+ *   storage.profiles      { ok, error, since }          the configuration store (profiles.json)
+ *   storage.alertJournal  { ok, writeErrors, lastError } the durable alert history
+ * One item per failing store, saying what failed and that changes are not being saved. Shown in
+ * Overview's "Needs attention" and on the Health page.
+ */
+export function storageAttention(status) {
+  const s = status?.storage;
+  if (!s) return [];
+  const items = [];
+  if (s.profiles && s.profiles.ok === false) {
+    items.push({
+      key: 'storage-profiles',
+      tone: 'bad',
+      what: 'Configuration storage',
+      detail: `Changes are not being saved: the configuration could not be written to the data directory${s.profiles.error ? ` (${s.profiles.error})` : ''}. Everything changed since then is lost on restart. Free disk space or fix the directory's permissions.`,
+      to: '/system'
+    });
+  }
+  if (s.alertJournal && s.alertJournal.ok === false) {
+    const n = Number(s.alertJournal.writeErrors) || 0;
+    items.push({
+      key: 'storage-alerts',
+      tone: 'bad',
+      what: 'Alert history',
+      detail: `Alert events are not being saved: ${plural(n, 'write')} to the alert history failed${s.alertJournal.lastError ? ` (${s.alertJournal.lastError})` : ''}. Alerts still fire, but their history is lost on restart.`,
+      to: '/system'
+    });
   }
   return items;
 }

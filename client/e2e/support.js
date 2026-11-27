@@ -73,6 +73,64 @@ export async function startEip() {
   return { port: sim.port, close: () => sim.stop() };
 }
 
+/** HTTP/JSON simulator: /api/meter = { power: { total: 12.5 }, state: "OK" }. Returns { port, sim, close() }. */
+export async function startHttpJson() {
+  const { startHttpJsonSimulator } = requireServer('./test/support/httpJsonSimulator.js');
+  const sim = await startHttpJsonSimulator({ docs: { '/api/meter': { power: { total: 12.5 }, state: 'OK', device: { online: true } } } });
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** MTConnect agent simulator with the default milling machine; Xact = 12.5, exec = ACTIVE. Returns { port, sim, close() }. */
+export async function startMtconnect() {
+  const { startMtconnectSimulator } = requireServer('./test/support/mtconnectSimulator.js');
+  const sim = await startMtconnectSimulator({});
+  sim.setValue('Xact', 12.5);
+  sim.setValue('exec', 'ACTIVE');
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** BACnet/IP device simulator (UDP) with its default objects (analog-input:1 = 21.5 Good, analog-input:2 = fault, ...). */
+export async function startBacnet(opts = {}) {
+  const { BacnetSimulator } = requireServer('./test/support/bacnetSimulator.js');
+  const sim = await new BacnetSimulator(opts).start();
+  return { port: sim.port, sim, close: () => sim.stop() };
+}
+
+/** CoAP (UDP) simulator: /json (temperature 21.5), /senml (Cel / %RH records), /obs (observable text, starts at 1). */
+export async function startCoap() {
+  const { CoapSimulator } = requireServer('./test/support/coapSimulator.js');
+  const sim = await new CoapSimulator().start();
+  return {
+    port: sim.port,
+    /** Push a new value to every observer of /obs. */
+    notify: (body) => sim.notify('/obs', { body: String(body) }),
+    /** Requests that were not GET (always 0). */
+    nonGet: () => sim.stats.nonGetReceived,
+    close: () => sim.stop()
+  };
+}
+
+/** SNMP agent (UDP, loopback) from server/test/support/snmpSimulator.js with its default MIB (sysName.0 = "sim-agent", ...). */
+export async function startSnmp(options = {}) {
+  const { startSnmpSimulator } = requireServer('./test/support/snmpSimulator.js');
+  const sim = await startSnmpSimulator(options);
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** Matter Server simulator (WebSocket, path /ws) with its default five-node dump; node 1 temperature = 21.34 degC. Returns { port, sim, close() }. */
+export async function startMatterServer() {
+  const { startMatterServerSimulator } = requireServer('./test/support/matterServerSimulator.js');
+  const sim = await startMatterServerSimulator({});
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
+/** Z-Wave JS Server simulator (WebSocket, path /) with its default network; node 3 switch on. Returns { port, sim, close() }. */
+export async function startZwaveJsServer() {
+  const { startZwaveJsServerSimulator } = requireServer('./test/support/zwaveJsServerSimulator.js');
+  const sim = await startZwaveJsServerSimulator({});
+  return { port: sim.port, sim, close: () => sim.close() };
+}
+
 // ---- REST ------------------------------------------------------------------------------
 
 async function call(method, url, body) {

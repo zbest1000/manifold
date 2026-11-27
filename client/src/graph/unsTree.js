@@ -39,3 +39,14 @@ export function buildUnsTree(broker, topics) {
 
 /** Mounted sources (OPC UA / i3X) use a `mount:<id>` pseudo broker id. */
 export const isMountNode = (node) => String(node.brokerId).startsWith('mount:');
+
+/**
+ * The selected node as the CURRENT tree has it. A selection keeps the node object it was made with; the
+ * tree is rebuilt as topics arrive, so the details panel must read counts and rates from the newest copy
+ * (a node selected by a deep link right after load would otherwise keep its first, smaller topic count).
+ * Falls back to the kept object while the node is not in the tree (not seen yet, or another namespace).
+ */
+export function liveSelection(selected, byId) {
+  if (!selected) return null;
+  return byId?.get(selected.id) || selected;
+}

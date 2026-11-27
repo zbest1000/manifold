@@ -166,12 +166,41 @@ function credentialLikeKeys(ctx) {
 
 // ---- selection rules ---------------------------------------------------------------
 
+/**
+ * Case-insensitive glob test (`*` any run, `?` one character), whole string. Not a RegExp: a
+ * pattern like `*a*a*a*a…b` compiled to `.*a.*a…` backtracks exponentially on a long tag key or
+ * MQTT topic and blocks the event loop for minutes. This greedy matcher with single-star
+ * backtracking is O(pattern × text) in the worst case.
+ */
+function globMatch(pattern, text) {
+  const p = String(pattern).toLowerCase();
+  const s = String(text).toLowerCase();
+  let pi = 0;
+  let si = 0;
+  let star = -1;
+  let mark = 0;
+  while (si < s.length) {
+    if (pi < p.length && (p[pi] === '?' || (p[pi] !== '*' && p[pi] === s[si]))) {
+      pi++;
+      si++;
+    } else if (pi < p.length && p[pi] === '*') {
+      star = pi++;
+      mark = si;
+    } else if (star !== -1) {
+      pi = star + 1;
+      si = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pi < p.length && p[pi] === '*') pi++;
+  return pi === p.length;
+}
+
+/** A compiled glob: `{ test(text) }` (RegExp-shaped so callers need not care). */
 function globToRegExp(p) {
-  const src = String(p)
-    .split('')
-    .map((c) => (c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[.+^${}()|[\]\\]/g, '\\$&')))
-    .join('');
-  return new RegExp(`^${src}$`, 'i');
+  const pattern = String(p);
+  return { source: pattern, test: (text) => globMatch(pattern, text) };
 }
 
 /** source.select -> compiled rules, or null when there is no select. */
@@ -550,7 +579,7 @@ function bindingSchema({ defaultObjectCap, minObjectCap, maxObjectCap, previewMa
   const text = (maxLength, description) => ({ type: 'string', maxLength, description });
   return {
     version: 1,
-    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug', 'mqtt'],
+    sourceTypes: ['device', 'device-profile', 'opcua', 'sparkplug', 'mqtt', 'iot'],
     mqttSource: {
       description: 'An MQTT topic tree as a source: each entry reads one value from a topic payload',
       fields: {

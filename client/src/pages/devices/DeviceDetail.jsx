@@ -10,6 +10,7 @@ import LiveTagsTable from './LiveTagsTable';
 import ProbePanel from './ProbePanel';
 import { ExperimentalBadge, FromProfileBadge } from './FormControls';
 import { useDeviceValues } from './hooks';
+import { browseNoun } from './model';
 
 const H = ({ children }) => <h3 className="mb-2 text-sm font-medium text-fg">{children}</h3>;
 
@@ -20,7 +21,7 @@ function Overview({ device, st, view, host, issues, profile, protocolLabel, desc
   const params = Object.entries(profile ? resolveParams(profile, device.params).values : device.params || {});
   const limits = device.limits || {};
   const connection = [
-    ['Endpoint', <span key="e" className="mono text-xs">{device.host}:{device.port}</span>],
+    ['Endpoint', <span key="e" className="mono text-xs">{device.scheme ? `${device.scheme}://${device.host}:${device.port}${device.path || ''}` : `${device.host}:${device.port}`}</span>],
     ['Protocol', protocolLabel],
     device.unitId !== undefined && ['Unit id', <span key="u" className="tabular-nums">{device.unitId}</span>],
     device.rack !== undefined && device.slot !== undefined && ['Rack / slot', <span key="r" className="tabular-nums">{device.rack} / {device.slot}</span>],
@@ -156,7 +157,7 @@ export default function DeviceDetail({ device, live, host, issues, profile, prot
           </Button>
           {canBrowse && (
             <Button variant="secondary" onClick={() => onEdit(device, { browse: true })} disabled={readOnly} title={why}>
-              <Cable size={14} aria-hidden="true" /> Import from controller
+              <Cable size={14} aria-hidden="true" /> Import from {browseNoun(descriptor)}
             </Button>
           )}
           <Button variant="secondary" onClick={() => onMap(device)}>

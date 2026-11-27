@@ -50,7 +50,7 @@ const RowImpl = memo(function Row({ r, selected, experimental, profileName, busy
   const why = readOnly ? READ_ONLY_REASON : undefined;
   const nameOf = d.name;
   const endpoint = `${d.host}:${d.port}`;
-  const extra = d.unitId !== undefined ? `unit ${d.unitId}` : d.rack !== undefined && d.slot !== undefined ? `rack ${d.rack} / slot ${d.slot}` : d.protocol === 'ethernet-ip' && d.slot !== undefined ? `slot ${d.slot}` : '';
+  const extra = d.unitId !== undefined ? `unit ${d.unitId}` : d.rack !== undefined && d.slot !== undefined ? `rack ${d.rack} / slot ${d.slot}` : d.protocol === 'ethernet-ip' && d.slot !== undefined ? `slot ${d.slot}` : d.protocol === 'bacnet-ip' && d.deviceInstance !== undefined ? `device ${d.deviceInstance}${d.network ? ` · net ${d.network}` : ''}` : d.protocol === 'snmp' ? `SNMP v${d.version || '2c'}` : '';
   return (
     <Tr highlight={selected} className="cursor-pointer" onClick={(e) => !e.target.closest('a,button,input,label') && onOpen(d)} data-device={d.id}>
       <Td header className="max-w-[9.5rem] md:max-w-[14rem]">
@@ -141,7 +141,7 @@ const RowImpl = memo(function Row({ r, selected, experimental, profileName, busy
 });
 
 /**
- * The device table (docs/design/ui-design-system.md#list-page): sortable, filterable, dense. State,
+ * The device table (docs/design/ui-design-system.md, Page patterns): sortable, filterable, dense. State,
  * poll health, quarantined tags and the last error scan down the page; a row opens the detail.
  */
 export default function DeviceList({ devices, hosts, deviceStates, labels, experimental, profileById, selectedId, busyId, readOnly, onOpen, onEdit, onDelete, onToggle, onMap }) {

@@ -68,7 +68,19 @@ function TagRowImpl({ tag, index, protocol, types, typeOptional, typeInfo, place
     bit: () => num('bit', 'Bit'),
     byteOrder: () => orderSel('byteOrder', 'Byte order override'),
     wordOrder: () => orderSel('wordOrder', 'Word order override'),
-    description: () => cell('description', 'Description')
+    description: () => cell('description', 'Description'),
+    encoding: () => (
+      <select className={cellCls} aria-label={`Text encoding, row ${n}`} value={tag.encoding ?? ''} disabled={readOnly} onChange={(e) => onChange(tag._id, { encoding: e.target.value || undefined })}>
+        <option value="">auto</option>
+        <option value="text">text</option>
+        <option value="hex">hex</option>
+      </select>
+    ),
+    rate: () => (
+      <span className="grid h-7 place-items-center" title="Publish the counter as a per-second rate">
+        <input type="checkbox" aria-label={`Rate per second, row ${n}`} checked={tag.rate === true || tag.rate === 'true'} disabled={readOnly} onChange={(e) => onChange(tag._id, { rate: e.target.checked || undefined })} className="h-3.5 w-3.5 accent-accent" />
+      </span>
+    )
   };
   const extraCols = [...cols.always, ...(advancedOpen ? cols.advanced : [])];
   const bad = showLive && sample && qualityInfo(sample.q).key === 'bad';
@@ -187,7 +199,7 @@ export const ProfileTagRow = memo(function ProfileTagRow({ tag, sample, stale, q
       <td className={mutedCell}>{tag.property || '—'}</td>
       {extraCols.map((c) => (
         <td key={c} className={mutedCell}>
-          {c === 'byteOrder' || c === 'wordOrder' ? tag[c] || 'device default' : tag[c] ?? ''}
+          {c === 'byteOrder' || c === 'wordOrder' ? tag[c] || 'device default' : c === 'rate' ? (tag.rate ? 'yes' : '') : tag[c] ?? ''}
         </td>
       ))}
       <td />

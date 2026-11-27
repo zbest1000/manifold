@@ -4,7 +4,7 @@
  * Modbus TCP framing: request encoder, streaming response parser and response
  * validation. Read-only by construction — `encodeRequest` is the only function
  * that builds outgoing frames and it refuses every function code except the
- * four read codes (design: southbound-drivers.md sections 5.1 and 7).
+ * four read codes (docs/design/driver-contract.md, read-only by construction).
  */
 
 const READ_FUNCTION_CODES = new Set([1, 2, 3, 4]);

@@ -54,10 +54,10 @@ test('EMQX: manager connects, auto-subscribes, and ingests real retained traffic
     await manager.publish('emqx', 'ci/plant/line1/temp', { v: 21.5 }, { retain: true });
     await manager.publish('emqx', 'ci/plant/line1/press', '3.1', { qos: 1, retain: true });
 
-    assert.ok(
-      await until(() => manager.stores.get('emqx')?.topicCount() >= 2),
-      'published topics must round-trip through the broker into the store'
-    );
+    // Wait for the two topics themselves, not for a count: the broker's own topics ($SYS) and
+    // retained leftovers also land in the store and could satisfy a count before ours arrive.
+    const arrived = () => manager.resolveSubscriptions('emqx', ['ci/plant/+/temp', 'ci/plant/+/press']).results.every((r) => r.matchCount === 1);
+    assert.ok(await until(arrived), 'published topics must round-trip through the broker into the store');
 
     // The wildcard-resolution engine against real EMQX-delivered topics.
     const resolved = manager.resolveSubscriptions('emqx', ['ci/plant/+/temp']);

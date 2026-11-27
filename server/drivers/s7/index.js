@@ -2,7 +2,7 @@
 
 /**
  * Siemens S7 (classic S7comm over ISO-on-TCP, port 102) — READ-ONLY driver.
- * Implements the southbound driver contract (docs/design/southbound-drivers.md §4.1, §5.2).
+ * Implements the southbound driver contract (docs/design/driver-contract.md).
  */
 
 const {
@@ -41,6 +41,7 @@ function describe() {
   return {
     protocol,
     label: 'Siemens S7',
+    browseNoun: 'controller',
     defaultPort: 102,
     readOnly: true,
     experimental: true, // verified against the in-process simulator only; see NOTES.md

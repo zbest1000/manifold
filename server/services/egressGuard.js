@@ -337,6 +337,117 @@ function pinnedLookup(hostname, options, callback) {
   });
 }
 
+// ---- link-local / cloud-metadata only -----------------------------------------
+// MQTT brokers, OPC UA endpoints and historians are deliberately outside the egress guard: a broker
+// or historian on localhost or the plant LAN is the normal setup. They still never need a
+// link-local address or a cloud-metadata service, which is where an instance in a cloud VM or
+// container would hand out credentials. These helpers refuse exactly that, and nothing else.
+
+// Well-known metadata host names (refused before any DNS lookup).
+const METADATA_NAMES = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.goog',
+  'instance-data',
+  'instance-data.ec2.internal',
+  'metadata.azure.internal',
+  'metadata.tencentyun.com',
+  'metadata.oraclecloud.com'
+]);
+
+/** True for 169.254.0.0/16 (incl. 169.254.169.254), fe80::/10 and the single-address metadata helpers. */
+function isLinkLocalOrMetadata(ip) {
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const n = ipv4ToInt(ip);
+    return (
+      n !== null &&
+      (inCidrV4(n, '169.254.0.0', 16) ||
+        inCidrV4(n, '168.63.129.16', 32) || // Azure wireserver
+        inCidrV4(n, '100.100.100.200', 32) || // Alibaba Cloud metadata
+        inCidrV4(n, '192.0.0.192', 32)) // Oracle Cloud metadata
+    );
+  }
+  if (v === 6) {
+    const g = parseV6(ip);
+    if (!g) return false;
+    const zeros = (from, to) => g.slice(from, to).every((x) => x === 0);
+    if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10
+    if (g[0] === 0xfd00 && g[1] === 0x0ec2 && zeros(2, 7) && g[7] === 0x254) return true; // AWS fd00:ec2::254
+    // IPv4 embedded in a v6 form (mapped, translated, NAT64): judge the v4 address.
+    if (zeros(0, 5) && g[5] === 0xffff) return isLinkLocalOrMetadata(v4FromGroups(g[6], g[7]));
+    if (zeros(0, 4) && g[4] === 0xffff && g[5] === 0) return isLinkLocalOrMetadata(v4FromGroups(g[6], g[7]));
+    if (g[0] === 0x64 && g[1] === 0xff9b && zeros(2, 6)) return isLinkLocalOrMetadata(v4FromGroups(g[6], g[7]));
+    if (g[0] === 0x2002) return isLinkLocalOrMetadata(v4FromGroups(g[1], g[2]));
+  }
+  return false;
+}
+
+const LINK_LOCAL_REASON = 'link-local or cloud-metadata address (never a broker, OPC UA server or historian)';
+const isMetadataName = (host) => METADATA_NAMES.has(String(host || '').trim().toLowerCase().replace(/\.$/, ''));
+
+/**
+ * Save-time check for broker hosts, OPC UA endpoint URLs and historian URLs/hosts: refuses a
+ * link-local or metadata literal, a metadata host name, or a name that resolves to such an address.
+ * Private, LAN and loopback targets pass. A name that does not resolve passes too (a LAN name may be
+ * offline when it is saved; the connect-time lookup checks it again).
+ */
+async function assertNotLinkLocal(hostOrUrl, { purpose, lookup = promisedLookup } = {}) {
+  const host = hostFromTarget(hostOrUrl);
+  if (!host) return [];
+  if (isMetadataName(host)) throw new EgressBlockedError(host, LINK_LOCAL_REASON, purpose);
+  if (net.isIP(host)) {
+    if (isLinkLocalOrMetadata(host)) throw new EgressBlockedError(host, LINK_LOCAL_REASON, purpose);
+    return [host];
+  }
+  let records;
+  try {
+    records = await lookup(host, { all: true });
+  } catch {
+    return [];
+  }
+  const bad = (records || []).find((r) => isLinkLocalOrMetadata(r.address));
+  if (bad) throw new EgressBlockedError(`${host} (${bad.address})`, LINK_LOCAL_REASON, purpose);
+  return (records || []).map((r) => r.address);
+}
+
+/**
+ * Connect-time `lookup` (net/tls/http compatible) that refuses link-local and metadata addresses
+ * and passes everything else, so the address checked is the address connected to.
+ */
+function linkLocalGuardLookup(purpose) {
+  return function lookupGuard(hostname, options, callback) {
+    if (typeof options === 'function') {
+      callback = options;
+      options = {};
+    }
+    if (isMetadataName(hostname)) return process.nextTick(callback, new EgressBlockedError(hostname, LINK_LOCAL_REASON, purpose));
+    dns.lookup(hostname, { ...(options || {}), all: true }, (err, records) => {
+      if (err) return callback(err);
+      const bad = records.find((r) => isLinkLocalOrMetadata(r.address));
+      if (bad) return callback(new EgressBlockedError(`${hostname} (${bad.address})`, LINK_LOCAL_REASON, purpose));
+      if (!records.length) return callback(new EgressBlockedError(hostname, 'unresolvable or malformed address', purpose));
+      if (options && options.all) return callback(null, records);
+      return callback(null, records[0].address, records[0].family);
+    });
+  };
+}
+
+/**
+ * For routes: answers 403 { error, code: 'EGRESS_BLOCKED' } and resolves true when `target` is a
+ * link-local or metadata address (see assertNotLinkLocal); resolves false otherwise.
+ */
+async function refuseLinkLocal(res, target, purpose) {
+  try {
+    await assertNotLinkLocal(target, { purpose });
+    return false;
+  } catch (error) {
+    if (error?.code !== 'EGRESS_BLOCKED') throw error;
+    res.status(403).json({ error: error.message, code: 'EGRESS_BLOCKED' });
+    return true;
+  }
+}
+
 let sharedAgent = null;
 function getAgent() {
   if (!sharedAgent) sharedAgent = new Agent({ connect: { lookup: pinnedLookup } });
@@ -416,6 +527,12 @@ module.exports = {
   classifyAddress,
   classifyScanTarget,
   hostFromTarget,
+  isLinkLocalOrMetadata,
+  assertNotLinkLocal,
+  refuseLinkLocal,
+  linkLocalGuardLookup,
+  isMetadataName,
+  LINK_LOCAL_REASON,
   EgressBlockedError,
   ALLOW_PRIVATE,
   ALLOW_LOOPBACK_DEVICES,

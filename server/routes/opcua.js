@@ -1,4 +1,6 @@
 const express = require('express');
+const { urlIdentity, secretRequiredBody } = require('../services/endpointIdentity');
+const { refuseLinkLocal } = require('../services/egressGuard');
 const { expectedRev, handleRevisionError } = require('../services/revision');
 const router = express.Router();
 
@@ -91,6 +93,7 @@ router.post('/trust', async (req, res) => {
 router.post('/connections', async (req, res) => {
   const { opcuaManager, profiles } = req.app.locals.services;
   const { rev: _rev, ...body } = req.body || {};
+  if (await refuseLinkLocal(res, body.endpointUrl, 'OPC UA endpoint')) return;
   const dup = opcuaManager.findDuplicateConnection(body, null, savedConfigs(profiles));
   if (dup) return duplicateResponse(res, dup);
   try {
@@ -122,11 +125,16 @@ router.put('/connections/:connectionId', async (req, res) => {
     throw error;
   }
   const { rev: _rev, ...body } = req.body || {};
+  if (await refuseLinkLocal(res, body.endpointUrl, 'OPC UA endpoint')) return;
   const dup = opcuaManager.findDuplicateConnection(body, connectionId, savedConfigs(profiles));
   if (dup) return duplicateResponse(res, dup);
-  // Leave-blank-to-keep: an omitted password keeps the stored one.
-  if (body.password === undefined && saved?.password !== undefined) {
-    body.password = saved.password;
+  // Leave-blank-to-keep: an omitted password keeps the stored one, for the same endpoint only. A new
+  // scheme, host or port with the password left blank is refused before the session is touched.
+  if (body.password === undefined && saved?.password) {
+    if (body.username && urlIdentity(body.endpointUrl) !== urlIdentity(saved.endpointUrl)) {
+      return res.status(400).json(secretRequiredBody('password'));
+    }
+    if (urlIdentity(body.endpointUrl) === urlIdentity(saved.endpointUrl)) body.password = saved.password;
   }
   try {
     const result = await opcuaManager.updateConnection(connectionId, body);

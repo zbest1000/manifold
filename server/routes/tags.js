@@ -21,7 +21,7 @@ router.use((req, _res, next) => {
 
 // GET /api/tags/sources — what can be browsed right now
 router.get('/sources', (req, res) => {
-  const { mqttManager, opcuaManager, devices } = req.app.locals.services;
+  const { mqttManager, opcuaManager, devices, iot } = req.app.locals.services;
   const sources = [];
   for (const d of devices?.list() || []) {
     sources.push({ type: 'device', id: d.id, label: `${d.name} · ${d.protocol}`, state: d.status?.state });
@@ -34,6 +34,10 @@ router.get('/sources', (req, res) => {
     const sp = mqttManager.getSparkplug(b.id);
     if (sp.summary.edgeNodes > 0) sources.push({ type: 'sparkplug', id: b.id, label: `${b.name} · Sparkplug` });
     sources.push({ type: 'mqtt', id: b.id, label: `${b.name} · topics` });
+  }
+  // IoT devices over MQTT: one source per device, labelled by convention and broker.
+  for (const d of iot?.listDevices({ limit: 2000 }) || []) {
+    sources.push({ type: 'iot', id: d.sourceId, label: `${d.name} · ${d.conventionLabel} via ${d.brokerName}`, state: d.availability === 'offline' ? 'offline' : 'online', brokerId: d.brokerId, deviceId: d.id, convention: d.convention });
   }
   res.json({ sources });
 });
@@ -75,9 +79,24 @@ async function addOpcuaMeta(opcuaManager, connectionId, vars) {
 
 // GET /api/tags/browse?type=&id=&node= — one level of children under `node`
 router.get('/browse', async (req, res) => {
-  const { mqttManager, opcuaManager, profiles, devices } = req.app.locals.services;
+  const { mqttManager, opcuaManager, profiles, devices, iot } = req.app.locals.services;
   const { type, id, node = '' } = req.query;
   try {
+    if (type === 'iot') {
+      // id = `${brokerId}|${deviceId}`: the device's tags (flat), with the metadata the convention derived.
+      const i = String(id || '').lastIndexOf('|');
+      const dev = i > 0 ? iot?.getDevice(String(id).slice(0, i), String(id).slice(i + 1)) : null;
+      if (!dev) return res.status(404).json({ error: 'IoT device not found' });
+      return res.json({
+        children: dev.tags.map((t) => ({
+          id: t.key,
+          name: t.name,
+          kind: 'tag',
+          address: t.key,
+          meta: { type: t.type, unit: t.unit || null, description: t.description || null, property: t.name, range: t.range || null, enum: t.enum || null, topic: t.topic || null, selector: t.selector || null, unsupported: t.unsupported || null, diagnostic: Boolean(t.diagnostic), origin: 'device' }
+        }))
+      });
+    }
     if (type === 'device') {
       // Configured (effective: profile + ad-hoc) tags, grouped by poll group when a device has more than one.
       const device = profiles.getIn('devices', id);
@@ -184,7 +203,7 @@ router.get('/browse', async (req, res) => {
         }))
       });
     }
-    res.status(400).json({ error: 'type must be device, opcua, sparkplug, or mqtt' });
+    res.status(400).json({ error: 'type must be device, opcua, sparkplug, mqtt or iot' });
   } catch (error) {
     res.status(502).json({ error: error.message });
   }
@@ -239,7 +258,7 @@ router.post('/bindings', async (req, res) => {
 // collisions with other bindings' topics, and the save-time warnings. Nothing
 // is stored or published.
 router.post('/bindings/preview', (req, res) => {
-  const { profiles, bindings, devices } = req.app.locals.services;
+  const { profiles, bindings, devices, iot } = req.app.locals.services;
   const draft = { ...(req.body || {}), id: req.body?.id || '__preview__' };
   let body;
   try {
@@ -255,6 +274,10 @@ router.post('/bindings/preview', (req, res) => {
       unit.byAddress ||= new Map(unit.tags.map((t) => [t.address, t]));
       const tag = unit.byAddress.get(address);
       return (tag && bindings.latestMqtt?.(unit, tag)) || null;
+    }
+    if (unit.sourceType === 'iot' && iot && unit.iot) {
+      const tag = iot.rawDevice(unit.iot.brokerId, unit.iot.deviceId)?.tags.get(address);
+      if (tag?.rx) return { v: tag.value, q: tag.q, t: tag.t || tag.rx, type: tag.type };
     }
     if (unit.sourceType === 'device' && devices?.getValues) {
       const v = devices.getValues(unit.sourceId)[address];

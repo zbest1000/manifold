@@ -1,6 +1,9 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const router = express.Router();
+
+// Upper bound for a recording's size cap (two segments of up to this size each are kept on disk).
+const MAX_RECORDING_BYTES = 4 * 2 ** 30;
 const { filterProblem } = require('../services/mqttMatch');
 const { checkpoint, handleRevisionError } = require('../services/revision');
 const { missingRefsMessage, brokenRefs } = require('../services/references');
@@ -49,6 +52,9 @@ router.post('/', (req, res) => {
   if (!brokerId || !filter) return res.status(400).json({ error: 'brokerId and filter are required' });
   const fp = filterProblem(filter);
   if (fp) return res.status(400).json({ error: `filter "${filter}" ${fp}` });
+  if (maxBytes !== undefined && maxBytes !== null && maxBytes !== '' && !(Number(maxBytes) > 0 && Number(maxBytes) <= MAX_RECORDING_BYTES)) {
+    return res.status(400).json({ error: `maxBytes must be between 1 and ${MAX_RECORDING_BYTES} (${MAX_RECORDING_BYTES / 2 ** 30} GiB)` });
+  }
   if (target && target.type === 'historian' && !target.historianId) {
     return res.status(400).json({ error: 'target.historianId is required for historian targets' });
   }
@@ -113,6 +119,8 @@ router.get('/:id/series', async (req, res) => {
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
+  // Without tags every sample of the recording would be held in memory; ask for what is charted (like historians).
+  if (tags.length < 1 || tags.length > 10) return res.status(400).json({ error: 'tags must list 1-10 topics (comma-separated)' });
   try {
     res.json(
       await recorder.series(req.params.id, {

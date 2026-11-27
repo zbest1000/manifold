@@ -1,7 +1,8 @@
 # 🏷️ Tags and Sparkplug
 
-> **Goal:** from "browse a device's tags" to "they live in the UNS" in one
-> editor — with report-by-exception and real quality codes on the way.
+> **Goal:** know what the Tags page can map, how Sparkplug B traffic is read in order, and how
+> Manifold publishes as a Sparkplug edge node or host. The mapping editor itself is described in
+> [Mapping to the UNS](Mapping-to-the-UNS).
 
 ## The tag browser
 
@@ -9,40 +10,22 @@
 
 | Source | What you browse |
 |---|---|
-| 🔧 Devices | the tags you defined on the [Devices page](Devices-and-Drivers) (Modbus TCP, S7, EtherNet/IP), grouped by poll group |
+| 🔧 Devices | the tags you defined on the [Devices page](Devices-and-Drivers) (every driver), grouped by poll group; device profiles as a whole |
 | 🖧 OPC UA | the address space of any connected server, loaded lazily |
 | ⚡ Sparkplug | the device registry (Group → Edge → Device → metrics) rebuilt from BIRTH certificates |
 | 📡 MQTT | the observed topic trie |
+| 💡 IoT devices | devices a bridge publishes over MQTT ([IoT devices over MQTT](IoT-Devices-over-MQTT)) |
 
 ![The Tags workspace on the Boiler house PLC: its five tags, all already mapped](images/tags-workspace.png)
 
 Pick a **Source**, tick tags in the tree (or press **Map by rule** to take every tag matching include
 and exclude patterns, or **Map by filter** for every MQTT topic under a wildcard filter), and press **Add to
-UNS**. Every source, MQTT topics included, becomes a **mapping** (stored as a *binding*; the interface says
-mapping). The
-**mapping editor** is one sheet, not a wizard: **Mapping** (name, broker, UNS topics or Sparkplug B device),
-**What** (pick tags or choose by rule), **Where** (the asset path, chosen in a picker over the live UNS tree, and
-the layout), **Tags** (the published name, unit and description of each tag, and a details panel per tag),
-**Context**, **Payload** (format, fields, `_status` and `_meta`) and **Delivery** (QoS, deadband, heartbeat, retain,
-the direct historian target, the object size cap), with the topics and payloads the **server** would publish
-(collisions and raw-address warnings included) in a preview column. Every section is described in
-[Mapping to the UNS](Mapping-to-the-UNS#the-tags-page-and-the-mapping-editor). **Retain values is off by default**
-(a retained value outlives a dead device).
-
-The tree is keyboard accessible (arrow keys to move, Space to select, Enter to open) and has a **Filter loaded
-tags** box, **Select shown (n)** (up to 500 tags) and a marker on tags that are already mapped. The **Mappings** tab
-lists every mapping with its state, and warnings from the last save appear in a banner above the table. A device
-profile can be mapped as a whole with **Map a device profile** (every instance gets its own asset); see
-[Mapping to the UNS](Mapping-to-the-UNS#one-definition-for-many-identical-devices-profile-bindings).
-
-For the full story on device tags (asset paths versus templates, the two
-layouts, quality, the `_status` and `_meta` documents, deadband, heartbeat,
-retained cleanup, historians) see [Mapping to the UNS](Mapping-to-the-UNS).
-MQTT topics are a source like the others: one value per topic (a field path into JSON, or a
-value/time/quality envelope read automatically), the broker connection as source state, an
-optional per-topic staleness limit, and loop safety so a mapping never reads what it publishes;
-see [MQTT topics as a source](Mapping-to-the-UNS#mqtt-topics-as-a-source). Routes the old Tags page
-created for topics keep working and can be migrated from the Mappings tab after review.
+UNS**. Every source becomes a **mapping** (stored as a *binding*), edited in the single-sheet **mapping
+editor** with a live preview of what the server would publish; **Retain values** is off by default. The tree
+is keyboard accessible and has a **Filter loaded tags** box, **Select shown (n)** (up to 500 tags) and a marker
+on tags that are already mapped; **Map a device profile** maps every instance of a profile at once. The editor,
+the Mappings tab, MQTT topics as a source and every option are described in
+[Mapping to the UNS](Mapping-to-the-UNS#the-tags-page-and-the-mapping-editor).
 
 **A Sparkplug source** maps the metrics of an edge node or device (`{ type: "sparkplug", brokerId, group,
 edge, device?, metrics? }`). Each metric keeps its own timestamp and its declared quality (the `Quality`
@@ -164,9 +147,8 @@ directions:
   wait for a primary host (a common Ignition/edge gateway setting) then see
   one and start publishing.
 
-> A host session records its broker's connection settings when it starts. If you edit the broker
-> profile afterwards, start the host again to reconnect with the new settings; the session does not notice the
-> edit by itself.
+> A running host session follows edits and removals of its broker profile on its own: it publishes a clean
+> offline STATE on the old connection and reconnects with the new settings.
 
 > 💡 Only run one primary host per host ID on a broker — that is the
 > specification's whole point. Manifold refuses nothing here; the convention

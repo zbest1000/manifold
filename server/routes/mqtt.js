@@ -1,8 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { redactSecrets } = require('../services/secrets');
+const { redactSecrets, stripUrlCredentials } = require('../services/secrets');
+const { hostIdentity, secretRequiredBody, restoreMaskedUrlPassword } = require('../services/endpointIdentity');
+const { refuseLinkLocal } = require('../services/egressGuard');
 const { expectedRev, handleRevisionError } = require('../services/revision');
 const { usersOfBroker } = require('../services/references');
+const { validateCanaryConfig } = require('../services/brokerCanary');
+const { presetList } = require('../services/brokerPresets');
 
 const BROKER_PROTOCOLS = ['mqtt', 'mqtts', 'ws', 'wss'];
 
@@ -28,7 +32,7 @@ function validateBrokerConfig(body) {
   if (body.subscribeFilter !== undefined && (typeof body.subscribeFilter !== 'string' || body.subscribeFilter.length === 0)) {
     return 'subscribeFilter must be a non-empty topic filter';
   }
-  return null;
+  return validateCanaryConfig(body.canary);
 }
 
 // MQTT 5 publish properties: { userProperties?: {k: v strings}, contentType?,
@@ -59,7 +63,20 @@ function validatePublishProperties(properties) {
 // GET /api/mqtt/brokers — list connections
 router.get('/brokers', (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
-  res.json({ brokers: mqttManager.getConnections().map((b) => ({ ...b, rev: profiles?.getBroker?.(b.id)?.rev || 0 })) });
+  res.json({
+    brokers: mqttManager.getConnections().map((b) => ({
+      ...b,
+      rev: profiles?.getBroker?.(b.id)?.rev || 0,
+      // Compact security summary and canary state for the list; the detail endpoints carry the rest.
+      posture: mqttManager.getPosture(b.id)?.summary || null,
+      canaryState: mqttManager.canary.summary(b.id)
+    }))
+  });
+});
+
+// GET /api/mqtt/presets: well-known public test brokers the connect form can fill in.
+router.get('/presets', (req, res) => {
+  res.json({ presets: presetList() });
 });
 
 // What a broker looks like to a client: the stored config with credentials masked, plus its
@@ -79,11 +96,12 @@ function duplicateResponse(res, dup) {
 }
 
 // POST /api/mqtt/brokers — connect to a broker (profile persisted for restart)
-router.post('/brokers', (req, res) => {
+router.post('/brokers', async (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
   const { rev: _rev, ...body } = req.body || {};
   const invalid = validateBrokerConfig(body);
   if (invalid) return res.status(400).json({ error: invalid });
+  if (await refuseLinkLocal(res, body.host, 'MQTT broker')) return;
   const dup = mqttManager.findDuplicateBroker(body);
   if (dup) return duplicateResponse(res, dup);
   try {
@@ -99,7 +117,9 @@ router.post('/brokers', (req, res) => {
 // the running client, persist the new config under the SAME id, reconnect.
 // The normal disconnect/connection-attempt socket events fire so client
 // stores stay truthful. Validated like POST (host is required).
-router.put('/brokers/:brokerId', (req, res) => {
+const brokerEndpoint = (c) => hostIdentity(c.protocol || 'mqtt', c.host, c.port);
+
+router.put('/brokers/:brokerId', async (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
   const brokerId = req.params.brokerId;
   const saved = profiles?.brokers().find((b) => b.config?.id === brokerId);
@@ -115,12 +135,16 @@ router.put('/brokers/:brokerId', (req, res) => {
     throw error;
   }
   // Leave-blank-to-keep: the list endpoint never echoes credentials, so a body
-  // that omits the password keeps the stored one (same pattern as historians).
-  if (body.password === undefined && saved?.config?.password !== undefined) {
+  // that omits the password keeps the stored one (same pattern as historians) - but only for the
+  // same endpoint. A new protocol, host or port with the password left blank is refused: the stored
+  // password must never be sent to a server it was not entered for.
+  if (body.password === undefined && saved?.config?.password) {
+    if (brokerEndpoint(body) !== brokerEndpoint(saved.config)) return res.status(400).json(secretRequiredBody('password'));
     body.password = saved.config.password;
   }
   const invalid = validateBrokerConfig(body);
   if (invalid) return res.status(400).json({ error: invalid });
+  if (await refuseLinkLocal(res, body.host, 'MQTT broker')) return;
   const dup = mqttManager.findDuplicateBroker(body, brokerId);
   if (dup) return duplicateResponse(res, dup);
   try {
@@ -168,6 +192,23 @@ router.delete('/brokers/:brokerId', (req, res) => {
   } catch (error) {
     res.status(404).json({ error: error.message });
   }
+});
+
+// GET /api/mqtt/brokers/:brokerId/posture: read-only security assessment from what Manifold already
+// knows about the connection (nothing is probed): findings worst first, plus the facts they rest on.
+router.get('/brokers/:brokerId/posture', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const posture = mqttManager.getPosture(req.params.brokerId);
+  if (!posture) return res.status(404).json({ error: 'Broker not found' });
+  res.json({ brokerId: req.params.brokerId, ...posture });
+});
+
+// GET /api/mqtt/brokers/:brokerId/canary: round-trip probe status (state "off" when the canary is not enabled).
+router.get('/brokers/:brokerId/canary', (req, res) => {
+  const { mqttManager } = req.app.locals.services;
+  const status = mqttManager.getCanary(req.params.brokerId);
+  if (!status) return res.status(404).json({ error: 'Broker not found' });
+  res.json({ brokerId: req.params.brokerId, ...status });
 });
 
 // GET /api/mqtt/brokers/:brokerId/topics?limit=100000
@@ -244,8 +285,21 @@ router.get('/brokers/:brokerId/admin', (req, res) => {
 router.post('/brokers/:brokerId/admin', (req, res) => {
   const { mqttManager, profiles } = req.app.locals.services;
   try {
-    const result = mqttManager.setBrokerAdmin(req.params.brokerId, req.body || {});
-    profiles?.setBrokerAdmin(req.params.brokerId, req.body || {});
+    const body = { ...(req.body || {}) };
+    // GET masks a URL password (user:***@host); saving that masked URL back keeps the stored one,
+    // for the same origin and user only (another host is refused with 400 secret-required).
+    const stored = mqttManager.admin?.get(req.params.brokerId);
+    if (stored?.url && body.url === stripUrlCredentials(stored.url)) body.url = stored.url;
+    else if (typeof body.url === 'string') {
+      try {
+        body.url = restoreMaskedUrlPassword(body.url, stored?.url);
+      } catch (error) {
+        if (error.code === 'secret-required') return res.status(400).json(secretRequiredBody(error.field));
+        throw error;
+      }
+    }
+    const result = mqttManager.setBrokerAdmin(req.params.brokerId, body);
+    profiles?.setBrokerAdmin(req.params.brokerId, body);
     res.json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });

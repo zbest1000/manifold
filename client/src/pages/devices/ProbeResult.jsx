@@ -101,7 +101,7 @@ export default function ProbeResult({ protocol, result, selectedTag, onApply }) 
   return (
     <div className="space-y-2" aria-live="polite" data-testid="probe-result">
       {protocol === 'modbus-tcp' ? <ModbusResult result={result} selectedTag={selectedTag} onApply={onApply} /> : <GenericResult result={result} />}
-      <p className="mono break-all text-xs text-subtle">raw: {result.rawHex}</p>
+      {result.rawHex !== undefined && <p className="mono break-all text-xs text-subtle">raw: {result.rawHex}</p>}
     </div>
   );
 }

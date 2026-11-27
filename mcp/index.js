@@ -53,7 +53,7 @@ function fail(error) {
   return { isError: true, content: [{ type: 'text', text: `Error: ${error.message}` }] };
 }
 
-const server = new McpServer({ name: 'manifold', version: '2.0.0' });
+const server = new McpServer({ name: 'manifold', version: '1.1.0' });
 
 // ---------------------------------------------------------------------------
 // System / discovery
@@ -116,7 +116,7 @@ server.tool(
 
 server.tool(
   'config_export',
-  'Export the full DataOps configuration (pipelines, historians, models, recordings, contracts, bindings, mounts, alert rules) as one JSON document. Secrets are stripped.',
+  'Export the full DataOps configuration (pipelines, historians, models, recordings, contracts, bindings, codec bindings, mounts, alert rules) as one JSON document. Secrets are stripped.',
   {},
   async () => {
     try {
@@ -148,11 +148,50 @@ server.tool(
 // ---------------------------------------------------------------------------
 server.tool(
   'mqtt_list_brokers',
-  'List all MQTT broker connections with their status and metrics.',
+  'List all MQTT broker connections with their status and metrics. Each broker also carries `posture` (counts of security findings by severity and the worst one; details via mqtt_broker_posture), `canaryState` (state of the opt-in round-trip canary, null when it is off; details via mqtt_broker_canary) and `intake` (the subscription filter requested and the one the broker actually granted).',
   {},
   async () => {
     try {
       return ok(await api('/api/mqtt/brokers'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_posture',
+  'Read-only security assessment of one broker connection, built from what Manifold already knows (nothing is probed): TLS and certificate verification, certificate days left, anonymous or authenticated, password over plaintext, wildcard root subscription, MQTT version, client-id collisions / reconnect storms, $SYS readable. Findings are listed worst first with severity (high, medium, low, info), an explanation and what to change.',
+  { brokerId: z.string() },
+  async ({ brokerId }) => {
+    try {
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/posture`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_canary',
+  'Status of the opt-in broker canary for one broker: state (off, unknown, pending, ok, slow, failing, not-permitted with `refused` = publish or subscribe), success rate, p50/p95 publish-to-deliver latency and time since the last success over a rolling window. The canary publishes a small non-retained message to its own topic (default manifold/canary/<id>) and is off unless enabled in the broker settings; this tool only reads it.',
+  { brokerId: z.string() },
+  async ({ brokerId }) => {
+    try {
+      return ok(await api(`/api/mqtt/brokers/${encodeURIComponent(brokerId)}/canary`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'mqtt_broker_presets',
+  'Well-known public MQTT test brokers (host, port, TLS). Anything published to them is visible to everyone: never use them with plant data. Pass a preset to mqtt_connect to add one.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/mqtt/presets'));
     } catch (error) {
       return fail(error);
     }
@@ -193,9 +232,16 @@ server.tool(
   }
 );
 
+// How payloads appear in topic and message results (see codecs_list).
+const PAYLOAD_NOTE =
+  ' Payloads: JSON is parsed; non-JSON payloads are decoded by a payload codec when one applies (a codec binding: CBOR, ' +
+  'MessagePack, SenML, Protobuf or Avro with a schema; or auto-detected binary CBOR / MessagePack), and then `codec` names it ' +
+  '({ name, binding?, auto? }) and `codecError` explains a bound codec that failed; anything else that is not text is base64 ' +
+  '(payloadFormat "binary"). 64-bit integers from codecs are decimal strings.';
+
 server.tool(
   'mqtt_list_topics',
-  'List all topics seen on a broker, with message counts and last-activity timestamps. Ideal for building a topic tree.',
+  'List all topics seen on a broker, with message counts, last-activity timestamps and the latest payload. Ideal for building a topic tree.' + PAYLOAD_NOTE,
   { brokerId: z.string() },
   async ({ brokerId }) => {
     try {
@@ -208,7 +254,7 @@ server.tool(
 
 server.tool(
   'mqtt_get_messages',
-  'Get recent messages for a specific topic on a broker, including decoded Sparkplug B payloads where applicable.',
+  'Get recent messages for a specific topic on a broker, including decoded Sparkplug B payloads where applicable.' + PAYLOAD_NOTE,
   {
     brokerId: z.string(),
     topic: z.string(),
@@ -552,6 +598,39 @@ server.tool(
 );
 
 server.tool(
+  'codecs_list',
+  'Payload codec bindings (topic filter -> CBOR, MessagePack, SenML, Protobuf or Avro, with the schema) and their decoded / failed counters, plus auto-detection counts and the decode limits. Read-only.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/codecs'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'codec_test',
+  'Decode one payload with a codec without storing anything (read-only): codec "auto" (CBOR / MessagePack detection), a built-in codec, a schema codec with schemaText (+ messageType for Protobuf), or a saved binding by bindingId.',
+  {
+    codec: z.enum(['auto', 'cbor', 'msgpack', 'senml-json', 'senml-cbor', 'protobuf', 'avro']).optional().describe('Omit when bindingId is given.'),
+    bindingId: z.string().optional(),
+    schemaText: z.string().optional().describe('.proto text or Avro JSON schema (max 128 KiB).'),
+    messageType: z.string().optional().describe('Protobuf message type, e.g. plant.v1.Pump.'),
+    payload: z.string().describe('The payload bytes as text in `encoding`.'),
+    encoding: z.enum(['hex', 'base64', 'text']).optional().describe('Default hex.')
+  },
+  async (args) => {
+    try {
+      return ok(await api('/api/codecs/test', { method: 'POST', body: JSON.stringify(args) }));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
   'models_list',
   'Contextualization models: multi-source attribute bindings published as merged objects at UNS paths, with publish/error status.',
   {},
@@ -608,7 +687,7 @@ server.tool(
 
 server.tool(
   'tags_sources',
-  'List browsable tag sources right now: connected OPC UA servers, Sparkplug registries, and MQTT topic tries.',
+  'List browsable tag sources right now: devices, connected OPC UA servers, Sparkplug registries, IoT devices over MQTT (type "iot", id "<brokerId>|<deviceId>") and MQTT topic tries.',
   {},
   async () => {
     try {
@@ -623,14 +702,39 @@ server.tool(
   'tags_browse',
   'Browse one level of device tags under a node in a source (from tags_sources). Nodes are { id, name, kind: "folder"|"tag", address }.',
   {
-    type: z.enum(['opcua', 'sparkplug', 'mqtt']).describe('Source type.'),
-    id: z.string().describe('Source id (connectionId or brokerId).'),
+    type: z.enum(['opcua', 'sparkplug', 'mqtt', 'iot']).describe('Source type.'),
+    id: z.string().describe('Source id (connectionId, brokerId, or "<brokerId>|<deviceId>" for iot).'),
     node: z.string().optional().describe('Node to browse under; omit for the root level.')
   },
   async ({ type, id, node }) => {
     try {
       const q = new URLSearchParams({ type, id, ...(node ? { node } : {}) });
       return ok(await api(`/api/tags/browse?${q}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'iot_devices',
+  'IoT devices over MQTT (read-only): Zigbee2MQTT, Z-Wave JS UI, Home Assistant MQTT discovery, Tasmota, Shelly, ChirpStack and The Things Stack devices that detection found on connected brokers, ' +
+    'each with convention, broker, availability, last seen and tag count. Pass brokerId + deviceId for one device with its tags (unit, type, range, enum, topic, selector) and live values with quality. ' +
+    'Manifold only reads these from the bridge; it never controls them. Detection is opt-in per broker (GET/PUT /api/iot/brokers/:id).',
+  {
+    brokerId: z.string().optional().describe('Only devices on this broker (or, with deviceId, the broker of that device).'),
+    deviceId: z.string().optional().describe('One device (e.g. "z2m:0x00158d0001a2b3c4"); needs brokerId.'),
+    convention: z.enum(['zigbee2mqtt', 'zwavejs', 'homeassistant', 'tasmota', 'shelly', 'chirpstack', 'ttn']).optional().describe('Only devices of this convention.'),
+    q: z.string().optional().describe('Text filter on name, model, manufacturer or id.')
+  },
+  async ({ brokerId, deviceId, convention, q }) => {
+    try {
+      if (deviceId) {
+        if (!brokerId) throw new Error('deviceId needs brokerId');
+        return ok(await api(`/api/iot/devices/${encodeURIComponent(brokerId)}/${encodeURIComponent(deviceId)}`));
+      }
+      const qs = new URLSearchParams({ ...(brokerId ? { brokerId } : {}), ...(convention ? { convention } : {}), ...(q ? { q } : {}) });
+      return ok(await api(`/api/iot/devices${qs.toString() ? `?${qs}` : ''}`));
     } catch (error) {
       return fail(error);
     }
@@ -668,8 +772,8 @@ server.tool(
     name: z.string().optional(),
     enabled: z.boolean().optional().describe('Default true.'),
     rev: z.number().optional().describe('Revision of the stored binding this edit is based on (optimistic concurrency, when the server supports it).'),
-    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt']) }).passthrough()
-      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? }, { type: "device-profile", profileId, tags, select?, overrides? } or { type: "mqtt", brokerId, tags | tags:"all" + filter, field?, staleAfterMs?, select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
+    source: z.object({ type: z.enum(['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt', 'iot']) }).passthrough()
+      .describe('Source: { type: "opcua", connectionId, tags }, { type: "sparkplug", brokerId, group, edge }, { type: "device", deviceId, tags, select?, overrides? }, { type: "device-profile", profileId, tags, select?, overrides? }, { type: "mqtt", brokerId, tags | tags:"all" + filter, field?, staleAfterMs?, select?, overrides? } or { type: "iot", brokerId, deviceId (from iot_devices), tags (tag keys) | "all", select?, overrides? }. tags: [address | { address, name?, enabled?, ...overrides }] or "all".'),
     target: z.object({ mode: z.enum(['mqtt', 'sparkplug']), brokerId: z.string() }).passthrough()
       .describe('Target: { mode, brokerId, assetPath | assetPathTemplate, format?, layout?, fields?, metaFields?, context?, contextMode?, ... }; sparkplug mode also needs group and edge.'),
     rbe: z.object({}).passthrough().optional().describe('Report by exception: { heartbeatMs?, deadband?: { type: "absolute"|"percent", value } }.')
@@ -804,17 +908,24 @@ server.tool(
 
 server.tool(
   'alert_rule_save',
-  'Create or update an alert rule (changes server state). Types: branch-silent (no traffic under path), topic-silent (a specific topic goes quiet; requires topic), new-topic (new topic appears under prefix). Optional webhookUrl is POSTed on firing.',
+  'Create or update an alert rule (changes server state). Types: branch-silent (no traffic under path for thresholdMs), topic-silent (a specific topic goes quiet; requires topic), new-topic (new topic appears under prefix), value-threshold (a numeric payload or dot-path field crosses value per op; requires topic, which may be an MQTT filter with + and #). severity is info, warning (default) or critical. For value-threshold, sustainMs is how long the condition must hold before it fires and clearValue the hysteresis level it must return past to resolve. Optional webhookUrl is POSTed on firing and resolving. To update, pass the rule id and the rev you read; a stale rev is refused with 409.',
   {
     id: z.string().optional().describe('Rule id to update; omit to create.'),
+    rev: z.number().optional().describe('The rev of the rule as read; refused (409) if it changed since.'),
     name: z.string().optional(),
-    type: z.enum(['branch-silent', 'topic-silent', 'new-topic']),
+    type: z.enum(['branch-silent', 'topic-silent', 'new-topic', 'value-threshold']),
     brokerId: z.string(),
+    severity: z.enum(['info', 'warning', 'critical']).optional().describe('Default warning.'),
     path: z.string().optional().describe('UNS branch path for branch-silent rules.'),
-    topic: z.string().optional().describe('Exact topic for topic-silent rules (required for that type).'),
+    topic: z.string().optional().describe('Exact topic for topic-silent rules; topic or +/# filter for value-threshold rules.'),
     prefix: z.string().optional().describe('Topic prefix for new-topic rules.'),
     thresholdMs: z.number().optional().describe('Silence threshold in ms (default 60000).'),
-    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires.'),
+    field: z.string().optional().describe('value-threshold: dot-path into a JSON payload (omit for a plain numeric payload).'),
+    op: z.enum(['>', '>=', '<', '<=', '==', '!=']).optional().describe('value-threshold: comparison.'),
+    value: z.number().optional().describe('value-threshold: the limit.'),
+    sustainMs: z.number().optional().describe('value-threshold: ms the condition must hold before firing (default 0).'),
+    clearValue: z.number().optional().describe('value-threshold: resolve only once the value is back past this level.'),
+    webhookUrl: z.string().optional().describe('Webhook to POST when the rule fires or resolves. It is a credential: answers never return it (only hasWebhook and webhookOrigin). Omit to keep the stored one; an empty string removes it.'),
     enabled: z.boolean().optional().describe('Default true.')
   },
   async (args) => {
@@ -841,11 +952,48 @@ server.tool(
 
 server.tool(
   'alert_events',
-  'Recent alert firings, newest first.',
+  'Recent alert events (firing, resolved, acknowledged, ended), newest first, from the in-memory ring. For filtering or older events use alert_history.',
   { limit: z.number().optional().describe('Max events (default 200, max 500).') },
   async ({ limit }) => {
     try {
       return ok(await api(`/api/alerts/events${limit ? `?limit=${Number(limit)}` : ''}`));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'alerts_active',
+  'Alarms active now: every firing rule (per concrete topic for wildcard value rules) and value rules breached but not firing yet, with severity, value, since, and whether and by whom each was acknowledged. Also counts (firing, breached, unacknowledged, unacknowledgedCritical). Read-only.',
+  {},
+  async () => {
+    try {
+      return ok(await api('/api/alerts/active'));
+    } catch (error) {
+      return fail(error);
+    }
+  }
+);
+
+server.tool(
+  'alert_history',
+  'Durable alert history (kept across server restarts), newest first. Filters: ruleId, state (comma list of firing, resolved, acknowledged, ended, event), severity (comma list), q (text in rule name, topic, detail, person, note), from/to (epoch ms or ISO). Page with the returned nextCursor. Read-only. Acknowledging alarms is left to people in the UI.',
+  {
+    ruleId: z.string().optional(),
+    state: z.string().optional(),
+    severity: z.string().optional(),
+    q: z.string().optional(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    cursor: z.number().optional().describe('nextCursor from the previous page.'),
+    limit: z.number().optional().describe('Page size (default 100, max 500).')
+  },
+  async (args) => {
+    try {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(args)) if (v !== undefined && v !== '') qs.set(k, String(v));
+      return ok(await api(`/api/alerts/history?${qs}`));
     } catch (error) {
       return fail(error);
     }

@@ -6,7 +6,8 @@ import {
   routeTargetLabel, historianPayload, historianSaveDisabled, historianSummary, historianFormFrom, BLANK_HISTORIAN, outboxSummary,
   recordingBody, recordingStatusLabel, brokerName
 } from '@/pages/pipelines/helpers';
-import { valueRuleSummary, ruleScope, formFromRule, ruleBody, importSummary, EMPTY_RULE_FORM } from '@/pages/settings/helpers';
+import { importSummary } from '@/pages/settings/helpers';
+import { valueRuleSummary, ruleScope, formFromRule, ruleBody, EMPTY_RULE_FORM } from '@/pages/alerts/helpers';
 
 describe('sortRows / nextSort', () => {
   const rows = [{ n: 'pump10', v: 3 }, { n: 'pump2', v: null }, { n: 'pump1', v: 1 }, { n: 'Pump3', v: 2 }];

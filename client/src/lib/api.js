@@ -53,6 +53,11 @@ async function request(path, options = {}) {
     // Field-level validation errors ({ key, error }[]) travel with the error.
     if (Array.isArray(body.details)) err.details = body.details;
     err.status = res.status;
+    // A stored secret that would follow an address change (400 secret-required): `field` names the input to show it on.
+    if (body.code === 'secret-required') {
+      err.code = body.code;
+      err.field = body.field || null;
+    }
     // 409 carries structure the pages act on: stale (another writer saved first: `current` is the saved
     // object), duplicate (`existing` names the connection that is already there), in-use (`usedBy`).
     if (res.status === 409) {
@@ -64,6 +69,23 @@ async function request(path, options = {}) {
     throw err;
   }
   return body;
+}
+
+// GET a text (CSV) body with the bearer token, so an authenticated server can still be exported from.
+async function requestText(path) {
+  const token = getAuthToken();
+  const res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  const text = await res.text();
+  if (!res.ok) {
+    let raw = `Request failed (${res.status})`;
+    try {
+      raw = JSON.parse(text).error || raw;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(humanizeError(raw).summary);
+  }
+  return text;
 }
 
 // Fetch the Prometheus /metrics exposition as raw text (it lives outside /api
@@ -171,6 +193,12 @@ export const api = {
   deleteContract: (id) => request(`/api/contracts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   contractViolations: (limit = 200) => request(`/api/contracts/violations?limit=${limit}`),
 
+  // Payload codecs (topic filter -> codec + schema; decoded on ingest)
+  listCodecs: () => request('/api/codecs'),
+  saveCodec: (c) => request('/api/codecs', { method: 'POST', body: JSON.stringify(c) }),
+  deleteCodec: (id) => request(`/api/codecs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  testCodec: (spec) => request('/api/codecs/test', { method: 'POST', body: JSON.stringify(spec) }),
+
   // Models
   listModels: () => request('/api/models'),
   saveModel: (m) => request('/api/models', { method: 'POST', body: JSON.stringify(m) }),
@@ -194,6 +222,10 @@ export const api = {
   saveAlertRule: (rule) => request('/api/alerts/rules', { method: 'POST', body: JSON.stringify(rule) }),
   deleteAlertRule: (id) => request(`/api/alerts/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   alertEvents: (limit = 200, ruleId = '') => request(`/api/alerts/events?limit=${limit}${ruleId ? `&ruleId=${encodeURIComponent(ruleId)}` : ''}`),
+  activeAlarms: () => request('/api/alerts/active'),
+  acknowledgeAlarm: (body) => request('/api/alerts/ack', { method: 'POST', body: JSON.stringify(body) }),
+  alertHistory: (query) => request(`/api/alerts/history?${query}`),
+  alertHistoryCsv: (query) => requestText(`/api/alerts/history?${query}`),
 
   topicTree: (id, prefix = '', limit = 500) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}/topictree?prefix=${encodeURIComponent(prefix)}&limit=${limit}`),
@@ -250,6 +282,9 @@ export const api = {
   i3xHistory: (body) => request('/api/i3x/history', { method: 'POST', body: JSON.stringify(body) }),
 
   // In-place edits (disconnect → upsert same id → reconnect on the server)
+  brokerPosture: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/posture`),
+  brokerCanary: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}/canary`),
+  brokerPresets: () => request('/api/mqtt/presets'),
   getBroker: (id) => request(`/api/mqtt/brokers/${encodeURIComponent(id)}`),
   updateBroker: (id, config) =>
     request(`/api/mqtt/brokers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(config) }),

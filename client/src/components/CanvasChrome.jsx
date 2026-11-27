@@ -4,8 +4,8 @@ import { IconButton } from '@/components/ui';
 
 /**
  * Chrome for the canvas pages (Topics, UNS, Flows), built on the design
- * system's tokens and rules (docs/design/ui-design-system.md, "Canvas page with
- * floating toolbars"). These are the pieces the shared primitives do not cover:
+ * system's tokens and rules (docs/design/ui-design-system.md, "Canvas page"
+ * in Page patterns). These are the pieces the shared primitives do not cover:
  *
  *   SidePanel     a docked, NON-modal detail panel beside a canvas (the system's
  *                 Drawer is modal: it would trap focus and block the canvas).

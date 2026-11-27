@@ -1,5 +1,6 @@
 // Pure helpers for the device tag editor: delimited-text (CSV / spreadsheet TSV)
 // parsing and serialising, and row <-> tag conversion. No React, no DOM.
+import { neutralizeFormula, restoreFormula } from './csvSafe';
 
 /** Columns in the order the table shows them (advanced ones last); also the CSV export order. */
 export const TAG_COLUMNS = [
@@ -15,10 +16,14 @@ export const TAG_COLUMNS = [
   'length',
   'bit',
   'byteOrder',
-  'wordOrder'
+  'wordOrder',
+  'encoding',
+  'rate'
 ];
 
 const NUMERIC = new Set(['length', 'bit', 'scale', 'offset']);
+// Yes/no columns (SNMP counter rate): "true", "yes", "1" and "x" mean true.
+const BOOLEAN = new Set(['rate']);
 const ALIASES = {
   tag: 'key',
   name: 'key',
@@ -86,7 +91,7 @@ export function parseDelimited(text, delimiter = detectDelimiter(text)) {
 }
 
 function quoteField(v, delimiter) {
-  const s = v === undefined || v === null ? '' : String(v);
+  const s = v === undefined || v === null ? '' : String(neutralizeFormula(v));
   return s.includes('"') || s.includes('\n') || s.includes('\r') || s.includes(delimiter) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -108,8 +113,9 @@ function headerMap(cells) {
 }
 
 function coerce(col, raw) {
-  const v = raw.trim();
+  const v = restoreFormula(raw).trim();
   if (v === '') return undefined;
+  if (BOOLEAN.has(col)) return /^(true|yes|y|1|x)$/i.test(v);
   if (NUMERIC.has(col)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : v; // keep junk visible so validation flags it
@@ -147,6 +153,10 @@ export function cleanTag(tag) {
   for (const c of TAG_COLUMNS) {
     const v = tag[c];
     if (v === undefined || v === null || v === '') continue;
+    if (BOOLEAN.has(c)) {
+      if (v === true || v === 'true') out[c] = true;
+      continue;
+    }
     out[c] = NUMERIC.has(c) && typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : v;
   }
   return out;

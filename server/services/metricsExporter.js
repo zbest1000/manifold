@@ -15,7 +15,7 @@ const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
 
 function esc(v) {
-  return String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
+  return String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r\n|[\r\n]/g, ' '); // \r too: either line break would split the sample line for CR-aware parsers
 }
 
 function line(name, labels, value) {
@@ -63,6 +63,8 @@ function render(services) {
     out += line('manifold_broker_messages_received_total', { broker: info.name || info.id }, info.metrics.messagesReceived);
     out += line('manifold_broker_topics', { broker: info.name || info.id }, info.metrics.topicCount);
   }
+
+  out += renderBrokerHealth(mqttManager);
 
   counter('manifold_pipeline_messages_total', 'Pipeline route counters');
   const routeNames = new Map((profiles?.listIn('pipelines') || []).map((r) => [r.id, r.name || r.id.slice(0, 8)]));
@@ -113,6 +115,35 @@ function render(services) {
   gauge('manifold_alert_events', 'Alert events in the history ring');
   out += line('manifold_alert_events', null, alerts?.history?.length ?? 0);
 
+  // Active alarms by state and severity (every combination is present, zero included, so alert rules on
+  // these series never see "no data"). Unacknowledged = firing and not acknowledged yet.
+  const am = alerts?.getMetrics?.();
+  if (am) {
+    gauge('manifold_alerts_active', 'Active alarms by state and severity');
+    gauge('manifold_alerts_unacknowledged', 'Firing alarms nobody has acknowledged, by severity');
+    let activeLines = '';
+    let unackLines = '';
+    for (const severity of ['info', 'warning', 'critical']) {
+      for (const state of ['firing', 'breached']) {
+        const n = (am.active[`${state}|${severity}|true`] || 0) + (am.active[`${state}|${severity}|false`] || 0);
+        activeLines += line('manifold_alerts_active', { state, severity }, n);
+      }
+      unackLines += line('manifold_alerts_unacknowledged', { severity }, am.active[`firing|${severity}|false`] || 0);
+    }
+    out = out.replace('# HELP manifold_alerts_unacknowledged', `${activeLines}# HELP manifold_alerts_unacknowledged`) + unackLines;
+    counter('manifold_alert_transitions_total', 'Alert events since start, by state and severity');
+    for (const [k, n] of Object.entries(am.transitions)) {
+      const [state, severity] = k.split('|');
+      out += line('manifold_alert_transitions_total', { state, severity }, n);
+    }
+    if (am.journal) {
+      gauge('manifold_alert_history_bytes', 'Size of the durable alert history on disk (both segments)');
+      out += line('manifold_alert_history_bytes', null, am.journal.bytes);
+      counter('manifold_alert_history_write_errors_total', 'Failed writes to the alert history file');
+      out += line('manifold_alert_history_write_errors_total', null, am.journal.writeErrors);
+    }
+  }
+
   counter('manifold_binding_published_total', 'Tag binding publishes');
   counter('manifold_binding_suppressed_total', 'Tag binding samples suppressed by report-by-exception');
   counter('manifold_binding_errors_total', 'Tag binding publish errors');
@@ -124,6 +155,40 @@ function render(services) {
   for (const [id, s] of bindingStatus) out += line('manifold_binding_errors_total', { binding: id.slice(0, 8) }, s.errors);
 
   out += renderDevices(services.devices);
+  return out;
+}
+
+const CANARY_STATES = ['ok', 'slow', 'failing', 'not-permitted', 'pending', 'unknown'];
+
+/** Broker canary (only brokers that opted in) and security posture finding counts. */
+function renderBrokerHealth(mqttManager) {
+  if (!mqttManager?.getConnections) return '';
+  let out = '';
+  const gauge = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} gauge\n`);
+  const counter = (n, help) => (out += `# HELP ${n} ${help}\n# TYPE ${n} counter\n`);
+  const brokers = mqttManager.getConnections().map((b) => ({ id: b.id, label: b.name || b.id, canary: mqttManager.canary?.getStatus(b.id) }));
+  const watched = brokers.filter((b) => b.canary && b.canary.state !== 'off');
+
+  gauge('manifold_broker_canary_state', 'Canary state per broker (1 for the current state, 0 for the others)');
+  for (const b of watched) for (const state of CANARY_STATES) out += line('manifold_broker_canary_state', { broker: b.label, state }, b.canary.state === state ? 1 : 0);
+  gauge('manifold_broker_canary_success_ratio', 'Share of canary probes delivered in the rolling window');
+  for (const b of watched) out += line('manifold_broker_canary_success_ratio', { broker: b.label }, b.canary.successRate);
+  gauge('manifold_broker_canary_latency_ms', 'Canary publish-to-deliver latency over the rolling window');
+  for (const b of watched) {
+    out += line('manifold_broker_canary_latency_ms', { broker: b.label, quantile: '0.5' }, b.canary.p50Ms);
+    out += line('manifold_broker_canary_latency_ms', { broker: b.label, quantile: '0.95' }, b.canary.p95Ms);
+  }
+  gauge('manifold_broker_canary_last_success_age_seconds', 'Seconds since the last delivered canary probe');
+  for (const b of watched) out += line('manifold_broker_canary_last_success_age_seconds', { broker: b.label }, b.canary.sinceLastSuccessMs === null ? NaN : b.canary.sinceLastSuccessMs / 1000);
+  counter('manifold_broker_canary_probes_total', 'Canary probes sent');
+  for (const b of watched) out += line('manifold_broker_canary_probes_total', { broker: b.label }, b.canary.sent);
+
+  gauge('manifold_broker_posture_findings', 'Security posture findings per broker by severity');
+  for (const b of brokers) {
+    const summary = mqttManager.getPosture?.(b.id)?.summary;
+    if (!summary) continue;
+    for (const severity of ['high', 'medium', 'low', 'info']) out += line('manifold_broker_posture_findings', { broker: b.label, severity }, summary[severity]);
+  }
   return out;
 }
 

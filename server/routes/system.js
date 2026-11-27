@@ -2,12 +2,21 @@ const express = require('express');
 const router = express.Router();
 const { redactSecrets, isSecretKey } = require('../services/secrets');
 const { COLLECTIONS } = require('../services/profileStore');
+const { hostIdentity, historianEndpoint } = require('../services/endpointIdentity');
 
 // GET /api/system/status
 router.get('/status', (req, res) => {
-  const { mqttManager, opcuaManager, discovery, cesmii, i3x } = req.app.locals.services;
+  const { mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, alerts } = req.app.locals.services;
+  const journal = alerts?.journal;
+  const storage = {
+    // Saved configuration that could not be written (data directory unwritable or full): the
+    // running state is not on disk and is lost on restart until this clears.
+    profiles: profiles?.persistError ? { ok: false, error: profiles.persistError.message, since: profiles.persistError.at } : { ok: true },
+    alertJournal: journal ? { ok: !journal.stats.writeErrors, writeErrors: journal.stats.writeErrors, lastError: journal.stats.lastError || null } : null
+  };
   res.json({
-    status: 'ok',
+    status: storage.profiles.ok && (storage.alertJournal?.ok ?? true) ? 'ok' : 'degraded',
+    storage,
     timestamp: new Date().toISOString(),
     mqtt: {
       connections: mqttManager.getConnections().length,
@@ -67,7 +76,7 @@ router.post('/discovery/plan', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {
     const p = await discovery.plan(req.body || {});
-    res.json({ range: p.range, resolvedFrom: p.resolvedFrom, hosts: p.hosts.length, totalProbes: p.totalProbes, ports: p.ports, settings: p.settings, estimate: p.estimate, skipped: p.skipped, notes: p.notes });
+    res.json({ range: p.range, resolvedFrom: p.resolvedFrom, hosts: p.hosts.length, totalProbes: p.totalProbes, ports: p.ports, tcpPorts: p.tcpPorts, udpPorts: p.udpPorts, settings: p.settings, estimate: p.estimate, skipped: p.skipped, notes: p.notes });
   } catch (error) {
     // ?soft=1: the page asks for a plan on every edit, and a refused range is an expected answer there, not a
     // failed request (it would otherwise show up as a console error in the browser). 200 with `refused`.
@@ -82,7 +91,9 @@ router.post('/discovery/plan', async (req, res) => {
 });
 
 // POST /api/system/discovery/start { range, includeDevices, mqttPorts, opcuaPorts, i3xPorts, modbusPorts,
-//   s7Ports, eipPorts, mqttWsPorts, concurrency, perHost, timeoutMs, identifyTimeoutMs }
+//   s7Ports, eipPorts, mqttWsPorts, bacnetPorts / includeBacnet, coapPorts / includeCoap,
+//   snmpPorts / includeSnmp (UDP kinds, each opt-in on its own),
+//   concurrency, perHost, timeoutMs, identifyTimeoutMs }
 router.post('/discovery/start', async (req, res) => {
   const { discovery } = req.app.locals.services;
   try {
@@ -223,6 +234,20 @@ function restoreSecrets(imported, existing) {
   return out;
 }
 
+/**
+ * True when an imported historian or device points somewhere else than the stored one (scheme, host,
+ * port; a URL's origin). Its stored secrets must then not be restored into it.
+ */
+function endpointMoved(collection, item, existing) {
+  if (!existing || !isPlainObject(item)) return false;
+  if (collection === 'historians') return item.type !== existing.type || historianEndpoint(item) !== historianEndpoint(existing);
+  if (collection === 'devices') {
+    const id = (d) => `${d.protocol}|${hostIdentity(d.scheme ?? '', d.host, d.port)}`;
+    return id(item) !== id(existing);
+  }
+  return false;
+}
+
 // GET /api/system/config/export
 router.get('/config/export', (req, res) => {
   const { profiles } = req.app.locals.services;
@@ -245,7 +270,11 @@ router.post('/config/import', (req, res) => {
   const imported = {};
   for (const c of EXPORT_COLLECTIONS) {
     if (!Array.isArray(body[c])) continue;
-    for (const item of body[c]) profiles.upsertIn(c, item.id, restoreSecrets(item, profiles.getIn(c, item.id)));
+    for (const item of body[c]) {
+      const existing = profiles.getIn(c, item.id);
+      // A stored secret never follows an imported endpoint change: the item is imported without it.
+      profiles.upsertIn(c, item.id, restoreSecrets(item, endpointMoved(c, item, existing) ? undefined : existing));
+    }
     imported[c] = body[c].length;
   }
   if (Array.isArray(body.mounts)) {

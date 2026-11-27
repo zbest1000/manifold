@@ -2,7 +2,7 @@
 
 /**
  * DeviceRuntime: protocol-agnostic runtime for ONE device (see
- * docs/design/southbound-drivers.md sections 3, 4.1-4.3).
+ * docs/design/driver-contract.md and ARCHITECTURE.md).
  *
  * Owns the connection state machine (connecting -> online -> backoff -> ...),
  * the poll scheduler (one cycle per group, overruns skipped never queued, all
@@ -306,6 +306,40 @@ class DeviceRuntime {
       g.due = now;
       this._tick(g);
     }
+    this._startSubscription(gen);
+  }
+
+  /**
+   * Subscription drivers (capabilities.subscribe and a subscribe() function, e.g. the
+   * WebSocket bridge drivers) push value changes as they arrive, between poll cycles, and
+   * report a lost connection themselves. The connection state machine, backoff and the Bad
+   * samples on disconnect stay the runtime's.
+   */
+  _startSubscription(gen) {
+    const caps = this.driver.capabilities || {};
+    if (!caps.subscribe || typeof this.driver.subscribe !== 'function') return;
+    try {
+      this.driver.subscribe({
+        onSamples: (list) => {
+          if (!this._alive(gen) || !Array.isArray(list) || !list.length) return;
+          this._attempt = 0;
+          const tRead = this._now();
+          const samples = list
+            .filter((r) => r && this._tags.has(r.key))
+            .map((r) => {
+              const s = { key: r.key, v: r.v, type: r.type, q: r.q, tRead };
+              if (r.qReason) s.qReason = r.qReason;
+              return s;
+            });
+          this._emitSamples('subscription', samples);
+        },
+        onLost: (reason) => {
+          this._fail(gen, `connection lost: ${reason || 'closed'}`).catch(() => {});
+        }
+      });
+    } catch (e) {
+      this._fail(gen, `subscribe failed: ${errMsg(e)}`).catch(() => {});
+    }
   }
 
   /** Connection is gone (fatal result, failed connect, driver misbehaviour). */
@@ -507,6 +541,7 @@ class DeviceRuntime {
     for (const r of res.results || []) {
       const s = { key: r.key, v: r.v, type: r.type, q: r.q, tRead };
       if (r.qReason) s.qReason = r.qReason;
+      if (r.tSource !== undefined) s.tSource = r.tSource; // a driver's own source timestamp (ms), e.g. MTConnect
       samples.push(s);
     }
   }

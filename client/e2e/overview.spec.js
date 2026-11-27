@@ -46,7 +46,7 @@ test('needs attention: rejected points, a firing alert, a mapping not publishing
     await expect(item(`Historian ${hname}`)).toContainText('rejected');
     await expect(item(`Historian ${hname}`)).toHaveAttribute('href', '/pipelines?tab=historians');
     await expect(item(`Alert ${ruleName}`)).toContainText('Firing', { timeout: 40_000 });
-    await expect(item(`Alert ${ruleName}`)).toHaveAttribute('href', '/settings?tab=alerts');
+    await expect(item(`Alert ${ruleName}`)).toHaveAttribute('href', `/alerts?alarm=${encodeURIComponent(`${rule.json.id}|plant/line2/count`)}`);
     await expect(item(`Mapping ${mapName}`)).toContainText(`Not publishing: The target broker ${deadBroker} is not connected`);
     await expect(item(`Mapping ${mapName}`)).toHaveAttribute('href', '/tags?view=mappings');
     await expect(item(`Route ${ghostName}`)).toContainText('Broken reference: broker gone-broker no longer exists');

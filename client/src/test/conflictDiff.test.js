@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { diffRows, isStale } from '@/components/ConflictDialog';
 import { routeState, brokenSummary } from '@/pages/pipelines/helpers';
-import { ruleStates, ruleBody, formFromRule } from '@/pages/settings/helpers';
+import { ruleStates, ruleBody, formFromRule } from '@/pages/alerts/helpers';
 
 describe('diffRows: what differs between my unsaved version and the saved one', () => {
   it('lists only differing fields, by dotted path, ignoring bookkeeping and runtime state', () => {

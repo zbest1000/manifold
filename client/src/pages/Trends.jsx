@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, X, Plus, Database } from 'lucide-react';
+import { RefreshCw, X, Plus, Database, Download } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
 import { useStore } from '@/store/store';
 import PageHeader from '@/components/PageHeader';
@@ -7,6 +8,7 @@ import TrendChart, { seriesColor } from '@/components/TrendChart';
 import { useChartTheme } from '@/components/charts';
 import { liveQuality, liveTime, shortTag, unitFrom } from '@/components/chartMath';
 import { SERIES_DASH } from '@/graph/dataPalette';
+import { downloadTrendsCsv, trendsExportUrl } from '@/lib/trendsExport';
 import { Banner, Button, ButtonLink, Card, EmptyState, Field, HelpButton, IconButton, Input, PageBody, SegmentedControl, Select, Toggle } from '@/components/ui';
 
 /**
@@ -104,6 +106,8 @@ export default function Trends() {
   const [reloadTick, setReloadTick] = useState(0);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [normalize, setNormalize] = useState(false);
+  const [exportMode, setExportMode] = useState('bucketed'); // 'bucketed' (as charted) | 'raw'
+  const [exporting, setExporting] = useState(false);
   const searchSeq = useRef(0);
   const [sourcesError, setSourcesError] = useState('');
   const [sourcesTry, setSourcesTry] = useState(0);
@@ -270,6 +274,28 @@ export default function Trends() {
   const sourceName = sourceList.find((x) => x.id === sourceId)?.name;
   const rangeLabel = RANGE_PRESETS.find((p) => p.ms === rangeMs)?.label || '';
   const listId = 'trend-tag-suggestions';
+
+  // CSV of what is shown: the same source, tags (in chart order, with the units on the axis) and range.
+  const exportCsv = async () => {
+    if (!data || exporting) return;
+    setExporting(true);
+    try {
+      const url = trendsExportUrl({
+        source: usingLive ? 'live' : usingRecording ? 'recording' : 'historian',
+        id: sourceId,
+        tags: orderedSeries.map((s) => s.tag),
+        units: orderedSeries.map((s) => s.unit || ''),
+        from: data.start,
+        to: data.end,
+        mode: exportMode
+      });
+      await downloadTrendsCsv(url);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setExporting(false);
+    }
+  };
   const showList = suggestOpen && searchable && shownSuggestions.length > 0;
 
   return (
@@ -304,6 +330,10 @@ export default function Trends() {
                 Quality: a Bad sample is not plotted. The line breaks and a red triangle marks it on the time axis. Over long ranges samples are averaged per interval: the average uses only the
                 usable samples, an interval with only Bad samples is a gap, and one that mixed Bad and good samples is marked partial with a hollow amber diamond. The readout says which. A faint
                 dashed line bridges an outage (no samples for much longer than usual). InfluxDB stores no quality, so there nothing can be marked.
+              </p>
+              <p>
+                Export CSV saves the tags and range on screen: times in ISO 8601 UTC, one value and one quality column per tag (the unit in the header), empty cells where a tag had no
+                sample. Pick <b>as charted</b> for the averaged points the chart draws, or <b>raw samples</b> for every stored sample; the file name and its first lines say which.
               </p>
             </HelpButton>
             <Toggle checked={autoRefresh} onChange={setAutoRefresh} label="Auto refresh" />
@@ -442,6 +472,19 @@ export default function Trends() {
                 <>
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <h2 className="text-sm font-medium text-fg">Chart</h2>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {usingLive ? (
+                        <span className="text-xs text-muted">CSV holds the raw samples shown</span>
+                      ) : (
+                        <Select aria-label="CSV values" value={exportMode} onChange={(e) => setExportMode(e.target.value)} className="w-auto">
+                          <option value="bucketed">CSV: as charted (bucketed)</option>
+                          <option value="raw">CSV: raw samples</option>
+                        </Select>
+                      )}
+                      <Button variant="secondary" size="sm" onClick={exportCsv} loading={exporting} disabled={!data || orderedSeries.length === 0}>
+                        {!exporting && <Download size={14} aria-hidden="true" />} Export CSV
+                      </Button>
+                    </div>
                     {orderedSeries.length > 1 && (
                       <Toggle
                         checked={normalize || normalizeForced}

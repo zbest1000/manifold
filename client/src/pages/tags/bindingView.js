@@ -1,4 +1,22 @@
+import { bindingSourceId } from './helpers';
 // Pure display helpers for the bindings table / detail.
+
+/**
+ * How the Mappings table names a mapping's source: the /api/tags/sources label when the source is
+ * listed (connected), else its id. Uses the same source id as the browse list for every source type
+ * (an IoT device is `<brokerId>|<deviceId>`), so an IoT mapping is not shown as "not connected".
+ */
+export function sourceLabel(b, sources, profiles = []) {
+  const s = b.source || {};
+  if (s.type === 'device-profile') {
+    const p = profiles.find((x) => x.id === s.profileId);
+    return { type: 'profile', label: p ? p.name : s.profileId || '?', connected: Boolean(p) };
+  }
+  const id = bindingSourceId(s);
+  const found = sources.find((x) => x.type === s.type && x.id === id);
+  const scope = s.type === 'sparkplug' ? ` ${s.group}/${s.edge}${s.device ? `/${s.device}` : ''}` : s.type === 'mqtt' && s.tags === 'all' ? ` ${s.filter}` : '';
+  return { type: s.type, label: `${found?.label || (s.type === 'iot' ? s.deviceId : id) || '?'}${scope}`, connected: Boolean(found) };
+}
 
 export function layoutLabel(b) {
   const t = b.target || {};

@@ -8,15 +8,18 @@
  * Matches (case-insensitive, by key name): pass/passphrase/password, token,
  * secret, key (apiKey, privateKey, ...), credential(s), cert/certificate,
  * authorization, anything containing "webhook" (webhookUrl: its URL path is the
- * secret for Slack/Teams-style hooks), plus the exact names `ca` and `pfx`
- * (TLS material). Add new credential-bearing field names HERE.
+ * secret for Slack/Teams-style hooks), "community" (SNMP v1/v2c community
+ * strings), plus the exact names `ca` and `pfx` (TLS material). Add new
+ * credential-bearing field names HERE.
  */
-const SECRET_KEY_RE = /pass|token|secret|key|credential|cert|authorization|webhook|^ca$|^pfx$/i;
+const SECRET_KEY_RE = /pass|token|secret|key|credential|cert|authorization|webhook|community|^ca$|^pfx$/i;
 
 const isSecretKey = (k) => SECRET_KEY_RE.test(String(k));
 
-// scheme://user:password@host — strip the password (and keep the user name).
-const URL_CREDS_RE = /^([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):[^/\s@]*@/i;
+// scheme://user:password@host — strip the password (and keep the user name), wherever the URL
+// sits in the text: error messages quote URLs mid-sentence ("... from a URL that includes
+// credentials: http://u:p@host").
+const URL_CREDS_RE = /([a-z][a-z0-9+.-]*:\/\/[^/\s:@]*):[^/\s@]*@/gi;
 function stripUrlCredentials(s) {
   return typeof s === 'string' ? s.replace(URL_CREDS_RE, '$1:***@') : s;
 }

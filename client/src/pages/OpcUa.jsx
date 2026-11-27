@@ -167,7 +167,9 @@ export default function OpcUa() {
         }
         return;
       }
-      setSubmitError(e.message);
+      // The endpoint changed and the password was left blank: shown next to the password field.
+      if (e.code === 'secret-required') setSubmitError({ field: e.field || 'password', message: e.message });
+      else setSubmitError(e.message);
       setFailedAttempts((n) => n + 1);
     } finally {
       setBusy(false);
@@ -366,7 +368,8 @@ export default function OpcUa() {
           discovering={discovering}
           busy={busy}
           problem={problem}
-          submitError={submitError}
+          submitError={typeof submitError === 'string' ? submitError : null}
+          secretError={submitError?.field === 'password' ? submitError.message : null}
           duplicate={duplicate}
           onEditExisting={duplicate?.id && opcua.some((c) => c.id === duplicate.id) ? () => edit(opcua.find((c) => c.id === duplicate.id)) : null}
           failedAttempts={failedAttempts}

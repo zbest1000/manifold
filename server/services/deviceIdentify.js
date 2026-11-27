@@ -7,6 +7,14 @@ const s7Driver = require('../drivers/s7');
 const eipFrame = require('../drivers/eip/frame');
 const { COMMAND, CPF } = require('../drivers/eip/cip');
 const { parseIdentity } = require('../drivers/eip/client');
+const bacnetFrame = require('../drivers/bacnet/frame');
+const { BacnetClient } = require('../drivers/bacnet/client');
+const { WILDCARD_INSTANCE } = require('../drivers/bacnet/encoding');
+const { SEGMENTATION } = require('../drivers/bacnet/enums');
+const { CoapUdpSocket } = require('../drivers/coap/coapUdp');
+const { CoapClient } = require('../drivers/coap/client');
+const coapLinks = require('../drivers/coap/linkformat');
+const coapMsg = require('../drivers/coap/message');
 
 /**
  * Read-only identification probes for the Discovery CIDR scan. A probe opens one
@@ -30,6 +38,17 @@ const { parseIdentity } = require('../drivers/eip/client');
  *    only for hosts that answered COTP. `deep: false` keeps COTP only.
  *  - EtherNet/IP: encapsulation ListIdentity (no CIP service): vendor, device type,
  *    product code, revision, serial, product name, state.
+ *  - BACnet/IP (UDP, opt-in): one UNICAST Who-Is to the address and, at the same time, a
+ *    ReadProperty of the wildcard device instance 4194303 (many devices answer Who-Is only with a
+ *    broadcast I-Am, which a probe socket on an ephemeral port never receives). Either answer
+ *    identifies the device; its device object is then read (object-name, vendor-name, model-name,
+ *    vendor-identifier, firmware-revision) with ReadPropertyMultiple, or ReadProperty when RPM is
+ *    rejected. Frames come from the BACnet driver's read-only encoder; nothing is broadcast.
+ *  - CoAP (UDP, opt-in): ONE unicast confirmable GET /.well-known/core to the address, with a single
+ *    retransmission. Any well-formed CoAP response proves a CoAP server (even 4.04: not every device
+ *    publishes a listing); a 2.05 link-format body adds the resource count and the first few paths.
+ *    No multicast, no broadcast, nothing but that GET. The UDP socket goes through the same egress
+ *    policy as every device target.
  *  - OPC UA: the UA-TCP Hello message (connection level, before any secure channel or
  *    session); an Acknowledge or Error reply identifies an OPC UA server.
  *
@@ -344,6 +363,47 @@ async function identifyEip(host, port = 44818, { timeoutMs = IDENTIFY_TIMEOUT_MS
   return r || null;
 }
 
+// ---- CoAP ------------------------------------------------------------------------------
+
+/** CoAP: one GET /.well-known/core. Resolves null when nothing answers like CoAP. */
+async function identifyCoap(host, port = 5683, { timeoutMs = IDENTIFY_TIMEOUT_MS, signal } = {}) {
+  if (signal && signal.aborted) return null;
+  const socket = new CoapUdpSocket({ address: host, port });
+  let client = null;
+  let onAbort = null;
+  try {
+    await socket.open();
+    const ack = Math.max(150, Math.floor(timeoutMs / 4));
+    client = new CoapClient({ socket, ackTimeoutMs: ack, ackRandomFactor: 1, maxRetransmit: 1, blockSize: 256, maxResponseBytes: 65536, closeGraceMs: 0 });
+    const aborted = new Promise((resolve) => {
+      onAbort = () => resolve(null);
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+    // One exchange: a single GET, no Block2 follow-up. A long listing is read from its first datagram only.
+    const r = await Promise.race([client.exchange({ path: ['.well-known', 'core'], query: [], accept: 40 }, Date.now() + timeoutMs), aborted]);
+    if (!r || !r.ok || !r.msg) return null;
+    const m = r.msg;
+    const identity = { code: coapMsg.codeLabel(m.code) };
+    if (coapMsg.codeClass(m.code) === 2 && [40, undefined].includes(coapMsg.optionUint(m, coapMsg.OPT.CONTENT_FORMAT))) {
+      const { links } = coapLinks.parse(m.payload.toString('utf8'));
+      const resources = links.filter((l) => l.path !== '/.well-known/core');
+      identity.resourceCount = resources.length;
+      identity.observableCount = resources.filter((l) => l.obs).length;
+      identity.resources = resources.slice(0, 8).map((l) => l.path);
+      if (coapMsg.option(m, coapMsg.OPT.BLOCK2)) identity.partial = true; // the listing continues in further blocks that a scan does not fetch
+    } else {
+      identity.note = 'Answered, but without a resource listing.';
+    }
+    return { protocol: 'coap', verified: true, method: 'well-known-core', identity };
+  } catch {
+    return null; // refused by the egress policy, unreachable, or not an address
+  } finally {
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    if (client) await client.close().catch(() => {});
+    else await socket.close().catch(() => {});
+  }
+}
+
 // ---- OPC UA ----------------------------------------------------------------------------
 
 function encodeOpcuaHello(endpointUrl) {
@@ -386,10 +446,95 @@ async function identifyOpcua(host, port = 4840, { timeoutMs = IDENTIFY_TIMEOUT_M
   return { protocol: 'opcua', verified: true, method: 'ua-hello', identity: { ...r, endpointUrl } };
 }
 
+// ---- BACnet/IP -------------------------------------------------------------------------
+
+const BACNET_PROPS = { objectName: 77, vendorName: 121, modelName: 70, vendorId: 120, firmwareRevision: 44 };
+
+function firstApp(values) {
+  return values && values.length === 1 && values[0].tag ? values[0] : null;
+}
+
+/**
+ * BACnet/IP identification (see the module comment). `timeoutMs` bounds the wait for the first
+ * answer (the Discovery connect timeout), `identifyTimeoutMs` the device-object read after it.
+ * @returns {Promise<object|null>} { protocol:'bacnet-ip', verified, method, identity } or null
+ */
+async function identifyBacnet(host, port = 47808, { timeoutMs = 1200, identifyTimeoutMs = IDENTIFY_TIMEOUT_MS, signal } = {}) {
+  if (aborted(signal) || !net.isIP(host)) return null;
+  const client = new BacnetClient({ host, port, maxOutstanding: 2 });
+  const onAbort = () => client.close();
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  try {
+    await client.open();
+    const rp = (ref, deadlineMs) =>
+      client.request((id) => bacnetFrame.readPropertyPacket(id, ref), { service: bacnetFrame.SERVICE.READ_PROPERTY, apduTimeoutMs: deadlineMs, retries: 0, deadlineMs, label: 'identify' });
+    const [iam, wild] = await Promise.all([client.whoIs({ waitMs: timeoutMs }), rp({ objectType: 8, instance: WILDCARD_INSTANCE, property: 75 }, timeoutMs)]);
+    if (aborted(signal)) return null;
+    let instance = iam ? iam.instance : null;
+    let method = iam ? 'who-is' : null;
+    if (instance === null && wild.ok) {
+      try {
+        const v = firstApp(bacnetFrame.parseReadPropertyAck(wild.apdu.body).values);
+        if (v && v.tag === 'object-identifier') {
+          instance = v.value.instance;
+          method = 'read-property';
+        }
+      } catch {
+        /* not a usable answer */
+      }
+    }
+    if (instance === null) {
+      // A BACnet Error/Reject/Abort still proves a BACnet device is listening.
+      if (!wild.ok && ['error', 'reject', 'abort'].includes(wild.kind)) return { protocol: 'bacnet-ip', verified: true, method: 'read-property', identity: { answered: wild.kind } };
+      return null;
+    }
+    const identity = { deviceInstance: instance };
+    if (iam) Object.assign(identity, { vendorId: iam.vendorId, maxApdu: iam.maxApdu, segmentation: SEGMENTATION[iam.segmentation] || iam.segmentation });
+    const deadlineMs = identifyTimeoutMs;
+    const refs = Object.values(BACNET_PROPS).map((property) => ({ property }));
+    const store = (property, values) => {
+      const v = firstApp(values);
+      if (!v) return;
+      const name = Object.keys(BACNET_PROPS).find((k) => BACNET_PROPS[k] === property);
+      if (name === 'vendorId') identity.vendorId ??= Number(v.value);
+      else if (v.tag === 'character-string') identity[name] = String(v.value).slice(0, 128);
+    };
+    const multi = await client.request((id) => bacnetFrame.readPropertyMultiplePacket(id, [{ objectType: 8, instance, refs }]), { service: bacnetFrame.SERVICE.READ_PROPERTY_MULTIPLE, apduTimeoutMs: deadlineMs, retries: 0, deadlineMs, label: 'identify' });
+    if (multi.ok) {
+      try {
+        for (const a of bacnetFrame.parseReadPropertyMultipleAck(multi.apdu.body)) for (const r of a.results) if (!r.error) store(r.property, r.values);
+      } catch {
+        /* identity stays partial */
+      }
+    } else if (!aborted(signal) && multi.kind !== 'timeout' && multi.kind !== 'transport') {
+      const until = Date.now() + deadlineMs;
+      for (const property of [BACNET_PROPS.modelName, BACNET_PROPS.vendorName, BACNET_PROPS.objectName]) {
+        const left = until - Date.now();
+        if (left <= 0 || aborted(signal)) break;
+        const r = await rp({ objectType: 8, instance, property }, left);
+        if (!r.ok) continue;
+        try {
+          store(property, bacnetFrame.parseReadPropertyAck(r.apdu.body).values);
+        } catch {
+          /* skip */
+        }
+      }
+    }
+    return { protocol: 'bacnet-ip', verified: true, method, identity };
+  } catch {
+    return null;
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
+    client.close();
+  }
+}
+
 module.exports = {
   identifyModbus,
+  identifyBacnet,
   identifyS7,
   identifyEip,
+  identifyCoap,
   identifyOpcua,
   parseListIdentity,
   encodeReadDeviceId,

@@ -225,6 +225,25 @@ test('device and device-profile PUT use rev too; status is part of current like 
   assert.strictEqual(inj.status, 200);
   assert.strictEqual(services.profiles.getIn('devices', id).pinned, undefined, 'pinned is never stored from a request');
 
+  // A device with credentials: every answer, the 409 conflict body included, carries a stored secret as null.
+  for (const [protocol, secret, extra] of [
+    ['snmp', 'community', { version: '2c', community: 'CONC-COMMUNITY', port: 161 }],
+    ['http-json', 'authToken', { authType: 'bearer', authToken: 'CONC-TOKEN', port: 80 }]
+  ]) {
+    const made = await call('/api/devices', { method: 'POST', body: { name: `conc-${protocol}`, protocol, host: '127.0.0.1', enabled: false, tags: [], ...extra } });
+    assert.strictEqual(made.status, 201, JSON.stringify(made.body));
+    assert.strictEqual(made.body[secret], null);
+    const sid = made.body.id;
+    const first = await call(`/api/devices/${sid}`, { method: 'PUT', body: { ...made.body, name: `conc-${protocol}-a`, rev: 1 } });
+    assert.strictEqual(first.status, 200, JSON.stringify(first.body));
+    assert.strictEqual(services.profiles.getIn('devices', sid)[secret], extra[secret], 'the null sent back keeps the stored secret');
+    const conflict = await call(`/api/devices/${sid}`, { method: 'PUT', body: { ...made.body, name: `conc-${protocol}-b`, rev: 1 } });
+    assert.strictEqual(conflict.status, 409);
+    assert.strictEqual(conflict.body.current[secret], null, `${secret} is masked in current`);
+    assert.ok(!JSON.stringify(conflict.body).includes(extra[secret]));
+    assert.ok(!JSON.stringify((await call('/api/devices')).body).includes(extra[secret]));
+  }
+
   const prof = await call('/api/devices/profiles', { method: 'POST', body: { name: 'conc-prof', protocol: 'modbus-tcp', tags: [] } });
   assert.strictEqual(prof.status, 201, JSON.stringify(prof.body));
   assert.strictEqual(prof.body.rev, 1);

@@ -1,4 +1,5 @@
 const { guardedFetch } = require('./egressGuard');
+const { stripUrlCredentials } = require('./secrets');
 const { EventEmitter } = require('events');
 
 /**
@@ -74,7 +75,7 @@ class CesmiiClient extends EventEmitter {
         body: JSON.stringify(body)
       });
     } catch (error) {
-      throw new Error(`CESMII request failed: ${error.message}`, { cause: error });
+      throw new Error(`CESMII request failed: ${stripUrlCredentials(error.message)}`, { cause: error });
     }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {

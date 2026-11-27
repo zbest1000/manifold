@@ -8,9 +8,9 @@ import { SECURITY_MODES, SECURITY_POLICIES, problemField, withCurrent } from './
 /**
  * The connect / edit dialog for an OPC UA server: endpoint with discovery, security, credentials and
  * the certificate trust flow. `problem` is a validation message shown only after the first submit;
- * `submitError` is what the server answered.
+ * `submitError` is what the server answered; `secretError` (400 secret-required) is shown on the password field.
  */
-export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, duplicate = null, onEditExisting = null, failedAttempts = 0, onDiscover, onSubmit, onCancel }) {
+export default function ConnectionForm({ form, setForm, editing, endpoints, discovering, busy, problem, submitError, secretError = null, duplicate = null, onEditExisting = null, failedAttempts = 0, onDiscover, onSubmit, onCancel }) {
   const readOnly = useReadOnly();
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const field = problem ? problemField(problem) : null;
@@ -129,8 +129,8 @@ export default function ConnectionForm({ form, setForm, editing, endpoints, disc
           <Field label="Username (optional)">
             <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" placeholder="Anonymous" />
           </Field>
-          <Field label="Password">
-            <Input type="password" value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editing ? 'Unchanged' : ''} />
+          <Field label="Password" error={secretError || undefined}>
+            <Input type="password" aria-invalid={secretError ? 'true' : undefined} value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editing ? 'Unchanged' : ''} />
           </Field>
         </fieldset>
 

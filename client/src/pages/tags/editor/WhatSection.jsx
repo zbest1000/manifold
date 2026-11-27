@@ -239,7 +239,7 @@ export default function WhatSection({ state, setState, onSwitchMode, tagDefs, de
             <span className="font-medium tabular-nums">{publishing.toLocaleString()}</span> of {total.toLocaleString()} {noun}{total === 1 ? '' : 's'} published
             {off > 0 && <span className="text-muted"> · {off} switched off (kept with their settings)</span>}
           </p>
-          {(state.srcType === 'device' || isProfile) && !readOnly && (
+          {(state.srcType === 'device' || state.srcType === 'iot' || isProfile) && !readOnly && (
             <>
               {!adding && (
                 <Button size="sm" variant="secondary" className="mt-2" onClick={() => setAdding(true)} disabled={!tagDefs}>

@@ -36,12 +36,92 @@ export function lengthDefault(info) {
   return m ? Number(m[1]) : null;
 }
 
+/** What the driver's own tag list is called in the UI: "controller" unless the descriptor says otherwise. */
+export function browseNoun(descriptor) {
+  return descriptor?.browseNoun || 'controller';
+}
+
+const URL_DEFAULT_PORTS = { http: 80, https: 443, ws: 80, wss: 443 };
+
+/**
+ * A whole URL typed or pasted into Host, for a URL-based driver (its descriptor has a `scheme`
+ * select): `{ scheme, host, port, path }` to put into the form, or null when the text is not a URL
+ * with one of the driver's schemes. A URL with a user name or password is not split (credentials
+ * belong in the authentication fields). No port means the scheme's default; no path (or "/") means
+ * the driver's default path.
+ */
+export function splitUrlHost(text, descriptor) {
+  const fields = descriptor?.deviceFields || [];
+  const schemeField = fields.find((f) => f.name === 'scheme' && f.type === 'select');
+  const m = /^\s*([a-z][a-z0-9+.-]*):\/\//i.exec(String(text ?? ''));
+  if (!schemeField || !m) return null;
+  const scheme = m[1].toLowerCase();
+  const allowed = (schemeField.options || []).map((o) => String(typeof o === 'object' ? o.value : o));
+  if (!allowed.includes(scheme)) return null;
+  let url;
+  try {
+    url = new URL(String(text).trim());
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || !url.hostname) return null;
+  const out = { scheme, host: url.hostname.replace(/^\[|\]$/g, ''), port: url.port ? Number(url.port) : URL_DEFAULT_PORTS[scheme] ?? descriptor.defaultPort };
+  const pathField = fields.find((f) => f.name === 'path');
+  if (pathField) out.path = url.pathname && url.pathname !== '/' ? url.pathname.replace(/\/+$/, '') || '/' : pathField.default ?? '';
+  return out;
+}
+
+// Readable labels for what "Test connection" reports (drivers return camelCase keys).
+const INFO_LABELS = {
+  url: 'URL',
+  nodeCount: 'Nodes',
+  nodesAvailable: 'Nodes available',
+  nodesAsleep: 'Nodes asleep',
+  nodesDead: 'Nodes dead',
+  schemaVersion: 'API schema',
+  minSupportedSchemaVersion: 'Oldest API schema supported',
+  serverSchemaRange: 'API schemas the server offers',
+  schemaNotes: 'Schema notes',
+  sdkVersion: 'SDK version',
+  controllerSdk: 'Controller SDK',
+  fabricId: 'Fabric ID',
+  compressedFabricId: 'Compressed fabric ID',
+  homeId: 'Home ID',
+  sysName: 'System name',
+  sysDescr: 'System description',
+  sysObjectID: 'System object ID',
+  engineId: 'Engine ID',
+  rttMs: 'Round trip (ms)',
+  latencyMs: 'Latency (ms)'
+};
+const ACRONYMS = new Set(['id', 'url', 'sdk', 'cpu', 'ip', 'mac', 'tls', 'api', 'apdu', 'pdu', 'ms']);
+
+/** "schemaVersion" -> "API schema" (known) or "Schema version" (split camelCase). */
+export function infoLabel(key) {
+  if (INFO_LABELS[key]) return INFO_LABELS[key];
+  const words = String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()));
+  if (!words.length || !words[0]) return String(key);
+  if (!ACRONYMS.has(words[0].toLowerCase())) words[0] = words[0][0].toUpperCase() + words[0].slice(1);
+  return words.join(' ');
+}
+
 /** First example in the driver's address help, for input placeholders. */
 export function addressExample(descriptor) {
   const help = String(descriptor?.addressHelp || '');
+  if (descriptor?.id === 'http-json' || descriptor?.id === 'mtconnect') return descriptor.addressForms?.[0] || 'address';
+  if (descriptor?.id === 'matter-server') return '5/1/TemperatureMeasurement/MeasuredValue';
+  if (descriptor?.id === 'zwave-js') return '5/49/0/Air temperature';
   const first = help.split(/[.,;]\s|, /)[0].trim();
   if (descriptor?.id === 's7') return 'DB1.DBD0';
   if (descriptor?.id === 'ethernet-ip') return 'Program:MainProgram.Tag';
+  if (descriptor?.id === 'bacnet-ip') return 'analog-input:1';
+  if (descriptor?.id === 'coap') return '/sensors/temp';
+  if (descriptor?.id === 'snmp') return 'sysUpTime.0';
   return first.length > 0 && first.length < 30 ? first : 'address';
 }
 
@@ -54,6 +134,7 @@ export function extraColumns(descriptor) {
   const id = descriptor?.id;
   const hasLength = Object.values(descriptor?.tagTypeInfo || {}).some((t) => t?.needsLength) || (descriptor?.tagTypes || []).some((t) => typeof t === 'object' && t.needsLength);
   if (id === 'modbus-tcp') return { always: [], advanced: ['length', 'bit', 'byteOrder', 'wordOrder', 'description'] };
+  if (id === 'snmp') return { always: ['rate'], advanced: ['encoding', 'description'] };
   if (hasLength) return { always: ['length'], advanced: ['description'] };
   return { always: [], advanced: ['description'] };
 }
@@ -106,6 +187,13 @@ export function summarizeNormalized(protocol, n) {
     const bit = n.bitOffset !== undefined && n.bitOffset !== null && n.type === 'BOOL' ? `.${n.bitOffset}` : '';
     return `${n.address} · ${where}${bit} · ${n.type}, ${n.length} byte${n.length === 1 ? '' : 's'}`;
   }
+  if (protocol === 'coap' && n.uri !== undefined) {
+    const parts = [`GET ${n.uri}`];
+    if (n.selector !== undefined) parts.push(`value at ${n.selector}`);
+    if (n.observe) parts.push('observe');
+    if (n.type) parts.push(n.type);
+    return parts.join(' · ');
+  }
   if (protocol === 'ethernet-ip' || (n.address && !n.table)) {
     return `${n.address}${n.type ? ` · ${n.type}` : ' · type read from the controller'}`;
   }
@@ -149,15 +237,21 @@ export function nodesToTags(nodes, { descriptor, existing = [], pollGroup = '', 
   const props = new Set(existing.map((t) => t.property).filter(Boolean));
   const known = new Set(tagTypeNames(descriptor));
   return nodes.map((node) => {
-    const dataType = String(node.meta?.dataType || '').toUpperCase();
+    const raw = String(node.meta?.dataType || '');
+    // Drivers name types in their own case (DINT, float32, number): match without regard to case.
+    const dataType = [...known].find((k) => k.toLowerCase() === raw.toLowerCase()) || '';
     const isArray = (node.meta?.dims || []).length > 0;
+    const meta = node.meta || {};
     return {
       _id: makeId(),
       key: uniqueName(String(node.address).replace(KEY_SAFE, '_').slice(0, 120), keys),
       address: node.address,
-      type: known.has(dataType) && !isArray ? dataType : '',
+      type: dataType && !isArray ? dataType : '',
       pollGroup,
-      property: uniqueName(suggestProperty(node.address), props)
+      // A device that names its points (BACnet object-name) gives a better property than the address.
+      property: uniqueName(suggestProperty(meta.objectName || node.address), props),
+      ...(typeof meta.unit === 'string' && meta.unit ? { unit: meta.unit } : {}),
+      ...(typeof meta.description === 'string' && meta.description ? { description: meta.description } : {})
     };
   });
 }
@@ -191,6 +285,13 @@ export function flattenTree(childrenByParent, expanded) {
 export function probeSpec(protocol) {
   if (protocol === 'modbus-tcp') return { count: { label: 'Registers', min: 1, max: 125, def: 2 }, unitId: true, placeholder: 'holding:100' };
   if (protocol === 's7') return { count: { label: 'Bytes', min: 1, max: 480, def: '' }, unitId: false, placeholder: 'DB1.DBD0' };
+  if (protocol === 'http-json') return { count: null, unitId: false, placeholder: '/api/status or /api/status#$.power.total' };
+  if (protocol === 'mtconnect') return { count: null, unitId: false, placeholder: 'Xact' };
+  if (protocol === 'bacnet-ip') return { count: null, unitId: false, placeholder: 'analog-input:1' };
+  if (protocol === 'coap') return { count: null, unitId: false, placeholder: '/sensors/temp' };
+  if (protocol === 'snmp') return { count: null, unitId: false, placeholder: 'sysUpTime.0 or 1.3.6.1.2.1.1.3.0' };
+  if (protocol === 'matter-server') return { count: null, unitId: false, placeholder: '5/1/TemperatureMeasurement/MeasuredValue' };
+  if (protocol === 'zwave-js') return { count: null, unitId: false, placeholder: '5/49/0/Air temperature' };
   return { count: null, unitId: false, placeholder: 'Program:MainProgram.Tag' };
 }
 
@@ -205,6 +306,11 @@ export function probeBody(protocol, { address, count, unitId }) {
 
 export const DEFAULT_LIMITS = { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 };
 
+function pickLimits(limits) {
+  if (!limits || typeof limits !== 'object') return {};
+  return Object.fromEntries(Object.keys(DEFAULT_LIMITS).filter((k) => Number.isFinite(limits[k])).map((k) => [k, limits[k]]));
+}
+
 export function blankDevice(descriptor) {
   return {
     name: '',
@@ -214,7 +320,8 @@ export function blankDevice(descriptor) {
     port: descriptor.defaultPort,
     ...fieldDefaults(descriptor.deviceFields),
     options: fieldDefaults(descriptor.optionFields),
-    limits: { ...DEFAULT_LIMITS },
+    // A driver that needs longer deadlines (BACnet: APDU timeout x retries) says so in its descriptor.
+    limits: { ...DEFAULT_LIMITS, ...pickLimits(descriptor.limits) },
     pollGroups: [{ id: 'default', intervalMs: 1000 }],
     tags: []
   };

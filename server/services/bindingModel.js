@@ -6,8 +6,8 @@ const cx = require('./bindingContext');
 const mq = require('./bindingMqtt');
 
 /**
- * Binding model - the pure half of tag bindings (docs/design/southbound-drivers.md
- * section 6): validation, expansion of a binding into publishing UNITS, topic
+ * Binding model - the pure half of tag bindings (ARCHITECTURE.md, Bindings;
+ * docs/wiki/Mapping-to-the-UNS.md): validation, expansion of a binding into publishing UNITS, topic
  * resolution, payload shapes, the `_meta` document, the retained-topic set a
  * binding owns, save-time warnings and the preview. No I/O; TagBindings
  * (./tagBindings.js) runs the hot path on top of it.
@@ -87,7 +87,7 @@ const OBJECT_ENVELOPE_BYTES = 48; // {"t":1730000000000,"values":{}} + slack
 const UNKNOWN_VALUE_BYTES = 128;
 const STRING_VALUE_BYTES = 256;
 const HISTORIAN_TYPES = new Set(['timebase', 'timescaledb']);
-const SOURCE_TYPES = ['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt'];
+const SOURCE_TYPES = ['opcua', 'sparkplug', 'device', 'device-profile', 'mqtt', 'iot'];
 const META_FIELDS = ['type', 'unit', 'description', 'range'];
 const MAX_WARNINGS = 50;
 const PREVIEW_MAX_TAGS = 50;
@@ -143,6 +143,44 @@ function serverMetaOf(profiles, connectionId, nodeId) {
     return null;
   }
 }
+
+/**
+ * IoT-over-MQTT devices (./iot/iotManager.js): the runtime attaches the device registry to the
+ * profile store, { device(brokerId, deviceId) -> registry device | null, readFilters(brokerId) ->
+ * [filter] }, so expandUnits / validation see the tags the conventions derived (name, type, unit,
+ * range, description) without a signature change. Registry metadata is the device layer: mapping
+ * settings win.
+ */
+const iotResolvers = new WeakMap();
+function attachIotSource(profiles, resolver) {
+  if (profiles && typeof profiles === 'object') iotResolvers.set(profiles, resolver);
+}
+function iotDeviceOf(profiles, brokerId, deviceId) {
+  const r = profiles && iotResolvers.get(profiles);
+  if (!r || !brokerId || !deviceId) return null;
+  try {
+    return r.device(brokerId, deviceId) || null;
+  } catch {
+    return null;
+  }
+}
+function iotReadFilters(profiles, brokerId) {
+  const r = profiles && iotResolvers.get(profiles);
+  try {
+    return (r?.readFilters?.(brokerId) || []).map(String);
+  } catch {
+    return [];
+  }
+}
+/** Registry tag -> the device-tag shape buildTag / selection rules read. */
+function iotTagDef(t) {
+  const d = { key: t.key, property: t.name, type: t.type && t.type !== 'unknown' ? t.type : undefined };
+  if (t.unit) d.unit = t.unit;
+  if (t.description) d.description = t.description;
+  if (t.range && Number.isFinite(t.range.min) && Number.isFinite(t.range.max)) d.range = { min: t.range.min, max: t.range.max };
+  return d;
+}
+const iotSourceId = (src) => `${src.brokerId}|${src.deviceId}`;
 
 /** The key a tag publishes under (topic level, object member, _meta property). MQTT sources keep levels. */
 const nameKey = (unit, name) => (unit?.sourceType === 'mqtt' ? mq.slugPath(name) : slug(name));
@@ -429,6 +467,7 @@ function expandUnits(b, profiles, opts = {}) {
       unit.template = target.pathTemplate || 'uns/{name}';
     }
   }
+  if (src.type === 'iot') unit.sourceId = iotSourceId(src);
   if (src.type === 'mqtt') {
     unit.sourceId = src.brokerId;
     unit.mqtt = { filter: src.tags === 'all' ? String(src.filter || '') : null, prefixLen: src.tags === 'all' ? mq.filterPrefix(src.filter || '').length : null };
@@ -463,6 +502,18 @@ function expandUnits(b, profiles, opts = {}) {
         if (!keep(unit, e.address, null, e, false)) continue;
         unit.tags.push(buildTag(e.address, null, e, overrides?.[e.address], unit, details));
       }
+    }
+  } else if (src.type === 'iot') {
+    unit.iot = { brokerId: src.brokerId, deviceId: src.deviceId };
+    const dev = iotDeviceOf(profiles, src.brokerId, src.deviceId);
+    const defs = dev ? [...dev.tags.values()].map(iotTagDef) : [];
+    const byKey = new Map(defs.map((t) => [t.key, t]));
+    const entries = tagEntries(src);
+    const isAll = entries === 'all';
+    for (const e of isAll ? defs.map((t) => ({ address: t.key })) : entries) {
+      const tag = byKey.get(e.address);
+      if (!keep(unit, e.address, tag, e, isAll)) continue;
+      unit.tags.push(buildTag(e.address, tag || null, e, overrides?.[e.address], unit, details));
     }
   } else if (src.type !== 'sparkplug') {
     const entries = tagEntries(src);
@@ -602,6 +653,7 @@ function metaDoc(unit) {
     if (ok('source')) {
       if (b.source.type === 'opcua') p.source = { connectionId: unit.sourceId, address: t.address };
       else if (b.source.type === 'mqtt') p.source = { brokerId: unit.sourceId, topic: t.address, ...(t.field ? { field: t.field } : {}) };
+      else if (b.source.type === 'iot') p.source = { brokerId: b.source.brokerId, iotDeviceId: b.source.deviceId, address: t.address };
       else p.source = { deviceId: unit.deviceId ?? unit.sourceId, address: t.address };
       if (b.source.type === 'device-profile') p.source.profileId = b.source.profileId;
     }
@@ -717,7 +769,7 @@ function validateBinding(draft, { profiles }) {
     throw new BindingValidationError(msg, details);
   };
   if (!source?.type || !SOURCE_TYPES.includes(source.type)) {
-    fail('source.type must be "device", "device-profile", "opcua", "sparkplug" or "mqtt"');
+    fail('source.type must be "device", "device-profile", "opcua", "sparkplug", "mqtt" or "iot"');
   }
   const entries = tagEntries(source);
   // Disabled entries may name a tag the device no longer has (they only remember settings).
@@ -752,6 +804,16 @@ function validateBinding(draft, { profiles }) {
     const units = target && typeof target === 'object' ? expandUnits({ name, source, target, id: draft.id || 'draft' }, profiles) : [];
     const err = mq.mqttSourceError(source, target || {}, units);
     if (err) fail(err);
+  }
+  if (source.type === 'iot') {
+    if (typeof source.brokerId !== 'string' || !source.brokerId) fail('iot source needs brokerId');
+    if (typeof source.deviceId !== 'string' || !source.deviceId || /\s/.test(source.deviceId)) fail('iot source needs deviceId (the IoT device id, e.g. "z2m:0x00158d0001a2b3c4")');
+    if (entries !== 'all' && !entries.length) fail('iot source needs tags[] (tag keys of the device, or "all")');
+    // A mapping must not publish into what the conventions read on the same broker.
+    if (target && target.brokerId === source.brokerId) {
+      const pair = mq.overlapPair(source.brokerId, iotReadFilters(profiles, source.brokerId), target.brokerId, mq.publishFilters({ target }, []));
+      if (pair) fail(`loop: this mapping would publish into topics IoT detection reads (target ${pair.target} overlaps ${pair.source} on broker ${source.brokerId}); publish elsewhere or to another broker`);
+    }
   }
   if (!target?.mode || !['mqtt', 'sparkplug'].includes(target.mode)) fail('target.mode must be "mqtt" or "sparkplug"');
   if (!target.brokerId) fail('target.brokerId is required');
@@ -873,7 +935,7 @@ function validateBinding(draft, { profiles }) {
 function validateMappingOptions(source, target, profiles, fail) {
   const entries = tagEntries(source);
   const isMqtt = source.type === 'mqtt';
-  const listSource = source.type === 'device' || source.type === 'device-profile' || isMqtt;
+  const listSource = source.type === 'device' || source.type === 'device-profile' || source.type === 'iot' || isMqtt;
   // MQTT entries also carry `field` and `staleAfterMs` (checked by bindingMqtt.mqttSourceError).
   const own = (o) => {
     if (!isMqtt || !cx.isPlainObject(o)) return o;
@@ -888,13 +950,13 @@ function validateMappingOptions(source, target, profiles, fail) {
     }
   }
   if (source.select !== undefined && source.select !== null) {
-    if (!listSource || entries !== 'all') fail('source.select applies only to device, device-profile and mqtt sources with tags: "all"');
+    if (!listSource || entries !== 'all') fail('source.select applies only to device, device-profile, iot and mqtt sources with tags: "all"');
     const err = cx.selectError(source.select);
     if (err) fail(err);
     if (isMqtt && Object.keys(source.select).some((k) => k !== 'include' && k !== 'exclude')) fail('source.select of an mqtt source takes include and exclude only (topic globs)');
   }
   if (source.overrides !== undefined && source.overrides !== null) {
-    if (!listSource) fail('source.overrides applies only to device, device-profile and mqtt sources');
+    if (!listSource) fail('source.overrides applies only to device, device-profile, iot and mqtt sources');
     if (!cx.isPlainObject(source.overrides)) fail('source.overrides must be an object { <tagKey>: { ...overrides } }');
     for (const [k, o] of Object.entries(source.overrides)) {
       const err = cx.overrideError(own(o), `source.overrides["${k}"]`, { strict: true });
@@ -1280,8 +1342,13 @@ function suggestMapping(source, profiles) {
     const topics = entries === 'all' ? observedTopics(profiles, src.brokerId, src.filter) : entries.map((e) => e.address);
     const rows = topics.map((topic) => ({ address: topic, property: null, type: null, unit: null, description: null, suggestedName: mq.topicName(topic, prefix), basis: 'topic', rawAddress: false }));
     return { sourceType: 'mqtt', tags: rows, entries: rows.map((r) => ({ address: r.address, name: r.suggestedName })), context: { suggested: {}, resolved: {} } };
+  } else if (src.type === 'iot') {
+    const dev = iotDeviceOf(profiles, src.brokerId, src.deviceId);
+    if (!dev) throw new BindingValidationError('iot source: no such device on that broker (is detection enabled and the device seen?)');
+    tags = [...dev.tags.values()].map(iotTagDef);
+    context = { suggested: {}, resolved: {} };
   } else {
-    throw new BindingValidationError('suggest supports device, device-profile, opcua and mqtt sources');
+    throw new BindingValidationError('suggest supports device, device-profile, opcua, iot and mqtt sources');
   }
   const byName = new Map();
   const out = tags.map((t) => {
@@ -1318,6 +1385,9 @@ module.exports = {
   observedTopics,
   attachServerMeta,
   serverMetaOf,
+  attachIotSource,
+  iotDeviceOf,
+  iotTagDef,
   addMqttTopic,
   nameKey,
   DEFAULT_OBJECT_CAP,

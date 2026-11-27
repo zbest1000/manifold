@@ -5,7 +5,7 @@
 
 ## What you need
 
-- Node.js **≥ 20.19** (or 22+) — the OPC UA driver needs modern `require(ESM)` support.
+- Node.js **20.19+ or 22.12+** — the OPC UA client needs `require(ESM)` support and the client build tool (Vite) needs these versions.
 - An MQTT broker to point at — or none at all: the Docker stack ships one with simulated traffic.
 - Optionally a PLC, or the simulators (see [Try it without hardware](Devices-and-Drivers#try-it-without-hardware)).
 
@@ -28,7 +28,9 @@ npm start              # serves API + built client on :5000
 One command brings up Manifold, a Mosquitto broker, an OPC UA simulator, simulated
 Modbus TCP / S7 / EtherNet/IP devices, and a traffic generator publishing plain MQTT
 and Sparkplug B — pre-wired, so the UI is alive the moment it loads (the
-Devices page already polls the three simulators, and the Tags page already has two mappings):
+Devices page already polls the three simulators, and the Tags page already has two mappings).
+The demo runs without a token and is reachable only from your machine; see
+[DOCKER.md](https://github.com/zbest1000/manifold/blob/main/DOCKER.md):
 
 ```bash
 docker compose up --build
@@ -40,19 +42,22 @@ docker compose up --build
 Just Manifold, no demo services — published to GHCR on every release:
 
 ```bash
-docker run -p 5000:5000 -v manifold-data:/data ghcr.io/zbest1000/manifold:latest
-# open http://localhost:5000
+docker run -p 5000:5000 -v manifold-data:/data \
+  -e MANIFOLD_AUTH_TOKEN=$(openssl rand -hex 24) \
+  ghcr.io/zbest1000/manifold:1.1.0
+# open http://localhost:5000 and enter the token
 ```
 
 The volume at `/data` keeps profiles, history, and the OPC UA PKI across
-container restarts. See [Operations](Operations) for tokens and hardening.
+container restarts.
 
 > ⚠️ **Loopback by default.** With **no** token set (`MANIFOLD_AUTH_TOKEN`,
 > `MANIFOLD_VIEWER_TOKEN` or `MANIFOLD_TOKENS`) the server binds `127.0.0.1` only:
-> it is reachable from its own host, not the network. To reach it from other machines,
-> set a token (recommended) or `MANIFOLD_HOST=0.0.0.0`. If a token is set, the first page
-> is the **Manifold is locked** screen: enter the access token there. See
-> [Operations](Operations).
+> it is reachable from its own host, not the network, and inside a container not even
+> through a published port, which is why the image needs a token. To reach it from other
+> machines, set a token (recommended) or `MANIFOLD_HOST=0.0.0.0`. If a token is set, the
+> first page is the **Manifold is locked** screen: enter the access token there. See
+> [Operations](Operations) for tokens and hardening.
 
 ## The first page
 
@@ -60,7 +65,7 @@ container restarts. See [Operations](Operations) for tokens and hardening.
 
 **Overview** shows what is connected and what is wrong. A new install is empty: **Needs
 attention** is quiet, **Sources** reads `0 / 0` for everything, and the sidebar groups the rest of the
-app: **Observe** (Topics, UNS, Flows, Trends), **Build** (Pipelines, Tags), **Connect** (MQTT Brokers,
+app: **Observe** (Topics, UNS, Flows, Trends, Alerts), **Build** (Pipelines, Tags), **Connect** (MQTT Brokers,
 Devices, OPC UA, CESMII SMIP, i3X, Discovery) and **System** (Health, Settings). The sidebar footer has the
 theme switch (system, light, dark; see [User interface](User-Interface)) and the `[` key collapses the sidebar.
 
@@ -70,6 +75,9 @@ theme switch (system, light, dark; see [User interface](User-Interface)) and the
 2. Fill in **Name** (for example *Plant broker*), **Protocol** (`mqtt (TCP)`, `mqtts`, `ws` or `wss`),
    **MQTT version** (3.1.1 or 5), **Host** and **Port**, and **Username** and **Password** if the broker needs them.
    **Connection settings** (retries, timeouts, keep-alive, intake) is collapsed; the defaults are sensible.
+   The **Public test brokers** presets fill the form for a shared public broker, for trying Manifold out only (see
+   [Broker Setup](Broker-Setup#public-test-brokers)). The **Canary** box is off by default; turning it on makes
+   Manifold publish a small probe message.
 3. Press **Connect**.
 
 ![The connect-a-broker dialog](images/broker-form.png)
@@ -89,8 +97,8 @@ zero registration, because they are derived from observed traffic.
 Devices are PLCs, meters and gateways that Manifold polls directly and read-only.
 
 1. Open **Devices** and press **Add device**.
-2. **Connection**: a **Name**, the **Protocol** (Modbus TCP, Siemens S7 or EtherNet/IP; S7 and EtherNet/IP carry an *Experimental*
-   badge), **Host** and **Port**, and the protocol's own fields (Modbus **Unit ID**; S7 **Rack** and **Slot**, or one of the
+2. **Connection**: a **Name**, the **Protocol** (Modbus TCP, Siemens S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect,
+   CoAP, Matter Server or Z-Wave JS Server; every one but Modbus TCP carries an *Experimental* badge: not verified on real hardware), **Host** and **Port**, and the protocol's own fields (Modbus **Unit ID**; S7 **Rack** and **Slot**, or one of the
    **Presets**). Open **On the &lt;protocol&gt; side** for what to enable on the PLC first (S7 needs PUT/GET, for instance).
 3. Press **Test connection**. It opens one connection with these settings, saves nothing, and answers
    *Connected in N ms* with the device's identity, or *Could not connect* with the reason.
@@ -128,8 +136,11 @@ The Topics page has the equivalent `/topics?broker=<broker id>&topic=<topic>`. Y
 
 ## Where to next
 
-- Poll a PLC directly (Modbus TCP, S7, EtherNet/IP) → [Devices and Drivers](Devices-and-Drivers)
-  (it can also find them on the network and create many from a profile)
+- Read a PLC, controller, meter or sensor directly (Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect,
+  CoAP), find them on the network and create many from a profile → [Devices and Drivers](Devices-and-Drivers);
+  Matter and Z-Wave → [Bridge servers](Bridge-Servers)
+- See the Zigbee, Z-Wave, Wi-Fi and LoRaWAN devices a bridge publishes on your broker → [IoT devices over MQTT](IoT-Devices-over-MQTT)
+- Alarm on values and silent topics, acknowledge, keep a history → [Alerts](Alerts)
 - Publish tags with units, context and quality → [Mapping to the UNS](Mapping-to-the-UNS)
 - Light and dark themes, shortcuts, deep links, phones → [User interface](User-Interface)
 - Have a real PLC and want to help lift the "experimental" label →
@@ -141,7 +152,7 @@ The Topics page has the equivalent `/topics?broker=<broker id>&topic=<topic>`. Y
 ## Environment variables
 
 The common ones are below; every variable the server reads, with its default, is in the
-[README](https://github.com/zbest1000/manifold#environment-variables).
+[README](https://github.com/zbest1000/manifold#configuration).
 
 | Variable | Purpose |
 |---|---|
@@ -150,6 +161,7 @@ The common ones are below; every variable the server reads, with its default, is
 | `MANIFOLD_VIEWER_TOKEN` | Read-only token. Setting it alone **also turns auth on**, so set an admin token too |
 | `MANIFOLD_TOKENS` | Named tokens: `name:token:role,...` (roles `admin`/`viewer`) — see [Operations](Operations) |
 | `MANIFOLD_HOST` | Bind address. Default `127.0.0.1` when open, `0.0.0.0` when a token is set |
+| `MANIFOLD_ALLOWED_HOSTS` | Extra host names a token-less loopback instance answers to (others get 421) |
 | `MANIFOLD_ALLOW_PRIVATE_TARGETS` | `1` = let the scanner and outbound clients reach RFC1918/LAN (needed for Discovery and for PLCs on a plant network; fail-closed by default; loopback and cloud metadata always blocked) |
 | `MANIFOLD_ALLOW_LOOPBACK_DEVICES` | `1` = device drivers may target `127.0.0.0/8` / `::1` (local simulators only; off by default) |
 | `MANIFOLD_METRICS_PUBLIC` | `1` = leave `/metrics` open when auth is on |

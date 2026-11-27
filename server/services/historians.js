@@ -3,6 +3,8 @@
 const crypto = require('crypto');
 const { Agent } = require('undici');
 const { fetchWithTimeout } = require('./httpTimeout');
+const { stripUrlCredentials } = require('./secrets');
+const { assertNotLinkLocal, linkLocalGuardLookup } = require('./egressGuard');
 
 // All historian HTTP calls get a hard deadline: a wedged historian (TCP accepts,
 // never responds) must degrade to an error, not hang the store-and-forward
@@ -19,6 +21,7 @@ const timedFetch = (url, opts) => fetchWithTimeout(url, opts, HISTORIAN_TIMEOUT_
 // sslRootCert (same precedence as the pg path). Agents are cached so each
 // distinct TLS setting keeps one socket pool, not one per request.
 const tlsAgents = new Map();
+const historianLookup = linkLocalGuardLookup('historian');
 function tlsDispatcher(conn) {
   const insecure = Boolean(conn.sslInsecure);
   const ca = conn.sslRootCert ? String(conn.sslRootCert) : '';
@@ -26,7 +29,9 @@ function tlsDispatcher(conn) {
   const key = insecure ? 'insecure' : `ca:${ca}`;
   let agent = tlsAgents.get(key);
   if (!agent) {
-    agent = new Agent({ connect: insecure ? { rejectUnauthorized: false } : { ca } });
+    // The connect-time lookup refuses link-local and cloud-metadata addresses (httpFetch checks the
+    // resolved address before every request in either case).
+    agent = new Agent({ connect: { lookup: historianLookup, ...(insecure ? { rejectUnauthorized: false } : { ca }) } });
     tlsAgents.set(key, agent);
   }
   return agent;
@@ -48,6 +53,9 @@ const TLS_ERROR_CODES = new Set([
 // Single entry point for every historian HTTP call: injects the TLS dispatcher
 // and rewrites certificate failures into a fix-it hint.
 async function httpFetch(conn, url, opts, fetchImpl) {
+  // Historians may be on loopback or the LAN (no egress guard), never on a link-local or
+  // cloud-metadata address: checked here and again by the dispatcher's connect-time lookup.
+  await assertNotLinkLocal(url, { purpose: 'historian' });
   const dispatcher = tlsDispatcher(conn);
   try {
     return await fetchImpl(url, dispatcher ? { ...opts, dispatcher } : opts);
@@ -67,6 +75,8 @@ async function httpFetch(conn, url, opts, fetchImpl) {
         { cause: err }
       );
     }
+    // fetch quotes a URL that carries credentials in its message; never pass the password on.
+    if (err && typeof err.message === 'string') err.message = stripUrlCredentials(err.message);
     throw err;
   }
 }
@@ -393,6 +403,7 @@ function pgEntryFor(conn) {
 async function timescaleWrite(conn, points) {
   if (!conn.host || !conn.database || !conn.user) throw new Error('timescaledb needs host, database, and user');
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool, schemaReady } = pgEntryFor(conn);
 
   if (!schemaReady.has(table)) {
@@ -674,6 +685,7 @@ async function influxQuerySeries(conn, { tags, start, end, maxPoints }, fetchImp
 
 async function timescaleQueryTags(conn, { search, limit }) {
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool } = pgEntryFor(conn);
   const { rows } = await pool.query(
     `SELECT DISTINCT topic FROM ${table} WHERE topic ILIKE $1 ORDER BY topic LIMIT $2`,
@@ -684,6 +696,7 @@ async function timescaleQueryTags(conn, { search, limit }) {
 
 async function timescaleQuerySeries(conn, { tags, start, end, maxPoints }) {
   const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
   const { pool } = pgEntryFor(conn);
   // The bucket width is the ONLY interpolated value and it is built from an
   // integer we computed — user text never reaches the SQL string.
@@ -802,6 +815,123 @@ async function querySeries(conn = {}, { tags = [], start, end, maxPoints = 1000 
   return backend(conn, { tags, ...range }, fetchImpl);
 }
 
+// ---- raw read-back (CSV export) ------------------------------------------------
+//
+//   queryRaw(conn, { tags, start, end }) -> async iterator of
+//     { tag, t, value: number|null, quality: number|null } in time order
+// Unlike querySeries nothing is averaged: every stored sample comes back, so the
+// export can stream a long range without holding it. Work is paged: TimescaleDB
+// by keyset (ts, topic) pages of RAW_PAGE rows; InfluxDB and Timebase by time
+// windows of RAW_WINDOW_MS, each window merged across tags and sorted. A Bad
+// sample has a null value and its quality; InfluxDB returns quality null.
+
+const RAW_PAGE = 10_000;
+const RAW_WINDOW_MS = 3_600_000;
+
+function rawTags(tags) {
+  if (!Array.isArray(tags) || tags.length < 1 || tags.length > 10 || tags.some((t) => typeof t !== 'string' || !t.trim())) {
+    throw new Error('tags must be an array of 1-10 non-empty strings');
+  }
+  return tags;
+}
+
+async function* timescaleRaw(conn, { tags, start, end }) {
+  const table = safeIdent(conn.table || 'manifold_samples');
+  await assertNotLinkLocal(conn.host, { purpose: 'historian' });
+  const { pool } = pgEntryFor(conn);
+  let afterTs = new Date(start - 1);
+  let afterTopic = '';
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT ts, topic, value, quality FROM ${table}
+       WHERE topic = ANY($1) AND ts BETWEEN $2 AND $3 AND (ts, topic) > ($4, $5)
+       ORDER BY ts, topic LIMIT ${RAW_PAGE}`,
+      [tags, new Date(start), new Date(end), afterTs, afterTopic]
+    );
+    for (const row of rows) {
+      const t = row.ts instanceof Date ? row.ts.getTime() : Date.parse(row.ts);
+      if (!Number.isFinite(t)) continue;
+      const q = qualityCode(row.quality) ?? QUALITY_GOOD;
+      const v = row.value == null ? NaN : Number(row.value);
+      yield { tag: row.topic, t, value: Number.isFinite(v) && !isBadCode(q) ? v : null, quality: q };
+    }
+    if (rows.length < RAW_PAGE) return;
+    const last = rows[rows.length - 1];
+    afterTs = last.ts instanceof Date ? last.ts : new Date(last.ts);
+    afterTopic = last.topic;
+  }
+}
+
+async function* influxRaw(conn, { tags, start, end }, fetchImpl) {
+  const topicFilter = tags.map((t) => `r.topic == ${fluxString(t, 'tag')}`).join(' or ');
+  for (let from = start; from < end; from += RAW_WINDOW_MS) {
+    const to = Math.min(end, from + RAW_WINDOW_MS);
+    const flux = [
+      `from(bucket: ${fluxString(conn.bucket, 'bucket')})`,
+      `  |> range(start: ${new Date(from).toISOString()}, stop: ${new Date(to).toISOString()})`,
+      `  |> filter(fn: (r) => r._measurement == ${fluxString(conn.measurement || 'manifold', 'measurement')} and r._field == "value")`,
+      `  |> filter(fn: (r) => ${topicFilter})`,
+      `  |> keep(columns: ["_time", "_value", "topic"])`
+    ].join('\n');
+    const rows = await influxQuery(conn, flux, fetchImpl);
+    const out = [];
+    for (const row of rows) {
+      if (!tags.includes(row.topic) || !row._time) continue;
+      const t = Date.parse(row._time);
+      const v = Number(row._value);
+      if (Number.isFinite(t) && Number.isFinite(v)) out.push({ tag: row.topic, t, value: v, quality: null });
+    }
+    out.sort((a, b) => a.t - b.t);
+    yield* out;
+  }
+}
+
+async function* timebaseRaw(conn, { tags, start, end }, fetchImpl) {
+  for (let from = start; from < end; from += RAW_WINDOW_MS) {
+    const to = Math.min(end, from + RAW_WINDOW_MS);
+    // The same documented dataset GET as timebaseQuerySeries, one window at a time, without bucketing.
+    const base = String(conn.url || '').replace(/\/+$/, '');
+    if (!base) throw new Error('timebase url is required');
+    if (!conn.dataset) throw new Error('timebase dataset is required');
+    const tagParams = tags.map((t) => `tagname=${encodeURIComponent(t).replace(/%2F/gi, '/')}`).join('&');
+    const url =
+      `${base}/api/datasets/${encodeURIComponent(conn.dataset)}/data?${tagParams}` +
+      `&start=${encodeURIComponent(new Date(from).toISOString())}&end=${encodeURIComponent(new Date(to).toISOString())}`;
+    const res = await httpFetch(conn, url, { headers: { ...(conn.apiKey ? { Authorization: `Bearer ${conn.apiKey}` } : {}) } }, fetchImpl);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`timebase query failed (${res.status})${text ? `: ${text.slice(0, 200)}` : ''}`);
+    }
+    const data = await res.json().catch(() => null);
+    const out = [];
+    for (const s of Array.isArray(data?.tl) ? data.tl : []) {
+      const tag = s?.t?.n;
+      if (!tags.includes(tag)) continue;
+      for (const p of Array.isArray(s.d) ? s.d : []) {
+        const t = Date.parse(p?.t);
+        // Half-open windows [from, to) so a sample on a boundary is exported once; the last window includes `end`.
+        if (!Number.isFinite(t) || t < from || (to < end ? t >= to : t > end)) continue;
+        const q = qualityCode(p?.q);
+        const v = p?.v === null || p?.v === undefined || p?.v === '' ? NaN : Number(p.v);
+        if (!Number.isFinite(v) && !isBadCode(q)) continue; // text values do not export as numbers
+        out.push({ tag, t, value: Number.isFinite(v) && !isBadCode(q) ? v : null, quality: q ?? QUALITY_GOOD });
+      }
+    }
+    out.sort((a, b) => a.t - b.t);
+    yield* out;
+  }
+}
+
+const RAW_BACKENDS = { timescaledb: timescaleRaw, influxdb: influxRaw, timebase: timebaseRaw };
+
+/** Every stored sample for up to 10 tags over [start, end], in time order (async iterator). */
+function queryRaw(conn = {}, { tags = [], start, end } = {}, fetchImpl = timedFetch) {
+  const backend = RAW_BACKENDS[conn.type];
+  if (!backend) throw new Error(`unsupported historian type "${conn.type}" (supported: ${Object.keys(BACKENDS).join(', ')})`);
+  const range = normalizeRange({ start, end });
+  return backend(conn, { tags: rawTags(tags), start: range.start, end: range.end }, fetchImpl);
+}
+
 /** Close pooled Postgres connections and TLS socket pools (shutdown). */
 async function closePools() {
   for (const { pool } of pgPools.values()) await pool.end().catch(() => {});
@@ -829,6 +959,7 @@ function supportedTypes() {
 /** Redact secrets for API responses. */
 function publicConfig(conn) {
   const { token, apiKey, apiSecret, password, ...rest } = conn;
+  if (typeof rest.url === 'string') rest.url = stripUrlCredentials(rest.url);
   return { ...rest, hasSecret: Boolean(token || apiKey || apiSecret || password) };
 }
 
@@ -836,6 +967,7 @@ module.exports = {
   writePoints,
   queryTags,
   querySeries,
+  queryRaw,
   supportedTypes,
   publicConfig,
   toLineProtocol,

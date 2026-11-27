@@ -8,10 +8,11 @@ const { DriverSupervisor } = require('./driverSupervisor');
 const egressGuard = require('./egressGuard');
 const { compiledView } = require('./mqttMatch');
 const profilesModel = require('./deviceProfiles');
+const { hostIdentity, secretRequiredMessage } = require('./endpointIdentity');
 
 /**
  * Device manager: the main-process side of the southbound drivers
- * (docs/design/southbound-drivers.md). It owns device configuration, validates
+ * (docs/design/driver-contract.md). It owns device configuration, validates
  * it with each driver's pure validators, applies the egress guard, feeds the
  * desired device set to the DriverSupervisor (which runs the drivers in child
  * processes), keeps the latest value per tag, and exposes the normalized
@@ -35,7 +36,15 @@ const profilesModel = require('./deviceProfiles');
 const DRIVER_MODULES = {
   'modbus-tcp': path.join(__dirname, '..', 'drivers', 'modbus', 'index.js'),
   s7: path.join(__dirname, '..', 'drivers', 's7', 'index.js'),
-  'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js')
+  'ethernet-ip': path.join(__dirname, '..', 'drivers', 'eip', 'index.js'),
+  'http-json': path.join(__dirname, '..', 'drivers', 'httpjson', 'index.js'),
+  mtconnect: path.join(__dirname, '..', 'drivers', 'mtconnect', 'index.js'),
+  'bacnet-ip': path.join(__dirname, '..', 'drivers', 'bacnet', 'index.js'),
+  coap: path.join(__dirname, '..', 'drivers', 'coap', 'index.js'),
+  snmp: path.join(__dirname, '..', 'drivers', 'snmp', 'index.js'),
+  // WebSocket bridge drivers (subscription; see drivers/common/wsClient.js)
+  'matter-server': path.join(__dirname, '..', 'drivers', 'matterserver', 'index.js'),
+  'zwave-js': path.join(__dirname, '..', 'drivers', 'zwavejs', 'index.js')
 };
 
 const MAX_TAGS_PER_DEVICE = 20000;
@@ -52,6 +61,17 @@ const REBIND_CHECK_MS = 30_000;
 
 // Fields the store or the main process own; they never come from a client and never reach a driver.
 const BOOKKEEPING_KEYS = ['rev', 'updatedAt', 'pinned'];
+/**
+ * `limits` with every unset field (absent, null or '') taken from the driver's descriptor
+ * (`describe().limits`). Fields the device sets are kept as they are; the driver validates them.
+ */
+function withDefaultLimits(desc, limits) {
+  const own = limits && typeof limits === 'object' && !Array.isArray(limits) ? limits : {};
+  const out = { ...(desc && desc.limits && typeof desc.limits === 'object' ? desc.limits : {}) };
+  for (const [k, v] of Object.entries(own)) if (v !== undefined && v !== null && v !== '') out[k] = v;
+  return out;
+}
+
 function runtimeDevice(device) {
   const { rev: _r, updatedAt: _u, pinned: _p, ...rest } = device;
   return rest;
@@ -71,6 +91,15 @@ class DeviceValidationError extends Error {
     super(message);
     this.name = 'DeviceValidationError';
     this.details = details;
+  }
+}
+
+/** A stored secret would follow an endpoint change: it must be entered again (HTTP 400 secret-required). */
+class SecretRequiredError extends DeviceValidationError {
+  constructor(field) {
+    super(secretRequiredMessage(field));
+    this.code = 'secret-required';
+    this.field = field;
   }
 }
 
@@ -114,6 +143,23 @@ function checkPollGroups(input) {
     groupIds.add(g.id);
   }
   return pollGroups;
+}
+
+// Device secrets (HTTP passwords and tokens, SNMP community and v3 passwords, ...), ONE rule for
+// every driver: a secret is a descriptor field of type `password` (plus any name a driver lists in
+// `describe().secretFields`). It is stored with the device and passed to the driver process, but
+// every answer of this manager carries a stored secret as `null` (no secret stored: the field is
+// absent), so list/save/bulk/instantiate and the 409 conflict body never contain one. An edit that
+// leaves a secret absent, null or blank keeps the stored value (same protocol only), and a secret
+// the driver says is not in use (`activeSecretFields`, e.g. a token left over after switching to
+// basic authentication, or a community after switching to SNMPv3) is dropped.
+const hasValue = (v) => v !== undefined && v !== null && v !== '';
+
+function maskSecrets(device, fields) {
+  if (!fields.length) return device;
+  const out = { ...device };
+  for (const f of fields) if (hasValue(out[f])) out[f] = null;
+  return out;
 }
 
 function loadDrivers(modules) {
@@ -251,7 +297,8 @@ class DeviceManager extends EventEmitter {
    * that is unreachable must not shadow a working IPv4 one. A literal IP carries no pin.
    */
   _pinned(device, addresses) {
-    const base = runtimeDevice(device);
+    // A device stored before its driver declared limits still runs with the driver's defaults.
+    const base = runtimeDevice({ ...device, limits: withDefaultLimits(this.drivers[device.protocol]?.mod?.describe?.(), device.limits) });
     if (!Array.isArray(addresses) || !addresses.length || net.isIP(String(device.host))) {
       this._pins.delete(device.id);
       return base;
@@ -313,9 +360,72 @@ class DeviceManager extends EventEmitter {
 
   // ---- configuration ---------------------------------------------------------
 
+  _secretFields(protocol) {
+    const mod = this.drivers[protocol]?.mod;
+    const d = mod && mod.describe ? mod.describe() : {};
+    const out = new Set(Array.isArray(d.secretFields) ? d.secretFields : []);
+    // Top-level device fields only: that is where credentials live (options hold protocol tuning).
+    for (const f of d.deviceFields || []) if (f && f.type === 'password') out.add(f.name ?? f.key);
+    return [...out];
+  }
+
+  /** An edit that leaves a secret absent, null or blank keeps the stored one; never across a protocol change. */
+  _keepStoredSecrets(input, id) {
+    return this._withStoredSecrets(input, id).input;
+  }
+
+  /**
+   * _keepStoredSecrets plus the names of the fields it filled in from the store (`kept`) and the
+   * stored device (`stored`), so the caller can refuse the edit when the endpoint moved.
+   */
+  _withStoredSecrets(input, id) {
+    const d = input || {};
+    const stored = id ? this.profiles.getIn('devices', id) : null;
+    if (!stored || (d.protocol !== undefined && d.protocol !== stored.protocol)) return { input: d, kept: [], stored: null };
+    const fields = this._secretFields(stored.protocol);
+    if (!fields.length) return { input: d, kept: [], stored };
+    const out = { ...d };
+    const kept = [];
+    for (const f of fields) {
+      if (!hasValue(out[f]) && hasValue(stored[f])) {
+        out[f] = stored[f];
+        kept.push(f);
+      }
+    }
+    return { input: out, kept, stored };
+  }
+
+  /** scheme://host:port the driver connects to (scheme: the URL drivers' field, else the protocol). */
+  _endpoint(device) {
+    const mod = this.drivers[device.protocol]?.mod;
+    const d = mod && mod.describe ? mod.describe() : {};
+    const schemeField = (d.deviceFields || []).find((f) => f && (f.name ?? f.key) === 'scheme');
+    const scheme = device.scheme ?? schemeField?.default ?? '';
+    return `${device.protocol}|${hostIdentity(scheme, device.host, device.port, d.defaultPort)}`;
+  }
+
+  /**
+   * Normalize an edit of a stored device. A secret left blank keeps the stored one only while the
+   * endpoint (protocol, scheme, host, port) is unchanged; when it moved, every kept secret the
+   * driver would still use must be entered again (SecretRequiredError, HTTP 400 secret-required).
+   */
+  _normalizeEdit(input, id, extra = {}) {
+    const { input: withSecrets, kept, stored } = this._withStoredSecrets(input, id);
+    const device = this.normalize({ ...withSecrets, ...extra }, id || input?.id || 'test');
+    if (stored && kept.length && this._endpoint(device) !== this._endpoint(stored)) {
+      const missing = kept.find((f) => hasValue(device[f]));
+      if (missing) throw new SecretRequiredError(missing);
+    }
+    return device;
+  }
+
+  _maskDevice(device) {
+    return device ? maskSecrets(device, this._secretFields(device.protocol)) : device;
+  }
+
   /** Driver descriptors in the one shape the UI renders forms from. */
   protocols() {
-    const TYPES = { integer: 'number', number: 'number', select: 'select', boolean: 'boolean' };
+    const TYPES = { integer: 'number', number: 'number', select: 'select', boolean: 'boolean', password: 'password' };
     const field = (f) => ({
       ...f,
       name: f.name ?? f.key,
@@ -393,6 +503,9 @@ class DeviceManager extends EventEmitter {
     if (d.name !== undefined && d.name !== null && hasUnsafeNameChar(String(d.name))) {
       throw new DeviceValidationError('name must not contain control or text-direction override characters');
     }
+    // A driver may explain a refused host form better than the generic rule (CoAP: coaps:// is not supported).
+    const hostProblem = typeof d.host === 'string' && typeof driver.mod.checkHost === 'function' ? driver.mod.checkHost(d.host) : null;
+    if (hostProblem) throw new DeviceValidationError(hostProblem);
     if (typeof d.host !== 'string' || !d.host.trim() || /[\s/]/.test(d.host)) {
       throw new DeviceValidationError('host is required (hostname or IP address, no scheme)');
     }
@@ -422,7 +535,9 @@ class DeviceManager extends EventEmitter {
       host: d.host.trim(),
       port,
       options,
-      limits: d.limits && typeof d.limits === 'object' ? d.limits : {},
+      // Unset limits take the driver's declared defaults (a CoAP retransmission or a BACnet APDU
+      // timeout x retries needs longer than the runtime's generic request deadline).
+      limits: withDefaultLimits(desc, d.limits),
       pollGroups,
       tags
     };
@@ -459,6 +574,9 @@ class DeviceManager extends EventEmitter {
       const own = Array.isArray(error.details) ? error.details.filter((x) => !x.key).map((x) => x.error) : [];
       throw new DeviceValidationError(own.length ? own.join('; ') : error.message);
     }
+    // A secret the driver does not use with the chosen settings is not kept.
+    const active = driver.mod.activeSecretFields ? driver.mod.activeSecretFields(device) : null;
+    if (active) for (const f of this._secretFields(protocol)) if (!active.includes(f)) delete device[f];
     return device;
   }
 
@@ -590,7 +708,7 @@ class DeviceManager extends EventEmitter {
     return this.profiles.listIn('devices').map((device) => {
       const e = eff.get(device.id);
       const tags = e ? e.device.tags : device.tags || [];
-      const out = { ...device, tags, status: this.statusOf({ ...device, tags }, status) };
+      const out = { ...this._maskDevice(device), tags, status: this.statusOf({ ...device, tags }, status) };
       if (device.profileId) {
         out.ownTags = device.tags || [];
         out.profileErrors = e?.errors || [];
@@ -621,13 +739,13 @@ class DeviceManager extends EventEmitter {
 
   async save(input, id, { expectRev } = {}) {
     if (id) this.profiles.assertRev?.('devices', id, expectRev); // a stale edit is refused before anything else
-    const device = this.normalize(input, id);
+    const device = id ? this._normalizeEdit(input, id) : this.normalize(input, id);
     await this.guard(device.host); // refuse to store an unreachable-by-policy target
     const clash = this.profiles.listIn('devices').find((d) => d.id !== device.id && d.name === device.name);
     if (clash) throw new DeviceValidationError(`name "${device.name}" is already used by another device; pick a different name`);
     const saved = this.profiles.upsertIn('devices', device.id, device, { expectRev });
     await this.apply();
-    return saved;
+    return this._maskDevice(saved);
   }
 
   /**
@@ -667,7 +785,7 @@ class DeviceManager extends EventEmitter {
       throw error;
     }
     await this.apply();
-    return stored;
+    return stored.map((d) => this._maskDevice(d));
   }
 
   async remove(id) {
@@ -677,7 +795,7 @@ class DeviceManager extends EventEmitter {
   }
 
   async test(input) {
-    const device = this.normalize({ ...input, tags: [] }, input?.id || 'test');
+    const device = this._normalizeEdit(input, input?.id, { tags: [] });
     const addresses = await this.guard(device.host);
     const started = Date.now();
     try {
@@ -736,6 +854,7 @@ class DeviceManager extends EventEmitter {
         type: s.type || 'unknown',
         q: s.q,
         qReason: s.qReason,
+        ...(s.tSource !== undefined ? { tSource: s.tSource } : {}),
         tRead
       });
     }
@@ -780,4 +899,4 @@ class DeviceManager extends EventEmitter {
   }
 }
 
-module.exports = { DeviceManager, DeviceValidationError, DeviceConflictError, DRIVER_MODULES, tagMetaError };
+module.exports = { DeviceManager, DeviceValidationError, SecretRequiredError, DeviceConflictError, DRIVER_MODULES, tagMetaError };

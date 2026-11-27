@@ -1,53 +1,35 @@
-# Native ingest store (Rust / napi) — experiment & findings
+# Native ingest store benchmark (Rust / napi)
 
-This is a Rust (`napi-rs`) native addon implementing the MQTT ingest + coalescing
-hot path (`TopicStore`: `ingest`, `ingest_batch`, `drain`, `get_topics`, counts).
-It was built to answer a specific question: **would moving the hot path to Rust
-make the server faster?**
+**Not used by Manifold.** Nothing in the server, the client, the MCP server, the Docker images
+or CI builds, loads or tests this directory (`.dockerignore` excludes it). It is a standalone
+Rust (`napi-rs`) crate that answered one question: would moving the MQTT ingest and coalescing
+hot path (`TopicStore`: `ingest`, `ingest_batch`, `drain`, `get_topics`, counts) to Rust make the
+server faster? The answer was no, and the server uses the JavaScript store in
+`server/services/topicStore.js`.
 
-## Measured results (this machine, Node 22, release build)
+## What was measured
 
-| Path | Throughput | Notes |
-|---|---|---|
-| **Pure JS hot path** (current default) | **4.19 M msg/s** | No FFI; minimal per-message Map work |
-| Raw Rust store (`bench`, Rust owns the loop) | **12.2 M msg/s** | ~3× — but requires no per-message JS↔Rust crossing |
-| Rust via **per-message FFI** (`ingest`) | 2.81 M msg/s | Slower — the napi boundary crossing costs more than it saves |
-| Rust via **batched FFI** (`ingest_batch`) | 1.42 M msg/s | Slower still — marshalling arrays of strings+buffers dominates |
+Node 22, release build, one machine:
 
-| Memory @ 1,000,000 topics | RSS | 
+| Path | Throughput |
 |---|---|
-| JS `Map` of record objects (old default) | 532 MB |
-| **JS struct-of-arrays store** (`server/services/topicStore.js`, current default) | **425 MB** (~20% less, no native dep) |
-| Rust `TopicStore` | 380 MB (~29% less than old, and no GC pauses) |
+| JavaScript hot path (what the server uses) | 4.19 M msg/s |
+| Rust store with Rust owning the loop (`bench`) | 12.2 M msg/s |
+| Rust through per-message FFI (`ingest`) | 2.81 M msg/s |
+| Rust through batched FFI (`ingest_batch`) | 1.42 M msg/s |
 
-> **Update — the memory win was captured in pure JS.** The default hot path now
-> uses `server/services/topicStore.js`: one `Map(topic -> slot)` plus parallel
-> typed arrays for the scalar fields and the latest payload kept as a **latin1
-> string** (V8 stores latin1 at one byte/char, lossless for arbitrary bytes, and
-> avoids a `Buffer` object per topic). That recovers most of Rust's memory
-> advantage — 425 MB vs Rust's 380 MB — **without any native build step**, so the
-> Rust addon is no longer needed even for the memory-bound case. It remains below
-> only as a reproducible benchmark.
+| Memory at 1,000,000 topics | RSS |
+|---|---|
+| JavaScript `Map` of record objects (an earlier store) | 532 MB |
+| JavaScript struct-of-arrays store (`topicStore.js`, what the server uses) | 425 MB |
+| Rust `TopicStore` | 380 MB |
 
-## Conclusion
+Crossing the JavaScript/Rust boundary for each message, or in batches, costs more than the
+`Map` update it replaces. Rust only wins throughput when it owns the whole ingest loop, which
+would mean a Rust MQTT client and giving up the Node ecosystem on that path. The struct-of-arrays
+JavaScript store recovered most of Rust's memory advantage without a native build step.
 
-- **For throughput, keep the JS hot path.** It already sustains millions of
-  publishes/sec, and any path that marshals MQTT data across the JS↔Rust boundary
-  (per-message *or* batched) is **slower**, because copying strings + payload
-  buffers over FFI costs more than the tiny JS `Map` update it replaces.
-- **Rust only wins throughput if it owns the ingest loop end-to-end** — i.e. a
-  Rust MQTT client (`rumqttc`) subscribing directly, with zero per-message
-  marshalling. That is a "port the component", not a surgical addon, and it would
-  also give up the mature `node-opcua` / `socket.io` / MCP ecosystem on that path.
-- **Rust's clear, surgical win is memory + GC**: ~29% less RSS and no
-  garbage-collection pauses at millions of resident topics.
-
-So this addon is **not wired into the default path** (that would regress the
-common case). It is kept as a reproducible benchmark and an optional,
-memory-optimized store for deployments that hold millions of topics and are
-memory/latency-bound rather than throughput-bound.
-
-## Build & reproduce
+## Reproduce
 
 ```bash
 cd native
@@ -56,5 +38,4 @@ cp target/release/libmanifold_native.so index.node   # .dylib on macOS
 node bench.js
 ```
 
-Requires a Rust toolchain (`rustup`). The compiled `.node` is intentionally not
-committed; build it where you intend to run it (or wire up `napi-rs` prebuilds).
+Requires a Rust toolchain. The compiled `.node` file is not committed.

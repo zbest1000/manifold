@@ -8,7 +8,7 @@
  * CIP service — including each service inside a Multiple Service Packet and
  * the message embedded in an Unconnected Send — through `assertCipAllowed`,
  * and throws `EipReadOnlyError` before any byte exists for anything outside
- * the allowlist (design: southbound-drivers.md section 7). The transport
+ * the allowlist (docs/design/driver-contract.md, read-only by construction). The transport
  * additionally re-parses every buffer it is asked to write with
  * `inspectOutgoingFrame` (defence in depth: a byte-level allowlist check).
  *

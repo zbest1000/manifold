@@ -5,6 +5,7 @@
 // A header line is optional: without one the columns are address,name (a Kepware / Ignition
 // "nodeId,name" export works as is; "nodeId" and "tag" are accepted for address).
 import { makeRow, renameRow, setOv, renameable } from './mappingRows';
+import { neutralizeFormula, restoreFormula } from '@/lib/csvSafe';
 
 const NUMERIC = ['scale', 'offset', 'precision', 'deadband', 'staleAfterMs'];
 const TEXT = ['unit', 'description', 'displayName', 'dataType', 'field'];
@@ -19,7 +20,7 @@ export function csvColumns(srcType) {
 }
 
 const quote = (v) => {
-  const s = v === undefined || v === null ? '' : String(v);
+  const s = v === undefined || v === null ? '' : String(neutralizeFormula(v));
   return /[",\n\r;\t]/.test(s) || /^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
@@ -84,7 +85,7 @@ const BOOL = { true: true, false: false, yes: true, no: false, on: true, off: fa
 
 /** One cell -> [value] | [undefined, error]. Empty cells clear nothing (they are skipped). */
 function cellValue(col, raw) {
-  const v = raw.trim();
+  const v = restoreFormula(raw.trim());
   if (col === 'enabled') return Object.hasOwn(BOOL, v.toLowerCase()) ? [BOOL[v.toLowerCase()]] : [undefined, `enabled must be true or false, not "${v}"`];
   if (col === 'deadband') {
     const pct = v.endsWith('%');
@@ -130,7 +131,7 @@ export function applyCsv(state, text, { tagDefs = null } = {}) {
   let updated = 0;
   records.slice(hasHeader ? 1 : 0).forEach((rec, k) => {
     const line = k + (hasHeader ? 2 : 1);
-    const get = (c) => (cols.indexOf(c) >= 0 ? rec[cols.indexOf(c)] ?? '' : '');
+    const get = (c) => restoreFormula(cols.indexOf(c) >= 0 ? rec[cols.indexOf(c)] ?? '' : '');
     const address = get('address').trim();
     if (!address) return errors.push({ line, message: 'No address.' });
     let row;
@@ -148,7 +149,7 @@ export function applyCsv(state, text, { tagDefs = null } = {}) {
       if (!allowed.has(c) || c === 'address' || raw.trim() === '') continue;
       if (c === 'name') {
         if (!renameable(state.srcType)) lineErrors.push('names of this source cannot be changed');
-        else next = renameRow(next, raw.trim());
+        else next = renameRow(next, restoreFormula(raw.trim()));
         continue;
       }
       const [v, err] = cellValue(c, raw);

@@ -17,6 +17,7 @@ const I3xClient = require('./services/i3xClient');
 const ProfileStore = require('./services/profileStore');
 const HistoryStore = require('./services/historyStore');
 const { AlertEngine } = require('./services/alertEngine');
+const { AlertHistory } = require('./services/alertHistory');
 const { PipelineEngine } = require('./services/pipelineEngine');
 const { scanBroken } = require('./services/references');
 const Recorder = require('./services/recorder');
@@ -29,7 +30,10 @@ const { parseNamedTokens, roleAllows } = require('./services/authConfig');
 const metricsExporter = require('./services/metricsExporter');
 const SparkplugPublisher = require('./services/sparkplugPublisher');
 const { TagBindings } = require('./services/tagBindings');
+const { PayloadCodecs } = require('./services/codecs');
 const { DeviceManager } = require('./services/deviceManager');
+const { IotManager } = require('./services/iot/iotManager');
+const { attachIotSource } = require('./services/bindingModel');
 
 const mqttRoutes = require('./routes/mqtt');
 const opcuaRoutes = require('./routes/opcua');
@@ -42,17 +46,30 @@ const historianRoutes = require('./routes/historians');
 const pipelineRoutes = require('./routes/pipelines');
 const recorderRoutes = require('./routes/recorder');
 const contractRoutes = require('./routes/contracts');
+const codecRoutes = require('./routes/codecs');
+const trendRoutes = require('./routes/trends');
 const modelRoutes = require('./routes/models');
 const tagRoutes = require('./routes/tags');
 const deviceRoutes = require('./routes/devices');
+const iotRoutes = require('./routes/iot');
 
 const app = express();
+// Behind a reverse proxy, name it (MANIFOLD_TRUST_PROXY: hop count or proxy addresses) so the rate limit,
+// the auth-failure throttle and the audit log see each client instead of the proxy. Off by default.
+{
+  const { value, warning } = require('./services/trustProxy').parseTrustProxy(process.env.MANIFOLD_TRUST_PROXY);
+  app.set('trust proxy', value);
+  if (warning) console.warn(warning);
+}
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
     origin: process.env.CLIENT_URL || 'http://localhost:3000',
     methods: ['GET', 'POST']
-  }
+  },
+  // A WebSocket is not covered by CORS: without this any page an operator opens could connect
+  // (and, on an open instance, publish to brokers). See originAllowed / hostAllowed below.
+  allowRequest: (req, callback) => callback(null, originAllowed(req.headers.origin, req.headers.host) && hostAllowed(req.headers.host))
 });
 
 // CORS: in production the client is served same-origin, so no cross-origin
@@ -60,13 +77,37 @@ const io = socketIo(server, {
 // A blanket cors() would let any website script an authenticated browser.
 app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:3000' }));
 
-// Security headers. contentSecurityPolicy is disabled by default because the
-// Vite dev client and the built SPA differ; the served bundle is same-origin and
-// self-contained. crossOriginResourcePolicy is relaxed so the dev client on a
-// different port can still load assets.
+// Security headers. The Content-Security-Policy fits the built client (client/dist), which is
+// same-origin and self-contained: scripts only from this origin (the theme pre-paint script is a
+// file, not inline), no eval, workers from this origin or blob:, the Socket.IO connection to this
+// origin. Inline styles stay allowed (React style attributes and the toast library's injected
+// stylesheet). upgrade-insecure-requests is left out on purpose: plants serve Manifold over plain
+// http on an IP address, where it would break every asset. The Vite dev client is served by Vite,
+// not by this server. crossOriginResourcePolicy is relaxed so the dev client on a different port
+// can still load assets.
 app.use(
   helmet({
-    contentSecurityPolicy: false,
+    // The built SPA is self-contained (no inline or third-party script; theme-init.js is a file),
+    // so scripts are 'self' only: an injected <script> from a topic name or device label cannot
+    // run. Inline styles stay allowed (React style props). No upgrade-insecure-requests: plants
+    // reach Manifold over plain HTTP by IP, where it would break every request.
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        scriptSrcAttr: ["'none'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        fontSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'"],
+        workerSrc: ["'self'", 'blob:'],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"]
+      }
+    },
     crossOriginResourcePolicy: { policy: 'cross-origin' }
   })
 );
@@ -105,6 +146,47 @@ for (const message of TOKENS_PARSED.errors) console.error(`[auth] ${message}`);
 // Fail closed: if tokens were configured at all (even if every entry was
 // rejected), auth stays ON — a typo must never turn into an open server.
 const AUTH_ENABLED = Boolean(AUTH_TOKEN || VIEWER_TOKEN || NAMED_TOKENS.length || TOKENS_PARSED.configured);
+
+// Bind address (see server.listen below). With no token the control plane binds loopback only.
+const HOST = process.env.MANIFOLD_HOST || (AUTH_ENABLED ? '0.0.0.0' : '127.0.0.1');
+const LOOPBACK_BIND = /^(127(?:\.\d{1,3}){3}|localhost|::1)$/i.test(HOST);
+const CLIENT_ORIGIN = process.env.CLIENT_URL || 'http://localhost:3000';
+const LOOPBACK_NAME = /^(localhost|127(?:\.\d{1,3}){3}|::1)$/i;
+const EXTRA_HOSTS = new Set(String(process.env.MANIFOLD_ALLOWED_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean));
+
+function hostnameOf(hostHeader) {
+  const h = String(hostHeader || '').trim().toLowerCase();
+  if (h.startsWith('[')) return h.slice(1, h.indexOf(']') === -1 ? undefined : h.indexOf(']'));
+  return h.split(':')[0];
+}
+
+/**
+ * DNS rebinding guard for the open (no token), loopback-bound instance: a page on evil.example that
+ * re-resolves to 127.0.0.1 is same-origin to the browser, so the only tell is the Host header.
+ * Loopback names pass, plus MANIFOLD_ALLOWED_HOSTS (comma-separated). With a token, or when the
+ * operator deliberately binds elsewhere, any Host is accepted (the token is the protection).
+ */
+function hostAllowed(hostHeader) {
+  if (AUTH_ENABLED || !LOOPBACK_BIND) return true;
+  const name = hostnameOf(hostHeader);
+  return LOOPBACK_NAME.test(name) || EXTRA_HOSTS.has(name);
+}
+
+/** Browser origins allowed on the socket: none sent (tools), the dev client, or the page's own origin. */
+function originAllowed(origin, hostHeader) {
+  if (origin === undefined || origin === '') return true;
+  if (origin === CLIENT_ORIGIN) return true;
+  try {
+    return new URL(origin).host === String(hostHeader || '').toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+app.use((req, res, next) => {
+  if (hostAllowed(req.headers.host)) return next();
+  res.status(421).json({ error: 'Misdirected request: this unauthenticated instance answers only to localhost (set MANIFOLD_ALLOWED_HOSTS to add a name, or MANIFOLD_AUTH_TOKEN)' });
+});
 
 function timingEqual(candidate, expected) {
   if (typeof candidate !== 'string' || candidate.length === 0 || !expected) return false;
@@ -196,7 +278,9 @@ const discovery = new DiscoveryService(io, { i3x });
 const cesmii = new CesmiiClient();
 const profiles = new ProfileStore();
 const history = new HistoryStore(mqttManager);
-const alerts = new AlertEngine({ io, profiles, mqttManager });
+// Alert history is durable: data/alerts.jsonl (two size-capped segments), reloaded on start.
+const alertJournal = new AlertHistory({ dir: process.env.MANIFOLD_DATA_DIR || path.join(__dirname, 'data') });
+const alerts = new AlertEngine({ io, profiles, mqttManager, journal: alertJournal });
 const outbox = new HistorianOutbox({ profiles });
 const pipelines = new PipelineEngine({ mqttManager, profiles, outbox });
 const recorder = new Recorder({ mqttManager, profiles, outbox });
@@ -210,11 +294,20 @@ const bindings = new TagBindings({ mqttManager, opcuaManager, profiles, sparkplu
 // the tag source the binding engine sees.
 const devices = new DeviceManager({ profiles, io });
 bindings.registerSource('device', devices);
+// Payload codecs: decode CBOR / MessagePack / SenML / Protobuf / Avro on ingest.
+const codecs = new PayloadCodecs({ profiles });
+mqttManager.codecs = codecs;
+
+// IoT devices over MQTT (Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly,
+// LoRaWAN network servers): read-only device registry per broker, a tag source for mappings.
+const iot = new IotManager({ mqttManager, profiles });
+attachIotSource(profiles, { device: (b, d) => iot.rawDevice(b, d), readFilters: (b) => iot.readFilters(b) });
+bindings.registerSource('iot', iot);
 
 app.locals.services = {
   mqttManager, opcuaManager, discovery, cesmii, i3x, profiles, history, alerts,
   pipelines, recorder, replayer, contracts, models,
-  outbox, audit, sparkplugPublisher, bindings, devices
+  outbox, audit, sparkplugPublisher, bindings, devices, codecs, iot
 };
 
 // (The audit middleware is mounted ahead of auth, above.)
@@ -266,11 +359,19 @@ if (process.env.MANIFOLD_NO_RESTORE !== '1') {
 }
 history.start();
 alerts.start();
+if (alerts.restored?.loaded) {
+  console.log(
+    `alerts: restored ${alerts.restored.loaded} history event(s)` +
+      (alerts.restored.ended ? `, ${alerts.restored.ended} alarm(s) active at shutdown ended by restart` : '') +
+      (alerts.restored.tornLines ? `, skipped ${alerts.restored.tornLines} damaged line(s)` : '')
+  );
+}
 outbox.start();
 pipelines.start();
 recorder.start();
 contracts.start();
 models.start();
+iot.start();
 bindings.start();
 devices.start().catch((error) => console.warn(`devices: ${error.message}`));
 
@@ -305,9 +406,12 @@ app.use('/api/historians', historianRoutes);
 app.use('/api/pipelines', pipelineRoutes);
 app.use('/api/recorder', recorderRoutes);
 app.use('/api/contracts', contractRoutes);
+app.use('/api/codecs', codecRoutes);
+app.use('/api/trends', trendRoutes);
 app.use('/api/models', modelRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/devices', deviceRoutes);
+app.use('/api/iot', iotRoutes);
 
 // GET /api/whoami — lets the client discover whether auth is on and what role
 // the caller holds, so the UI can render a read-only badge and disable mutation
@@ -481,8 +585,7 @@ const PORT = process.env.PORT || 5000;
 // only, so an accidentally-open instance is reachable solely from its own host.
 // Exposing an unauthenticated instance beyond localhost is now a deliberate act:
 // set MANIFOLD_HOST=0.0.0.0 explicitly (and you'll be warned). With auth on, the
-// default is all interfaces as before.
-const HOST = process.env.MANIFOLD_HOST || (AUTH_ENABLED ? '0.0.0.0' : '127.0.0.1');
+// default is all interfaces as before. (HOST is computed with the auth settings above.)
 server.listen(PORT, HOST, () => {
   console.log(`Manifold server listening on ${HOST}:${PORT}`);
   if (require('./services/egressGuard').ALLOW_PRIVATE) {
@@ -522,6 +625,7 @@ const shutdown = async () => {
   history.snapshot({ sync: true }); // final flush before rings are torn down
   history.stop();
   alerts.stop();
+  await alerts.flush().catch(() => {}); // queued history lines reach data/alerts.jsonl
   pipelines.stop();
   recorder.stop();
   await outbox.flush().catch(() => {}); // last chance to deliver; failures spill to disk
@@ -530,6 +634,7 @@ const shutdown = async () => {
   contracts.stop();
   models.stop();
   bindings.stop();
+  iot.stop();
   await devices.stop().catch(() => {}); // stops driver host processes
   await sparkplugPublisher.stop().catch(() => {}); // clean NDEATHs, not broker-side wills
   await require('./services/historians').closePools().catch(() => {});

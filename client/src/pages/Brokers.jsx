@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Trash2, ChevronRight, Pencil } from 'lucide-react';
+import { Plus, Trash2, ChevronRight, Pencil, PanelRight } from 'lucide-react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import { useStore } from '@/store/store';
@@ -12,9 +12,11 @@ import {
 } from '@/components/ui';
 import PageHeader from '@/components/PageHeader';
 import { useConflict } from '@/components/ConflictDialog';
+import BrokerDetail from '@/pages/brokers/BrokerDetail';
+import { canaryConfigFromForm, canaryFormFromBroker, canaryLine, canaryTone, postureText, postureTone, presetToForm, defaultCanaryTopic } from '@/lib/brokerHealth';
 
 /**
- * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md#list-page).
+ * MQTT brokers: the list + form-dialog pattern (docs/design/ui-design-system.md, Page patterns).
  * A sortable table of connections; create and edit happen in one dialog.
  */
 
@@ -38,7 +40,14 @@ const BLANK = {
   autoSubscribe: true,
   subscribeFilter: '#',
   subscribeQos: 1,
-  rejectUnauthorized: true
+  rejectUnauthorized: true,
+  // Canary (opt-in): publishes a probe message through the broker
+  canaryEnabled: false,
+  canaryTopic: '',
+  canaryQos: 0,
+  canaryIntervalSec: 30,
+  canarySlowMs: 1000,
+  presetId: null // the public test broker the form was filled from (not sent)
 };
 
 const SORT_ACCESSORS = {
@@ -47,7 +56,8 @@ const SORT_ACCESSORS = {
   messages: (b) => b.metrics?.messagesReceived ?? 0,
   topics: (b) => b.metrics?.topicCount ?? 0,
   activity: (b) => new Date(b.lastActivity || 0).getTime(),
-  errors: (b) => b.metrics?.errors ?? 0
+  errors: (b) => b.metrics?.errors ?? 0,
+  security: (b) => (b.posture ? b.posture.high * 10000 + b.posture.medium * 100 + b.posture.low : -1)
 };
 
 export default function Brokers() {
@@ -60,8 +70,11 @@ export default function Brokers() {
   const [editingId, setEditingId] = useState(null);
   const [editingRev, setEditingRev] = useState(undefined); // the revision the form was loaded at (conflict detection)
   const [duplicate, setDuplicate] = useState(null); // 409 duplicate: { id, name } of the connection that already exists
+  const [secretError, setSecretError] = useState(null); // 400 secret-required: the address changed, the password must be typed again
   const [refused, setRefused] = useState(null); // 409 in-use: { broker, usedBy } when a delete is refused
   const [busy, setBusy] = useState(false);
+  const [detailId, setDetailId] = useState(null); // the broker whose details drawer is open
+  const [presets, setPresets] = useState([]);
   const { resolveConflict, conflictDialog } = useConflict();
   const [sort, setSort] = useState({ key: 'name', dir: 'asc' });
   const [confirm, confirmDialog] = useConfirm();
@@ -76,6 +89,7 @@ export default function Brokers() {
   const isWs = form.protocol === 'ws' || form.protocol === 'wss';
   const rows = sortRows(brokers, sort, SORT_ACCESSORS);
   const connected = brokers.filter((b) => b.status === 'connected').length;
+  const detail = brokers.find((b) => b.id === detailId) || null;
 
   const buildConfig = () => ({
     name: form.name || undefined,
@@ -97,7 +111,8 @@ export default function Brokers() {
     autoSubscribe: form.autoSubscribe,
     subscribeFilter: form.subscribeFilter || '#',
     subscribeQos: Number(form.subscribeQos),
-    rejectUnauthorized: form.rejectUnauthorized
+    rejectUnauthorized: form.rejectUnauthorized,
+    canary: canaryConfigFromForm(form, editingId)
   });
 
   const closeForm = () => {
@@ -105,14 +120,20 @@ export default function Brokers() {
     setEditingId(null);
     setEditingRev(undefined);
     setDuplicate(null);
+    setSecretError(null);
     setForm(BLANK);
   };
 
   const openNew = () => {
+    api
+      .brokerPresets()
+      .then((r) => setPresets(r.presets || []))
+      .catch(() => setPresets([])); // the form works without them
     setForm(BLANK);
     setEditingId(null);
     setEditingRev(undefined);
     setDuplicate(null);
+    setSecretError(null);
     setShowForm(true);
   };
 
@@ -121,6 +142,7 @@ export default function Brokers() {
     if (isWs && !Number(form.port)) return toast.error('Port is required for WebSocket connections');
     setBusy(true);
     setDuplicate(null);
+    setSecretError(null);
     const config = buildConfig();
     try {
       if (editingId) {
@@ -147,6 +169,8 @@ export default function Brokers() {
     } catch (e) {
       // Same protocol, host, port, user and filter as a connection that exists: shown inline, in the form.
       if (e.status === 409 && e.code === 'duplicate') setDuplicate(e.existing || { name: 'an existing connection' });
+      // The host, port or protocol changed and the password was left blank: shown next to the password field.
+      else if (e.code === 'secret-required') setSecretError(e.message);
       else toast.error(e.message);
     } finally {
       setBusy(false);
@@ -176,11 +200,13 @@ export default function Brokers() {
       reconnect: c.reconnect !== false,
       reconnectPeriod: c.reconnectPeriod ?? BLANK.reconnectPeriod,
       cleanSession: c.cleanSession !== false,
-      rejectUnauthorized: c.rejectUnauthorized !== false
+      rejectUnauthorized: c.rejectUnauthorized !== false,
+      ...canaryFormFromBroker(b)
     });
     setEditingId(b.id);
     setEditingRev(b.rev ?? c.rev);
     setDuplicate(null);
+    setSecretError(null);
     setShowForm(true);
   };
 
@@ -255,11 +281,12 @@ export default function Brokers() {
           )
         ) : (
           <TableSort sort={sort} onSort={(key) => setSort((s) => nextSort(s, key))}>
-            <Table caption="MQTT broker connections" className="min-w-[56rem]">
+            <Table caption="MQTT broker connections" className="min-w-[64rem]">
               <THead>
                 <Th sortKey="name">Broker</Th>
                 <Th sortKey="status">State</Th>
                 <Th>Subscription</Th>
+                <Th sortKey="security">Security</Th>
                 <Th sortKey="messages" align="right">Messages</Th>
                 <Th sortKey="topics" align="right">Topics</Th>
                 <Th sortKey="activity" align="right">Last activity</Th>
@@ -273,7 +300,14 @@ export default function Brokers() {
                   return (
                     <Tr key={b.id} highlight={editingId === b.id}>
                       <Td header className="max-w-[18rem]">
-                        <span className="block truncate font-medium text-fg">{b.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setDetailId(b.id)}
+                          aria-label={`Details for ${b.name}`}
+                          className="block max-w-full truncate rounded text-left font-medium text-fg hover:text-accent-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                        >
+                          {b.name}
+                        </button>
                         <span className="mono block truncate text-xs text-muted">
                           {b.protocol}://{b.host}:{b.port}
                         </span>
@@ -290,9 +324,40 @@ export default function Brokers() {
                             since <Timestamp value={b.connectedAt} />
                           </span>
                         )}
+                        {canaryLine(b.canaryState) && (
+                          <span className="block text-xs text-subtle" data-testid={`canary-line-${b.id}`}>
+                            <StatusText tone={canaryTone(b.canaryState.state)} className="text-xs">
+                              Canary: {canaryLine(b.canaryState)}
+                            </StatusText>
+                          </span>
+                        )}
                       </Td>
                       <Td className="mono whitespace-nowrap text-xs text-muted">
-                        {b.autoSubscribe === false ? <span className="font-sans text-subtle">Off</span> : `${b.subscribeFilter || '#'} · QoS ${b.subscribeQos ?? 1}`}
+                        {b.autoSubscribe === false ? (
+                          <span className="font-sans text-subtle">Off</span>
+                        ) : b.intake?.via === 'fallback' ? (
+                          <span title={`The broker refused ${b.intake.requested}`}>
+                            {b.intake.granted} · QoS {b.intake.qos} <span className="font-sans text-warn">(fallback)</span>
+                          </span>
+                        ) : (
+                          `${b.subscribeFilter || '#'} · QoS ${b.subscribeQos ?? 1}`
+                        )}
+                      </Td>
+                      <Td className="whitespace-nowrap text-xs" data-testid={`posture-${b.id}`}>
+                        {b.posture ? (
+                          <button
+                            type="button"
+                            onClick={() => setDetailId(b.id)}
+                            aria-label={`Security: ${postureText(b.posture)}. Open details for ${b.name}`}
+                            className="rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                          >
+                            <StatusText tone={postureTone(b.posture)} className="text-xs">
+                              {postureText(b.posture)}
+                            </StatusText>
+                          </button>
+                        ) : (
+                          <span className="text-subtle">—</span>
+                        )}
                       </Td>
                       <Td align="right" className="mono tabular-nums">{(b.metrics?.messagesReceived ?? 0).toLocaleString()}</Td>
                       <Td align="right" className="mono tabular-nums">{(b.metrics?.topicCount ?? 0).toLocaleString()}</Td>
@@ -313,8 +378,9 @@ export default function Brokers() {
                           <span className="mono tabular-nums text-subtle">0</span>
                         )}
                       </Td>
-                      <Td align="right" className="w-20">
+                      <Td align="right" className="w-28">
                         <span className="inline-flex items-center gap-0.5">
+                          <IconButton icon={PanelRight} label={`Details for ${b.name}`} size={14} onClick={() => setDetailId(b.id)} />
                           <IconButton icon={Pencil} label={`Edit ${b.name}`} size={14} onClick={() => edit(b)} />
                           <IconButton icon={Trash2} label={`Disconnect and remove ${b.name}`} size={14} className="hover:bg-bad/10 hover:text-bad" onClick={() => disconnect(b)} />
                         </span>
@@ -354,6 +420,29 @@ export default function Brokers() {
                   message twice. Edit &ldquo;{duplicate.name}&rdquo; instead, or change the user or the subscribe filter here.
                 </span>
               </Banner>
+            )}
+            {!editingId && presets.length > 0 && (
+              <fieldset className="space-y-2" data-testid="broker-presets">
+                <legend className="mb-1 text-sm font-medium text-fg">Public test brokers</legend>
+                <div className="flex flex-wrap gap-2">
+                  {presets.map((p) => (
+                    <Button key={p.id} variant="secondary" size="sm" aria-pressed={form.presetId === p.id} onClick={() => setForm(presetToForm(p, { ...BLANK, presetId: p.id }))} data-testid={`preset-${p.id}`}>
+                      {p.label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted">
+                  These are shared, public brokers: anything you publish is visible to everyone, and anyone can publish to them. Do not use them with plant data. A preset only fills in this form.
+                </p>
+                {form.presetId && (
+                  <Banner variant="warn" title={`${presets.find((p) => p.id === form.presetId)?.name}: public broker`}>
+                    <span data-testid="preset-note">
+                      {presets.find((p) => p.id === form.presetId)?.transport}. Subscribing to <span className="mono">{form.subscribeFilter}</span>, not <span className="mono">#</span>: a root
+                      subscription on a public broker is a firehose of strangers&apos; data. If the broker refuses a filter, the subscription column and the details show what it granted.
+                    </span>
+                  </Banner>
+                )}
+              </fieldset>
             )}
             <fieldset className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
               <legend className="mb-2 text-sm font-medium text-fg">Connection</legend>
@@ -398,15 +487,47 @@ export default function Brokers() {
               <Field label="Username (optional)">
                 <Input value={form.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" />
               </Field>
-              <Field label="Password (optional)">
+              <Field label="Password (optional)" error={secretError || undefined}>
                 <Input
                   type="password"
                   value={form.password}
-                  onChange={(e) => set({ password: e.target.value })}
+                  aria-invalid={secretError ? 'true' : undefined}
+                  onChange={(e) => {
+                    setSecretError(null);
+                    set({ password: e.target.value });
+                  }}
                   autoComplete="new-password"
                   placeholder={editingId ? 'unchanged' : undefined}
                 />
               </Field>
+            </fieldset>
+
+            <fieldset className="space-y-3">
+              <legend className="mb-1 text-sm font-medium text-fg">Canary (optional)</legend>
+              <Checkbox
+                label="Probe this broker with a canary message"
+                description="Off by default. When on, Manifold publishes a small message to your broker every few seconds, receives it back through its own subscription and measures the time. It never retains the message and keeps it out of topics, the UNS, recordings, pipelines and mappings."
+                checked={form.canaryEnabled}
+                onChange={(v) => set({ canaryEnabled: v })}
+              />
+              {form.canaryEnabled && (
+                <div className="grid grid-cols-1 gap-x-4 gap-y-3 border-l-2 border-line pl-4 sm:grid-cols-2" data-testid="canary-fields">
+                  <Field label="Canary topic" help="Leave empty for the default. A custom topic must start with manifold/canary/ followed by a name, and cannot contain command levels such as set, get or cmnd. Give the broker's access rules a rule for it.">
+                    <Input className="mono" value={form.canaryTopic} onChange={(e) => set({ canaryTopic: e.target.value })} placeholder={defaultCanaryTopic(editingId || 'id')} />
+                  </Field>
+                  <Select label="Canary QoS" value={form.canaryQos} onChange={(e) => set({ canaryQos: Number(e.target.value) })}>
+                    <option value={0}>QoS 0: at most once</option>
+                    <option value={1}>QoS 1: at least once</option>
+                    <option value={2}>QoS 2: exactly once</option>
+                  </Select>
+                  <Field label="Probe every (seconds)">
+                    <Input type="number" min={5} max={3600} value={form.canaryIntervalSec} onChange={(e) => set({ canaryIntervalSec: e.target.value })} />
+                  </Field>
+                  <Field label="Slow above (ms)" help="The state is Slow when the 95th percentile latency is above this.">
+                    <Input type="number" min={50} max={3000} value={form.canarySlowMs} onChange={(e) => set({ canarySlowMs: e.target.value })} />
+                  </Field>
+                </div>
+              )}
             </fieldset>
 
             <div>
@@ -478,6 +599,16 @@ export default function Brokers() {
             </div>
           </div>
         </Dialog>
+      )}
+      {detail && (
+        <BrokerDetail
+          broker={detail}
+          onClose={() => setDetailId(null)}
+          onEdit={(b) => {
+            setDetailId(null);
+            edit(b);
+          }}
+        />
       )}
       {refused && (
         <Dialog

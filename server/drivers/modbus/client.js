@@ -4,7 +4,7 @@
  * Modbus TCP client: one socket, exactly one request in flight, strict
  * response validation. Any timeout, mismatch or framing error destroys the
  * socket for good, so a late reply can never be matched to a later request
- * (design: southbound-drivers.md rule 2).
+ * (docs/design/driver-contract.md, design rules).
  *
  * Result shape of `request()` (it RESOLVES; it never rejects for device or
  * transport problems, only throws for programmer errors such as a write

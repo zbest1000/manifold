@@ -7,7 +7,7 @@ import HostStatePanel from './HostStatePanel';
 import TagPath from './TagPath';
 import { shortLabels } from './tagPath';
 import { HEALTH_TONE, HEALTH_LABEL } from './bindingHealthView';
-import { sourceKey } from './helpers';
+import { sourceKey, labelInSentence } from './helpers';
 import { defaultFilter } from './mqttModel';
 
 /**
@@ -40,7 +40,7 @@ export default function MapWorkspace({ page, selection, setSelection, onToggle, 
             <Card>
               <EmptyState
                 title="No sources connected"
-                hint="Tags come from live connections. Add a device, connect an OPC UA server, or connect a broker (its topics and Sparkplug devices appear automatically)."
+                hint="Tags come from live connections. Add a device, connect an OPC UA server, or connect a broker (its topics and Sparkplug devices appear automatically; Zigbee2MQTT, Home Assistant and other IoT devices once detection is on under Devices, IoT over MQTT)."
                 action={
                   <div className="flex flex-wrap justify-center gap-2">
                     <ButtonLink to="/devices" variant="secondary">
@@ -63,8 +63,8 @@ export default function MapWorkspace({ page, selection, setSelection, onToggle, 
   }
 
   const ruleCard =
-    source.type === 'device'
-      ? { title: 'Every tag of this device', hint: 'Map all tags, or those matching include and exclude rules. Tags added to the device later are picked up when they match.', label: 'Map by rule', spec: { srcType: 'device', source, selectMode: 'rules' } }
+    source.type === 'device' || source.type === 'iot'
+      ? { title: 'Every tag of this device', hint: 'Map all tags, or those matching include and exclude rules. Tags added to the device later are picked up when they match.', label: 'Map by rule', spec: { srcType: source.type, source, selectMode: 'rules' } }
       : source.type === 'mqtt'
         ? { title: 'Every topic under a filter', hint: 'Map each topic under a wildcard filter (one value per topic). Topics that appear later are picked up automatically.', label: 'Map by filter', spec: { srcType: 'mqtt', source, selectMode: 'rules', filter: defaultFilter(list.map((t) => t.address)) } }
         : null;
@@ -121,7 +121,7 @@ export default function MapWorkspace({ page, selection, setSelection, onToggle, 
             flush
           >
             {selection.size === 0 ? (
-              <p className="px-4 py-3 text-sm text-muted">Tick tags in the tree, or use Select all on a folder, then {addLabel.toLowerCase()}.</p>
+              <p className="px-4 py-3 text-sm text-muted">Tick tags in the tree, or use Select all on a folder, then {labelInSentence(addLabel)}.</p>
             ) : (
               <ul className="max-h-60 divide-y divide-line overflow-y-auto" aria-labelledby="selection-heading">
                 {list.map((t) => (

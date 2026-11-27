@@ -1,4 +1,6 @@
 const mqtt = require('mqtt');
+const net = require('net');
+const egressGuard = require('./egressGuard');
 const { EventEmitter } = require('events');
 const { randomUUID: uuidv4 } = require('crypto');
 const SparkplugDecoder = require('./sparkplugDecoder');
@@ -7,6 +9,9 @@ const TopicStore = require('./topicStore');
 const TopicTrie = require('./topicTrie');
 const brokerAdmin = require('./brokerAdmin');
 const { lintTrie } = require('./unsLint');
+const { BrokerCanary, validateCanaryConfig, normalizeCanaryConfig } = require('./brokerCanary');
+const { assess: assessPosture } = require('./brokerPosture');
+const { stripUrlCredentials } = require('./secrets');
 
 const STATS_INTERVAL_MS = 2000;
 const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -17,6 +22,12 @@ const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000;
 // history per topic. Socket forwarding is batched so the initial retained
 // burst of a huge broker doesn't emit millions of individual events.
 const MAX_TOPICS = 2_000_000; // per-broker topic cap (guards server memory)
+// Managed/public brokers commonly refuse a bare '#' (and often '+/#') by ACL while granting deeper
+// wildcards. When the intake root wildcard is refused outright, walk to the nearest root-equivalent instead
+// of sitting connected and ingesting nothing. '+/+/#' misses only single-level topics.
+const WILDCARD_FALLBACKS = { '#': '+/#', '+/#': '+/+/#' };
+const DROP_HISTORY = 20; // unexpected session drops kept per broker (client-id collision / reconnect storm signal)
+const SESSION_TAKEN_OVER = 142; // MQTT 5 DISCONNECT reason code
 const GLOBAL_RECENT = 5000; // recent messages kept across all topics, per broker
 // Trim the ring in amortized chunks: splice(0, 1) on every push past the cap
 // memmoves ~5000 slots per forwarded message and dominated the flush.
@@ -122,6 +133,7 @@ class MqttManager extends EventEmitter {
     this.msgSeq = 0; // fast monotonic id (avoids uuid per message on the hot path)
     this.subscriptions = new Map(); // brokerId -> Set(topic filters)
     this.sparkplugDecoder = new SparkplugDecoder();
+    this.codecs = null; // PayloadCodecs (services/codecs), attached by index.js; null = no decoding
     this.maxMsgProps = MAX_MSG_PROPS;
     this.subscribeRetries = SUBSCRIBE_RETRIES;
     this.subscribeRetryBaseMs = SUBSCRIBE_RETRY_BASE_MS;
@@ -129,6 +141,8 @@ class MqttManager extends EventEmitter {
     this.publishSummary = new Map(); // brokerId -> { count, topic, leadAt } for the current window
     this.topicIdleTtlMs = TOPIC_IDLE_TTL_MS;
     this.sweepCursor = new Map(); // brokerId -> next slot for the incremental idle sweep
+    this.canary = new BrokerCanary(this); // opt-in publish->deliver probe (see brokerCanary.js)
+    this.drops = new Map(); // brokerId -> { times: [ms], takenOver: n } unexpected session drops (posture)
 
     // unref so these background timers never keep the process alive on their own
     // (the HTTP server holds the event loop open in normal operation)
@@ -154,6 +168,8 @@ class MqttManager extends EventEmitter {
 
     this.connections.set(brokerId, info);
     this.clients.set(brokerId, client);
+    this.drops.set(brokerId, { times: [], takenOver: 0 });
+    this.canary.configure(brokerId, info.canary);
     // Sparkplug topics (classified once per slot) are additionally queued
     // un-coalesced: NDATA/DDATA carry only changed metrics, so latest-wins
     // would lose data. See topicStore.js.
@@ -209,6 +225,15 @@ class MqttManager extends EventEmitter {
     if (typeof subscribeFilter !== 'string' || subscribeFilter.length === 0) {
       throw new Error('subscribeFilter must be a non-empty topic filter');
     }
+    const canaryError = validateCanaryConfig(config.canary);
+    if (canaryError) throw new Error(canaryError);
+    // Brokers may be on loopback or the LAN (no egress guard), but never on a link-local or
+    // cloud-metadata address: a literal or metadata name is refused here, a name that resolves to one
+    // is refused by the connect-time lookup below (every reconnect resolves through it).
+    const literal = String(config.host).replace(/^\[|\]$/g, '');
+    if (egressGuard.isLinkLocalOrMetadata(literal) || egressGuard.isMetadataName(literal)) {
+      throw new egressGuard.EgressBlockedError(literal, egressGuard.LINK_LOCAL_REASON, 'MQTT broker');
+    }
     const clientId = config.clientId || `manifold_${Date.now()}`;
     const brokerUrl = `${protocol}://${config.host}:${port}${isWebSocket ? wsPath : ''}`;
 
@@ -222,6 +247,16 @@ class MqttManager extends EventEmitter {
     };
 
     if (mqttVersion === 5) options.protocolVersion = 5;
+
+    // Connect-time address check. mqtts: tls.connect takes `lookup`; ws/wss: the ws library hands
+    // wsOptions to http(s).request, which takes it too; plain TCP: mqtt.js does not pass it on to
+    // net.createConnection, so _mqttConnect builds that stream itself (customStream).
+    const lookup = egressGuard.linkLocalGuardLookup('MQTT broker');
+    options.lookup = lookup;
+    if (isWebSocket) options.wsOptions = { lookup };
+    if (protocol === 'mqtt') {
+      options.customStream = () => net.createConnection({ host: literal, port, lookup });
+    }
 
     if (config.username) {
       options.username = config.username;
@@ -244,6 +279,13 @@ class MqttManager extends EventEmitter {
       clientId,
       username: config.username || null,
       autoSubscribe: config.autoSubscribe !== false,
+      // Security facts for the posture view (no secrets: the password itself is never kept here).
+      hasPassword: Boolean(config.password),
+      tls: protocol === 'mqtts' || protocol === 'wss' ? { verify: options.rejectUnauthorized, hasCa: Boolean(config.ca), hasClientCert: Boolean(config.cert), certificate: null } : null,
+      // What the broker actually granted for the intake subscription (it can differ from the request).
+      intake: { requested: subscribeFilter, granted: null, qos: null, via: null },
+      sysSubscription: null, // 'granted' | 'refused' once the $SYS/# subscription is answered
+      canary: normalizeCanaryConfig(config.canary, brokerId),
       // Intake filter: what autoSubscribe subscribes to on connect. Shared
       // subscriptions ($share/<group>/<filter>) work too — messages still
       // arrive on the real topic, so nothing downstream changes.
@@ -276,6 +318,13 @@ class MqttManager extends EventEmitter {
   // Seam over mqtt.connect (mqtt v5 exports non-configurable getters, so the
   // module itself can't be stubbed) — tests intercept URL/options here.
   _mqttConnect(url, options) {
+    if (typeof options.customStream === 'function') {
+      const { customStream, ...rest } = options;
+      const u = new URL(url);
+      const client = new mqtt.MqttClient(customStream, { ...rest, protocol: 'mqtt', host: u.hostname, hostname: u.hostname, port: Number(u.port) || 1883 });
+      client.on('error', () => {}); // as mqtt.connect does: the manager's own handler reports errors
+      return client;
+    }
     return mqtt.connect(url, options);
   }
 
@@ -291,15 +340,17 @@ class MqttManager extends EventEmitter {
       info.connectedAt = new Date();
       info.lastError = null;
       info.reconnectCount = 0; // a successful connect resets the retry counter
+      this._captureCertificate(client, info);
+      this.canary.onConnect(brokerId, client);
       this.io.emit('mqtt-connected', { brokerId, connection: this.publicInfo(info) });
 
       if (info.autoSubscribe) {
-        this.subscribe(brokerId, info.subscribeFilter, info.subscribeQos);
+        this.subscribe(brokerId, info.subscribeFilter, info.subscribeQos, { intake: true });
         // `#` does not match topics beginning with `$` (MQTT spec), so subscribe
         // to the broker's `$SYS` tree separately for audit/health stats. Brokers
         // that don't publish `$SYS` simply deliver nothing here ($SYS stays QoS 0
         // — it's periodic diagnostics, losing one sample is meaningless).
-        this.subscribe(brokerId, '$SYS/#', 0);
+        this.subscribe(brokerId, '$SYS/#', 0, { quiet: true, sys: true });
       }
     });
 
@@ -316,7 +367,23 @@ class MqttManager extends EventEmitter {
       this.io.emit('mqtt-error', { brokerId, error: error.message });
     });
 
+    // MQTT 5 brokers say why they close a session; 0x8E means another client took over this client ID.
+    client.on('disconnect', (packet) => {
+      if (packet?.reasonCode === SESSION_TAKEN_OVER) {
+        const d = this.drops.get(brokerId);
+        if (d) d.takenOver++;
+      }
+    });
+
     client.on('close', () => {
+      this.canary.onDisconnect(brokerId);
+      if (info.status === 'connected') {
+        const d = this.drops.get(brokerId);
+        if (d) {
+          d.times.push(Date.now());
+          if (d.times.length > DROP_HISTORY) d.times.shift();
+        }
+      }
       // Keep a terminal 'error' (gave up after max retries) rather than
       // downgrading it to 'offline'; a transient error becomes 'offline'
       // (lastError keeps the reason) until the reconnect cycle moves it on.
@@ -353,6 +420,13 @@ class MqttManager extends EventEmitter {
     const store = this.stores.get(brokerId);
     if (!info || !store) return;
 
+    // Canary probes are claimed here, before anything else sees them: not the topic store (so not the topic
+    // tree, UNS, recorder, pipelines, mappings or alerts either) and not the broker's message counters.
+    if (this.canary.claims(brokerId, topic)) {
+      this.canary.onDelivery(brokerId, topic, message);
+      return;
+    }
+
     info.metrics.messagesReceived++;
     info.metrics.bytesReceived += message.length;
 
@@ -383,11 +457,33 @@ class MqttManager extends EventEmitter {
   // Build the full message object for a drained topic row (parse, type
   // detection, Sparkplug decode). Runs at most once per topic per flush.
   // `row` is a TopicStore row: { topic, buffer, qos, retain, ts, count }.
-  buildMessage(brokerId, row) {
+  //
+  // Payload codecs (services/codecs): a codec binding that matches the topic is
+  // tried first (a Protobuf or Avro payload can be valid UTF-8); a binary
+  // payload with no binding is offered to the conservative CBOR / MessagePack
+  // auto-detection. A failed decode falls through to the plain handling below,
+  // so a bad payload or schema never blocks ingest. Sparkplug topics have their
+  // own decoder and skip both. `count: false` (read path) leaves codec counters alone.
+  buildMessage(brokerId, row, { count = true } = {}) {
     const message = row.buffer;
     let payload;
     let payloadFormat = 'text';
-    if (row.truncated) {
+    let decoded = null; // codec result: { value, codec, sourceTimestamp? } | { error, codec } | { raw, codec }
+    const codecs = this.codecs;
+    // Sparkplug classification from the per-slot cache when it exists (no regex per message).
+    const sparkOf = () => {
+      const m = row.slot !== undefined ? this.topicMeta.get(brokerId)?.[row.slot] : undefined;
+      return m ? m.spark : this.isSparkplugTopic(row.topic);
+    };
+    let codecsApply = Boolean(codecs) && !row.truncated;
+    if (codecsApply && codecs.hasBindings()) {
+      if (sparkOf()) codecsApply = false;
+      else decoded = codecs.decodeBound(brokerId, row.topic, message, { count });
+    }
+    if (decoded && decoded.value !== undefined) {
+      payload = decoded.value;
+      payloadFormat = 'decoded';
+    } else if (row.truncated) {
       // Oversized payload: only the first maxPayloadBytes were retained. Do not
       // JSON.parse a partial buffer — surface it as a bounded preview instead.
       payloadFormat = 'large';
@@ -413,6 +509,14 @@ class MqttManager extends EventEmitter {
         if (text.includes('�')) {
           payloadFormat = 'binary';
           payload = message.toString('base64');
+          if (codecsApply && !decoded && !sparkOf()) {
+            const auto = codecs.decodeAuto(message, { count });
+            if (auto) {
+              decoded = auto;
+              payload = auto.value;
+              payloadFormat = 'decoded';
+            }
+          }
         }
       }
     }
@@ -448,10 +552,20 @@ class MqttManager extends EventEmitter {
     const props = this.msgProps.get(brokerId)?.get(row.topic);
     if (props) messageObj.properties = props;
 
+    // Which codec decoded the payload ({ name, bindingId?, binding?, auto? }), or
+    // why the bound codec could not (the payload then shows as it arrived).
+    if (decoded && decoded.codec && !decoded.raw) {
+      if (decoded.error) messageObj.codecError = { ...decoded.codec, error: decoded.error };
+      else {
+        messageObj.codec = decoded.codec;
+        if (Number.isFinite(decoded.sourceTimestamp)) messageObj.sourceTimestamp = decoded.sourceTimestamp;
+      }
+    }
+
     // Source time and quality, when the payload carries them. `timestamp`
     // stays arrival time; consumers prefer `sourceTimestamp` / `quality` when
     // present (absent means: arrival time, quality Good).
-    if (payloadFormat === 'json') {
+    if (payloadFormat === 'json' || payloadFormat === 'decoded') {
       const tvq = tvqOf(payload);
       if (tvq) {
         if (tvq.t !== undefined) messageObj.sourceTimestamp = tvq.t;
@@ -626,12 +740,16 @@ class MqttManager extends EventEmitter {
     for (const brokerId of this.stores.keys()) this.flushBroker(brokerId);
   }
 
-  subscribe(brokerId, topic, qos = 0) {
-    this._subscribe(brokerId, topic, qos, 0);
+  // opts: { quiet } expected refusals are not reported as errors (the $SYS tree is often off limits);
+  // { intake } this is the configured intake filter: its grant is recorded and a refused root wildcard walks the
+  // fallback ladder; { sys } records whether $SYS/# was granted.
+  subscribe(brokerId, topic, qos = 0, opts = {}) {
+    this._subscribe(brokerId, topic, qos, 0, opts);
   }
 
-  _subscribe(brokerId, topic, qos, attempt) {
+  _subscribe(brokerId, topic, qos, attempt, opts = {}) {
     const client = this.requireClient(brokerId);
+    const info = this.connections.get(brokerId);
     client.subscribe(topic, { qos }, (error, granted) => {
       // A broker can accept the packet but refuse the grant (SUBACK 0x80).
       // Stock EMQX does exactly this for QoS 1+ subscriptions to bare '#'
@@ -651,9 +769,22 @@ class MqttManager extends EventEmitter {
             to: 0,
             reason: 'broker refused the grant at this QoS (SUBACK 0x80) — retrying at QoS 0'
           });
-          this.subscribe(brokerId, topic, 0);
+          this._subscribe(brokerId, topic, 0, 0, opts);
+        } else if (opts.intake && WILDCARD_FALLBACKS[topic]) {
+          const next = WILDCARD_FALLBACKS[topic];
+          this.io.emit('subscription-fallback', {
+            brokerId,
+            topic,
+            fallback: next,
+            reason: `The broker's ACL refuses '${topic}'. Subscribing to '${next}', which covers everything with more levels.`
+          });
+          // Each rung restarts at the configured intake QoS so a broker that grants the broader filter durably
+          // is not stuck at QoS 0.
+          this._subscribe(brokerId, next, info?.subscribeQos ?? 0, 0, opts);
         } else {
-          this.io.emit('subscription-error', { brokerId, topic, error: 'subscription refused by broker (SUBACK 0x80)' });
+          if (opts.sys && info) info.sysSubscription = 'refused';
+          if (opts.intake && info) info.intake = { ...info.intake, granted: null, qos: null, via: 'refused' };
+          if (!opts.quiet) this.io.emit('subscription-error', { brokerId, topic, error: 'subscription refused by broker (SUBACK 0x80)' });
         }
         return;
       }
@@ -667,7 +798,7 @@ class MqttManager extends EventEmitter {
             this.retryTimers.delete(timer);
             if (this.clients.get(brokerId) !== client || this.connections.get(brokerId)?.status !== 'connected') return;
             try {
-              this._subscribe(brokerId, topic, qos, attempt + 1);
+              this._subscribe(brokerId, topic, qos, attempt + 1, opts);
             } catch {
               // went away between the check and the call — nothing to retry
             }
@@ -676,10 +807,16 @@ class MqttManager extends EventEmitter {
           this.retryTimers.add(timer);
           return;
         }
-        this.io.emit('subscription-error', { brokerId, topic, error: error.message, attempts: attempt + 1 });
+        if (!opts.quiet) this.io.emit('subscription-error', { brokerId, topic, error: error.message, attempts: attempt + 1 });
         return;
       }
       this.subscriptions.get(brokerId)?.add(topic);
+      if (info) {
+        if (opts.sys) info.sysSubscription = 'granted';
+        if (opts.intake) {
+          info.intake = { requested: info.intake.requested, granted: topic, qos: granted?.[0]?.qos ?? qos, via: topic === info.intake.requested ? 'requested' : 'fallback' };
+        }
+      }
       this.io.emit('subscription-success', { brokerId, topic, qos, granted });
     });
   }
@@ -834,6 +971,8 @@ class MqttManager extends EventEmitter {
     this.subscriptions.delete(brokerId);
     this.publishSummary.delete(brokerId);
     this.sweepCursor.delete(brokerId);
+    this.canary.remove(brokerId);
+    this.drops.delete(brokerId);
     this.io.emit('mqtt-disconnected', { brokerId });
     return { brokerId, status: 'disconnected' };
   }
@@ -879,7 +1018,8 @@ class MqttManager extends EventEmitter {
           topicCapReached: Boolean(store?.capReached),
           evictedTopics: store?.evicted || 0
         },
-        lastActivity: info.lastActivity
+        lastActivity: info.lastActivity,
+        canary: this.canary.summary(brokerId)
       });
     });
     this.io.emit('broker-stats', stats);
@@ -898,6 +1038,58 @@ class MqttManager extends EventEmitter {
   publicInfo(info) {
     const { metrics, ...rest } = info;
     return { ...rest, metrics: { ...metrics } };
+  }
+
+  // The TLS peer certificate of a live session, read from the socket Manifold already holds (nothing is
+  // probed). Only plain TLS sockets expose it; WebSocket transports leave it unknown.
+  _captureCertificate(client, info) {
+    if (!info.tls) return;
+    try {
+      const raw = client.stream?.getPeerCertificate?.();
+      if (raw && raw.valid_to) {
+        info.tls.certificate = {
+          validTo: raw.valid_to,
+          subject: raw.subject?.CN || null,
+          issuer: raw.issuer?.CN || null,
+          selfSigned: Boolean(raw.issuer && raw.subject && raw.issuer.CN === raw.subject.CN)
+        };
+      }
+    } catch {
+      // not available on this transport
+    }
+  }
+
+  /** Read-only security assessment of a connection (see brokerPosture.js); null for an unknown broker. */
+  getPosture(brokerId) {
+    const info = this.connections.get(brokerId);
+    if (!info) return null;
+    const d = this.drops.get(brokerId) || { times: [], takenOver: 0 };
+    const subs = this.getSubscriptions(brokerId).filter((t) => !t.startsWith('$SYS/'));
+    return assessPosture({
+      protocol: info.protocol,
+      host: info.host,
+      port: info.port,
+      clientId: info.clientId,
+      tls: Boolean(info.tls),
+      tlsVerify: info.tls?.verify,
+      hasCa: info.tls?.hasCa,
+      certificate: info.tls?.certificate || null,
+      username: info.username,
+      hasPassword: info.hasPassword,
+      mqttVersion: info.mqttVersion,
+      subscribeFilter: info.subscribeFilter,
+      autoSubscribe: info.autoSubscribe,
+      // What is actually subscribed wins over what was asked for (a fallback may have replaced '#').
+      effectiveFilters: info.intake?.granted ? [info.intake.granted] : subs,
+      sysReadable: (this.sys.get(brokerId)?.size || 0) > 0,
+      drops: d.times,
+      sessionTakenOver: d.takenOver
+    });
+  }
+
+  getCanary(brokerId) {
+    if (!this.connections.has(brokerId)) return null;
+    return this.canary.getStatus(brokerId);
   }
 
   getConnections() {
@@ -925,8 +1117,10 @@ class MqttManager extends EventEmitter {
     const cache = this.rowCache.get(brokerId);
     const topics = store.getTopics(limit).map((row) => {
       const hit = cache?.get(row.slot);
-      if (hit && hit.count === row.count) return hit.obj;
-      const msg = this.buildMessage(brokerId, row);
+      // A codec binding change re-decodes: the cache is also keyed on the codec table's revision.
+      const codecRev = this.codecs ? this.codecs.rev : 0;
+      if (hit && hit.count === row.count && hit.codecRev === codecRev) return hit.obj;
+      const msg = this.buildMessage(brokerId, row, { count: false });
       const obj = {
         topic: row.topic,
         messageCount: row.count,
@@ -935,9 +1129,11 @@ class MqttManager extends EventEmitter {
         type: msg.type,
         retain: msg.retain,
         payload: msg.payload,
-        properties: msg.properties // MQTT 5 only; undefined otherwise (dropped by JSON)
+        properties: msg.properties, // MQTT 5 only; undefined otherwise (dropped by JSON)
+        codec: msg.codec, // payload codec that decoded it; undefined otherwise
+        codecError: msg.codecError
       };
-      cache?.set(row.slot, { count: row.count, obj });
+      cache?.set(row.slot, { count: row.count, codecRev, obj });
       return obj;
     });
     return { topics, total: store.topicCount(), dropped: store.dropped, capReached: store.capReached };
@@ -954,7 +1150,7 @@ class MqttManager extends EventEmitter {
     // topic has aged entirely out of the ring do we rebuild it from the store.
     if (matches.length === 0) {
       const row = this.stores.get(brokerId)?.getLatest(topic);
-      if (row) matches.push(this.buildMessage(brokerId, row));
+      if (row) matches.push(this.buildMessage(brokerId, row, { count: false }));
     }
     return matches.reverse();
   }
@@ -1019,7 +1215,7 @@ class MqttManager extends EventEmitter {
   getBrokerAdmin(brokerId) {
     const cfg = this.admin.get(brokerId);
     if (!cfg) return { configured: false };
-    return { configured: true, type: cfg.type, url: cfg.url, hasKey: Boolean(cfg.apiKey) };
+    return { configured: true, type: cfg.type, url: stripUrlCredentials(cfg.url), hasKey: Boolean(cfg.apiKey) };
   }
 
   clearBrokerAdmin(brokerId) {
@@ -1269,6 +1465,8 @@ class MqttManager extends EventEmitter {
     for (const t of this.retryTimers) clearTimeout(t);
     this.retryTimers.clear();
     this.publishSummary.clear();
+    this.canary.shutdown();
+    this.drops.clear();
     this.clients.forEach((client) => client.end(true));
     this.clients.clear();
     this.connections.clear();

@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Manifold — Industrial data explorer & DataOps toolkit</title>
-  <meta name="description" content="Open-source industrial data explorer: MQTT, Sparkplug B, OPC UA, CESMII SMIP and i3X, with a live Unified Namespace, DataOps pipelines, historians, and an MCP server for AI agents." />
+  <meta name="description" content="Manifold is a self-hosted web application that reads live data from your plant&#39;s brokers, OPC UA servers and devices, shows it as one browsable namespace, and republishes it in a clean, consistent shape for other systems." />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230ea5e9'/%3E%3Cg fill='none' stroke='white' stroke-width='6' stroke-linecap='round'%3E%3Ccircle cx='50' cy='28' r='9' fill='white' stroke='none'/%3E%3Ccircle cx='26' cy='68' r='8' fill='white' stroke='none'/%3E%3Ccircle cx='74' cy='68' r='8' fill='white' stroke='none'/%3E%3Cpath d='M50 37 L28 60 M50 37 L72 60'/%3E%3C/g%3E%3C/svg%3E" />
   <meta property="og:title" content="Manifold — Industrial data explorer & DataOps toolkit" />
-  <meta property="og:description" content="MQTT · Sparkplug B · OPC UA · CESMII · i3X — explored, unified into a live UNS, and shaped by a DataOps layer. Open source, MIT." />
+  <meta property="og:description" content="Manifold is a self-hosted web application that reads live data from your plant&#39;s brokers, OPC UA servers and devices, shows it as one browsable namespace, and republishes it in a clean, consistent shape for other systems." />
   <meta property="og:type" content="website" />
   <style>
     :root {
@@ -180,10 +180,9 @@
         <span class="eyebrow">◆ Open source · MIT · MQTT · Sparkplug B · OPC UA</span>
         <h1>One live map of your<br /><span class="grad">industrial data.</span></h1>
         <p class="lede">
-          Manifold connects to your brokers and servers, streams their data in real time, and renders it as a
-          live <b>Unified Namespace</b> — interactive topic and address-space graphs, and producer → topic →
-          consumer lineage. A DataOps layer routes and reshapes the stream, and an MCP server exposes it all to AI agents.
-        </p>
+            Manifold is a self-hosted web application that reads live data from your plant's brokers, OPC UA servers and
+            devices, shows it as one browsable namespace, and republishes it in a clean, consistent shape for other systems.
+          </p>
         <div class="cta">
           <a class="btn primary" href="#quickstart">Get started</a>
           <a class="btn" href="https://github.com/zbest1000/manifold">View on GitHub</a>
@@ -193,7 +192,8 @@
           <span><b>Explore</b> MQTT 3.1.1 / 5</span>
           <span><b>Decode</b> Sparkplug B</span>
           <span><b>Browse</b> OPC UA</span>
-          <span><b>Integrate</b> CESMII SMIP</span>
+          <span><b>Poll</b> PLCs, read-only</span>
+            <span><b>Integrate</b> CESMII SMIP</span>
           <span><b>Connect</b> i3X</span>
         </div>
         <figure class="shot">
@@ -214,12 +214,13 @@
           <div class="card">
             <div class="ic">🔎</div>
             <h3>Explore</h3>
-            <p>Live topic tree, 2D/3D graphs, and a WebGL renderer for 60k+ topics.</p>
+            <p>Live topic tree, 2D/3D graphs, and a WebGL renderer for very large namespaces.</p>
             <ul>
               <li>MQTT 3.1.1 &amp; 5 over tcp/tls/ws/wss, with <code>$share</code> subscriptions</li>
               <li>OPC UA address space with live values &amp; secure connections</li>
-              <li>JSON, text, binary &amp; Sparkplug B payloads decoded</li>
-              <li>Network discovery by CIDR scan with handshake verification</li>
+              <li>JSON, text, binary &amp; Sparkplug B payloads decoded; CBOR, MessagePack, SenML, Protobuf and Avro through payload codecs</li>
+              <li>Network discovery by CIDR scan with handshake verification, including opt-in BACnet/IP, CoAP and SNMP over UDP</li>
+              <li>Per-broker security posture, an opt-in round-trip canary, and public test-broker presets</li>
             </ul>
           </div>
           <div class="card">
@@ -231,7 +232,7 @@
               <li>Namespace lint score with structural findings</li>
               <li>Per-topic staleness calibrated to each topic's cadence</li>
               <li>~130 curated industrial icons + custom SVGs</li>
-              <li>Canvases follow the theme; deep links such as <code>/uns?broker=&amp;path=</code></li>
+              <li>Canvases follow the theme; Expand all / Collapse all and a search whose results you pick with the keyboard; deep links such as <code>/uns?broker=&amp;path=</code></li>
             </ul>
           </div>
           <div class="card">
@@ -241,8 +242,8 @@
             <ul>
               <li>Pipelines: filter → transform chain → broker or historian</li>
               <li>Historians: InfluxDB, TimescaleDB, Timebase — store-and-forward</li>
-              <li>Trends from a historian <em>or</em> a local recording — no DB needed</li>
-              <li>Contracts, alerts (sustain + hysteresis), recorder &amp; replay</li>
+              <li>Trends from a historian <em>or</em> a local recording — no DB needed — with CSV export</li>
+              <li>Contracts, recorder &amp; replay, and alerts (sustain + hysteresis) with severities, acknowledgement and a history that survives restarts</li>
             </ul>
           </div>
           <div class="card">
@@ -251,7 +252,8 @@
             <p>Browse device tags and publish them into the UNS.</p>
             <ul>
               <li>Unified tag browser: devices, OPC UA, Sparkplug registry, MQTT trie</li>
-              <li>Read-only drivers: Modbus TCP, S7 and EtherNet/IP. S7 and EtherNet/IP are experimental, and <b>no driver has been run against real hardware yet</b> (simulators only)</li>
+              <li>Read-only drivers: Modbus TCP, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON, MTConnect, CoAP, and Matter and Z-Wave through their bridge servers. Every driver but Modbus TCP is experimental, and <b>no driver has been run against real hardware yet</b> (simulators only)</li>
+              <li>IoT devices read from their MQTT bridges: Zigbee2MQTT, Z-Wave JS UI, Home Assistant discovery, Tasmota, Shelly, ChirpStack, The Things Stack (experimental; Manifold never publishes to them)</li>
               <li>Devices as a table with a detail drawer, profiles with parameters, all-or-nothing bulk creation, opt-in device discovery</li>
               <li>A single-sheet <b>mapping editor</b>: publish under an ISA-95 asset path as values, TVQ with units, one object per asset, or a Sparkplug B device, with a live server preview</li>
               <li>Choose tags by list or by rule, set per-tag name, unit, scale, states and limits, and add asset context</li>
@@ -275,7 +277,7 @@
             <h3>MCP for AI agents</h3>
             <p>The same backend, exposed to any MCP client.</p>
             <ul>
-              <li>75 tools: MQTT, UNS, DataOps, OPC UA, CESMII, i3X</li>
+              <li>83 tools: MQTT, UNS, DataOps, alerts, IoT devices, OPC UA, CESMII, i3X</li>
               <li>Discover brokers, browse topics, read live payloads</li>
               <li>Drive pipelines and mappings (bindings) programmatically</li>
               <li>Honors the same auth token as the API</li>
@@ -295,7 +297,7 @@
         <div class="showcase">
           <figure>
             <img src="assets/topics-3d.png" alt="3D topic graph" loading="lazy" />
-            <figcaption><b>3D topic graph.</b> Real three.js instancing, smooth at tens of thousands of nodes.</figcaption>
+            <figcaption><b>3D topic graph.</b> three.js instancing for namespaces with tens of thousands of topics (tested on a software renderer only).</figcaption>
           </figure>
           <figure>
             <img src="assets/overview.png" alt="Overview: sources, data flow, connections and latest values for a demo plant" loading="lazy" />
@@ -314,7 +316,7 @@
       <div class="wrap">
         <div class="section-head">
           <h2>Running in minutes</h2>
-          <p>Requires Node.js ≥ 20.19 (or 22+). No account, no cloud — it runs on your machine.</p>
+          <p>From source: Node.js 20.19+ or 22.12+. No account, no cloud: it runs on your own machine.</p>
         </div>
         <div class="steps">
           <div class="step">
@@ -326,10 +328,11 @@ docker compose up <span class="k">--build</span>
           </div>
           <div class="step">
             <h3><span class="tag">B</span> Prebuilt image</h3>
-            <p>Just Manifold, published to GHCR on every release.</p>
+            <p>Just Manifold, published to GHCR on every release. The token is required: without one the server listens on loopback inside the container.</p>
             <pre>docker run <span class="k">-p</span> 5000:5000 \
   <span class="k">-v</span> manifold-data:/data \
-  ghcr.io/zbest1000/manifold:latest</pre>
+  <span class="k">-e</span> MANIFOLD_AUTH_TOKEN=$(openssl rand <span class="k">-hex</span> 24) \
+  ghcr.io/zbest1000/manifold:1.1.0</pre>
           </div>
           <div class="step">
             <h3><span class="tag">C</span> From source</h3>
@@ -357,7 +360,8 @@ MANIFOLD_AUTH_TOKEN=$(openssl rand <span class="k">-hex</span> 24) npm start</pr
           </div>
           <ul class="checks">
             <li><b>Named, revocable tokens</b> with admin / read-only roles, enforced on REST <em>and</em> the socket.</li>
-            <li><b>Egress guard</b> blocks the scanner and outbound clients from loopback, cloud metadata, and (unless opted in) private ranges.</li>
+            <li><b>Egress guard</b> keeps network scans, devices, webhooks and the HTTP clients off loopback, cloud metadata and (unless opted in) private ranges; brokers, OPC UA servers and historians are refused link-local and metadata addresses.</li>
+            <li><b>No token, local only:</b> a token-less instance bound to loopback answers only to <code>localhost</code> names (<code>MANIFOLD_ALLOWED_HOSTS</code> adds more), so a web page cannot drive it.</li>
             <li><b>Brute-force throttle</b> and security headers on every entry point.</li>
             <li><b>Audit log</b> of every mutation, with secrets redacted.</li>
             <li><b>Config as code</b> — export/import the whole setup, secrets stripped.</li>
@@ -383,7 +387,7 @@ MANIFOLD_AUTH_TOKEN=$(openssl rand <span class="k">-hex</span> 24) npm start</pr
     <div class="wrap foot">
       <div class="col">
         <div class="brand" style="margin-bottom:8px;"><span class="mark">◆</span> Manifold</div>
-        <p style="max-width:280px; font-size:0.9rem; color:var(--faint); margin:0;">Industrial data explorer &amp; DataOps toolkit. MQTT · Sparkplug B · OPC UA · CESMII · i3X.</p>
+        <p style="max-width:280px; font-size:0.9rem; color:var(--faint); margin:0;">Reads live data from brokers, OPC UA servers and devices, shows one namespace, republishes it cleanly. MIT licensed.</p>
       </div>
       <div class="col">
         <h4>Docs</h4>

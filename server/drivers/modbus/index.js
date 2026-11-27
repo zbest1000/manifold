@@ -3,7 +3,7 @@
 /**
  * Modbus TCP driver (read-only). Combines the pure core (address, decode,
  * planner, frame) with ModbusClient and implements the driver contract of
- * southbound-drivers.md section 4.1 as consumed by the polling runtime.
+ * docs/design/driver-contract.md as consumed by the polling runtime.
  *
  * `execute()` never throws for device or transport problems; it returns
  *   { ok:true, results:[{key, v, type, q, qReason?}] }
@@ -32,6 +32,7 @@ function describe() {
   return {
     protocol,
     label: 'Modbus TCP',
+    browseNoun: 'device', // no tag list to browse; the noun keeps shared copy right
     readOnly: true,
     defaultPort: 502,
     defaultUnitId: 255,

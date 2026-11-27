@@ -1,6 +1,9 @@
 const express = require('express');
 const { randomUUID: uuidv4 } = require('crypto');
 const historians = require('../services/historians');
+const { stripUrlCredentials } = require('../services/secrets');
+const { refuseLinkLocal } = require('../services/egressGuard');
+const { historianEndpoint, historianSecretField, restoreMaskedUrlPassword, secretRequiredBody } = require('../services/endpointIdentity');
 const router = express.Router();
 const { checkpoint, handleRevisionError } = require('../services/revision');
 
@@ -17,7 +20,7 @@ router.get('/', (req, res) => {
 });
 
 // POST /api/historians { id?, name, type, url, ...backend fields }
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { profiles } = req.app.locals.services;
   const {
     id, name, type, url, org, bucket, token, measurement, dataset, writePath,
@@ -38,14 +41,36 @@ router.post('/', (req, res) => {
   }
   if (type === 'influxdb' && (!org || !bucket)) return res.status(400).json({ error: 'org and bucket are required for influxdb' });
   if (type === 'timebase' && !dataset) return res.status(400).json({ error: 'dataset is required for timebase' });
+  // Loopback and LAN historians are fine (no egress guard); link-local and cloud-metadata addresses never.
+  if (await refuseLinkLocal(res, type === 'timescaledb' ? host : url, 'historian')) return;
 
   const existing = id ? profiles.getIn('historians', id) : null;
+  // Leave-blank-to-keep applies to the same endpoint only. When the URL's origin (or the database
+  // host/port) changes, the stored secrets are not carried over: the one this type uses must be
+  // entered again (400 secret-required), the others are dropped.
+  const moved = Boolean(existing) && historianEndpoint(existing) !== historianEndpoint({ type, url, host, port });
+  const keep = (field, value) => (value !== undefined ? value : moved ? null : existing?.[field] || null);
+  if (moved) {
+    const needed = historianSecretField(type);
+    if (needed && existing[needed] && (req.body || {})[needed] === undefined) return res.status(400).json(secretRequiredBody(needed));
+  }
+  let storedUrl;
+  if (existing?.url && url === stripUrlCredentials(existing.url)) storedUrl = existing.url;
+  else {
+    try {
+      // GET masks a URL password (user:***@host): saved back for the same origin and user it keeps the stored one.
+      storedUrl = restoreMaskedUrlPassword(url, existing?.url);
+    } catch (error) {
+      if (error.code === 'secret-required') return res.status(400).json(secretRequiredBody(error.field));
+      throw error;
+    }
+  }
   let saved;
   try {
     saved = profiles.upsertIn('historians', id || uuidv4(), {
     name: name || null,
     type,
-    url: url || null,
+    url: storedUrl || null,
     org: org || null,
     bucket: bucket || null,
     measurement: measurement || null,
@@ -60,10 +85,10 @@ router.post('/', (req, res) => {
     sslRootCert: sslRootCert || null,
     table: table || null,
     dropPolicy: dropPolicy === 'oldest' ? 'oldest' : 'newest',
-    // keep the stored secret when the client omits it on edit
-    token: token !== undefined ? token : existing?.token || null,
-    apiKey: apiKey !== undefined ? apiKey : existing?.apiKey || null,
-    password: password !== undefined ? password : existing?.password || null
+    // keep the stored secret when the client omits it on edit (same endpoint only, see above)
+    token: keep('token', token),
+    apiKey: keep('apiKey', apiKey),
+    password: keep('password', password)
     }, { expectRev });
   } catch (error) {
     if (handleRevisionError(res, error, historians.publicConfig)) return;

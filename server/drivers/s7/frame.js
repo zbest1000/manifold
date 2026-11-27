@@ -28,6 +28,7 @@
 
 const TPKT_HEADER = 4;
 const MAX_TPKT_LENGTH = 0xffff;
+const MAX_DT_FRAGMENTS = 1024;
 
 const COTP = Object.freeze({ CR: 0xe0, CC: 0xd0, DT: 0xf0, DR: 0x80, DC: 0xc0, ER: 0x70 });
 const ROSCTR = Object.freeze({ JOB: 1, ACK: 2, ACK_DATA: 3, USERDATA: 7 });
@@ -305,6 +306,8 @@ class TpktParser {
       const data = frame.subarray(3);
       this._fragmentBytes += data.length;
       if (this._fragmentBytes > this._maxPduBytes) this._fail(`reassembled S7 PDU exceeds ${this._maxPduBytes} bytes`);
+      // Empty fragments add no bytes but still cost memory: cap their number as well.
+      if (this._fragments.length >= MAX_DT_FRAGMENTS) this._fail(`S7 PDU split into more than ${MAX_DT_FRAGMENTS} COTP fragments`);
       this._fragments.push(Buffer.from(data));
       if (!(frame[2] & 0x80)) return null; // more fragments follow
       const pdu = this._fragments.length === 1 ? this._fragments[0] : Buffer.concat(this._fragments);

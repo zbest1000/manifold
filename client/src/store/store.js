@@ -367,7 +367,7 @@ export function initRealtime() {
   });
   socket.on('mqtt-message', (msg) => s.ingestMessage(msg)); // backward compat
   socket.on('broker-stats', (stats) => {
-    for (const st of stats) s.upsertBroker({ id: st.brokerId, status: st.status, metrics: st.metrics });
+    for (const st of stats) s.upsertBroker({ id: st.brokerId, status: st.status, metrics: st.metrics, canaryState: st.canary ?? null });
   });
 
   // The connection list carries status, monitored nodes and errors: re-read it on every change of
@@ -435,6 +435,12 @@ export function initRealtime() {
     const msg = `Subscription "${topic}" on ${brokerName(brokerId)} downgraded from QoS ${from} to ${to}`;
     s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
     notifyWarning(`mqtt|${brokerId}|${topic}`, msg);
+  });
+  // A root wildcard the broker's ACL refused: the server subscribed the nearest allowed filter instead.
+  socket.on('subscription-fallback', ({ brokerId, topic, fallback, reason }) => {
+    const msg = `Broker ${brokerName(brokerId)} refused "${topic}": subscribed "${fallback}" instead`;
+    s.pushLog('warning', 'mqtt', msg, { brokerId, topic, hint: reason });
+    notifyWarning(`mqtt|${brokerId}|${topic}|fallback`, msg);
   });
   // Schema drift was only visible on the Contracts tab. Every violation is
   // logged; the toast is throttled per contract (a bad publisher can violate on

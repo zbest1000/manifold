@@ -2,6 +2,12 @@
 // server/services/tagBindings.js (slug / targetTopic / statusTopic) EXACTLY so
 // the wizard preview shows what the server will publish.
 
+/** A button label used inside a sentence: "Add to UNS" -> "add to UNS" (only the first letter changes, acronyms stay). */
+export function labelInSentence(label) {
+  const s = String(label || '');
+  return s ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
 /** Same as the server: trim, then collapse whitespace and MQTT-reserved / + # into "_". */
 export function slug(name) {
   return String(name).trim().replace(/[\s/+#]+/g, '_');
@@ -125,6 +131,14 @@ function bindingPath(b, tagName) {
   return tagName == null ? t.pathTemplate || '' : targetTopic(t.pathTemplate, tagName);
 }
 
+/** The browse-source id a binding source reads from (the `id` of a /api/tags/sources entry). */
+export function bindingSourceId(s = {}) {
+  if (s.type === 'opcua') return s.connectionId;
+  if (s.type === 'mqtt' || s.type === 'sparkplug') return s.brokerId;
+  if (s.type === 'iot') return `${s.brokerId}|${s.deviceId}`;
+  return s.deviceId ?? s.connectionId;
+}
+
 /**
  * Index of which source tags already appear in a binding.
  * byKey: `${type}|${sourceId}|${address}` (sparkplug: `|${scope}|${metric}`) -> [{ id, name, path }]
@@ -149,7 +163,7 @@ export function buildBoundIndex(bindings) {
         add(wildcard, base, { id: b.id, name: label, path });
       }
     } else if (Array.isArray(s.tags)) {
-      const sid = s.type === 'opcua' ? s.connectionId : s.type === 'mqtt' ? s.brokerId : s.deviceId ?? s.connectionId;
+      const sid = bindingSourceId(s);
       for (const t of s.tags) {
         const address = typeof t === 'string' ? t : t.address;
         const name = typeof t === 'string' ? t : t.name;
@@ -190,6 +204,7 @@ export const SOURCE_GROUPS = [
   { type: 'device', label: 'Devices' },
   { type: 'opcua', label: 'OPC UA servers' },
   { type: 'sparkplug', label: 'Sparkplug (via MQTT broker)' },
+  { type: 'iot', label: 'IoT devices (via MQTT broker)' },
   { type: 'mqtt', label: 'MQTT topics' }
 ];
 

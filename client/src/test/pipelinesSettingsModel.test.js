@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   moveItem, routeFlow, routeState, outboxHealth, formatBytes, historianUsers, withTransformIds, newTransform, stripTransformIds, transformLabel, blankRoute
 } from '@/pages/pipelines/helpers';
-import { ruleStates, auditTone, alertTone } from '@/pages/settings/helpers';
+import { auditTone } from '@/pages/settings/helpers';
+import { ruleStates, alertTone } from '@/pages/alerts/helpers';
 import { connectionState, qualityOf, problemField, formProblem, BLANK_FORM } from '@/pages/opcua/helpers';
 
 describe('route editor helpers', () => {

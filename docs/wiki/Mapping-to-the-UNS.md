@@ -5,11 +5,25 @@
 > is 0" from "the device is gone".
 
 A **mapping** takes tags from a source (a device, a device profile, an OPC UA
-connection, a Sparkplug endpoint or MQTT topics) and publishes them to the broker. **"Mapping" is
+connection, a Sparkplug endpoint, MQTT topics or an IoT device that a bridge publishes over MQTT) and publishes them to the broker. **"Mapping" is
 the word the interface uses; the REST API, the stored configuration and the
 JSON on this page call the same object a *binding*** (`/api/tags/bindings`).
 This guide says "mapping" for what you do in the UI and keeps `binding` where it
 quotes the API.
+
+This page is the reference for the mapping editor and for what a mapping publishes. New to it?
+Read [The Tags page and the mapping editor](#the-tags-page-and-the-mapping-editor), then the
+[worked examples](#worked-examples-the-exact-messages), which show the exact messages.
+
+**Contents:** [The Tags page and the editor](#the-tags-page-and-the-mapping-editor) ·
+[Path is not address](#path-is-not-address) · [Payload layouts](#plain-envelope-or-one-object-per-asset) ·
+[Quality and `_status`](#quality-and-the-_status-topic) · [`_meta`](#metadata-units-and-the-_meta-document) ·
+[Deadband and heartbeat](#report-by-exception-deadband-and-heartbeat) ·
+[MQTT topics](#mqtt-topics-as-a-source) and [IoT devices](#iot-devices-as-a-source) as sources ·
+[Retain and cleanup](#retain-and-what-is-cleaned-up) · [Choosing what to map](#choosing-what-to-map) ·
+[Adding context](#adding-context) · [Preview and warnings](#preview-and-warnings) ·
+[Sparkplug target](#sparkplug-as-the-target) · [Historians](#historians-timebase-is-the-reference) ·
+[Worked examples](#worked-examples-the-exact-messages) · [Bindings as JSON](#quick-reference-bindings-as-json)
 
 Device tags come from the [Devices page](Devices-and-Drivers). You create the
 mapping on the **Tags** page: choose the source, tick tags (or choose a rule), and use
@@ -60,11 +74,9 @@ flowchart LR
   **Source missing** when the device, profile, OPC UA connection or broker the mapping reads
   from was deleted, with how to fix it. A **Clear orphaned retained topics** button sits above
   the table (see [Retain, and what is cleaned up](#retain-and-what-is-cleaned-up)).
-- When the configuration still holds pipeline routes the old Tags page created for MQTT
-  topics, a banner offers to **Review** them: each shows the route, the equivalent mapping (as
-  JSON too) and what changes; **Create mapping** asks for confirmation and then disables
-  (default) or deletes the route. Only routes with exactly the shape that page wrote are
-  offered; a migrated route is not offered again.
+- Configuration from 1.0.0, where MQTT topic selections became pipeline routes, gets a banner
+  that offers to **Review** those routes and turn each into a mapping (see
+  [MQTT topics as a source](#mqtt-topics-as-a-source)).
 
 ![The Mappings tab with the Boiler house mapping expanded to show its resolved topics](images/mappings.png)
 
@@ -101,8 +113,8 @@ version) and **Cancel** (back to editing, nothing lost).
 - *Value*: **Publish as** (*Device type* or `number`, `integer`, `boolean`, `string`), **Scale**,
   **Offset**, **Decimals**, **Report by exception** (*Mapping default*, *Every change*,
   *Absolute*, *Percent*), **States** (raw value to label, with a choice of how states are
-  published), **Limits** (low low, low, high, high high; published as metadata, Manifold
-  raises no alarms).
+  published), **Limits** (low low, low, high, high high; published as metadata for alarm
+  tools; Manifold's own [alert rules](Alerts) do not read them).
 - *Tag context*: key/value pairs for this tag only.
 - A line states the value pipeline for the tag, for example `published = raw x 0.1, 1 dp`.
 
@@ -255,7 +267,7 @@ member has `v`, `q` and, when the tag has a unit, `u`. Properties:
 - QoS and retain apply to the object. `_status` and `_meta` are still published
   under it (`<asset>/_status`, `<asset>/_meta`), so the asset topic has a payload
   **and** children: the namespace lint reports this as `data-on-branch`. Turn the
-  two documents off (the checkboxes under "also published") if you want a clean
+  two documents off (the `_status` and `_meta` switches under Payload) if you want a clean
   object-only asset and accept the loss of the status document.
 - Available for `mqtt` targets only, not Sparkplug.
 
@@ -420,9 +432,35 @@ or every topic under a filter, picking up topics that appear later (at most 2000
 - **Hot path.** MQTT-source mappings ride the coalesced message tap: one map lookup per message
   on a broker some mapping reads, indexes compiled per configuration revision, a new topic
   tested once against the filters and then remembered (bounded).
-- **Routes from the old Tags page.** Topic selections used to compile to pipeline routes; those
-  keep working. The Tags page offers a reviewable migration (`GET /api/tags/bindings/migrations`,
+- **Routes made by 1.0.0.** Topic selections used to compile to pipeline routes; those keep
+  working. The Mappings tab's **Review** banner shows each route, the equivalent mapping and what
+  changes; **Create mapping** asks for confirmation and then disables (default) or deletes the
+  route. Only routes with exactly that shape are offered (`GET /api/tags/bindings/migrations`,
   `POST /api/tags/bindings/migrate { routeId, mapping, route: "disable" | "delete" }`).
+
+## IoT devices as a source
+
+Devices found by [IoT devices over MQTT](IoT-Devices-over-MQTT) (Zigbee2MQTT, Z-Wave JS UI, Home
+Assistant discovery, Tasmota, Shelly, ChirpStack, The Things Stack; **experimental — not verified on
+real hardware**) are a mapping source of their own, `source.type: "iot"`. **Map to UNS** on the IoT
+over MQTT tab, or choosing the device as the Tags page's source, opens the editor with the tags the
+bridge described: name, unit, type, range, allowed values and description are pre-filled.
+
+```json
+{ "type": "iot", "brokerId": "facility-broker", "deviceId": "z2m:0x00158d0004a1c201", "tags": "all" }
+```
+
+- `deviceId` is the convention's stable id (`z2m:<IEEE address>`, `zwave:<node>`, `ha:<device id>`,
+  `tasmota:<MAC>`, `shelly:<device id>`, `chirpstack:` / `ttn:` and the DevEUI), so a rename in the
+  bridge keeps the mapping working. `tags` is a list of tag keys or `"all"` (with `select` rules,
+  as for devices).
+- The device's availability is the source state: an offline device (availability topic, LWT, dead
+  Z-Wave node, bridge offline) or a disconnected broker publishes one Bad value per tag and
+  `_status: { online: false }`.
+- **Loop safety.** A target on the same broker that overlaps the topics detection reads (for example
+  under `zigbee2mqtt/`) is refused at save time, with the overlapping filters named.
+- Detection must be on for the device's convention; until the device has been seen the mapping's
+  health says so (*IoT device ... has not been seen on broker ... yet*).
 
 ## Retain, and what is cleaned up
 
@@ -461,10 +499,8 @@ binding. The limits, so nothing surprises you:
 
 ## Choosing what to map
 
-Everything in this section is optional. A binding that uses none of it
-publishes exactly what it published before (the test suite compares topics,
-payloads and `_meta` byte for byte against fixtures captured from the earlier
-code).
+Everything in this section is optional; a binding that uses none of it publishes the
+defaults described above.
 
 The examples below were produced by running the code against an S7 filler
 (`deviceId: filler4`) with these tags: `DB10_speed` (property `speed`, `bpm`,
@@ -553,8 +589,7 @@ each `object-per-asset` member:
 | `src` | the source address (the device tag key or the OPC UA node id) |
 | `ctx` | the tag's merged context (see [Adding context](#adding-context)) |
 
-Default: `v, t, q, u` for envelopes and `v, q, u` for object members, exactly
-as before. With `"fields": ["v", "t", "q", "u", "name", "src"]`:
+Default: `v, t, q, u` for envelopes and `v, q, u` for object members. With `"fields": ["v", "t", "q", "u", "name", "src"]`:
 
 ```json
 acme/dallas/packaging/line4/filler/speed
@@ -618,7 +653,8 @@ entry wins over `source.overrides`.
 | `deadband` | number (absolute) or `{ type, value }` | this tag's report-by-exception band; `0` turns the binding's band off for it |
 | `context` | `{ key: string \| number \| boolean }` | merged over the device tag's context, mapping wins key by key |
 
-**Limits are carried as context, not evaluated.** Manifold has no alarm engine:
+**Limits are carried as context, not evaluated.** The mapping does not alarm, and
+Manifold's [alert rules](Alerts) do not read limits (a rule has its own threshold):
 a value beyond `hi` publishes like any other. Consumers that alarm read the
 limits from `_meta` (or the Sparkplug BIRTH).
 
@@ -899,8 +935,7 @@ DEATH lifecycle (see [Tags and Sparkplug](Tags-and-Sparkplug)).
 
 A device sample is a value, a time and a quality, which is what Timebase
 (Flow Software) stores natively, so a Good to Bad transition can survive all the
-way into history. Timebase also has no Modbus, S7 or EtherNet/IP collector (per
-its product pages, read November 2026), so these drivers fill a gap.
+way into history.
 
 There are **three delivery paths**:
 
@@ -934,24 +969,12 @@ There are **three delivery paths**:
    with `field: "v"` so the stored value is the number, not the JSON wrapper
    (the quality and timestamp are taken from the envelope either way).
 
-> **Verify before relying on paths 2 and 3 with Timebase.** The Timebase REST API
-> reference could not be read when this was written, and nothing has been
-> checked against the real product:
-> - Whether the Historian really **ignores a TVQ older than a tag's newest
->   point** (a comment in the writer says so; the outbox delivers strictly
->   oldest-first per historian either way).
-> - The accepted shape for a Bad sample **without a value**: Manifold sends
->   `v: null` with the quality.
-> - **Resolution:** Timebase advertises 500 ms storage resolution; whether closer
->   samples are kept is unconfirmed, so avoid poll groups faster than 500 ms with
->   a Timebase target.
-> - Quality-code semantics, batch limits, authentication (tokens) and the
->   tag/Field management endpoints.
->
-> Manifold's CI exercises the write against `timebase/historian:1.3.4`; 2.x is
-> current. Vendor pages also say Timebase is "first-in-wins" on a timestamp (an
-> identical timestamp/value is discarded), which would make outbox retries safe
-> to resend. That is also untested here. The checks to run are in
+> **Verify before relying on paths 2 and 3 with Timebase.** Manifold's CI exercises the write
+> against `timebase/historian:1.3.4` (2.x is current), but the REST API reference could not be
+> read: whether a sample older than a tag's newest point is ignored, the accepted shape of a Bad
+> sample without a value (Manifold sends `v: null` with the quality), whether samples closer than
+> the advertised 500 ms resolution are kept (avoid faster poll groups with a Timebase target),
+> quality codes, batch limits and tokens are unconfirmed. The checks to run are in
 > [Verifying on real hardware](Verifying-on-Real-Hardware#timebase-direct-write).
 
 ## Worked examples: the exact messages
@@ -1080,26 +1103,19 @@ docs/ex6/pump-1/flow                12.5
 - A **Scale** of `0` is refused: `tag "temp".scale must be a non-zero finite number`. In the editor this shows
   on the field; through the preview API it comes back as `{ "valid": false, "error": "..." }` with
   HTTP 200 so the editor can show it inline.
-- A value that cannot be scaled or cast publishes quality 0 and a reason, never a wrong value (see
-  [Per-tag overrides](#per-tag-overrides)).
 - Context on a plain payload cannot be carried. The preview and the save say so with an
   `option-ignored` warning: *context cannot ride a plain payload (it is a bare value); use the envelope
   format or the object layout, or keep context in _meta*.
 - With **What _meta lists per tag** reduced to *Unit* only (`metaFields: ["unit"]`) and context *Nowhere*, the preview's
   `_meta` tab shows `{"properties":{"water_temperature":{"unit":"°C"}},"updatedAt":...}`.
-- `POST /api/tags/bindings/suggest` on this device proposes `water_temperature`, `fan_speed`, `flow`,
-  `running` (basis `property`) and `spareRaw` (basis `key`, because the tag has no property). A tag whose
-  key is a raw address gets no suggestion (`suggestedName: null`, reason `raw-address`).
-
 ### Editing, and what is cleaned up
 
 Rename the asset path, switch a mapping off, delete it, or turn `_meta` off, and Manifold publishes an empty
-retained message to each retained topic that left the set (see [Retain, and what is
-cleaned up](#retain-and-what-is-cleaned-up)): `_status`, `_meta`, and value topics when **Retain values** is on.
-Two limits apply and are not hidden by the editor: an edit made while the Manifold server is **down** is not cleaned
-up when it starts again, and a clear sent while the broker is disconnected is dropped. A mapping that selects tags by
-rule publishes the retained topics of the tags it matches **now**; when a rule stops matching a tag, that tag's
-retained topic is cleared the same way.
+retained message to each retained topic that left the set: `_status`, `_meta`, and value topics when **Retain
+values** is on. A mapping that selects tags by rule publishes the retained topics of the tags it matches **now**;
+when a rule stops matching a tag, that tag's retained topic is cleared the same way. Edits made while the server was
+down, and clears aimed at a disconnected broker, are caught up from the recorded topics (see [Retain, and what is
+cleaned up](#retain-and-what-is-cleaned-up)).
 
 ## Quick reference: bindings as JSON
 
@@ -1151,33 +1167,8 @@ optionally `"maxObjectBytes"`) for the object form, `"historian": {
 }
 ```
 
-A binding that picks tags by rule and adds context:
-
-```json
-{
-  "name": "Filler 4 to UNS",
-  "source": {
-    "type": "device",
-    "deviceId": "filler4",
-    "tags": "all",
-    "select": { "exclude": ["*spare*"], "withProperty": true },
-    "overrides": {
-      "DB10_temp": { "scale": 0.1, "precision": 1, "limits": { "hi": 30 }, "context": { "pidTag": "TT-401" } },
-      "DB10_state": { "states": { "0": "Stopped", "1": "Running" } }
-    }
-  },
-  "target": {
-    "mode": "mqtt",
-    "brokerId": "<broker id>",
-    "assetPath": "acme/dallas/packaging/line4/filler",
-    "format": "envelope",
-    "fields": ["v", "t", "q", "u"],
-    "metaFields": ["type", "unit", "description", "range", "displayName", "limits", "states", "context"],
-    "context": { "site": "dallas", "equipmentId": "{deviceId}" },
-    "contextMode": "meta"
-  }
-}
-```
+A binding that picks tags by rule and adds context is in [Rules instead of a list](#rules-instead-of-a-list)
+and [Where context goes](#where-context-goes).
 
 Post either to `POST /api/tags/bindings` (admin; the response carries
 `warnings`), or to `POST /api/tags/bindings/preview` to see the result first. A

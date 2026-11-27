@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import { ChevronUp, ChevronDown, ChevronsUpDown, Pencil, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { IconButton } from './controls';
+import { Tooltip } from './tooltip';
 
 /* ------------------------------------------------------------------ */
 /* Table: real <table> semantics, compact rows, optional sortable heads */
@@ -38,9 +39,10 @@ export function TableSort({ sort, onSort, children }) {
 /**
  * Th — column header with scope="col". Give `sortKey` (inside <TableSort>) to
  * make it a sortable button with aria-sort. `srOnly` hides the text visually
- * (for action columns) while keeping it announced.
+ * (for action columns) while keeping it announced. `hint` explains a sortable column in a tooltip on
+ * its sort button (a separate hint button inside the sort button would nest two buttons).
  */
-export function Th({ children, sortKey, align = 'left', srOnly = false, className }) {
+export function Th({ children, sortKey, hint, align = 'left', srOnly = false, className }) {
   const ctx = useContext(SortContext);
   const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
   const base = clsx('h-8 whitespace-nowrap px-3 align-middle text-xs font-medium text-muted', alignClass, className);
@@ -48,16 +50,25 @@ export function Th({ children, sortKey, align = 'left', srOnly = false, classNam
     const active = ctx.sort?.key === sortKey;
     const dir = active ? ctx.sort.dir : null;
     const Icon = dir === 'asc' ? ChevronUp : dir === 'desc' ? ChevronDown : ChevronsUpDown;
+    const button = (
+      <button
+        type="button"
+        onClick={() => ctx.onSort(sortKey)}
+        className={clsx('group inline-flex items-center gap-1 rounded transition-colors hover:text-fg', align === 'right' && 'flex-row-reverse', active && 'text-fg')}
+      >
+        {hint ? <span className="border-b border-dotted border-line-stronger">{children}</span> : children}
+        <Icon size={12} aria-hidden="true" className={active ? 'text-accent-text' : 'opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70'} />
+      </button>
+    );
     return (
       <th scope="col" aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'} className={base}>
-        <button
-          type="button"
-          onClick={() => ctx.onSort(sortKey)}
-          className={clsx('group inline-flex items-center gap-1 rounded transition-colors hover:text-fg', align === 'right' && 'flex-row-reverse', active && 'text-fg')}
-        >
-          {children}
-          <Icon size={12} aria-hidden="true" className={active ? 'text-accent-text' : 'opacity-0 transition-opacity group-hover:opacity-70 group-focus-visible:opacity-70'} />
-        </button>
+        {hint ? (
+          <Tooltip label={hint} side="bottom">
+            {button}
+          </Tooltip>
+        ) : (
+          button
+        )}
       </th>
     );
   }

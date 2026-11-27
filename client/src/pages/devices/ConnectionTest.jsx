@@ -3,6 +3,7 @@ import { Plug } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button, Banner, KeyValue } from '@/components/ui';
 import { useReadOnly, READ_ONLY_REASON } from '@/store/selectors';
+import { infoLabel } from './model';
 
 /** The device's self-description as [label, value] pairs (scalars only). */
 function infoItems(info) {
@@ -10,7 +11,7 @@ function infoItems(info) {
   if (typeof info === 'string') return [['Device', info]];
   return Object.entries(info)
     .filter(([, v]) => v !== null && v !== undefined && v !== '' && typeof v !== 'object')
-    .map(([k, v]) => [k, String(v)]);
+    .map(([k, v]) => [infoLabel(k), String(v)]);
 }
 
 /** "Test connection": a one-off connect with the unsaved configuration, and a result panel. */

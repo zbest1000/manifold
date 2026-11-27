@@ -10,66 +10,82 @@ They are the same object. User-facing guides use "mapping"; this document uses "
 means the stored record or the engine (`tagBindings`, `bindingModel`) and "mapping" for what a
 person does in the editor.
 
+## Diagrams
+
+Every diagram below is Mermaid source, drawn from the code (module names are real files under
+`server/`). Each sits next to the text it explains:
+
+| Diagram | Where |
+| --- | --- |
+| System overview for newcomers | [README: How it works](README.md#how-it-works) |
+| Processes and components | [System overview](#system-overview) |
+| The path of one value, PLC register to UNS topic to historian row | [The path of one value](#the-path-of-one-value) |
+| Deployment | [Deployment](#deployment) |
+| Message hot path | [Message hot path](#message-hot-path) |
+| Pipelines and their loop guards | [Pipelines](#pipelines) |
+| Store-and-forward to historians | [Historians and store-and-forward](#historians-and-store-and-forward) |
+| Trends read-back | [Read-back (Trends)](#read-back-trends) |
+| Alarm lifecycle | [Alerting](#alerting) |
+| Mapping engine: sources, units, published topics, loop guard | [Bindings](#bindings) |
+| Sparkplug publisher session | [The Sparkplug publisher](#the-sparkplug-publisher) |
+| Device drivers: components, host supervision, device connection | [Southbound device drivers](#southbound-device-drivers) |
+| OPC UA certificate trust | [OPC UA security](#opc-ua-security) |
+| Client design tokens and data flow | [Client architecture](#client-architecture) |
+| Security boundaries | [Security model](#security-model) |
+
+Conventions: data flows left to right, sources on the left, outputs on the right; labels on arrows
+say what travels (the direction of the data, not of who opens the connection); "read-only"
+marks links on which Manifold never writes.
+
 ## System overview
+
+Manifold runs as up to three kinds of process: the **main server process** (`server/index.js`),
+one **driver host process** per device protocol (`server/drivers/host.js`), and, when an agent
+uses it, the separate **MCP server** (`mcp/index.js`). The browser client and the MCP server
+reach the backend only through the REST API (and, for the browser, Socket.IO).
 
 ```mermaid
 flowchart LR
-    subgraph sources [Data sources]
-        B[MQTT brokers]
-        O[OPC UA servers]
-        C[CESMII SMIP]
-        I[i3X servers]
-        PLC[PLCs and devices<br/>Modbus TCP, S7, EtherNet/IP]
+    subgraph clients["Clients"]
+        UI["Browser: client/<br/>React SPA, Zustand store"]
+        MCP["MCP process: mcp/index.js<br/>83 tools over stdio"]
     end
 
-    subgraph hosts [driver host processes - one per protocol]
-        DH[modbus / s7 / eip<br/>runtime + driver]
+    subgraph main["Main process: server/index.js"]
+        GATE["Host and Origin check,<br/>auth, rate limit, auditLog"]
+        ROUTES["Express routes<br/>routes/*.js"]
+        SIO["Socket.IO<br/>live events"]
+        INGEST["mqttManager + topicStore<br/>opcuaManager, iotManager"]
+        ENGINES["tagBindings, pipelineEngine,<br/>alertEngine, recorder, modelEngine"]
+        DEV["deviceManager<br/>driverSupervisor"]
+        OB["historianOutbox"]
+        PS["profileStore"]
     end
 
-    subgraph server [server/ - Node.js]
-        M[mqttManager<br/>ingest + coalesce<br/>Sparkplug queue]
-        OM[opcuaManager<br/>supervised reconnect]
-        SUP[driverSupervisor]
-        DM[deviceManager]
-        T[TopicTrie]
-        P[pipelineEngine]
-        MD[modelEngine]
-        R[recorder / replayer]
-        SC[schemaContracts]
-        TB[tagBindings<br/>tag sources, RBE, quality]
-        SP[sparkplugPublisher]
-        OB[historianOutbox]
-        H[historians<br/>influx / timescale / timebase]
-        AL[alertEngine]
-        AU[auditLog]
-        MX[metricsExporter]
+    subgraph hosts["Driver host processes: drivers/host.js"]
+        HOST["one per protocol, or per isolated device<br/>DeviceRuntime + driver per device"]
     end
 
-    subgraph clients [Consumers]
-        UI[client/ - React]
-        MCP[mcp/ - MCP server]
-        PROM[Prometheus]
-        HIST[(Historian databases)]
+    subgraph data["Data directory: MANIFOLD_DATA_DIR"]
+        CFG[("profiles.json<br/>+ .bak.1 to .5")]
+        LOGS[("history.json, alerts.jsonl,<br/>audit.jsonl, binding-retained.json")]
+        SPILL[("outbox/, recordings/, pki/")]
     end
 
-    B --> M
-    O --> OM
-    PLC <-- read-only --> DH
-    DH -- IPC: samples, state --> SUP --> DM
-    M --> T
-    M -- message tap --> P & R & SC & TB & AL
-    OM -- OpcuaSource: samples + state --> TB
-    DM -- samples + state --> TB
-    P --> OB
-    R --> OB
-    OB --> H --> HIST
-    TB --> SP --> B
-    TB -- mqtt publish, _status --> B
-    P -- publish --> B
-    M -- Socket.IO --> UI
-    DM -- Socket.IO --> UI
-    MCP -- REST --> server
-    MX --> PROM
+    UI -- "REST" --> GATE
+    UI <-- "Socket.IO" --> SIO
+    MCP -- "REST + bearer token" --> GATE
+    GATE --> ROUTES
+    ROUTES -- "config" --> PS
+    ROUTES -- "commands, queries" --> INGEST & ENGINES & DEV
+    INGEST -- "message tap" --> ENGINES
+    DEV <-- "fork, JSON IPC" --> HOST
+    DEV -- "samples, source-state" --> ENGINES
+    ENGINES -- "points" --> OB
+    INGEST & DEV -- "batched live values" --> SIO
+    PS --> CFG
+    ENGINES --> LOGS
+    OB --> SPILL
 ```
 
 The backend owns all live state. The client is a real-time view over
@@ -78,26 +94,113 @@ over the same REST API, so a browser user and an MCP agent see identical
 data. Device drivers are the one part that does not run in the server
 process: each protocol's driver runs in a supervised child process, and the
 server only ever sees its IPC messages (see
-[Southbound device drivers](#southbound-device-drivers)).
+[Southbound device drivers](#southbound-device-drivers)). The protocol connections
+themselves (MQTT, OPC UA, historians, webhooks) are opened by the main process.
+
+### The path of one value
+
+One holding register on a Modbus PLC, mapped to a UNS topic as a TVQ envelope, with a pipeline
+route that copies that topic into a historian. A mapping can also write to a historian directly
+(`target.historian`), which skips the broker round trip; the `opt` box marks that branch.
+
+```mermaid
+sequenceDiagram
+    participant PLC
+    participant HOST as driver host<br/>(child process)
+    participant DEV as driverSupervisor +<br/>deviceManager
+    participant TB as tagBindings
+    participant MQ as mqttManager
+    participant BRK as MQTT broker
+    participant PE as pipelineEngine
+    participant OB as historianOutbox
+    participant HIS as historian
+
+    HOST->>PLC: Read Holding Registers (FC 3), read-only
+    PLC-->>HOST: register words
+    Note over HOST: DeviceRuntime decodes:<br/>{ key, v, type, q: 192, tRead }
+    HOST->>DEV: IPC "samples", one batch per poll-group cycle
+    DEV->>TB: "sample" per tag, then "batch-end"
+    Note over TB: scale and offset, cast, deadband<br/>(change on value or quality)
+    TB->>MQ: publish acme/dallas/line4/filler/temperature
+    opt mapping has a direct historian target
+        TB->>OB: enqueue { tag, ts, value, quality }
+    end
+    MQ->>BRK: PUBLISH { v, t, q, u }
+    BRK-->>MQ: same message on the intake subscription
+    Note over MQ: topicStore ingest, 100 ms flush, message tap
+    MQ->>PE: message matches a route's source filter
+    PE->>OB: enqueue { tag, ts, value, quality }
+    OB->>HIS: writePoints, batches of 1,000, oldest first
+    alt historian unreachable
+        OB->>OB: spill to outbox/ segments, drain later
+    end
+```
 
 ## Repository layout
 
 ```
 server/   Express + Socket.IO backend; protocol managers and engines
-  drivers/    southbound device drivers (modbus, s7, eip), the shared runtime
-              (runtime/deviceRuntime.js) and the child-process entry (host.js)
-  services/   managers, engines, tagSources/ (tag-source adapters)
+  drivers/    southbound device drivers (modbus, s7, eip, bacnet, snmp, httpjson, mtconnect,
+              coap, matterserver, zwavejs), code they share (common/), the runtime
+              (runtime/: deviceRuntime.js, udpTransport.js, the WebSocket client) and the
+              child-process entry (host.js)
+  services/   managers, engines, tagSources/ (tag-source adapters), iot/ (IoT over MQTT
+              conventions), codecs/ (payload codecs)
   tools/      runnable simulators for the demo stack (simulators.js)
   test/       node:test suites; test/support/ holds the device simulators
-client/   React 18 + Vite + Tailwind; design system (src/components/ui), pages,
+client/   React 19 + Vite + Tailwind; design system (src/components/ui), pages,
           canvas renderers (src/graph), Zustand store; e2e/ holds the Playwright suite
 mcp/      MCP server (stdio), forwards to the backend REST API
-native/   Rust/napi hot-path experiment, kept as a reproducible benchmark
+native/   Rust/napi hot-path benchmark; not built or used by the product
 docker/   Demo stack: app, mosquitto, OPC PLC simulator, traffic generator,
           simulated Modbus / S7 / EtherNet/IP devices (docker-compose.yml)
-docs/     design notes (docs/design/), the review, the UI backlog and the wiki
-          sources (docs/wiki/); site/ is the static landing page
+docs/     contributor notes (docs/design/), known issues, release steps and the
+          wiki sources (docs/wiki/); site/ is the static landing page
 ```
+
+## Deployment
+
+The production image (root `Dockerfile`, `ghcr.io/zbest1000/manifold`) is one container: the
+server and the built client, running as the unprivileged `node` user, port 5000, state under the
+`/data` volume (`MANIFOLD_DATA_DIR`). The server speaks plain HTTP; put a reverse proxy in front
+for TLS and set `MANIFOLD_TRUST_PROXY`. A typical plant places it where it can reach the OT
+network on one side and the site's brokers and historians on the other:
+
+```mermaid
+flowchart LR
+    subgraph ot["OT network"]
+        PLC["PLCs, meters,<br/>controllers"]
+        OPC["OPC UA servers"]
+    end
+
+    subgraph host["Docker host, at the OT / IT boundary"]
+        APP["Manifold container<br/>node index.js, port 5000"]
+        VOL[("volume /data<br/>config, spill, logs, PKI")]
+        RP["reverse proxy<br/>TLS on 443"]
+    end
+
+    subgraph it["Site network"]
+        BRK["MQTT broker<br/>the UNS"]
+        HIS[("Historian")]
+        PROM["Prometheus"]
+        USERS["Operators' browsers"]
+    end
+
+    PLC -- "register and tag values<br/>Modbus 502, S7 102, EtherNet/IP 44818<br/>(read-only)" --> APP
+    OPC -- "monitored values<br/>opc.tcp 4840 (read-only)" --> APP
+    APP --- VOL
+    APP -- "UNS and Sparkplug<br/>MQTT 1883 / 8883" --> BRK
+    APP -- "points over HTTP or SQL" --> HIS
+    APP -- "/metrics, scraped" --> PROM
+    APP -- "UI and API, HTTP 5000" --> RP
+    RP -- "HTTPS" --> USERS
+```
+
+The ports are the protocols' defaults; each connection sets its own. Without a token the server
+binds `127.0.0.1`, which inside a container is unreachable, so the image needs
+`MANIFOLD_AUTH_TOKEN` (or `MANIFOLD_TOKENS`). Device targets on a plant LAN need
+`MANIFOLD_ALLOW_PRIVATE_TARGETS=1`. The demo stack (`docker-compose.yml`) is different: it builds
+`docker/app/Dockerfile`, seeds connections and adds a broker and simulators ([DOCKER.md](DOCKER.md)).
 
 ## Message hot path
 
@@ -167,6 +270,14 @@ Key mechanics:
   A subscribe that fails for another reason (a timeout, a busy client) is
   retried with exponential backoff, at most three times, before an error is
   surfaced.
+- **Payload codecs** (`server/services/codecs/`) run inside `buildMessage`, so once per touched
+  topic per flush, never per raw message: a codec binding matching the topic (most specific filter
+  first) decodes CBOR, MessagePack, SenML, Protobuf (reflection over the protobufjs parse, no code
+  generation) or Avro (hand-written binary reader) before the JSON/text detection; a binary payload
+  without a binding is offered to a conservative CBOR / MessagePack auto-detection. Work per payload
+  is bounded (256 KiB, depth 32, 100,000 items); a failure is counted on the binding and the payload
+  falls through unchanged. Sparkplug topics skip both. The read path (`getTopics`) decodes without
+  counting and re-decodes when the codec table's revision changes.
 - **Source time and quality** travel with the message when the payload has
   them: a TVQ envelope's `t` and `q`, a Sparkplug message and metric
   timestamp, and a metric's `Quality` property. `timestamp` stays arrival
@@ -270,19 +381,18 @@ Delivery always goes through the **outbox** — engines never call a historian
 directly:
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Queue: enqueue
-    Queue --> Written: flush ok
-    Queue --> Spill: write failed (retryable) / memory cap
-    Queue --> DeadLetter: rejected for good (4xx, SQL data error)
-    Spill --> Written: drained oldest-first, ahead of live data
-    Spill --> DeadLetter: rejected for good while draining
-    Spill --> Dropped: spill at cap
-    note right of Dropped
-        drop policy per historian:
-        newest (default, keeps outage start)
-        or oldest (keeps latest data)
-    end note
+flowchart LR
+    ENQ["enqueue(historianId, points)<br/>pipelineEngine, recorder,<br/>tagBindings"] --> BL{"spill backlog<br/>on disk?"}
+    BL -- "no" --> MEM["memory queue<br/>5,000 points"]
+    BL -- "yes: append behind it" --> SEG
+    MEM -- "overflow: oldest points" --> SEG
+    MEM -- "batches of 1,000" --> W["historians.writePoints<br/>influxdb, timescaledb, timebase"]
+    SEG[("outbox/ID.SEQ.seg<br/>JSONL, 4 MiB each,<br/>20 MiB in total")] -- "drained oldest first" --> W
+    CUR[("outbox/ID.cursor<br/>seg and offset delivered")] -. "resume point" .- SEG
+    W -- "accepted: delivered" --> HIS[("historian")]
+    W -- "network error, 5xx, 408, 429,<br/>401 or 403: pending, retried" --> SEG
+    W -- "other 4xx, SQL data error:<br/>bisect the batch" --> DL[("rejected<br/>outbox/ID.deadletter.jsonl")]
+    SEG -- "at the cap: drop policy" --> DROP["dropped and counted<br/>newest (default) or oldest"]
 ```
 
 **Ordering.** Delivery per historian is strictly oldest-first, because Timebase
@@ -349,10 +459,22 @@ flowchart LR
   Timebase accepts for a Bad sample with no value (Manifold sends `v: null`
   with the quality), whether samples closer than its advertised 500 ms
   resolution are kept, and its quality-code semantics. CI runs against
-  `timebase/historian:1.3.4`; 2.x is current. See
-  [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md) §11.
+  `timebase/historian:1.3.4`; 2.x is current.
 
 ## Alerting
+
+Rules have a **severity** (`info`, `warning`, `critical`). A firing rule (per concrete topic
+for wildcard value rules) is an **active alarm** (`GET /api/alerts/active`); an operator can
+**acknowledge** one or several (`POST /api/alerts/ack`, who and when recorded, an optional
+note). An acknowledgement holds until the alarm clears and never suppresses a later firing.
+Every firing, resolution, acknowledgement and end is appended to a durable **history**
+(`services/alertHistory.js`: `<data dir>/alerts.jsonl`, two size-capped segments,
+`MANIFOLD_ALERT_HISTORY_MAX_BYTES`, written in the background, a torn last line skipped),
+queried with cursor paging and filters or exported as CSV (`GET /api/alerts/history`).
+Alarms active when the server stopped are closed as *Ended by restart* on the next start
+and fire again from live data if the condition still holds; deleting or disabling a rule
+ends its active alarms at once. Acknowledgements and restart bookkeeping are not sent to
+webhooks.
 
 Four rule types share one engine (`server/services/alertEngine.js`), with two
 evaluation paths:
@@ -367,16 +489,32 @@ evaluation paths:
   change — the same pattern as the pipeline engine), so steady-state
   per-message cost is an integer compare plus array walks.
 
-Value-rule state machine:
+Alarm lifecycle (per rule, and per concrete topic for wildcard value rules):
 
 ```mermaid
 stateDiagram-v2
+    direction LR
     [*] --> Idle
-    Idle --> Breached: condition true
-    Breached --> Idle: condition false before sustainMs
+    Idle --> Breached: value condition true
+    Breached --> Idle: clears before sustainMs
     Breached --> Firing: held for sustainMs
-    Firing --> Idle: cleared (clearValue hysteresis)
+    Idle --> Firing: topic or branch silent
+    Firing --> Acknowledged: POST /api/alerts/ack
+    Firing --> Idle: resolved
+    Acknowledged --> Idle: resolved
+    Firing --> Ended: rule deleted or disabled
+    Acknowledged --> Ended: rule deleted or disabled
+    Ended --> [*]
 ```
+
+Every transition (firing, resolved, acknowledged with who, when and the note, ended) is appended
+to `alerts.jsonl`; webhooks get only firing, resolved and one-off events. "Resolved" means the
+value crossed back past `clearValue` (hysteresis) or data flows again. Silence rules are checked
+every 15 s. On restart, alarms that were open are written as *Ended by restart* and every rule
+starts again from Idle.
+
+A `new-topic` rule has no state: each new topic is a one-off `event`, sent to the webhook and
+the history. An acknowledgement does not stop a later firing of the same alarm.
 
 `sustainMs` requires the condition to hold continuously before firing;
 `clearValue` adds hysteresis (a `>` rule resolves only at
@@ -389,7 +527,8 @@ Webhook failures do not kill the engine, but they are not silent either:
 `webhookFailures` and `lastWebhookError` are reported on
 `GET /api/alerts/rules`. Webhook delivery goes through the egress guard
 (`guardedFetch`), so a webhook to loopback, link-local or, by default, a private
-address is refused; viewers see only `hasWebhook`, never the URL.
+address is refused. No role gets the URL back: rule answers carry `hasWebhook` and
+`webhookOrigin`; a save without `webhookUrl` keeps the stored one and `""` removes it.
 
 ## Tag sources, bindings and the Sparkplug publisher
 
@@ -430,6 +569,49 @@ A binding is `{ source, target, rbe }`. The pure half (validation, expansion int
 publishing units, topic and payload shapes, the retained-topic set, warnings and
 the preview) is `services/bindingModel.js`; `services/tagBindings.js` is the run
 time on top of it.
+
+```mermaid
+flowchart LR
+    subgraph sources["Tag sources (source.type)"]
+        DEV["device<br/>deviceManager"]
+        PROF["device-profile<br/>one unit per instance"]
+        OPCS["opcua<br/>OpcuaSource"]
+        IOTS["iot<br/>iotManager"]
+        SPS["sparkplug<br/>decoded message tap"]
+        MQS["mqtt<br/>bindingRuntimeMqtt"]
+    end
+
+    subgraph engine["tagBindings, plan compiled by bindingModel"]
+        LOOP{"loop guard: own publish<br/>or 4 hops?"}
+        UNIT["units<br/>one per source and asset"]
+        XF["per-tag transform<br/>scale, offset, cast, states"]
+        RBE["report by exception<br/>deadband, heartbeat"]
+    end
+
+    subgraph published["Published"]
+        VAL["asset/name values<br/>plain, TVQ or one object"]
+        META["asset/_meta, retained"]
+        STAT["asset/_status, retained"]
+        SPBO["Sparkplug NBIRTH, DBIRTH,<br/>DDATA, DDEATH"]
+        HIST["outbox<br/>direct historian target"]
+    end
+
+    DEV & PROF & OPCS & IOTS -- "sample, source-state" --> UNIT
+    SPS -- "metrics, BIRTH / DEATH" --> UNIT
+    MQS -- "message" --> LOOP
+    LOOP -- "no" --> UNIT
+    LOOP -- "yes: loopBlocked" --> DROP["not consumed"]
+    UNIT --> XF --> RBE
+    RBE -- "mode mqtt" --> VAL
+    RBE -- "mode sparkplug" --> SPBO
+    RBE -- "historianId set" --> HIST
+    UNIT -- "types, units, sources changed" --> META
+    UNIT -- "online / offline" --> STAT
+```
+
+Validation at save refuses a binding whose published topics overlap its own MQTT source filter on
+the same broker; the run-time guard above catches the indirect cycles (A to B to A across bindings
+and pipelines) that static checks cannot see.
 
 ```js
 source: { type: 'device', deviceId, tags: [{ address: <tagKey>, name? }] | 'all' }
@@ -676,18 +858,44 @@ so a new subscriber replays the current status immediately.
 Manifold can act as a primary host itself: `POST /api/tags/sparkplug/state`
 starts a dedicated session that publishes retained STATE for a chosen host ID
 with a matching last-will, so edge nodes waiting on a primary host see one. A session
-records a signature of its broker's connection settings; asking for it to start again
-after the broker profile was edited reconnects with the new settings (no stop needed).
-Nothing re-checks the signature on its own, so an edit alone does not move a running
-host session.
+records a signature of its broker's connection settings. Running host and edge-node
+sessions follow edits and removals of their broker profile on their own: on a changed
+signature they publish a clean offline message (retained offline STATE, or DDEATH and
+NDEATH) on the old connection and reconnect with the new settings
+(`test/sparkplug-profile-follow.test.js`).
+
+## IoT devices over MQTT
+
+`services/iot/iotManager.js` reads the MQTT traffic of Zigbee2MQTT, Z-Wave JS UI, Home
+Assistant MQTT discovery, Tasmota, Shelly, ChirpStack and The Things Stack (one module per
+convention in `services/iot/conventions/`) from the MQTT manager's message tap and turns it
+into devices with named, typed tags (`services/iot/registry.js`). It is handed the MQTT
+manager for the tap, connection state, subscriptions and the topic store only, and never
+calls publish: nothing is sent to a bridge, gateway or device. Detection is opt-in per
+broker and convention (profile-store collection `iotDetection`); enabling a convention adds
+the subscriptions it needs and replays what the broker already delivered. Home Assistant
+value templates go through a small evaluator (`services/iot/template.js`) that executes no
+code. Bounds (`services/iot/limits.js`): devices and tags per broker
+(`MANIFOLD_IOT_MAX_DEVICES`, `MANIFOLD_IOT_MAX_TAGS`), payload size and JSON depth. The
+manager is also the binding engine's tag source `iot` (`sourceId` = `<brokerId>|<deviceId>`,
+address = tag key), with `source-state` per device from availability or the broker
+connection. Routes: `/api/iot/*`; MCP: `iot_devices`.
 
 ## Southbound device drivers
 
-Read-only polling of Modbus TCP, Siemens S7 (S7comm) and EtherNet/IP (Logix)
-devices, with tags landing in the same binding engine as OPC UA. The design is
-in [`docs/design/southbound-drivers.md`](docs/design/southbound-drivers.md)
-(status: implemented, S7 and EtherNet/IP experimental, nothing verified on real
-hardware); this section describes what exists.
+Read-only drivers for Modbus TCP, Siemens S7 (S7comm), EtherNet/IP (Logix), BACnet/IP,
+SNMP, HTTP/JSON, MTConnect and CoAP devices, and for Matter and Z-Wave networks through
+the Matter Server and Z-Wave JS Server, with tags landing in the same binding engine as
+OPC UA. Every driver except Modbus TCP is experimental, and nothing was verified on real
+hardware. The driver contract, its design rules and the checklist for adding a driver are in
+[`docs/design/driver-contract.md`](docs/design/driver-contract.md); this section describes how
+the drivers run. Transports: TCP
+(Modbus, S7, EtherNet/IP), UDP (BACnet/IP, SNMP, CoAP), HTTP GET (HTTP/JSON, MTConnect,
+through one shared client) and WebSocket (the two bridge servers, through a hand-written
+RFC 6455 client in the runtime). The bridge drivers are **subscription drivers**
+(`capabilities.subscribe`): they push samples between poll cycles and report a lost
+connection, while connection state, backoff and Bad-on-disconnect stay with the runtime.
+A device saved without limits runs with its driver's `describe().limits`.
 
 ```mermaid
 flowchart LR
@@ -713,6 +921,43 @@ host is **parked** (surfaced on the Devices page, retried when the device set
 is saved again) and its devices report offline. An uncaught error inside a host
 is fatal on purpose: log, exit, be restarted. `testConnection` uses a
 transient host if none is running.
+
+Host process lifecycle (`driverSupervisor`, one state machine per host):
+
+```mermaid
+stateDiagram-v2
+    state down <<choice>>
+    [*] --> starting: devices saved, fork drivers/host.js
+    starting --> running: host sends "ready"
+    starting --> down: exits before ready
+    running --> down: exit, uncaught error, or 3 missed pings (SIGKILL)
+    down --> backoff: at most 5 crashes in 60 s
+    down --> parked: more than 5 crashes in 60 s
+    backoff --> starting: after 0.5 s doubling to 30 s, targets re-validated
+    parked --> starting: a device of this protocol is saved again
+    running --> stopped: no devices left, or shutdown
+    stopped --> [*]
+```
+
+While a host is in `backoff` its devices report offline with phase `backoff`; when it is
+`parked` they report offline with the crash-loop reason, and nothing restarts it on its own.
+Inside a running host, each device has its own connection state machine (`DeviceRuntime`):
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> connecting: device started
+    connecting --> online: connected
+    connecting --> backoff: connect failed or timed out
+    online --> backoff: timeout, framing error, reply that does not match
+    backoff --> connecting: jittered 1 s to 60 s, no retry cap
+    online --> stopped: device disabled or deleted
+    backoff --> stopped: device disabled or deleted
+    stopped --> [*]
+```
+
+Leaving `online` marks every tag Bad (`disconnected`). While online, a tag the device refuses is
+quarantined and retried every minute while the others keep polling.
 
 **Runtime** (`drivers/runtime/deviceRuntime.js`) is protocol-agnostic and owns
 everything that must not be reimplemented per driver. Per device:
@@ -749,8 +994,9 @@ browse?, close }`. `plan` is a pure function packing tags into requests within
 the device's limits (Modbus blocks with a default max gap of 0; S7 reads within
 the negotiated PDU, at most 20 items; CIP Multiple Service Packets);
 `execute` never throws for device or transport problems and returns per-item
-status; drivers hold exactly one connection. All three are our own
-implementations on `node:net`, with no new dependency; the EtherNet/IP
+status; drivers hold exactly one connection. All of them are our own
+implementations on Node's `net`, `dgram`, `http(s)` and `crypto` (SNMPv3 USM), with no
+new runtime dependency; the EtherNet/IP
 decision record (`drivers/eip/NOTES.md`) explains why the candidate libraries
 were rejected.
 
@@ -781,7 +1027,9 @@ row fails, nothing is created and each row reports its own error. `POST
 
 **Discovery.** `services/deviceIdentify.js` holds the read-only identification
 probes the CIDR scan uses when device ports are requested (`includeDevices` or
-`modbusPorts` / `s7Ports` / `eipPorts`): one TCP connection, one request, one
+`modbusPorts` / `s7Ports` / `eipPorts`; the UDP kinds BACnet/IP, CoAP and SNMP only with
+their own `bacnetPorts` / `coapPorts` / `snmpPorts` or `include...` flag, one unicast
+exchange per host, port and kind, see `UDP_PROBES` in `services/discovery.js`). For the TCP kinds: one TCP connection, one request, one
 bounded reply (4 KB, 3 s), closed. The requests are built with the drivers' own
 frame encoders: Modbus `encodeRequest` with function 3 for one register at
 address 0, unit 1 (the encoder throws for anything but functions 1 to 4); S7
@@ -801,10 +1049,11 @@ driver host: `manifold_driver_host_up` and `_restarts_total`; and per binding
 are capped (500 devices, bindings and hosts; 16 groups and 16 exception codes per
 device).
 
-**Samples.** A sample is `{ key, v, type, q, qReason?, tRead }`; `qReason` is one
-of `disconnected`, `quarantined`, `unit-down`, `device-exception`, `decode`,
-`unavailable`. Polled protocols have no device timestamp, so `tRead` is the
-honest timestamp.
+**Samples.** A sample is `{ key, v, type, q, qReason?, tRead, tSource? }`. The runtime
+sets `qReason` to `disconnected`, `quarantined`, `unit-down` or `device-exception`;
+drivers add their own (`decode`, `unavailable`, `stale`, `layout` and others). Polled
+protocols have no device timestamp, so `tRead` is the honest timestamp; `tSource` is
+set only by a driver whose device supplies one (MTConnect).
 
 **Refusal reasons.** A tag that a device refuses (an S7 CPU with PUT/GET off or
 optimized access, a Modbus exception, a CIP status) is quarantined with the
@@ -923,7 +1172,7 @@ Prosys...) and tens of thousands of monitored items remain unverified.
 
 ## Client architecture
 
-`client/` is a React 18 single-page app built with Vite (route-level code splitting: every page in
+`client/` is a React 19 single-page app built with Vite (route-level code splitting: every page in
 `client/src/pages/` is a lazy chunk, so the main bundle carries only the shell, store and shared
 primitives; `@` aliases `client/src`). The UI language is specified in
 [`docs/design/ui-design-system.md`](docs/design/ui-design-system.md); this section is how it is wired.
@@ -1032,6 +1281,56 @@ coordinates.
 
 ## Security model
 
+```mermaid
+flowchart LR
+    subgraph untrusted["Untrusted: the network"]
+        PAGE["Any web page<br/>in an operator's browser"]
+        CLIENT["UI, scripts,<br/>MCP server"]
+    end
+
+    subgraph main["Main process"]
+        HOSTCHK["Host and Origin check<br/>(open loopback instance)"]
+        AUTH["bearer token and role<br/>admin, viewer, open"]
+        AUDIT["auditLog<br/>secrets redacted"]
+        API["routes, Socket.IO"]
+        SECRETS[("profiles.json secrets<br/>answered as null,<br/>hasWebhook only")]
+        GUARD["egressGuard<br/>check, then pin the address"]
+    end
+
+    subgraph drivers["Driver host processes"]
+        DRV["read-only encoders<br/>connect to pinned IPs only"]
+    end
+
+    subgraph targets["Outbound"]
+        HTTPT["webhooks, i3X, CESMII,<br/>broker admin APIs"]
+        PLC["PLCs and devices"]
+        ADMIN["brokers, OPC UA servers,<br/>historians"]
+    end
+
+    PAGE -- "foreign Host or Origin: 421 / refused" --> HOSTCHK
+    CLIENT --> HOSTCHK --> AUTH
+    AUTH -- "mutations, and every<br/>401, 403, 429" --> AUDIT
+    AUTH -- "admin: everything<br/>viewer: GET + read-only POSTs" --> API
+    API --> SECRETS
+    API --> GUARD
+    GUARD -- "guardedFetch" --> HTTPT
+    GUARD -- "pinned addresses over IPC" --> DRV
+    DRV -- "read requests only" --> PLC
+    API -- "link-local and metadata refused" --> ADMIN
+```
+
+The driver hosts receive only their devices' configuration (including the secrets those devices
+need) and the addresses the main process already validated; they do not resolve host names,
+read the profile store or serve the API, and their encoders cannot build a write. They are not
+sandboxed by the operating system: they run as the same user as the server.
+
+**Open local instances.** With no token the server binds `127.0.0.1`, and (while bound to
+loopback) refuses any request whose `Host` is not `localhost`, `127.x`, `::1` or a name in
+`MANIFOLD_ALLOWED_HOSTS` with 421, so a DNS-rebinding page cannot reach it. The Socket.IO
+handshake is refused for a browser `Origin` that is neither the page's own origin nor
+`CLIENT_URL` (a WebSocket is not covered by CORS). With a token, or a deliberate non-loopback
+bind, any `Host` is accepted and the token is the protection.
+
 **Authentication and roles**
 
 - `MANIFOLD_AUTH_TOKEN` (admin), `MANIFOLD_VIEWER_TOKEN` (read-only) and
@@ -1059,7 +1358,7 @@ coordinates.
   | `/cesmii/history` | SMIP time-series read (a GraphQL query) |
 
   Everything else non-GET, over HTTP or the socket, is refused (the socket answers with
-  an `error-message` event). Alert webhook URLs are hidden from viewers, and `/api/audit`
+  an `error-message` event). Alert webhook URLs are returned to no role, and `/api/audit`
   is admin only. The UI mirrors this: with a viewer token `useReadOnly()` is true, every
   mutating control is disabled with the reason, and Settings shows the session.
 - Failed authentication is rate-limited per IP (20 failures/minute, then 429),
@@ -1083,7 +1382,7 @@ path and the differences matter:
 | Network scanner (including the device probes) | each candidate address through `isAllowedAddress`: loopback, link-local and reserved always refused, private ranges only with `MANIFOLD_ALLOW_PRIVATE_TARGETS=1`; `MANIFOLD_ALLOW_LOOPBACK_DEVICES` does not apply |
 | i3X, CESMII, broker admin, alert webhooks | `guardedFetch`: check before the request, a connect-time `lookup` that pins the checked address (closes DNS rebinding), manual redirects (at most 5, each hop re-checked, `Authorization`/cookies dropped across origins), one overall deadline |
 | Device drivers | `assertAllowedDeviceTarget` when a device is saved, tested or applied. The hostname is resolved in the main process (`deviceManager._pinned`), the validated addresses travel to the driver host as `device.pinned.addresses` and each client connects to that IP (the hostname is kept for display); the supervisor re-validates through its `revalidate` hook before restarting a host and `deviceManager` re-checks running devices every 30 s, taking a device offline with the reason when the name turns blocked. Optimistic concurrency lives in `profileStore` (`rev`, `updatedAt`, `expectRev` on every upsert, error code `stale`) and `services/revision.js` (route side); references are checked by `services/references.js`. Loopback is additionally allowed when `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1` |
-| MQTT brokers, OPC UA endpoints, historian and database URLs | **not checked, by decision**: admin-configured connections that the libraries open themselves. A broker or historian on `localhost` or the LAN is the normal setup, so guarding them by default would break it. Residual risk: an admin token can make the server connect to any host it can reach through these three paths; protect admin tokens and use network policy |
+| MQTT brokers, OPC UA endpoints, historian and database URLs | **loopback and private ranges allowed, by decision**: admin-configured connections, and a broker or historian on `localhost` or the LAN is the normal setup. Link-local and cloud-metadata targets are refused at save (`refuseLinkLocal`, 403) and at connect on the resolved address (`linkLocalGuardLookup` on every MQTT reconnect and historian request, `assertNotLinkLocal` before every OPC UA session). Residual risk: an admin token can make the server connect to any other host it can reach through these three paths; protect admin tokens and use network policy |
 
 **Audit** (`services/auditLog.js`). The middleware is mounted *before* auth so
 rejected requests (401, 403, 429) are recorded even when they are GETs. Mutations
@@ -1115,8 +1414,12 @@ shutdown and on process exit. Ids are checked against prototype-polluting names
 and looked up with `Object.hasOwn`.
 
 **Secrets and files.** Secrets (broker passwords, historian tokens, admin API
-keys) are stored server-side only: never echoed by the API, redacted from audit
-entries, and stripped from config exports. `server/data/` is written mode
+keys, device passwords and communities, alert webhook URLs) are stored server-side only:
+never echoed by the API (device secrets come back as `null`, webhooks as `hasWebhook` and
+`webhookOrigin`), redacted from audit entries, and stripped from config exports. A stored
+secret does not follow an endpoint change: changing a connection's scheme, host or port
+without supplying the secret again is refused with 400 `secret-required`
+(`services/endpointIdentity.js`). `server/data/` is written mode
 0600/0700. It is not encrypted: without a real key-management story,
 at-rest encryption of a file the server must read on boot adds no protection, so
 the honest measure is file permissions plus host security.
@@ -1181,7 +1484,10 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `GET` | `/api/system/discovery/results` | Candidates found by the last scan |
 | `GET` | `/api/system/config/export` | Config as code (secrets stripped; devices and profiles included) |
 | `POST` | `/api/system/config/import` | Import a config, validated whole before it is applied (merge by id) |
-| `GET` | `/api/mqtt/brokers` | List broker connections |
+| `GET` | `/api/mqtt/brokers` | List broker connections (with `posture` summary, `canaryState` and `intake`) |
+| `GET` | `/api/mqtt/presets` | Public test-broker presets for the connect form |
+| `GET` | `/api/mqtt/brokers/:brokerId/posture` | Security posture findings (read-only assessment, nothing probed) |
+| `GET` | `/api/mqtt/brokers/:brokerId/canary` | Round-trip canary status (`off` unless enabled on the broker) |
 | `POST` | `/api/mqtt/brokers` | Connect (and persist) a broker |
 | `GET` | `/api/mqtt/brokers/:brokerId` | One broker |
 | `PUT` | `/api/mqtt/brokers/:brokerId` | Edit in place (reconnects) |
@@ -1208,10 +1514,13 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `GET` | `/api/uns/icons` | Custom UNS icons |
 | `POST` | `/api/uns/icons` | Add or replace an icon (single-path SVG, upsert by name) |
 | `DELETE` | `/api/uns/icons/:id` | Remove an icon |
-| `GET` | `/api/alerts/rules` | Alert rules, rule types, webhook health (webhook URLs hidden from viewers) |
+| `GET` | `/api/alerts/rules` | Alert rules, rule types, webhook health (webhook URLs are never returned: `hasWebhook` and `webhookOrigin` instead) |
 | `POST` | `/api/alerts/rules` | Create or edit a rule (upsert by id) |
 | `DELETE` | `/api/alerts/rules/:id` | Delete a rule |
-| `GET` | `/api/alerts/events` | Recent firings |
+| `GET` | `/api/alerts/events` | Recent events from memory (`?ruleId=`) |
+| `GET` | `/api/alerts/active` | Active alarms (firing, and breached value rules) with severity and acknowledgement, plus counts |
+| `POST` | `/api/alerts/ack` | Acknowledge one alarm or every firing alarm of a rule, with an optional note (records who and when) |
+| `GET` | `/api/alerts/history` | Durable alarm history (`data/alerts.jsonl`): cursor paging, filters, `format=csv` |
 | `GET` | `/api/pipelines` | Routes, live metrics, outbox health, transform types |
 | `POST` | `/api/pipelines` | Create or edit a route (upsert by id); the source filter and `repath` targets are validated as MQTT topics |
 | `DELETE` | `/api/pipelines/:id` | Delete a route |
@@ -1238,7 +1547,17 @@ and the POSTs marked *viewer*. Regenerate this table with
 | `POST` | `/api/contracts` | Lock (create or edit) a contract |
 | `DELETE` | `/api/contracts/:id` | Delete a contract |
 | `GET` | `/api/contracts/violations` | Recent violations |
-| `GET` | `/api/tags/sources` | What can be browsed right now (devices, OPC UA, Sparkplug, MQTT) |
+| `GET` | `/api/codecs` | Payload codec bindings, per-binding decoded / failed counters, auto-detection counts, limits |
+| `POST` | `/api/codecs` | Create or edit a codec binding; the schema is compiled first (`400` with the parser's message, `413` over 128 KiB) |
+| `DELETE` | `/api/codecs/:id` | Delete a codec binding |
+| `POST` | `/api/codecs/test` | Decode one pasted payload; nothing stored or counted (*viewer*) |
+| `GET` | `/api/trends/export.csv` | Trends CSV export of up to 10 tags over a range, raw or bucketed, streamed |
+| `GET` | `/api/tags/sources` | What can be browsed right now (devices, OPC UA, Sparkplug, MQTT, IoT devices) |
+| `GET` | `/api/iot/conventions` | The IoT-over-MQTT conventions and their options |
+| `GET` | `/api/iot/brokers` | Detection status of every broker |
+| `GET` / `PUT` | `/api/iot/brokers/:brokerId` | One broker's detection settings, suggestions and counts / save them (`{ conventions: { <id>: { enabled, ...options } } }`) |
+| `GET` | `/api/iot/devices` | IoT devices (`?brokerId=&convention=&q=`) |
+| `GET` | `/api/iot/devices/:brokerId/:deviceId` | One IoT device with its tags and live values |
 | `GET` | `/api/tags/browse` | One level of children under a node (`type`, `id`, `node`) |
 | `GET` | `/api/tags/bindings` | Mappings (stored as bindings) with run-time status |
 | `POST` | `/api/tags/bindings` | Create or edit a mapping; returns it plus non-blocking `warnings` |
@@ -1351,9 +1670,12 @@ A device is stored and returned as:
 
 ```js
 {
-  id, name, enabled, protocol: 'modbus-tcp' | 's7' | 'ethernet-ip',
+  id, name, enabled,
+  protocol: 'modbus-tcp' | 's7' | 'ethernet-ip' | 'bacnet-ip' | 'snmp' | 'http-json' | 'mtconnect'
+          | 'coap' | 'matter-server' | 'zwave-js',
   host, port,                       // egress-checked on save
-  unitId | rack, slot | slot, routePath,   // protocol-specific top-level fields
+  unitId | rack, slot | slot, routePath | deviceInstance | version, community | scheme, path, authToken, ...
+                                    // protocol-specific top-level fields; secrets come back as null
   options: { byteOrder, wordOrder, addressBase, maxRegisters, maxGap, ... },  // Modbus also unmapped: [{table, from, to}] (Advanced section)
   limits:  { requestDeadlineMs: 2000, connectTimeoutMs: 5000, interRequestDelayMs: 0 },
   pollGroups: [{ id, intervalMs }],           // intervalMs >= 100
@@ -1379,10 +1701,10 @@ uses returns 409.
 
 ## MCP tools
 
-75 tools, covering reads and mutations across the whole backend (there are no
+83 tools, covering reads and mutations across the whole backend (there are no
 device-specific tools yet; devices and profiles are managed through the REST API
-and the UI; `binding_save` accepts `device`, `device-profile`, `opcua` and `sparkplug`
-sources, with the selection rules, overrides, fields and context options passed
+and the UI; `binding_save` accepts `device`, `device-profile`, `opcua`, `sparkplug`, `mqtt`
+and `iot` sources, with the selection rules, overrides, fields and context options passed
 through). Mutating
 tools say so in their descriptions, and every call goes through the same
 authenticated REST API (and therefore the same audit log) as the UI.
@@ -1390,15 +1712,17 @@ authenticated REST API (and therefore the same audit log) as the UI.
 | Group | Tools |
 | --- | --- |
 | System & config | `system_status` · `discover_scan` · `discover_results` · `discovery_stop` · `config_export` · `config_import` |
-| MQTT | `mqtt_list_brokers` · `mqtt_connect` · `mqtt_disconnect` · `mqtt_list_topics` · `mqtt_get_messages` · `mqtt_sparkplug_topology` · `mqtt_sys_stats` · `mqtt_resolve_subscriptions` · `mqtt_topic_tree` · `mqtt_admin_pubsub` · `mqtt_subscribe` · `mqtt_publish` |
+| MQTT | `mqtt_list_brokers` · `mqtt_connect` · `mqtt_disconnect` · `mqtt_list_topics` · `mqtt_get_messages` · `mqtt_sparkplug_topology` · `mqtt_sys_stats` · `mqtt_broker_posture` · `mqtt_broker_canary` · `mqtt_broker_presets` · `mqtt_resolve_subscriptions` · `mqtt_topic_tree` · `mqtt_admin_pubsub` · `mqtt_subscribe` · `mqtt_publish` |
 | UNS | `uns_tree` · `uns_lint` · `uns_events` · `mount_save` · `mount_delete` |
 | Pipelines | `pipelines_list` · `pipeline_preview` · `pipeline_save` · `pipeline_delete` |
 | Historians | `historians_list` · `historian_save` · `historian_delete` · `historian_test` |
 | Contracts | `contracts_list` · `contract_infer` · `contract_lock` · `contract_delete` · `contracts_violations` |
+| Codecs | `codecs_list` · `codec_test` |
 | Models | `models_list` · `model_save` · `model_delete` |
 | Tags & bindings | `tags_sources` · `tags_browse` · `bindings_list` · `binding_save` · `binding_delete` |
 | Recorder & replay | `recorder_list` · `recorder_save` · `recorder_delete` · `recorder_data` · `replay_start` · `replay_stop` |
-| Alerts & audit | `alert_rule_save` · `alert_rule_delete` · `alert_events` · `audit_recent` |
+| Alerts & audit | `alert_rule_save` · `alert_rule_delete` · `alert_events` · `alerts_active` · `alert_history` · `audit_recent` |
+| IoT over MQTT | `iot_devices` |
 | OPC UA | `opcua_list_connections` · `opcua_connect` · `opcua_disconnect` · `opcua_browse` · `opcua_read` · `opcua_monitor` |
 | CESMII SMIP | `cesmii_status` · `cesmii_configure` · `cesmii_list_equipment` · `cesmii_list_attributes` · `cesmii_history` · `cesmii_query` |
 | i3X | `i3x_status` · `i3x_connect` · `i3x_probe` · `i3x_namespaces` · `i3x_object_types` · `i3x_graph` · `i3x_related` · `i3x_value` · `i3x_history` |
@@ -1410,7 +1734,7 @@ authenticated REST API (and therefore the same audit log) as the UI.
 each file as a child and streams results over an IPC pipe whose framing corrupts intermittently
 on CI runners ("Unable to deserialize cloned data"; observed on Node 20 and 22, including at
 concurrency 1). Direct execution produces the same TAP output and exit semantics with no IPC.
-There are 40 test files:
+There are 92 test files; the main areas:
 
 | Area | Files |
 | --- | --- |
@@ -1418,19 +1742,23 @@ There are 40 test files:
 | Transport and brokers | `integration` (in-process aedes: manager round trip, a pipeline end to end, Sparkplug NBIRTH, DBIRTH, DDATA, DDEATH and NDEATH with sequence assertions), `brokerAdmin` (fake EMQX REST), `sparkplug` |
 | DataOps | `dataops` (every transform, both loop guards, filters, spill and drain, drop policies, historian wire formats), `historian-outbox`, `historian-delete`, `route-validation`, `alerts`, `unit` (discovery CIDR maths and helpers) |
 | Mapping | `bindings-v2` (quality-aware change detection, Bad on loss, `_status`, typed Sparkplug metrics, heartbeat), `mapping-phase4` (asset paths, objects, `_meta`, profiles), `mapping-context` (selection, overrides, fields, context; compared byte for byte with `fixtures/mapping-legacy.json`), `mapping-routes`, `bindings-opcua-int` |
-| Devices | `modbus-core`, `s7-core`, `eip-core` (framing, addressing, decode golden vectors, planner, read-only allowlist), `modbus-driver`, `s7-driver`, `eip-driver` (against the simulators with fault injection; each asserts no write service was ever sent), `driver-runtime`, `driver-supervisor` (crash, hang, crash-loop parking, real `host.js`), `devices-int` (HTTP API with a real child host) |
-| OPC UA | `opcuasec` (PKI, trust API), `opcua-reconnect` |
+| Devices | `modbus-core`, `s7-core`, `eip-core`, `bacnet-core`, `snmp-core` (framing, addressing, decode golden vectors, planner, read-only allowlist), `modbus-driver`, `s7-driver`, `eip-driver`, `bacnet-driver`, `snmp-driver`, `httpjson-driver`, `mtconnect-driver`, `coap-driver`, `matterserver-driver`, `zwavejs-driver` (against the simulators with fault injection; each asserts no write-capable request was ever sent), `driver-runtime`, `driver-supervisor`, `driver-robustness`, `device-pinning`, `device-default-limits`, `ws-client`, and the HTTP-level `devices-int`, `devices-http-int`, `devices-ws-bridges-int`, `snmp-int`, `coap-int` |
+| IoT, codecs, alerts, brokers, trends | `iot-conventions`, `iot-int` (simulator traffic; nothing is published to command topics), `codecs`, `codecs-http`, `alerts-lifecycle`, `alert-state-counters`, `canary`, `posture`, `trends-export` |
+| Discovery | `discovery-scan`, `discovery-routes`, `discovery-udp`, `bacnet-discovery`, `coap-discovery`, `discovery-opcua-real` |
+| OPC UA | `opcuasec` (PKI, trust API), `opcua-reconnect`, `opcua-real`, `opcua-real-lifecycle` (a real node-opcua server: every security mode, trust, restarts), `bindings-opcua-real` |
 | Security and platform | `auth`, `authConfig`, `rbac` (viewer allowlist), `socket` (handshake and viewer refusal), `egress`, `platform` (audit, rate limits), `configExport`, `profileStore`, `profileDurability` (crash, corrupt file, backups), `http` |
 | Real services | `services-int` (EMQX, InfluxDB, TimescaleDB, Timebase; needs `INTEGRATION=1` and the containers, run by the CI `integration` job) |
 
-The simulators (`server/test/support/modbusSimulator.js`, `s7Simulator.js`, `eipSimulator.js`)
-implement write services on purpose and count them, so tests can prove none is ever sent. They
+The simulators (`server/test/support/`: Modbus, S7, EtherNet/IP, BACnet/IP, SNMP, HTTP/JSON,
+MTConnect, CoAP, the Matter Server and Z-Wave JS Server WebSocket APIs, and the IoT-over-MQTT
+traffic generator) implement write services (or record any command they would refuse) on purpose
+and count them, so tests can prove none is ever sent. They
 show that driver and simulator agree, not that either matches real firmware.
-`node server/tools/simulators.js` runs the same three simulators with values that change over
-time (the `docker-compose.yml` stack uses it); `docker/simulator/sim.js` publishes a plant
+`node server/tools/simulators.js` runs three of them (Modbus TCP, S7, EtherNet/IP) with values
+that change over time (the `docker-compose.yml` stack uses it); `docker/simulator/sim.js` publishes a plant
 namespace and Sparkplug B traffic for the demo broker.
 
-**Client unit tests** (`cd client && npm test`, Vitest, 21 files in `client/src/test/`) cover the
+**Client unit tests** (`cd client && npm test`, Vitest, 46 files in `client/src/test/`) cover the
 pure logic: topic matching, graph builders and coverage, UNS tree and helpers, payload diff,
 `canvasKit` and `canvasTheme`, chart maths, device status, tag and profile models (including the
 bulk CSV parser), the mapping model and preview model, and the Pipelines and Settings models.
@@ -1438,7 +1766,7 @@ bulk CSV parser), the mapping model and preview model, and the Pipelines and Set
 **UI end to end** (`cd client && npm run build && npm run e2e`, Playwright). Global setup starts
 an in-process MQTT broker with ticking topics, a Modbus simulator and the **real backend** on a
 random port with a throwaway `MANIFOLD_DATA_DIR` and `MANIFOLD_ALLOW_LOOPBACK_DEVICES=1`, serving
-the built client. Tests that need their own devices start the S7, EtherNet/IP or Modbus
+the built client. Tests that need their own devices start the device
 simulators in-process (`e2e/support.js`), a Timebase stub, or a second backend with auth on. One
 worker, serial, deterministic. Three projects (`playwright.config.js`):
 

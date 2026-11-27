@@ -475,10 +475,12 @@ test('long outage: retries back off (growing delays), then recover when the serv
     await own.stop();
     await until(() => emitted.filter(([n, p]) => n === 'opcua-connection-attempt' && p.connectionId === 'lo').length >= 6, 10_000, '5 retries');
     const attempts = emitted.filter(([n]) => n === 'opcua-connection-attempt').length;
+    // An attempt in flight has no next retry time (it is cleared when the attempt starts and set again
+    // when it fails), so wait for the wait between attempts before reading it.
+    await until(() => mgr.getConnections()[0].nextRetryAt instanceof Date, 5000, 'next retry scheduled');
     const conn = mgr.getConnections()[0];
     assert.strictEqual(conn.status, 'reconnecting');
     assert.match(conn.lastError, /ECONNREFUSED/);
-    assert.ok(conn.nextRetryAt instanceof Date);
     // backoff: the delay doubled up to the cap (random() = 1 -> exact ceilings 40, 80, 160, 320, 320...)
     assert.strictEqual(mgr.connections.get('lo').attempt >= 5, true);
 

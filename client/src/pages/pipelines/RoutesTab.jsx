@@ -167,13 +167,13 @@ export default function RoutesTab({ brokers }) {
             <THead>
               <Th sortKey="name">Route</Th>
               <Th sortKey="state">State</Th>
-              <Th sortKey="in" align="right"><HeadHint hint={COUNTER_HELP.in}>In</HeadHint></Th>
-              <Th sortKey="out" align="right"><HeadHint hint={COUNTER_HELP.routed}>Routed</HeadHint></Th>
-              <Th sortKey="delivered" align="right"><HeadHint hint={COUNTER_HELP.delivered}>Delivered</HeadHint></Th>
-              <Th sortKey="pending" align="right"><HeadHint hint={COUNTER_HELP.pending}>Pending</HeadHint></Th>
-              <Th sortKey="rejected" align="right"><HeadHint hint={COUNTER_HELP.rejected}>Rejected</HeadHint></Th>
+              <Th sortKey="in" align="right" hint={COUNTER_HELP.in}>In</Th>
+              <Th sortKey="out" align="right" hint={COUNTER_HELP.routed}>Routed</Th>
+              <Th sortKey="delivered" align="right" hint={COUNTER_HELP.delivered}>Delivered</Th>
+              <Th sortKey="pending" align="right" hint={COUNTER_HELP.pending}>Pending</Th>
+              <Th sortKey="rejected" align="right" hint={COUNTER_HELP.rejected}>Rejected</Th>
               <Th align="right"><HeadHint hint={COUNTER_HELP.blocked}>Blocked</HeadHint></Th>
-              <Th sortKey="errors" align="right"><HeadHint hint={COUNTER_HELP.errors}>Errors</HeadHint></Th>
+              <Th sortKey="errors" align="right" hint={COUNTER_HELP.errors}>Errors</Th>
               <Th srOnly align="right">Actions</Th>
             </THead>
             <tbody>

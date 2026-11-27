@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '@/lib/api';
+import { storageAttention } from '@/lib/attention';
 import PageHeader from '@/components/PageHeader';
 import { Banner, Button, Dialog, Skeleton, StatGroup, StatusDot, StatusText } from '@/components/ui';
 import { Sparkline, TimeSeriesChart } from '@/components/charts';
@@ -197,6 +198,22 @@ function CounterTile({ metrics, hist, family, result, label, unit, warnPositive 
   return <StatTile label={label} value={fmtInt(value)} unit={unit} warn={warnPositive && value > 0} history={deltas(aggHistory(hist, family, result))} />;
 }
 
+/** Storage degraded: what cannot be written, and that changes are not being saved. */
+function StorageBanner({ issues }) {
+  if (!issues.length) return null;
+  return (
+    <Banner variant="error" title="Storage degraded: changes are not being saved">
+      <ul className="space-y-1" data-testid="storage-degraded">
+        {issues.map((i) => (
+          <li key={i.key}>
+            <span className="font-medium">{i.what}.</span> {i.detail}
+          </li>
+        ))}
+      </ul>
+    </Banner>
+  );
+}
+
 export default function System() {
   const [metrics, setMetrics] = useState(null); // Map(key -> sample)
   const [error, setError] = useState('');
@@ -205,6 +222,8 @@ export default function System() {
 
   const [tick, setTick] = useState(0);
   const poll = useCallback(() => setTick((t) => t + 1), []); // manual Refresh/Retry: restart the poller (polls at once)
+  // Storage degraded (GET /api/system/status): the configuration or the alert history cannot be written.
+  const [storageIssues, setStorageIssues] = useState([]);
 
   // One name everywhere: nav item, heading, document title and route label read "Health".
   useEffect(() => {
@@ -239,8 +258,18 @@ export default function System() {
         if (alive) setError(e.message);
       }
     };
+    const pollStatus = () =>
+      api
+        .systemStatus()
+        .then((st) => alive && setStorageIssues(storageAttention(st)))
+        .catch(() => {}); // the metrics poll reports a server that cannot be reached
     pollOnce();
-    const t = setInterval(() => document.visibilityState === 'visible' && pollOnce(), POLL_MS);
+    pollStatus();
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      pollOnce();
+      pollStatus();
+    }, POLL_MS);
     return () => {
       alive = false;
       clearInterval(t);
@@ -256,7 +285,8 @@ export default function System() {
     return (
       <div className="flex h-full flex-col">
         <PageHeader title="Health" />
-        <div role="region" aria-label="Health metrics" tabIndex={0} className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+        <div role="region" aria-label="Health metrics" tabIndex={0} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          <StorageBanner issues={storageIssues} />
           {error ? (
             <Banner variant="error" title="Could not read /metrics" onRetry={poll}>
               {error}. Check that the server is running and your access token is valid.
@@ -298,6 +328,7 @@ export default function System() {
         />
 
         <div role="region" aria-label="Health metrics" tabIndex={0} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          <StorageBanner issues={storageIssues} />
           {error && (
             <Banner variant="warn" title="Last poll failed, showing the previous readings" onRetry={poll}>
               {error}

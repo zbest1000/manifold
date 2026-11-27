@@ -43,7 +43,10 @@ describe('scan request from the form', () => {
       i3x: [80, 443, 8080],
       modbus: [502],
       s7: [102],
-      'ethernet-ip': [44818]
+      'ethernet-ip': [44818],
+      bacnet: [47808],
+      coap: [5683],
+      snmp: [161]
     });
     expect(portsFor(SCAN_KINDS[3], 'x')).toEqual([502]);
   });

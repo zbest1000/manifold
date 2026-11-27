@@ -8,13 +8,22 @@
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+function originOf(url) {
+  try {
+    return new URL(String(url)).origin;
+  } catch {
+    return 'the server';
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     return await fetch(url, { ...options, signal });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') {
-      throw new Error(`request to ${url} timed out after ${timeoutMs}ms`, { cause: error });
+      // Name the origin only: a URL's path and query can be the credential (webhook paths, ?token=).
+      throw new Error(`request to ${originOf(url)} timed out after ${timeoutMs}ms`, { cause: error });
     }
     throw error;
   }

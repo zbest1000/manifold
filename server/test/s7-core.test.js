@@ -190,6 +190,16 @@ test('parser reassembles COTP DT fragments (EOT clear)', () => {
   assert.deepEqual(m.data, s7);
 });
 
+test('parser caps the number of DT fragments, not only their bytes (empty fragments cost memory too)', () => {
+  const empty = hex('0300 0007 02f000'); // TPKT + COTP DT, EOT clear, no data
+  const burst = Buffer.concat(Array(1000).fill(empty));
+  const p = new TpktParser();
+  assert.throws(() => {
+    for (let i = 0; i < 1000; i++) p.push(burst); // a million fragments
+  }, S7FramingError);
+  assert.ok(p._fragments.length <= 4096, `${p._fragments.length} fragments buffered`);
+});
+
 test('parser reports DR / ER as messages', () => {
   const p = new TpktParser();
   const [m] = p.push(hex('0300 000b 06 80 0001 0001 00'));

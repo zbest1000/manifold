@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The Tailwind compatibility layer is gone: legacy palette names (slate, surface, rose, amber,
-// emerald, sky, white/x glass, ...) no longer map onto the tokens, so a class like that renders
-// nothing. Keep them out of the source (docs/design/ui-design-system.md, section 11).
+// tailwind.config.js replaces Tailwind's palette with the semantic tokens, so palette names (slate,
+// surface, rose, amber, emerald, sky, white/x glass, ...) render nothing. Keep them out of the source (docs/design/ui-design-system.md).
 
 const ROOT = path.resolve(__dirname, '..');
 const HUES = 'slate|gray|zinc|neutral|stone|sky|rose|red|pink|amber|yellow|orange|emerald|green|lime|blue|indigo|teal|cyan|violet|purple|fuchsia|surface';

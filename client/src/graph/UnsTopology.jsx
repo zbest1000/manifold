@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize2, Minus, Plus, Workflow } from 'lucide-react';
+import { ChevronsDownUp, ChevronsUpDown, Maximize2, Minus, Plus, Workflow } from 'lucide-react';
 import { onMessageActivity } from '@/store/store';
 import { loadIcons } from './unsIcons';
 import { buildUnsTheme } from './unsTheme';
@@ -10,6 +10,8 @@ import { recordActivity, rollRates, liveMeta } from './unsLive';
 import {
   nodeKey,
   seedExpansion,
+  expandAllKeys,
+  collapseAllKeys,
   layoutForest,
   fitTransform,
   pickNode,
@@ -74,7 +76,7 @@ export { unsLiveMap, unsValueMap, unsRateMap, lastActive, nodeValue, nodeRate, s
 
 const NO_PAGING = new Map();
 
-export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, paging = NO_PAGING, onPage = null }) {
+export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId = null, onSelect, focusTarget = null, paging = NO_PAGING, onPage = null, extraControls = null }) {
   const tokens = useCanvasTokens();
   const themeTokens = buildUnsTheme(tokens);
   const hoverRef = useRef(null); // node key under the pointer
@@ -318,6 +320,32 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       return next;
     });
   }
+
+  // Expand all / Collapse all. Expand opens every branch breadth first up to EXPAND_ALL_CAP laid-out
+  // nodes, one page per long branch (expandAllKeys); collapse leaves each namespace open one level. The
+  // camera goes back to the automatic readable framing, and the result is announced.
+  const [bulkNote, setBulkNote] = useState('');
+  const expandAll = useCallback(() => {
+    const r = expandAllKeys(roots, paging);
+    cancelMotion();
+    setRevealNote(null);
+    anchorRef.current = null;
+    userMovedRef.current = false;
+    setExpanded(new Set(r.keys));
+    setBulkNote(
+      r.complete
+        ? `Expanded all ${r.opened.toLocaleString()} branches (${r.laid.toLocaleString()} nodes on the map).`
+        : `Expanded ${r.opened.toLocaleString()} of ${r.total.toLocaleString()} branches: the map stops at ${r.laid.toLocaleString()} nodes, and long branches show one page. Open the rest one by one.`
+    );
+  }, [roots, paging, cancelMotion]);
+  const collapseAll = useCallback(() => {
+    cancelMotion();
+    setRevealNote(null);
+    anchorRef.current = null;
+    userMovedRef.current = false;
+    setExpanded(new Set(collapseAllKeys(roots)));
+    setBulkNote('Collapsed every branch; each namespace shows its first level.');
+  }, [roots, cancelMotion]);
 
   // Warm the icon set (lazy chunk) so badges upgrade from glyphs to icons.
   useEffect(() => {
@@ -962,6 +990,9 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
       <span id="uns-canvas-help" className="sr-only">
         {keyboardHint}
       </span>
+      <span role="status" className="sr-only" data-testid="uns-bulk-note">
+        {bulkNote}
+      </span>
       {pagers.map((l) => (
         <div
           key={l.node.id}
@@ -1005,9 +1036,19 @@ export default function UnsTopology({ roots, levels = DEFAULT_LEVELS, selectedId
           )}
         </div>
       )}
-      <div ref={controlsRef} role="toolbar" aria-label="Map controls" aria-orientation="vertical" className="absolute bottom-4 right-4 z-10 flex flex-col rounded-md border border-line bg-panel p-0.5 shadow-overlay">
+      <div
+        ref={controlsRef}
+        role="toolbar"
+        aria-label="Map controls"
+        aria-orientation="vertical"
+        className="absolute bottom-4 right-4 z-10 flex max-h-[calc(100%-2rem)] flex-col overflow-y-auto rounded-md border border-line bg-panel p-0.5 shadow-overlay"
+      >
+        {extraControls}
         <IconButton icon={Plus} label="Zoom in" side="left" onClick={() => zoomBy(1.25)} />
         <IconButton icon={Minus} label="Zoom out" side="left" onClick={() => zoomBy(0.8)} />
+        <span aria-hidden="true" className="mx-1.5 my-0.5 h-px bg-line" />
+        <IconButton icon={ChevronsUpDown} label="Expand all" side="left" onClick={expandAll} data-testid="uns-expand-all" />
+        <IconButton icon={ChevronsDownUp} label="Collapse all" side="left" onClick={collapseAll} data-testid="uns-collapse-all" />
         <span aria-hidden="true" className="mx-1.5 my-0.5 h-px bg-line" />
         <IconButton
           icon={Maximize2}

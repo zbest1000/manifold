@@ -7,6 +7,7 @@ import { useStore } from '@/store/store';
 import { useDataTick } from '@/store/selectors';
 import { Sparkline, fmtNum } from '@/components/charts';
 import { diffPayloads, formatDiffValue } from '@/lib/payloadDiff';
+import { codecCaption, codecLabel } from '@/pages/pipelines/codecsModel';
 import { Badge, Banner, Button, Checkbox, IconButton, Input, KeyValue, Modal, Path, Select, Timestamp, useConfirm } from '@/components/ui';
 import { PanelSection, SidePanel } from '@/components/CanvasChrome';
 import { numericFromPayload, endId } from './topicUtils';
@@ -171,6 +172,7 @@ export default function TopicPanel({ node, brokerId, graph, onJump, onClose }) {
             items={[
               ['Messages', <span key="m" className="tabular-nums">{meta.messageCount != null ? Number(meta.messageCount).toLocaleString() : '—'}</span>],
               ['Payload type', meta.type ? <Badge key="t">{meta.type}</Badge> : '—'],
+              ...(latest?.codec ? [['Codec', <span key="c" data-testid="topic-codec">{codecCaption(latest.codec)}</span>]] : []),
               ['Last message', meta.lastActivity ? <Timestamp key="l" value={meta.lastActivity} /> : '—']
             ]}
           />
@@ -233,6 +235,11 @@ export default function TopicPanel({ node, brokerId, graph, onJump, onClose }) {
           <div className="max-h-64 overflow-auto rounded border border-line bg-app px-2 py-1.5 font-mono text-xs leading-relaxed">
             {latest.sparkplug ? <PayloadTree data={latest.sparkplug} name="sparkplug" /> : typeof latest.payload === 'object' ? <PayloadTree data={latest.payload} /> : <span className="whitespace-pre-wrap break-all text-fg">{String(latest.payload)}</span>}
           </div>
+          {latest.codecError && (
+            <p className="mt-2 text-xs text-warn" data-testid="topic-codec-error">
+              {codecLabel(latest.codecError.name)} binding {latest.codecError.binding ? `"${latest.codecError.binding}" ` : ''}could not decode this payload, so it is shown as it arrived: {latest.codecError.error}
+            </p>
+          )}
           {numericSeries.length >= 2 && <PanelPlot series={numericSeries} unit={unit} onExpand={() => setHistoryOpen(true)} />}
         </PanelSection>
       )}

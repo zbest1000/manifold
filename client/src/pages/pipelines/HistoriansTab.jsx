@@ -49,7 +49,8 @@ export default function HistoriansTab() {
   const historians = data?.historians || [];
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const problems = historianProblems(form);
-  const shown = attempted ? problems : {};
+  // 400 secret-required (the address changed, a stored secret was left blank) is shown on that field.
+  const shown = { ...(attempted ? problems : {}), ...(formError?.field ? { [formError.field]: formError.message } : {}) };
 
   const openForm = (h) => {
     setForm(h ? historianFormFrom(h) : BLANK_HISTORIAN);
@@ -90,7 +91,7 @@ export default function HistoriansTab() {
       reload();
       toast.success('Historian saved');
     } catch (e) {
-      setFormError(e.message);
+      setFormError(e.code === 'secret-required' && e.field ? { field: e.field, message: e.message } : e.message);
     } finally {
       setSaving(false);
     }
@@ -269,7 +270,7 @@ export default function HistoriansTab() {
           }
         >
           <div className="space-y-6">
-            {formError && (
+            {formError && typeof formError === 'string' && (
               <Banner variant="error" title="Could not save the historian">
                 {formError}
               </Banner>
@@ -312,8 +313,8 @@ export default function HistoriansTab() {
                   <Field label="User" error={shown.user}>
                     <Input aria-invalid={shown.user ? 'true' : undefined} value={form.user} onChange={(e) => set({ user: e.target.value })} autoComplete="off" />
                   </Field>
-                  <Field label="Password">
-                    <Input type="password" value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
+                  <Field label="Password" error={shown.password}>
+                    <Input type="password" aria-invalid={shown.password ? 'true' : undefined} value={form.password} onChange={(e) => set({ password: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
                   </Field>
                   <Checkbox className="sm:col-span-2" label="Use SSL" checked={form.ssl} onChange={(v) => set({ ssl: v })} />
                 </>
@@ -326,8 +327,8 @@ export default function HistoriansTab() {
                   <Field label="Bucket" error={shown.bucket}>
                     <Input aria-invalid={shown.bucket ? 'true' : undefined} value={form.bucket} onChange={(e) => set({ bucket: e.target.value })} />
                   </Field>
-                  <Field label="Token">
-                    <Input type="password" value={form.token} onChange={(e) => set({ token: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
+                  <Field label="Token" error={shown.token}>
+                    <Input type="password" aria-invalid={shown.token ? 'true' : undefined} value={form.token} onChange={(e) => set({ token: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
                   </Field>
                   <Field label="Measurement (optional)">
                     <Input className="mono" value={form.measurement} onChange={(e) => set({ measurement: e.target.value })} placeholder="manifold" />
@@ -339,8 +340,8 @@ export default function HistoriansTab() {
                   <Field label="Dataset" error={shown.dataset} help="Created on the first write if it does not exist.">
                     <Input aria-invalid={shown.dataset ? 'true' : undefined} value={form.dataset} onChange={(e) => set({ dataset: e.target.value })} placeholder="Manifold" />
                   </Field>
-                  <Field label="API key (optional)">
-                    <Input type="password" value={form.apiKey} onChange={(e) => set({ apiKey: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
+                  <Field label="API key (optional)" error={shown.apiKey}>
+                    <Input type="password" aria-invalid={shown.apiKey ? 'true' : undefined} value={form.apiKey} onChange={(e) => set({ apiKey: e.target.value })} autoComplete="new-password" placeholder={editingId ? 'Unchanged' : undefined} />
                   </Field>
                   <Field label="Write path (optional)" className="sm:col-span-2" help="Default: /api/datasets/{dataset}/data">
                     <Input className="mono" value={form.writePath} onChange={(e) => set({ writePath: e.target.value })} />

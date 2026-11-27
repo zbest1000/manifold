@@ -9,15 +9,17 @@ import ModelsTab from './pipelines/ModelsTab';
 import HistoriansTab from './pipelines/HistoriansTab';
 import RecorderTab from './pipelines/RecorderTab';
 import ContractsTab from './pipelines/ContractsTab';
+import CodecsTab from './pipelines/CodecsTab';
 
 /**
- * Pipelines: the DataOps surface. Five tabs over the same live stream, each a list page with one
+ * Pipelines: the DataOps surface. Six tabs over the same live stream, each a list page with one
  * primary action and a form dialog:
  *   Routes      source → transform chain → target, with a dry run
  *   Models      several raw topics merged into one object at a UNS path
  *   Historians  time-series databases that routes and recordings write into
  *   Recorder    capture to a file or a historian, with replay
  *   Contracts   locked payload shapes, with drift
+ *   Codecs      decode CBOR, MessagePack, SenML, Protobuf and Avro payloads on ingest
  * Each tab lives in pages/pipelines/.
  */
 const TABS = [
@@ -25,7 +27,8 @@ const TABS = [
   { id: 'models', label: 'Models' },
   { id: 'historians', label: 'Historians' },
   { id: 'recorder', label: 'Recorder' },
-  { id: 'contracts', label: 'Contracts' }
+  { id: 'contracts', label: 'Contracts' },
+  { id: 'codecs', label: 'Codecs' }
 ];
 const IDS = TABS.map((t) => t.id);
 
@@ -64,6 +67,7 @@ export default function Pipelines() {
           {tab === 'historians' && <HistoriansTab />}
           {tab === 'recorder' && <RecorderTab brokers={brokers} />}
           {tab === 'contracts' && <ContractsTab brokers={brokers} />}
+          {tab === 'codecs' && <CodecsTab brokers={brokers} />}
         </TabPanel>
       </PageBody>
     </div>
