@@ -65,11 +65,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Hand-written notes for this tag (docs/releases/<tag>.md) are used when present;
+      # otherwise a short pointer to the changelog. GitHub's generated list of merged
+      # pull requests is appended either way.
+      - name: Pick release notes
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            cp "$notes" "$RUNNER_TEMP/release-notes.md"
+          else
+            {
+              echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md) for the full changelog."
+              echo
+              echo "Docker image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/manifold:${GITHUB_REF_NAME#v}\` (also tagged \`latest\`)."
+            } > "$RUNNER_TEMP/release-notes.md"
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           generate_release_notes: true
-          body: |
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the full changelog.
-
-            Docker image: `ghcr.io/${{ github.repository_owner }}/manifold:latest` (also tagged with this release's version).
+          body_path: ${{ runner.temp }}/release-notes.md

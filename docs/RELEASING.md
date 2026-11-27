@@ -22,6 +22,9 @@ Pushing a `v*` tag triggers `.github/workflows/release.yml`, which:
 2. Creates a GitHub Release for the tag with generated notes and a link to
    [CHANGELOG.md](../CHANGELOG.md).
 
+Release notes: if `docs/releases/<tag>.md` exists (for example `docs/releases/v1.1.0.md`), the
+workflow uses it as the release text; otherwise the release points at the changelog.
+
 Before tagging: bump the `version` field in `package.json`,
 `server/package.json`, `client/package.json`, and `mcp/package.json`, add a
 CHANGELOG entry, and merge that to `main` first. (For v1.1.0 this is done:
