@@ -29,7 +29,7 @@
     "globals": "^17.14.0",
     "node-opcua": "^2.187.34",
     "nodemon": "^3.1.14",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.4"
   },
   "engines": {
     "node": ">=20.0.0"
